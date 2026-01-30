@@ -16,6 +16,7 @@ export async function executePlan(params: {
   workingDir: string;
   runtime: RuntimeEnv;
   progress: ProgressReporter;
+  onStepComplete?: () => void;
 }): Promise<GoalOutcome> {
   const { session, client, workingDir, runtime, progress } = params;
   const plan = session.plan;
@@ -25,6 +26,12 @@ export async function executePlan(params: {
   const order = topologicalSort(plan.steps);
 
   for (const step of order) {
+    // Skip steps already completed (resume scenario)
+    if (step.status === "done" || step.status === "failed" || step.status === "skipped") {
+      progress.tick();
+      continue;
+    }
+
     // Skip if any dependency failed or was skipped
     const depsOk = step.dependsOn.every((depId) => {
       const result = session.stepResults.get(depId);
@@ -58,15 +65,18 @@ export async function executePlan(params: {
     if (toolResult.success) {
       step.status = "done";
       runtime.log(`  [x] ${step.id}. Done (${durationMs}ms)`);
+      params.onStepComplete?.();
     } else {
       step.status = "failed";
       runtime.log(`  [!] ${step.id}. Failed: ${toolResult.error}`);
+      params.onStepComplete?.();
 
       // Ask LLM whether this failure blocks the overall goal
       const verdict = await assessFailure(client, step, toolResult, plan);
       if (verdict.blocked) {
         session.state = "blocked";
         session.blockReason = verdict.question;
+        params.onStepComplete?.();
         return { status: "blocked", question: verdict.question };
       }
       // Not blocked: continue with remaining steps (dependents will be skipped)

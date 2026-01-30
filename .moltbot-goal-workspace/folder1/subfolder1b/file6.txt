@@ -1,0 +1,1 @@
+File 6 explores cloud computing architectures and microservices patterns.

@@ -1,4 +1,5 @@
 import { confirm, isCancel } from "@clack/prompts";
+import crypto from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
@@ -8,6 +9,7 @@ import { executePlan } from "../goal/executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan } from "../goal/planner.js";
+import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import type { DiagramMode, GoalOutcome, GoalSession, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -47,6 +49,7 @@ export async function goalCommand(
   const outputFormat = resolveOutputFormat(opts);
   const diagramMode = resolveDiagramMode(opts, outputFormat);
   const isJson = outputFormat === "json";
+  const isDryRun = Boolean(opts.dryRun);
 
   // Default to a sandboxed workspace subfolder
   const workingDir = opts.workingDir
@@ -55,7 +58,12 @@ export async function goalCommand(
 
   mkdirSync(workingDir, { recursive: true });
 
+  // Generate run ID and timestamp for persistence
+  const runId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+
   if (!isJson) {
+    runtime.log(`Run: ${runId}`);
     runtime.log(`Workspace: ${workingDir}`);
   }
 
@@ -81,6 +89,20 @@ export async function goalCommand(
     blockReason: null,
   };
 
+  // Persist the current session state to disk
+  function persistRun(): void {
+    saveRun(
+      sessionToSerialized({
+        session,
+        runId,
+        workingDir,
+        model: opts.model,
+        dryRun: isDryRun,
+        createdAt,
+      }),
+    );
+  }
+
   // Phase 1: Planning
   session.state = "planning";
   let planResult;
@@ -101,6 +123,7 @@ export async function goalCommand(
   if ("blocked" in planResult) {
     session.state = "blocked";
     session.blockReason = planResult.question;
+    persistRun();
     const outcome: GoalOutcome = { status: "blocked", question: planResult.question };
     if (isJson) {
       runtime.log(JSON.stringify(outcome, null, 2));
@@ -112,13 +135,16 @@ export async function goalCommand(
 
   // After the blocked check, planResult is narrowed to Plan
   session.plan = planResult;
+  persistRun();
 
   // Display plan
   runtime.log(isJson ? "" : "\n");
   runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
   if (!isJson) runtime.log("");
 
-  if (opts.dryRun) {
+  if (isDryRun) {
+    session.state = "done";
+    persistRun();
     const outcome: GoalOutcome = {
       status: "done",
       summary: "Dry run complete (plan generated, no execution)",
@@ -131,6 +157,7 @@ export async function goalCommand(
 
   // Phase 2: Approval gate
   session.state = "awaiting_approval";
+  persistRun();
   if (!opts.yes) {
     // JSON mode requires --yes because interactive prompts break strict JSON output
     if (isJson) {
@@ -138,11 +165,29 @@ export async function goalCommand(
         "--output json requires --yes to skip interactive approval. Add --yes to auto-approve.",
       );
     }
-    const approved = await confirm({
-      message: `Execute this ${planResult.steps.length}-step plan?`,
-    });
-    if (isCancel(approved) || !approved) {
+    let approved: boolean | symbol;
+    try {
+      approved = await confirm({
+        message: `Execute this ${planResult.steps.length}-step plan?`,
+      });
+    } catch {
+      // SIGINT / stdin closed during prompt — persist as cancelled
+      session.state = "cancelled";
+      persistRun();
+      runtime.log("Cancelled.");
+      runtime.exit(130);
+    }
+    if (isCancel(approved)) {
+      // Ctrl+C / ESC via clack — persist as cancelled, not rejected
+      session.state = "cancelled";
+      persistRun();
+      runtime.log("Cancelled.");
+      runtime.exit(130);
+    }
+    if (!approved) {
+      // Explicit "No" — persist as rejected
       session.state = "rejected";
+      persistRun();
       runtime.log("Plan rejected.");
       return { status: "rejected" };
     }
@@ -162,7 +207,10 @@ export async function goalCommand(
       workingDir,
       runtime,
       progress: execProgress,
+      onStepComplete: persistRun,
     });
+
+    persistRun();
 
     // Final result
     if (!isJson) runtime.log("");

@@ -4,6 +4,7 @@ export type GoalState =
   | "planning"
   | "awaiting_approval"
   | "rejected"
+  | "cancelled"
   | "executing"
   | "done"
   | "blocked";
@@ -78,3 +79,30 @@ export type GoalOutcome =
 
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
 export type OutputFormat = "md" | "json";
+
+/** Serialized form of a goal session persisted to disk. */
+export type SerializedRun = {
+  runId: string;
+  goal: string;
+  state: GoalState;
+  plan: Plan | null;
+  stepResults: Record<string, StepResult>;
+  blockReason: string | null;
+  workingDir: string;
+  model: string | undefined;
+  dryRun: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Lightweight summary returned by listRuns(). */
+export type RunSummary = {
+  runId: string;
+  goal: string;
+  state: GoalState;
+  createdAt: string;
+  updatedAt: string;
+  stepCount: number;
+  completedSteps: number;
+  dryRun: boolean;
+};

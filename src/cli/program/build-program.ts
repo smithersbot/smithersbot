@@ -6,6 +6,7 @@ import { registerPreActionHooks } from "./preaction.js";
 
 export function buildProgram() {
   const program = new Command();
+  program.enablePositionalOptions();
   const ctx = createProgramContext();
   const argv = process.argv;
 
