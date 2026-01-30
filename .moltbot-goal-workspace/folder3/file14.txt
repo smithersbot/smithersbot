@@ -1,1 +1,0 @@
-File 14 explores performance optimization techniques and system monitoring.

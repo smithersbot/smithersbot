@@ -1,1 +1,0 @@
-File number 16 contains details about containerization and Docker technologies.

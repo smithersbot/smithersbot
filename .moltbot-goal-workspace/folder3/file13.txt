@@ -1,1 +1,0 @@
-This thirteenth file covers version control systems and collaborative development.
