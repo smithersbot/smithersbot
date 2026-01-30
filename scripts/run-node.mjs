@@ -8,6 +8,11 @@ const args = process.argv.slice(2);
 const env = { ...process.env };
 const cwd = process.cwd();
 const compiler = env.CLAWDBOT_TS_COMPILER === "tsc" ? "tsc" : "tsgo";
+
+// Detect JSON output mode: suppress all non-JSON output when active.
+const isJsonMode = args.includes("--json") ||
+  args.includes("--output=json") ||
+  (args.includes("--output") && args[args.indexOf("--output") + 1] === "json");
 const projectArgs = ["--project", "tsconfig.json"];
 
 const distRoot = path.join(cwd, "dist");
@@ -81,6 +86,7 @@ const shouldBuild = () => {
 };
 
 const logRunner = (message) => {
+  if (isJsonMode) return;
   if (env.CLAWDBOT_RUNNER_LOG === "0") return;
   process.stderr.write(`[moltbot] ${message}\n`);
 };
@@ -121,7 +127,9 @@ if (!shouldBuild()) {
   const build = spawn(buildCmd, buildArgs, {
     cwd,
     env,
-    stdio: "inherit",
+    // In JSON mode, suppress build output to keep stdout clean.
+    // Redirect stdin from parent, stdout to /dev/null, stderr to parent stderr.
+    stdio: isJsonMode ? ["inherit", "ignore", "inherit"] : "inherit",
   });
 
   build.on("exit", (code, signal) => {

@@ -34,6 +34,10 @@ export function registerGoalCommand(program: Command) {
           ["moltbot goal list", "List all goal runs"],
           ["moltbot goal status <runId>", "Show run details"],
           ["moltbot goal resume <runId>", "Resume a blocked/interrupted run"],
+          [
+            "moltbot goal answer <runId> --key <KEY> --value <VALUE>",
+            "Answer a blocked run's question",
+          ],
         ])}`,
     )
     .action(async (goalText, opts) => {
@@ -116,6 +120,30 @@ export function registerGoalCommand(program: Command) {
           String(runId),
           {
             yes: Boolean(opts.yes),
+            json: Boolean(opts.json),
+            output: opts.output as OutputFormat | undefined,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  // Subcommand: answer
+  goal
+    .command("answer <runId>")
+    .description("Provide input to unblock a goal run")
+    .requiredOption("--key <key>", "The required input key (shown in status/blocked output)")
+    .requiredOption("--value <value>", "The value to provide")
+    .option("--json", "Output as JSON (shorthand for --output json)", false)
+    .option("--output <format>", "Output format: md, json (default: md)")
+    .action(async (runId, opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { goalAnswerCommand } = await import("../../commands/goal-answer.js");
+        await goalAnswerCommand(
+          String(runId),
+          {
+            key: String(opts.key),
+            value: String(opts.value),
             json: Boolean(opts.json),
             output: opts.output as OutputFormat | undefined,
           },

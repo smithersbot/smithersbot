@@ -1,3 +1,16 @@
+/**
+ * Thrown after JSON error output has already been written to stdout.
+ * runCommandWithRuntime sets process.exitCode and returns without
+ * logging or calling process.exit (which could truncate piped stdout).
+ */
+export class JsonExitError extends Error {
+  readonly exitCode: number;
+  constructor(exitCode: number) {
+    super();
+    this.exitCode = exitCode;
+  }
+}
+
 export type ManagerLookupResult<T> = {
   manager: T | null;
   error?: string;
@@ -38,6 +51,10 @@ export async function runCommandWithRuntime(
   try {
     await action();
   } catch (err) {
+    if (err instanceof JsonExitError) {
+      process.exitCode = err.exitCode;
+      return;
+    }
     if (onError) {
       onError(err);
       return;

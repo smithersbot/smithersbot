@@ -7,14 +7,23 @@ export type GoalState =
   | "cancelled"
   | "executing"
   | "done"
-  | "blocked";
+  | "blocked"
+  | "failed";
+
+/** Structured blocked state with a machine-readable key. */
+export type BlockedDetail = {
+  prompt: string;
+  requiredInputKey: string;
+};
 
 export type GoalSession = {
   goal: string;
   state: GoalState;
   plan: Plan | null;
   stepResults: Map<string, StepResult>;
-  blockReason: string | null;
+  blocked: BlockedDetail | null;
+  answers: Record<string, string>;
+  lastError?: string;
 };
 
 export type PlanStep = {
@@ -75,7 +84,7 @@ export type GoalLlmClient = {
 
 export type GoalOutcome =
   | { status: "done"; summary: string }
-  | { status: "blocked"; question: string }
+  | { status: "blocked"; question: string; requiredInputKey: string }
   | { status: "rejected" };
 
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
@@ -88,7 +97,9 @@ export type SerializedRun = {
   state: GoalState;
   plan: Plan | null;
   stepResults: Record<string, StepResult>;
-  blockReason: string | null;
+  blocked: BlockedDetail | null;
+  answers: Record<string, string>;
+  lastError?: string;
   workingDir: string;
   model: string | undefined;
   dryRun: boolean;

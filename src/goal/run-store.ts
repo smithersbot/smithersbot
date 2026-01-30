@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadJsonFile } from "../infra/json-file.js";
-import type { GoalSession, RunSummary, SerializedRun, StepResult } from "./types.js";
+import type { GoalSession, RunSummary, SerializedRun, StepResult, BlockedDetail } from "./types.js";
 
 const GOALS_DIRNAME = "goals";
 const RUN_FILENAME = "run.json";
@@ -44,7 +44,23 @@ export function loadRun(
   const filePath = path.join(resolveRunDir(runId, goalsDir), RUN_FILENAME);
   const data = loadJsonFile(filePath);
   if (!data || typeof data !== "object") return undefined;
-  return data as SerializedRun;
+  return migrateRun(data as Record<string, unknown>) as SerializedRun;
+}
+
+/** Migrate old run data (blockReason → blocked, add answers). */
+function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
+  // Backward compat: migrate blockReason → structured blocked
+  if (!data.blocked && typeof data.blockReason === "string") {
+    data.blocked = {
+      prompt: data.blockReason,
+      requiredInputKey: "step:unknown:input",
+    } satisfies BlockedDetail;
+  }
+  if (!data.answers) {
+    data.answers = {};
+  }
+  delete data.blockReason;
+  return data;
 }
 
 /** List all runs as summaries, sorted by updatedAt descending (newest first). */
@@ -125,7 +141,9 @@ export function sessionToSerialized(params: {
     state: session.state,
     plan: session.plan,
     stepResults: Object.fromEntries(session.stepResults),
-    blockReason: session.blockReason,
+    blocked: session.blocked,
+    answers: session.answers,
+    lastError: session.lastError,
     workingDir,
     model,
     dryRun,
@@ -147,6 +165,8 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     state: run.state,
     plan: run.plan,
     stepResults,
-    blockReason: run.blockReason,
+    blocked: run.blocked ?? null,
+    answers: run.answers ?? {},
+    lastError: run.lastError,
   };
 }

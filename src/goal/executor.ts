@@ -75,9 +75,16 @@ export async function executePlan(params: {
       const verdict = await assessFailure(client, step, toolResult, plan);
       if (verdict.blocked) {
         session.state = "blocked";
-        session.blockReason = verdict.question;
+        session.blocked = {
+          prompt: verdict.question,
+          requiredInputKey: verdict.requiredInputKey,
+        };
         params.onStepComplete?.();
-        return { status: "blocked", question: verdict.question };
+        return {
+          status: "blocked",
+          question: verdict.question,
+          requiredInputKey: verdict.requiredInputKey,
+        };
       }
       // Not blocked: continue with remaining steps (dependents will be skipped)
     }
@@ -134,7 +141,7 @@ Given:
 - The remaining plan steps
 
 Determine if the goal is blocked. Respond ONLY with JSON (no markdown fences):
-- If blocked: { "blocked": true, "question": "A specific question to ask the user to unblock" }
+- If blocked: { "blocked": true, "question": "A specific question to ask the user to unblock", "requiredInputKey": "a_snake_case_key_for_the_missing_input" }
 - If not blocked (remaining steps can still achieve the goal): { "blocked": false }`;
 
 async function assessFailure(
@@ -142,7 +149,8 @@ async function assessFailure(
   failedStep: PlanStep,
   toolResult: { error?: string },
   plan: Plan,
-): Promise<{ blocked: boolean; question: string }> {
+): Promise<{ blocked: boolean; question: string; requiredInputKey: string }> {
+  const fallbackKey = `step:${failedStep.id}:input`;
   try {
     const response = await client.complete({
       systemPrompt: ASSESS_SYSTEM_PROMPT,
@@ -162,18 +170,21 @@ async function assessFailure(
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
       if (parsed.blocked === true && typeof parsed.question === "string") {
-        return { blocked: true, question: parsed.question };
+        const key =
+          typeof parsed.requiredInputKey === "string" && parsed.requiredInputKey
+            ? parsed.requiredInputKey
+            : fallbackKey;
+        return { blocked: true, question: parsed.question, requiredInputKey: key };
       }
-      return { blocked: false, question: "" };
+      return { blocked: false, question: "", requiredInputKey: "" };
     } catch {
-      // If LLM response is not valid JSON, assume not blocked
-      return { blocked: false, question: "" };
+      return { blocked: false, question: "", requiredInputKey: "" };
     }
   } catch {
-    // If LLM call itself fails, default to blocked with the original error
     return {
       blocked: true,
       question: `Step "${failedStep.id}" failed: ${toolResult.error ?? "unknown error"}. Is this expected?`,
+      requiredInputKey: fallbackKey,
     };
   }
 }

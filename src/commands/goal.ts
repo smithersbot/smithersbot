@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
+import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executePlan } from "../goal/executor.js";
@@ -42,7 +43,7 @@ function resolveDiagramMode(opts: GoalCommandOptions, outputFormat: OutputFormat
 export async function goalCommand(
   opts: GoalCommandOptions,
   runtime: RuntimeEnv,
-): Promise<GoalOutcome> {
+): Promise<GoalOutcome | undefined> {
   const goal = opts.goal.trim();
   if (!goal) throw new Error("Goal text is required");
 
@@ -67,26 +68,14 @@ export async function goalCommand(
     runtime.log(`Workspace: ${workingDir}`);
   }
 
-  // Resolve API key
-  const authResult = resolveEnvApiKey("anthropic");
-  if (!authResult) {
-    throw new Error(
-      "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
-    );
-  }
-
-  const client = createGoalLlmClient({
-    apiKey: authResult.apiKey,
-    modelOverride: opts.model,
-  });
-
   // In-memory session state
   const session: GoalSession = {
     goal,
     state: "init",
     plan: null,
     stepResults: new Map(),
-    blockReason: null,
+    blocked: null,
+    answers: {},
   };
 
   // Persist the current session state to disk
@@ -103,137 +92,174 @@ export async function goalCommand(
     );
   }
 
-  // Phase 1: Planning
-  session.state = "planning";
-  let planResult;
-  {
-    const progress = createCliProgress({
-      label: "Generating plan...",
-      indeterminate: true,
-      enabled: !isJson,
-    });
-    try {
-      planResult = await generatePlan(client, goal);
-    } finally {
-      progress.done();
-    }
-  }
-
-  // Handle blocked-at-planning
-  if ("blocked" in planResult) {
-    session.state = "blocked";
-    session.blockReason = planResult.question;
-    persistRun();
-    const outcome: GoalOutcome = { status: "blocked", question: planResult.question };
-    if (isJson) {
-      runtime.log(JSON.stringify(outcome, null, 2));
-    } else {
-      runtime.log(`\nBLOCKED: ${planResult.question}`);
-    }
-    return outcome;
-  }
-
-  // After the blocked check, planResult is narrowed to Plan
-  session.plan = planResult;
+  // Persist immediately so the run record exists before anything can fail
   persistRun();
 
-  // Display plan (human-readable only; JSON mode emits a single combined object later)
-  if (!isJson) {
-    runtime.log("\n");
-    runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
-    runtime.log("");
-  }
-
-  if (isDryRun) {
-    session.state = "done";
-    persistRun();
-    const outcome: GoalOutcome = {
-      status: "done",
-      summary: "Dry run complete (plan generated, no execution)",
-    };
-    if (isJson) {
-      const planData = JSON.parse(
-        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
-      );
-      runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
-    }
-    return outcome;
-  }
-
-  // Phase 2: Approval gate
-  session.state = "awaiting_approval";
-  persistRun();
-  if (!opts.yes) {
-    // JSON mode requires --yes because interactive prompts break strict JSON output
-    if (isJson) {
-      throw new Error(
-        "--output json requires --yes to skip interactive approval. Add --yes to auto-approve.",
-      );
-    }
-    let approved: boolean | symbol;
-    try {
-      approved = await confirm({
-        message: `Execute this ${planResult.steps.length}-step plan?`,
-      });
-    } catch {
-      // SIGINT / stdin closed during prompt — persist as cancelled
-      session.state = "cancelled";
-      persistRun();
-      runtime.log("Cancelled.");
-      runtime.exit(130);
-    }
-    if (isCancel(approved)) {
-      // Ctrl+C / ESC via clack — persist as cancelled, not rejected
-      session.state = "cancelled";
-      persistRun();
-      runtime.log("Cancelled.");
-      runtime.exit(130);
-    }
-    if (!approved) {
-      // Explicit "No" — persist as rejected
-      session.state = "rejected";
-      persistRun();
-      runtime.log("Plan rejected.");
-      return { status: "rejected" };
-    }
-  }
-
-  // Phase 3: Execution
-  const execProgress = createCliProgress({
-    label: "Executing plan...",
-    total: planResult.steps.length,
-    enabled: !isJson,
-  });
   try {
-    if (!isJson) runtime.log("");
-    const outcome = await executePlan({
-      session,
-      client,
-      workingDir,
-      runtime,
-      progress: execProgress,
-      onStepComplete: persistRun,
+    // Resolve API key
+    const authResult = resolveEnvApiKey("anthropic");
+    if (!authResult) {
+      throw new Error(
+        "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
+      );
+    }
+
+    const client = createGoalLlmClient({
+      apiKey: authResult.apiKey,
+      modelOverride: opts.model,
     });
 
-    persistRun();
-
-    // Final result
-    if (isJson) {
-      const planData = JSON.parse(
-        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
-      );
-      runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
-    } else {
-      runtime.log("");
-      if (outcome.status === "done") {
-        runtime.log(`DONE: ${outcome.summary}`);
-      } else if (outcome.status === "blocked") {
-        runtime.log(`BLOCKED: ${outcome.question}`);
+    // Phase 1: Planning
+    session.state = "planning";
+    let planResult;
+    {
+      const progress = createCliProgress({
+        label: "Generating plan...",
+        indeterminate: true,
+        enabled: !isJson,
+      });
+      try {
+        planResult = await generatePlan(client, goal);
+      } finally {
+        progress.done();
       }
     }
 
-    return outcome;
-  } finally {
-    execProgress.done();
+    // Handle blocked-at-planning
+    if ("blocked" in planResult) {
+      session.state = "blocked";
+      session.blocked = {
+        prompt: planResult.question,
+        requiredInputKey: "step:planning:input",
+      };
+      persistRun();
+      const outcome: GoalOutcome = {
+        status: "blocked",
+        question: planResult.question,
+        requiredInputKey: "step:planning:input",
+      };
+      if (isJson) {
+        runtime.log(JSON.stringify(outcome, null, 2));
+      } else {
+        runtime.log(`\nBLOCKED: ${planResult.question}`);
+      }
+      return outcome;
+    }
+
+    // After the blocked check, planResult is narrowed to Plan
+    session.plan = planResult;
+    persistRun();
+
+    // Display plan (human-readable only; JSON mode emits a single combined object later)
+    if (!isJson) {
+      runtime.log("\n");
+      runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
+      runtime.log("");
+    }
+
+    if (isDryRun) {
+      session.state = "done";
+      persistRun();
+      const outcome: GoalOutcome = {
+        status: "done",
+        summary: "Dry run complete (plan generated, no execution)",
+      };
+      if (isJson) {
+        const planData = JSON.parse(
+          formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+        );
+        runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
+      }
+      return outcome;
+    }
+
+    // Phase 2: Approval gate
+    session.state = "awaiting_approval";
+    persistRun();
+    if (!opts.yes) {
+      // JSON mode requires --yes because interactive prompts break strict JSON output
+      if (isJson) {
+        throw new Error(
+          "--output json requires --yes to skip interactive approval. Add --yes to auto-approve.",
+        );
+      }
+      let approved: boolean | symbol;
+      try {
+        approved = await confirm({
+          message: `Execute this ${planResult.steps.length}-step plan?`,
+        });
+      } catch {
+        // SIGINT / stdin closed during prompt — persist as cancelled
+        session.state = "cancelled";
+        persistRun();
+        runtime.log("Cancelled.");
+        runtime.exit(130);
+      }
+      if (isCancel(approved)) {
+        // Ctrl+C / ESC via clack — persist as cancelled, not rejected
+        session.state = "cancelled";
+        persistRun();
+        runtime.log("Cancelled.");
+        runtime.exit(130);
+      }
+      if (!approved) {
+        // Explicit "No" — persist as rejected
+        session.state = "rejected";
+        persistRun();
+        runtime.log("Plan rejected.");
+        return { status: "rejected" };
+      }
+    }
+
+    // Phase 3: Execution
+    const execProgress = createCliProgress({
+      label: "Executing plan...",
+      total: planResult.steps.length,
+      enabled: !isJson,
+    });
+    try {
+      if (!isJson) runtime.log("");
+      const outcome = await executePlan({
+        session,
+        client,
+        workingDir,
+        runtime,
+        progress: execProgress,
+        onStepComplete: persistRun,
+      });
+
+      persistRun();
+
+      // Final result
+      if (isJson) {
+        const planData = JSON.parse(
+          formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+        );
+        runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
+      } else {
+        runtime.log("");
+        if (outcome.status === "done") {
+          runtime.log(`DONE: ${outcome.summary}`);
+        } else if (outcome.status === "blocked") {
+          runtime.log(`BLOCKED: ${outcome.question}`);
+        }
+      }
+
+      return outcome;
+    } finally {
+      execProgress.done();
+    }
+  } catch (err) {
+    // Persist the failure so the run record is always available
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    session.lastError = errorMsg;
+    session.state = "failed";
+    persistRun();
+
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: errorMsg, runId }));
+      throw new JsonExitError(1);
+    }
+    throw err;
   }
 }

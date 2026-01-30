@@ -2,9 +2,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { JsonExitError } from "../cli/cli-utils.js";
 import { saveRun } from "../goal/run-store.js";
 import type { SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+
+async function catchJsonExit(fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    if (!(err instanceof JsonExitError)) throw err;
+  }
+}
 
 let testGoalsDir: string;
 
@@ -57,7 +66,8 @@ const sampleRun: SerializedRun = {
     ],
   },
   stepResults: { "1": { stepId: "1", success: true, output: "", durationMs: 1 } },
-  blockReason: null,
+  blocked: null,
+  answers: {},
   workingDir: "/tmp",
   model: undefined,
   dryRun: false,
@@ -128,7 +138,7 @@ describe("goal-status command", () => {
   it("--json error for unknown run outputs strict JSON", async () => {
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
-    await goalStatusCommand("nonexistent", { json: true }, rt);
+    await catchJsonExit(() => goalStatusCommand("nonexistent", { json: true }, rt));
     const raw = rt.logs.join("");
     expect(raw.trimStart()[0]).toBe("{");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -142,5 +152,69 @@ describe("goal-status command", () => {
     await goalStatusCommand("status-t", {}, rt);
     const output = rt.logs.join("\n");
     expect(output).toContain("status-test-aaaa");
+  });
+
+  it("text mode shows lastError for failed runs", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "failed-status-run",
+      state: "failed",
+      lastError: "shell_exec command not in read-only allowlist",
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("failed-status-run", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("failed");
+    expect(output).toContain("shell_exec command not in read-only allowlist");
+  });
+
+  it("JSON mode includes lastError for failed runs", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "failed-json-status",
+      state: "failed",
+      lastError: "Planning error",
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("failed-json-status", { json: true }, rt);
+    const raw = rt.logs.join("");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    expect(parsed.state).toBe("failed");
+    expect(parsed.lastError).toBe("Planning error");
+  });
+
+  it("text mode shows blocked details with answer hint", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "blocked-detail-run",
+      state: "blocked",
+      blocked: { prompt: "Need creds", requiredInputKey: "db_password" },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-detail-run", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("Need creds");
+    expect(output).toContain("db_password");
+    expect(output).toContain("moltbot goal answer");
+  });
+
+  it("JSON mode includes blocked object with prompt and requiredInputKey", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "blocked-json-detail",
+      state: "blocked",
+      blocked: { prompt: "Need creds", requiredInputKey: "db_password" },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-json-detail", { json: true }, rt);
+    const raw = rt.logs.join("");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const blocked = parsed.blocked as Record<string, unknown>;
+    expect(blocked.prompt).toBe("Need creds");
+    expect(blocked.requiredInputKey).toBe("db_password");
   });
 });

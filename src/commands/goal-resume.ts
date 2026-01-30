@@ -1,6 +1,7 @@
 import { confirm, isCancel } from "@clack/prompts";
 import { mkdirSync } from "node:fs";
 
+import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executePlan } from "../goal/executor.js";
@@ -39,9 +40,9 @@ export async function goalResumeCommand(
   if (!resolvedId) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: `Run not found: ${runId}` }));
-    } else {
-      runtime.error(`Run not found: ${runId}`);
+      throw new JsonExitError(1);
     }
+    runtime.error(`Run not found: ${runId}`);
     return undefined;
   }
 
@@ -49,9 +50,9 @@ export async function goalResumeCommand(
   if (!run) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: `Run file missing: ${resolvedId}` }));
-    } else {
-      runtime.error(`Run file missing: ${resolvedId}`);
+      throw new JsonExitError(1);
     }
+    runtime.error(`Run file missing: ${resolvedId}`);
     return undefined;
   }
 
@@ -59,30 +60,53 @@ export async function goalResumeCommand(
   if (run.state === "done") {
     if (isJson) {
       runtime.log(JSON.stringify({ error: "Run already completed." }));
-    } else {
-      runtime.error("Run already completed.");
+      throw new JsonExitError(1);
     }
+    runtime.error("Run already completed.");
     return undefined;
   }
 
-  // Blocked: print details and exit (re-plan is a later milestone)
+  // Terminal: failed is not resumable
+  if (run.state === "failed") {
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: "Run failed.", lastError: run.lastError ?? null }));
+      throw new JsonExitError(1);
+    }
+    runtime.error(`Run failed: ${run.lastError ?? "Unknown error"}`);
+    return undefined;
+  }
+
+  // Blocked: print details and exit — user must provide answer first
   if (run.state === "blocked") {
     if (isJson) {
-      runtime.log(JSON.stringify({ status: "blocked", question: run.blockReason }));
+      runtime.log(
+        JSON.stringify({
+          status: "blocked",
+          question: run.blocked?.prompt ?? null,
+          requiredInputKey: run.blocked?.requiredInputKey ?? null,
+        }),
+      );
     } else {
-      runtime.log(`Blocked: ${run.blockReason}`);
-      runtime.log("Re-planning for blocked runs is not yet supported.");
+      runtime.log(`Blocked: ${run.blocked?.prompt ?? "Unknown reason"}`);
+      runtime.log(`Required input: ${run.blocked?.requiredInputKey ?? "unknown"}`);
+      runtime.log(
+        `Answer:  moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked?.requiredInputKey ?? "KEY"} --value <VALUE>`,
+      );
     }
-    return { status: "blocked", question: run.blockReason ?? "" };
+    return {
+      status: "blocked",
+      question: run.blocked?.prompt ?? "",
+      requiredInputKey: run.blocked?.requiredInputKey ?? "unknown",
+    };
   }
 
   // Stale/incomplete states
   if (run.state === "init" || run.state === "planning") {
     if (isJson) {
       runtime.log(JSON.stringify({ error: "Run is in an incomplete state." }));
-    } else {
-      runtime.error("Run is in an incomplete state.");
+      throw new JsonExitError(1);
     }
+    runtime.error("Run is in an incomplete state.");
     return undefined;
   }
 
@@ -142,7 +166,7 @@ export async function goalResumeCommand(
         runtime.log(
           JSON.stringify({ error: "--yes is required in JSON mode to approve the plan." }),
         );
-        return undefined;
+        throw new JsonExitError(1);
       }
       let approved: boolean | symbol;
       try {

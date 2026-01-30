@@ -1,3 +1,4 @@
+import { JsonExitError } from "../cli/cli-utils.js";
 import { loadRun, resolveRunId } from "../goal/run-store.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import type { DiagramMode, OutputFormat } from "../goal/types.js";
@@ -26,9 +27,9 @@ export async function goalStatusCommand(
   if (!resolvedId) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: `Run not found: ${runId}` }));
-    } else {
-      runtime.error(`Run not found: ${runId}`);
+      throw new JsonExitError(1);
     }
+    runtime.error(`Run not found: ${runId}`);
     return;
   }
 
@@ -36,9 +37,9 @@ export async function goalStatusCommand(
   if (!run) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: `Run file missing: ${resolvedId}` }));
-    } else {
-      runtime.error(`Run file missing: ${resolvedId}`);
+      throw new JsonExitError(1);
     }
+    runtime.error(`Run file missing: ${resolvedId}`);
     return;
   }
 
@@ -60,8 +61,16 @@ export async function goalStatusCommand(
     runtime.log("Dry run:   yes");
   }
 
-  if (run.blockReason) {
-    runtime.log(`\nBlocked: ${run.blockReason}`);
+  if (run.lastError) {
+    runtime.log(`\nError:     ${run.lastError}`);
+  }
+
+  if (run.blocked) {
+    runtime.log(`\nBlocked:   ${run.blocked.prompt}`);
+    runtime.log(`Input key: ${run.blocked.requiredInputKey}`);
+    runtime.log(
+      `Answer:    moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked.requiredInputKey} --value <VALUE>`,
+    );
   }
 
   if (run.plan) {
@@ -86,7 +95,7 @@ export async function goalStatusCommand(
     }
   }
 
-  if (run.state === "awaiting_approval" || run.state === "executing") {
+  if (run.state === "awaiting_approval" || run.state === "executing" || run.state === "blocked") {
     runtime.log(`\nResume: moltbot goal resume ${run.runId.slice(0, 8)}`);
   }
 }

@@ -32,7 +32,8 @@ function createSession(plan: Plan): GoalSession {
     state: "executing",
     plan,
     stepResults: new Map(),
-    blockReason: null,
+    blocked: null,
+    answers: {},
   };
 }
 
@@ -148,6 +149,7 @@ describe("executor", () => {
       JSON.stringify({
         blocked: true,
         question: "What file should I read?",
+        requiredInputKey: "missing_file",
       }),
     );
 
@@ -162,6 +164,7 @@ describe("executor", () => {
     expect(result.status).toBe("blocked");
     if (result.status === "blocked") {
       expect(result.question).toBe("What file should I read?");
+      expect(result.requiredInputKey).toBe("missing_file");
     }
   });
 
@@ -239,6 +242,38 @@ describe("executor", () => {
 
     expect(result.status).toBe("done");
     expect(fs.readFileSync(path.join(tmpDir, "readme.md"), "utf8")).toBe("Hello Moltbot");
+  });
+
+  it("falls back to step ID for requiredInputKey when LLM omits it", async () => {
+    const failedId = "s001";
+    const plan: Plan = {
+      goal: "test",
+      summary: "Fallback key test",
+      steps: [
+        {
+          id: failedId,
+          description: "Read missing file",
+          dependsOn: [],
+          tool: { name: "file_read", args: { path: "nonexistent.txt" } },
+          status: "pending",
+        },
+      ],
+    };
+
+    const client = mockClient(JSON.stringify({ blocked: true, question: "Need input" }));
+
+    const result = await executePlan({
+      session: createSession(plan),
+      client,
+      workingDir: tmpDir,
+      runtime: mockRuntime,
+      progress: noopProgress,
+    });
+
+    expect(result.status).toBe("blocked");
+    if (result.status === "blocked") {
+      expect(result.requiredInputKey).toBe(`step:${failedId}:input`);
+    }
   });
 });
 
