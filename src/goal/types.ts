@@ -23,6 +23,7 @@ export type PlanStep = {
   dependsOn: string[];
   tool: ToolCall;
   status: "pending" | "running" | "done" | "failed" | "skipped";
+  durationMinutes?: number;
 };
 
 export type Plan = {

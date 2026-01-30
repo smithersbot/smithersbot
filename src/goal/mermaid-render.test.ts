@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeCpm } from "./cpm.js";
 import { renderMermaid } from "./mermaid-render.js";
 import type { Plan } from "./types.js";
 
@@ -117,5 +118,80 @@ describe("renderMermaid", () => {
     expect(out).toContain("&quot;hello&quot;");
     // Should not contain unescaped quotes inside the label
     expect(out).not.toMatch(/\["[^"]*"hello"[^"]*"\]/);
+  });
+
+  it("includes duration in node labels when CPM is provided", () => {
+    const plan = makePlan([
+      {
+        id: "1",
+        description: "Create dir",
+        dependsOn: [],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+        durationMinutes: 3,
+      },
+      {
+        id: "2",
+        description: "Write file",
+        dependsOn: ["1"],
+        tool: { name: "file_write", args: {} },
+        status: "pending",
+        durationMinutes: 5,
+      },
+    ]);
+    const cpm = computeCpm(plan);
+    const out = renderMermaid(plan, cpm);
+    expect(out).toContain("[3m]");
+    expect(out).toContain("[5m]");
+  });
+
+  it("includes classDef critical line when CPM is provided", () => {
+    const plan = makePlan([
+      {
+        id: "A",
+        description: "Root",
+        dependsOn: [],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+        durationMinutes: 2,
+      },
+    ]);
+    const cpm = computeCpm(plan);
+    const out = renderMermaid(plan, cpm);
+    expect(out).toContain("classDef critical stroke-width:3px;");
+  });
+
+  it("marks critical nodes with class lines", () => {
+    const plan = makePlan([
+      {
+        id: "A",
+        description: "Root",
+        dependsOn: [],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+        durationMinutes: 2,
+      },
+      {
+        id: "B",
+        description: "Long path",
+        dependsOn: ["A"],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+        durationMinutes: 3,
+      },
+      {
+        id: "C",
+        description: "Short path",
+        dependsOn: ["A"],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+        durationMinutes: 1,
+      },
+    ]);
+    const cpm = computeCpm(plan);
+    const out = renderMermaid(plan, cpm);
+    expect(out).toContain("class A critical;");
+    expect(out).toContain("class B critical;");
+    expect(out).not.toContain("class C critical;");
   });
 });

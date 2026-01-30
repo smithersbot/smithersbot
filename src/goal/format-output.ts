@@ -1,3 +1,4 @@
+import { computeCpm } from "./cpm.js";
 import type { DiagramMode, OutputFormat, Plan } from "./types.js";
 import { renderAsciiDependencies } from "./dag-render.js";
 import { renderMermaid } from "./mermaid-render.js";
@@ -5,8 +6,8 @@ import { renderMermaid } from "./mermaid-render.js";
 /**
  * Format a plan for display, respecting diagram mode and output format.
  *
- * - `md`: Markdown with summary, step list, and diagram section(s).
- * - `json`: Strict JSON with plan data and optional diagram strings.
+ * - `md`: Markdown with summary, step list, CPM schedule, and diagram section(s).
+ * - `json`: Strict JSON with plan data, CPM schedule, and optional diagram strings.
  */
 export function formatPlanOutput(
   plan: Plan,
@@ -27,6 +28,7 @@ function wantMermaid(mode: DiagramMode): boolean {
 }
 
 function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
+  const cpm = computeCpm(plan);
   const lines: string[] = [];
 
   lines.push(`## Plan: ${plan.summary}`);
@@ -35,10 +37,18 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
 
   for (const step of plan.steps) {
     const deps = step.dependsOn.length > 0 ? step.dependsOn.join(", ") : "none";
+    const dur = cpm.steps[step.id].durationMinutesEffective;
     lines.push(
-      `${step.id}. **${step.description}** -- \`${step.tool.name}\` (depends on: ${deps})`,
+      `${step.id}. **${step.description}** -- \`${step.tool.name}\` (depends on: ${deps}) [${dur}m]`,
     );
   }
+
+  // CPM schedule section
+  lines.push("");
+  lines.push("### Schedule (CPM)");
+  lines.push("");
+  lines.push(`**Total duration:** ${cpm.totalDurationMinutes}m`);
+  lines.push(`**Critical path:** ${cpm.criticalPathStepIds.join(" \u2192 ")}`);
 
   if (wantAscii(diagram)) {
     lines.push("");
@@ -52,7 +62,7 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
     lines.push("### Dependency Graph (Mermaid)");
     lines.push("");
     lines.push("```mermaid");
-    lines.push(renderMermaid(plan));
+    lines.push(renderMermaid(plan, cpm));
     lines.push("```");
   }
 
@@ -60,9 +70,10 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
 }
 
 function formatJson(plan: Plan, diagram: DiagramMode): string {
+  const cpm = computeCpm(plan);
   const diagrams: Record<string, string> = {};
   if (wantAscii(diagram)) diagrams.ascii = renderAsciiDependencies(plan);
-  if (wantMermaid(diagram)) diagrams.mermaid = renderMermaid(plan);
+  if (wantMermaid(diagram)) diagrams.mermaid = renderMermaid(plan, cpm);
 
   const output = {
     goal: plan.goal,
@@ -72,7 +83,13 @@ function formatJson(plan: Plan, diagram: DiagramMode): string {
       description: s.description,
       dependsOn: s.dependsOn,
       tool: s.tool,
+      durationMinutesEffective: cpm.steps[s.id].durationMinutesEffective,
     })),
+    schedule: {
+      totalDurationMinutes: cpm.totalDurationMinutes,
+      criticalPathStepIds: cpm.criticalPathStepIds,
+      steps: cpm.steps,
+    },
     diagrams,
   };
 

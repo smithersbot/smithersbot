@@ -137,10 +137,12 @@ export async function goalCommand(
   session.plan = planResult;
   persistRun();
 
-  // Display plan
-  runtime.log(isJson ? "" : "\n");
-  runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
-  if (!isJson) runtime.log("");
+  // Display plan (human-readable only; JSON mode emits a single combined object later)
+  if (!isJson) {
+    runtime.log("\n");
+    runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
+    runtime.log("");
+  }
 
   if (isDryRun) {
     session.state = "done";
@@ -150,7 +152,10 @@ export async function goalCommand(
       summary: "Dry run complete (plan generated, no execution)",
     };
     if (isJson) {
-      runtime.log(JSON.stringify(outcome, null, 2));
+      const planData = JSON.parse(
+        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+      );
+      runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
     }
     return outcome;
   }
@@ -213,13 +218,18 @@ export async function goalCommand(
     persistRun();
 
     // Final result
-    if (!isJson) runtime.log("");
     if (isJson) {
-      runtime.log(JSON.stringify(outcome, null, 2));
-    } else if (outcome.status === "done") {
-      runtime.log(`DONE: ${outcome.summary}`);
-    } else if (outcome.status === "blocked") {
-      runtime.log(`BLOCKED: ${outcome.question}`);
+      const planData = JSON.parse(
+        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+      );
+      runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
+    } else {
+      runtime.log("");
+      if (outcome.status === "done") {
+        runtime.log(`DONE: ${outcome.summary}`);
+      } else if (outcome.status === "blocked") {
+        runtime.log(`BLOCKED: ${outcome.question}`);
+      }
     }
 
     return outcome;

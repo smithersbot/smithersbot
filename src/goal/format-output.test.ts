@@ -178,6 +178,24 @@ describe("formatPlanOutput", () => {
       // D depends on B and C
       expect(out).toMatch(/\[ \] D \(git_add\)\n\s+deps: B, C/);
     });
+
+    it("includes CPM schedule section with total duration and critical path", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "none", format: "md" });
+      expect(out).toContain("### Schedule (CPM)");
+      expect(out).toContain("**Total duration:** 3m");
+      expect(out).toContain("**Critical path:** 1");
+    });
+
+    it("includes duration markers in step listing", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "none", format: "md" });
+      expect(out).toContain("[1m]");
+    });
+
+    it("mermaid diagram includes duration labels when present", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "md" });
+      expect(out).toContain("[1m]");
+      expect(out).toContain("classDef critical stroke-width:3px;");
+    });
   });
 
   describe("json format", () => {
@@ -245,6 +263,29 @@ describe("formatPlanOutput", () => {
       const parsed = JSON.parse(out);
       const ascii = parsed.diagrams.ascii as string;
       expect(ascii).toMatch(/\[ \] D \(git_add\)\n\s+deps: B, C/);
+    });
+
+    it("includes CPM schedule in JSON output", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "none", format: "json" });
+      const parsed = JSON.parse(out);
+      expect(parsed.schedule).toBeDefined();
+      expect(parsed.schedule.totalDurationMinutes).toBe(3);
+      expect(parsed.schedule.criticalPathStepIds).toEqual(["1", "2", "3"]);
+      expect(parsed.schedule.steps["1"].isCritical).toBe(true);
+    });
+
+    it("includes durationMinutesEffective on each step in JSON", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "none", format: "json" });
+      const parsed = JSON.parse(out);
+      for (const step of parsed.steps) {
+        expect(step.durationMinutesEffective).toBe(1);
+      }
+    });
+
+    it("JSON mermaid diagram contains duration labels", () => {
+      const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "json" });
+      const parsed = JSON.parse(out);
+      expect(parsed.diagrams.mermaid).toContain("[1m]");
     });
   });
 });
