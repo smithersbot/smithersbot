@@ -17,6 +17,7 @@ function statusChar(status: PlanStep["status"]): string {
 
 /**
  * Renders a plan as an ASCII dependency graph with status indicators.
+ * Used during execution runtime to show live progress.
  *
  * Example output:
  *   Plan: Create a landing page
@@ -81,7 +82,6 @@ export function renderDag(plan: Plan): string {
     for (const childId of children) {
       const child = stepMap.get(childId);
       if (child && !rendered.has(childId)) {
-        // Only enqueue if all deps will be satisfied
         queue.push(child);
       }
     }
@@ -91,4 +91,29 @@ export function renderDag(plan: Plan): string {
   lines.push("Legend: [ ] pending  [x] done  [!] failed  [-] skipped  [>] running");
 
   return lines.join("\n");
+}
+
+/**
+ * Renders a per-step dependency listing for static plan display.
+ * No pipe connectors, no runtime status legend.
+ *
+ * Example output:
+ *   [ ] 1 (mkdir)
+ *       deps: none
+ *
+ *   [ ] 2 (file_write)
+ *       deps: 1
+ *
+ *   [ ] 3 (git_add)
+ *       deps: 2
+ */
+export function renderAsciiDependencies(plan: Plan): string {
+  const blocks: string[] = [];
+
+  for (const step of plan.steps) {
+    const deps = step.dependsOn.length > 0 ? step.dependsOn.join(", ") : "none";
+    blocks.push(`[ ] ${step.id} (${step.tool.name})\n    deps: ${deps}`);
+  }
+
+  return blocks.join("\n\n");
 }

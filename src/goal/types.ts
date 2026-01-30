@@ -75,3 +75,6 @@ export type GoalOutcome =
   | { status: "done"; summary: string }
   | { status: "blocked"; question: string }
   | { status: "rejected" };
+
+export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
+export type OutputFormat = "md" | "json";
