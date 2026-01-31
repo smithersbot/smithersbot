@@ -25,6 +25,10 @@ export type GoalCommandOptions = {
   dryRun?: boolean;
   diagram?: DiagramMode;
   output?: OutputFormat;
+  /** Stop after planning; set state to awaiting_approval without entering the approval gate. */
+  planOnly?: boolean;
+  /** Use this run ID instead of generating a new one. */
+  runId?: string;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -60,7 +64,7 @@ export async function goalCommand(
   mkdirSync(workingDir, { recursive: true });
 
   // Generate run ID and timestamp for persistence
-  const runId = crypto.randomUUID();
+  const runId = opts.runId ?? crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
   if (!isJson) {
@@ -155,6 +159,14 @@ export async function goalCommand(
       runtime.log("\n");
       runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
       runtime.log("");
+    }
+
+    // Plan-only mode: stop after planning, leave state as awaiting_approval.
+    // Only reached when planResult is a Plan (blocked/failed paths return earlier).
+    if (opts.planOnly) {
+      session.state = "awaiting_approval";
+      persistRun();
+      return undefined;
     }
 
     if (isDryRun) {

@@ -238,10 +238,16 @@ describe("createTelegramBot", () => {
       description: command.description,
     }));
     expect(registered.slice(0, native.length)).toEqual(native);
-    expect(registered.slice(native.length)).toEqual([
+    // After native commands: goal command specs, then custom commands
+    const afterNative = registered.slice(native.length);
+    const customStart = afterNative.findIndex((c) => c.command === "custom_backup");
+    expect(customStart).toBeGreaterThanOrEqual(0);
+    expect(afterNative.slice(customStart)).toEqual([
       { command: "custom_backup", description: "Git backup" },
       { command: "custom_generate", description: "Create an image" },
     ]);
+    // Goal commands appear before custom commands
+    expect(afterNative.some((c) => c.command === "goal")).toBe(true);
   });
 
   it("ignores custom commands that collide with native commands", () => {
