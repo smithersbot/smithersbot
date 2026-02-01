@@ -2,6 +2,7 @@
 import { buildTelegramMessageContext } from "./bot-message-context.js";
 import { dispatchTelegramMessage } from "./bot-message-dispatch.js";
 import { startTypingLoop } from "./typing-loop.js";
+import { beginProofOfLife, startProofOfLifePulse } from "./proof-of-life.js";
 
 export const createTelegramMessageProcessor = (deps) => {
   const {
@@ -48,6 +49,13 @@ export const createTelegramMessageProcessor = (deps) => {
       resolveTelegramGroupConfig,
     });
     if (!context) return;
+    const proof = beginProofOfLife({
+      bot,
+      chatId: context.chatId,
+      threadId: context.resolvedThreadId,
+      label: "chat",
+    });
+    const proofPulse = startProofOfLifePulse(proof);
     const typingLoop = startTypingLoop({
       bot,
       chatId: context.chatId,
@@ -66,9 +74,12 @@ export const createTelegramMessageProcessor = (deps) => {
         telegramCfg,
         opts,
         resolveBotTopicsEnabled,
+        proofOfLife: proof,
       });
     } finally {
       typingLoop.stop();
+      proofPulse.stop();
+      proof.stop();
     }
   };
 };

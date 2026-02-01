@@ -1,4 +1,5 @@
 import type { Bot } from "grammy";
+import { formatErrorMessage } from "../infra/errors.js";
 
 // ---------------------------------------------------------------------------
 // Typing indicator loop — shared by goal commands and chat message dispatch
@@ -63,15 +64,22 @@ export function startTypingLoop(params: {
 
   const sendAction = () => {
     if (stopped) return;
-    const p =
-      threadId != null
-        ? bot.api.raw.sendChatAction({ chat_id: chatId, action, message_thread_id: threadId })
-        : bot.api.sendChatAction(chatId, action);
+    let p: Promise<unknown> | undefined;
+    if (threadId != null) {
+      const send = bot.api?.raw?.sendChatAction?.bind(bot.api.raw);
+      if (typeof send !== "function") return;
+      p = Promise.resolve(send({ chat_id: chatId, action, message_thread_id: threadId }));
+    } else {
+      const send = bot.api?.sendChatAction?.bind(bot.api);
+      if (typeof send !== "function") return;
+      p = Promise.resolve(send(chatId, action));
+    }
     p.catch((err: unknown) => {
       if (!errorLogged) {
         errorLogged = true;
         const errMsg = err instanceof Error ? err.message : String(err);
-        const cause = err instanceof Error && err.cause ? ` cause=${String(err.cause)}` : "";
+        const cause =
+          err instanceof Error && err.cause ? ` cause=${formatErrorMessage(err.cause)}` : "";
         logTyping(`${tag}sendChatAction error chatId=${chatId}: ${errMsg}${cause}`);
       }
     });

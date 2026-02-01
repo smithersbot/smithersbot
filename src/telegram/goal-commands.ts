@@ -2,6 +2,11 @@ import type { Bot, Context } from "grammy";
 
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
+import {
+  beginProofOfLife,
+  startProofOfLifePulse,
+  type ProofOfLifeHandle,
+} from "./proof-of-life.js";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
@@ -134,6 +139,15 @@ export async function withChatAction<T>(params: {
 
 export const PLANNING_PREFACE = "Right away, sir.";
 
+function createNoopProofOfLife(): ProofOfLifeHandle {
+  return {
+    update: async () => false,
+    finish: async () => false,
+    stop: () => {},
+    failed: () => true,
+  };
+}
+
 /**
  * Send a short preface message, then run `fn` with an immediate typing loop.
  * Applied only to planning / replanning paths.
@@ -144,25 +158,45 @@ export async function withPlanningFeedback<T>(params: {
   threadId?: number;
   label?: string;
   fn: () => Promise<T>;
+  deliver?: (result: T, proof: ProofOfLifeHandle) => Promise<void>;
+  proofOfLife?: boolean;
 }): Promise<T> {
-  const { bot, chatId, threadId, label, fn } = params;
+  const { bot, chatId, threadId, label, fn, deliver } = params;
+  const useProofOfLife = params.proofOfLife ?? true;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   const tag = label ? `${label} ` : "";
 
   // Preface: instant acknowledgement
   logTyping(`${tag}preface chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
-  await bot.api.sendMessage(chatId, PLANNING_PREFACE, threadParams).catch((err: unknown) => {
-    logTyping(
-      `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+  const sendPreface = bot.api?.sendMessage?.bind(bot.api);
+  if (typeof sendPreface === "function") {
+    await Promise.resolve(sendPreface(chatId, PLANNING_PREFACE, threadParams)).catch(
+      (err: unknown) => {
+        logTyping(
+          `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      },
     );
-  });
+  }
+
+  const proof = useProofOfLife
+    ? beginProofOfLife({ bot, chatId, threadId, label })
+    : createNoopProofOfLife();
+  const proofPulse = useProofOfLife ? startProofOfLifePulse(proof) : undefined;
 
   // Start typing immediately (no delay)
   const loop = startTypingLoop({ bot, chatId, threadId, label });
   try {
-    return await fn();
+    const result = await fn();
+    proofPulse?.stop();
+    if (deliver) {
+      await deliver(result, proof).catch(() => {});
+    }
+    return result;
   } finally {
     loop.stop();
+    proofPulse?.stop();
+    proof.stop();
   }
 }
 
@@ -536,6 +570,20 @@ export async function sendGoalReply(
   }
 }
 
+export async function sendGoalReplyWithProof(params: {
+  bot: Bot;
+  chatId: number;
+  markdown: string;
+  runtime: RuntimeEnv;
+  threadId?: number;
+  proof: ProofOfLifeHandle;
+}): Promise<void> {
+  const { bot, chatId, markdown, runtime, threadId, proof } = params;
+  const edited = await proof.finish(markdown, { textMode: "markdown", chunkLimit: 4000 });
+  if (edited) return;
+  await sendGoalReply(bot, chatId, markdown, runtime, threadId);
+}
+
 /** Send plan with inline keyboard, return last message ID for tracking. */
 async function sendGoalPlanMessage(params: {
   bot: Bot;
@@ -586,6 +634,37 @@ async function sendGoalPlanMessage(params: {
   }
 
   return lastMessageId;
+}
+
+export async function sendGoalPlanResultWithProof(params: {
+  bot: Bot;
+  chatId: number;
+  runtime: RuntimeEnv;
+  result: GoalPlanResult;
+  threadId?: number;
+  proof: ProofOfLifeHandle;
+}): Promise<void> {
+  const { bot, chatId, runtime, result, threadId, proof } = params;
+  if (result.runId && result.revision) {
+    const replyMarkup = buildGoalInlineKeyboard(result.runId.slice(0, 8), result.revision);
+    const edited = await proof.finish(result.text, {
+      textMode: "markdown",
+      chunkLimit: 4000,
+      replyMarkup,
+    });
+    if (edited) {
+      if (proof.messageId != null) {
+        persistTelegramPlanMessage({
+          runId: result.runId,
+          chatId,
+          messageId: proof.messageId,
+          threadId,
+        });
+      }
+      return;
+    }
+  }
+  await sendGoalPlanResult({ bot, chatId, runtime, result, threadId });
 }
 
 /** Persist Telegram plan message tracking on a run. */
@@ -753,14 +832,23 @@ export function registerTelegramGoalCommands({
     }
 
     if (action === "ga" || action === "gA") {
-      const reply = await withPlanningFeedback({
+      await withPlanningFeedback({
         bot,
         chatId,
         threadId,
         label: "callback:approve",
         fn: () => handleGoalApprove(resolvedId),
+        deliver: async (reply, proof) => {
+          await sendGoalReplyWithProof({
+            bot,
+            chatId,
+            markdown: reply,
+            runtime,
+            threadId,
+            proof,
+          });
+        },
       });
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (action === "gr") {
       const reply = await handleGoalReject(resolvedId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -815,14 +903,23 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
-      const reply = await withPlanningFeedback({
+      await withPlanningFeedback({
         bot,
         chatId,
         threadId,
         label: "reaction:approve",
         fn: () => handleGoalApprove(run.runId),
+        deliver: async (reply, proof) => {
+          await sendGoalReplyWithProof({
+            bot,
+            chatId,
+            markdown: reply,
+            runtime,
+            threadId,
+            proof,
+          });
+        },
       });
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -845,28 +942,46 @@ export function registerTelegramGoalCommands({
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
       return;
     }
-    const result = await withPlanningFeedback({
+    await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal",
       fn: () => handleGoal(text),
+      deliver: async (result, proof) => {
+        await sendGoalPlanResultWithProof({
+          bot,
+          chatId: resolved.chatId,
+          runtime,
+          result,
+          threadId: resolved.threadIdForSend,
+          proof,
+        });
+      },
     });
-    await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
 
   // /goal_approve <runId>
   bot.command("goal_approve", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const reply = await withPlanningFeedback({
+    await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal_approve",
       fn: () => handleGoalApprove(ctx.match?.trim() ?? ""),
+      deliver: async (reply, proof) => {
+        await sendGoalReplyWithProof({
+          bot,
+          chatId: resolved.chatId,
+          markdown: reply,
+          runtime,
+          threadId: resolved.threadIdForSend,
+          proof,
+        });
+      },
     });
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
   });
 
   // /goal_reject <runId>
@@ -895,14 +1010,23 @@ export function registerTelegramGoalCommands({
     }
     const runId = raw.slice(0, spaceIdx);
     const instructions = raw.slice(spaceIdx + 1).trim();
-    const result = await withPlanningFeedback({
+    await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal_edit",
       fn: () => handleGoalEdit(runId, instructions),
+      deliver: async (result, proof) => {
+        await sendGoalPlanResultWithProof({
+          bot,
+          chatId: resolved.chatId,
+          runtime,
+          result,
+          threadId: resolved.threadIdForSend,
+          proof,
+        });
+      },
     });
-    await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
 
   // /goal_status <runId>
@@ -931,18 +1055,37 @@ export function registerTelegramGoalCommands({
     }
     const runId = raw.slice(0, spaceIdx);
     const value = raw.slice(spaceIdx + 1).trim();
-    const result = await withPlanningFeedback({
+    const resolvedId = resolveRunId(runId);
+    const shouldReplan = resolvedId ? loadRun(resolvedId)?.state === "needs_clarification" : false;
+    await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal_answer",
+      proofOfLife: shouldReplan,
       fn: () => handleGoalAnswer(runId, value),
+      deliver: async (result, proof) => {
+        if (typeof result === "string") {
+          await sendGoalReplyWithProof({
+            bot,
+            chatId: resolved.chatId,
+            markdown: result,
+            runtime,
+            threadId: resolved.threadIdForSend,
+            proof,
+          });
+          return;
+        }
+        await sendGoalPlanResultWithProof({
+          bot,
+          chatId: resolved.chatId,
+          runtime,
+          result,
+          threadId: resolved.threadIdForSend,
+          proof,
+        });
+      },
     });
-    if (typeof result === "string") {
-      await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
-    } else {
-      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
-    }
   });
 
   // /goal_list

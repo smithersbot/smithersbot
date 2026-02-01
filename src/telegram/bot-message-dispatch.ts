@@ -46,6 +46,7 @@ export const dispatchTelegramMessage = async ({
   telegramCfg,
   opts,
   resolveBotTopicsEnabled,
+  proofOfLife,
 }) => {
   const {
     ctxPayload,
@@ -234,6 +235,7 @@ export const dispatchTelegramMessage = async ({
           onVoiceRecording: sendRecordVoice,
           linkPreview: telegramCfg.linkPreview,
           replyQuoteText,
+          editTarget: info.kind === "final" ? proofOfLife : undefined,
         });
         if (result.delivered) {
           deliveryState.delivered = true;
@@ -287,6 +289,7 @@ export const dispatchTelegramMessage = async ({
       chunkMode,
       linkPreview: telegramCfg.linkPreview,
       replyQuoteText,
+      editTarget: proofOfLife,
     });
     sentFallback = result.delivered;
   }

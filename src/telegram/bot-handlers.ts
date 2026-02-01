@@ -31,7 +31,9 @@ import {
   handleGoalEdit,
   handleGoalReject,
   sendGoalPlanResult,
+  sendGoalPlanResultWithProof,
   sendGoalReply,
+  sendGoalReplyWithProof,
   withChatAction,
   withPlanningFeedback,
 } from "./goal-commands.js";
@@ -54,6 +56,12 @@ const GOAL_HELP_MESSAGE = [
   "Commands: /new_goal, /goal_approve, /goal_reject, /goal_edit, /goal_status, /goal_list, /goal_answer",
 ].join("\n");
 
+type DeliveredResult<T> = { delivered: true; result: T };
+
+function isDeliveredResult<T>(value: T | DeliveredResult<T>): value is DeliveredResult<T> {
+  return Boolean(value && typeof value === "object" && "delivered" in value);
+}
+
 export async function handleTelegramGoalRouting(params: {
   chatId: number;
   threadId?: number;
@@ -63,10 +71,27 @@ export async function handleTelegramGoalRouting(params: {
   sendReply: (text: string) => Promise<void>;
   sendPlanResult: (result: Awaited<ReturnType<typeof handleGoal>>) => Promise<void>;
   runHandlers: {
-    create: (text: string) => ReturnType<typeof handleGoal>;
-    edit: (runId: string, text: string) => ReturnType<typeof handleGoalEdit>;
-    answer: (runId: string, text: string) => Promise<Awaited<ReturnType<typeof handleGoalAnswer>>>;
-    approve: (runId: string) => ReturnType<typeof handleGoalApprove>;
+    create: (
+      text: string,
+    ) => Promise<ReturnType<typeof handleGoal> | DeliveredResult<ReturnType<typeof handleGoal>>>;
+    edit: (
+      runId: string,
+      text: string,
+    ) => Promise<
+      ReturnType<typeof handleGoalEdit> | DeliveredResult<ReturnType<typeof handleGoalEdit>>
+    >;
+    answer: (
+      runId: string,
+      text: string,
+    ) => Promise<
+      | Awaited<ReturnType<typeof handleGoalAnswer>>
+      | DeliveredResult<Awaited<ReturnType<typeof handleGoalAnswer>>>
+    >;
+    approve: (
+      runId: string,
+    ) => Promise<
+      ReturnType<typeof handleGoalApprove> | DeliveredResult<ReturnType<typeof handleGoalApprove>>
+    >;
     reject: (runId: string) => ReturnType<typeof handleGoalReject>;
   };
 }): Promise<boolean> {
@@ -94,18 +119,21 @@ export async function handleTelegramGoalRouting(params: {
 
   if (route.kind === "GOAL_CREATE") {
     const result = await params.runHandlers.create(params.messageText);
+    if (isDeliveredResult(result)) return true;
     await params.sendPlanResult(result);
     return true;
   }
 
   if (route.kind === "GOAL_EDIT" && route.runId) {
     const result = await params.runHandlers.edit(route.runId, params.messageText);
+    if (isDeliveredResult(result)) return true;
     await params.sendPlanResult(result);
     return true;
   }
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
     const result = await params.runHandlers.answer(route.runId, params.messageText);
+    if (isDeliveredResult(result)) return true;
     if (typeof result === "string") {
       await params.sendReply(result);
     } else {
@@ -116,6 +144,7 @@ export async function handleTelegramGoalRouting(params: {
 
   if (route.kind === "GOAL_APPROVE" && route.runId) {
     const reply = await params.runHandlers.approve(route.runId);
+    if (isDeliveredResult(reply)) return true;
     await params.sendReply(reply);
     return true;
   }
@@ -345,32 +374,109 @@ export const registerTelegramHandlers = ({
         });
       },
       runHandlers: {
-        create: (text) =>
-          withPlanningFeedback({
+        create: async (text) => {
+          const result = await withPlanningFeedback({
             bot,
             chatId,
             threadId: params.threadId,
             label: "goal-router:create",
             fn: () => handleGoal(text),
-          }),
-        edit: (runId, text) =>
-          withPlanningFeedback({
+            deliver: async (planResult, proof) => {
+              await sendGoalPlanResultWithProof({
+                bot,
+                chatId,
+                runtime,
+                result: planResult,
+                threadId: params.threadId,
+                proof,
+              });
+            },
+          });
+          return { delivered: true, result };
+        },
+        edit: async (runId, text) => {
+          const result = await withPlanningFeedback({
             bot,
             chatId,
             threadId: params.threadId,
             label: "goal-router:edit",
             fn: () => handleGoalEdit(runId, text),
-          }),
-        answer: (runId, text) =>
-          withChatAction({
+            deliver: async (planResult, proof) => {
+              await sendGoalPlanResultWithProof({
+                bot,
+                chatId,
+                runtime,
+                result: planResult,
+                threadId: params.threadId,
+                proof,
+              });
+            },
+          });
+          return { delivered: true, result };
+        },
+        answer: async (runId, text) => {
+          const run = loadRun(runId);
+          const shouldReplan = run?.state === "needs_clarification";
+          if (!shouldReplan) {
+            return await withChatAction({
+              bot,
+              chatId,
+              action: "typing",
+              threadId: params.threadId,
+              label: "goal-router:answer",
+              fn: () => handleGoalAnswer(runId, text),
+            });
+          }
+          const result = await withPlanningFeedback({
             bot,
             chatId,
-            action: "typing",
             threadId: params.threadId,
             label: "goal-router:answer",
             fn: () => handleGoalAnswer(runId, text),
-          }),
-        approve: (runId) => handleGoalApprove(runId),
+            deliver: async (answerResult, proof) => {
+              if (typeof answerResult === "string") {
+                await sendGoalReplyWithProof({
+                  bot,
+                  chatId,
+                  markdown: answerResult,
+                  runtime,
+                  threadId: params.threadId,
+                  proof,
+                });
+                return;
+              }
+              await sendGoalPlanResultWithProof({
+                bot,
+                chatId,
+                runtime,
+                result: answerResult,
+                threadId: params.threadId,
+                proof,
+              });
+            },
+          });
+          return { delivered: true, result };
+        },
+        approve: async (runId) => {
+          const result = await withPlanningFeedback({
+            bot,
+            chatId,
+            threadId: params.threadId,
+            label: "goal-router:approve",
+            fn: () => handleGoalApprove(runId),
+            deliver: async (reply, proof) => {
+              await sendGoalReplyWithProof({
+                bot,
+                chatId,
+                markdown: reply,
+                runtime,
+                threadId: params.threadId,
+                proof,
+              });
+            },
+          });
+          return { delivered: true, result };
+        },
         reject: (runId) => handleGoalReject(runId),
       },
     });

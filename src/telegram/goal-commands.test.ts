@@ -188,7 +188,7 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Do something");
 
-      expect(result.text).toContain("Error:");
+      expect(result.text).toContain("Planning failed");
       expect(result.text).toContain("API key missing");
       expect(result.runId).toBeUndefined();
     });
@@ -597,13 +597,14 @@ describe("goal-commands telegram adapter", () => {
   describe("withPlanningFeedback", () => {
     it("sends preface message before fn runs", async () => {
       const callOrder: string[] = [];
-      const sendMessage = vi.fn().mockImplementation(async () => {
-        callOrder.push("sendMessage");
-        return { message_id: 1 };
+      const sendMessage = vi.fn().mockImplementation(async (_chatId, text) => {
+        callOrder.push(String(text));
+        return { message_id: callOrder.length };
       });
+      const editMessageText = vi.fn().mockResolvedValue(true);
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const mockBot = {
-        api: { sendMessage, sendChatAction },
+        api: { sendMessage, sendChatAction, editMessageText },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback, PLANNING_PREFACE } = await import("./goal-commands.js");
@@ -615,19 +616,25 @@ describe("goal-commands telegram adapter", () => {
           callOrder.push("fn");
           return "planned";
         },
+        deliver: async (finalText, proof) => {
+          await proof.finish(finalText, { textMode: "markdown" });
+        },
       });
 
       expect(result).toBe("planned");
-      expect(callOrder).toEqual(["sendMessage", "fn"]);
-      expect(sendMessage).toHaveBeenCalledWith(42, PLANNING_PREFACE, {});
+      expect(callOrder).toEqual([PLANNING_PREFACE, "…", "fn"]);
+      expect(sendMessage).toHaveBeenNthCalledWith(1, 42, PLANNING_PREFACE, {});
+      expect(sendMessage).toHaveBeenNthCalledWith(2, 42, "…", {});
+      expect(editMessageText).toHaveBeenCalled();
     });
 
     it("passes message_thread_id for preface in forum topics", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const editMessageText = vi.fn().mockResolvedValue(true);
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const raw = { sendChatAction: vi.fn().mockResolvedValue(true) };
       const mockBot = {
-        api: { sendMessage, sendChatAction, raw },
+        api: { sendMessage, sendChatAction, raw, editMessageText },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback, PLANNING_PREFACE } = await import("./goal-commands.js");
@@ -636,9 +643,15 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         threadId: 7,
         fn: async () => "ok",
+        deliver: async (finalText, proof) => {
+          await proof.finish(finalText, { textMode: "markdown" });
+        },
       });
 
-      expect(sendMessage).toHaveBeenCalledWith(42, PLANNING_PREFACE, { message_thread_id: 7 });
+      expect(sendMessage).toHaveBeenNthCalledWith(1, 42, PLANNING_PREFACE, {
+        message_thread_id: 7,
+      });
+      expect(sendMessage).toHaveBeenNthCalledWith(2, 42, "…", { message_thread_id: 7 });
       // Typing uses raw API for thread-scoped chat action
       expect(raw.sendChatAction).toHaveBeenCalledWith({
         chat_id: 42,
@@ -649,9 +662,10 @@ describe("goal-commands telegram adapter", () => {
 
     it("starts typing immediately even for fast operations", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const editMessageText = vi.fn().mockResolvedValue(true);
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const mockBot = {
-        api: { sendMessage, sendChatAction },
+        api: { sendMessage, sendChatAction, editMessageText },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback } = await import("./goal-commands.js");
@@ -659,6 +673,9 @@ describe("goal-commands telegram adapter", () => {
         bot: mockBot,
         chatId: 42,
         fn: async () => "fast",
+        deliver: async (finalText, proof) => {
+          await proof.finish(finalText, { textMode: "markdown" });
+        },
       });
 
       // Typing now starts immediately (no 2s delay)
@@ -667,9 +684,10 @@ describe("goal-commands telegram adapter", () => {
 
     it("still runs fn if preface message fails", async () => {
       const sendMessage = vi.fn().mockRejectedValue(new Error("send failed"));
+      const editMessageText = vi.fn().mockResolvedValue(true);
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const mockBot = {
-        api: { sendMessage, sendChatAction },
+        api: { sendMessage, sendChatAction, editMessageText },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback } = await import("./goal-commands.js");
@@ -677,6 +695,9 @@ describe("goal-commands telegram adapter", () => {
         bot: mockBot,
         chatId: 42,
         fn: async () => "still planned",
+        deliver: async (finalText, proof) => {
+          await proof.finish(finalText, { textMode: "markdown" });
+        },
       });
 
       expect(result).toBe("still planned");
@@ -684,9 +705,10 @@ describe("goal-commands telegram adapter", () => {
 
     it("clears timers even if fn throws", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const editMessageText = vi.fn().mockResolvedValue(true);
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const mockBot = {
-        api: { sendMessage, sendChatAction },
+        api: { sendMessage, sendChatAction, editMessageText },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback } = await import("./goal-commands.js");
@@ -696,6 +718,9 @@ describe("goal-commands telegram adapter", () => {
           chatId: 42,
           fn: async () => {
             throw new Error("boom");
+          },
+          deliver: async (finalText, proof) => {
+            await proof.finish(finalText, { textMode: "markdown" });
           },
         }),
       ).rejects.toThrow("boom");

@@ -23,6 +23,7 @@ import { resolveTelegramVoiceSend } from "../voice.js";
 import { buildTelegramThreadParams, resolveTelegramReplyId } from "./helpers.js";
 import type { StickerMetadata, TelegramContext } from "./types.js";
 import { cacheSticker, getCachedSticker } from "../sticker-cache.js";
+import type { ProofOfLifeHandle } from "../proof-of-life.js";
 
 const PARSE_ERR_RE = /can't parse entities|parse entities|find end of the entity/i;
 const VOICE_FORBIDDEN_RE = /VOICE_MESSAGES_FORBIDDEN/;
@@ -44,6 +45,8 @@ export async function deliverReplies(params: {
   linkPreview?: boolean;
   /** Optional quote text for Telegram reply_parameters. */
   replyQuoteText?: string;
+  /** Optional proof-of-life message to edit instead of sending the first text reply. */
+  editTarget?: ProofOfLifeHandle;
 }): Promise<{ delivered: boolean }> {
   const {
     replies,
@@ -57,8 +60,10 @@ export async function deliverReplies(params: {
     replyQuoteText,
   } = params;
   const chunkMode = params.chunkMode ?? "length";
+  const editTarget = params.editTarget;
   let hasReplied = false;
   let hasDelivered = false;
+  let editAttempted = false;
   const markDelivered = () => {
     hasDelivered = true;
   };
@@ -108,6 +113,20 @@ export async function deliverReplies(params: {
         if (!chunk) continue;
         // Only attach buttons to the first chunk.
         const shouldAttachButtons = i === 0 && replyMarkup;
+        if (editTarget && !editAttempted && i === 0) {
+          editAttempted = true;
+          if (chunks.length === 1) {
+            const edited = await editTarget.finish(chunk.html, {
+              textMode: "html",
+              plainText: chunk.text,
+              replyMarkup: shouldAttachButtons ? replyMarkup : undefined,
+            });
+            if (edited) {
+              markDelivered();
+              continue;
+            }
+          }
+        }
         await sendTelegramText(bot, chatId, chunk.html, runtime, {
           replyToMessageId:
             replyToId && (replyToMode === "all" || !hasReplied) ? replyToId : undefined,
