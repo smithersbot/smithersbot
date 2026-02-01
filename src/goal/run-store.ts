@@ -59,6 +59,11 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
   if (!data.answers) {
     data.answers = {};
   }
+  // Default plan revision fields for runs that have a plan
+  if (data.planRevision == null && data.plan) {
+    data.planRevision = 1;
+    data.activePlanRevision = 1;
+  }
   delete data.blockReason;
   return data;
 }

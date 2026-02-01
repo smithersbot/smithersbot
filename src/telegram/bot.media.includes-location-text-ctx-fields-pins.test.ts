@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config.js";
 import { resetInboundDedupe } from "../auto-reply/reply/inbound-dedupe.js";
 
 const useSpy = vi.fn();
@@ -63,9 +64,10 @@ vi.mock("../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config/config.js")>();
   return {
     ...actual,
-    loadConfig: () => ({
-      channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
-    }),
+    loadConfig: () =>
+      withTelegramGoalRouterDisabled({
+        channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
+      }),
   };
 });
 

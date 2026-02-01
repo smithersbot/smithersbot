@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { hasControlCommand } from "../auto-reply/command-detection.js";
+import { hasControlCommand, isControlCommandMessage } from "../auto-reply/command-detection.js";
 import {
   createInboundDebouncer,
   resolveInboundDebounceMs,
@@ -8,20 +8,117 @@ import { buildCommandsPaginationKeyboard } from "../auto-reply/reply/commands-in
 import { buildCommandsMessagePaginated } from "../auto-reply/status.js";
 import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { loadConfig } from "../config/config.js";
 import { writeConfigFile } from "../config/io.js";
 import { danger, logVerbose, warn } from "../globals.js";
+import type { SerializedRun } from "../goal/types.js";
 import { resolveMedia } from "./bot/delivery.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 import type { TelegramMessage } from "./bot/types.js";
-import { firstDefined, isSenderAllowed, normalizeAllowFromWithStore } from "./bot-access.js";
+import {
+  firstDefined,
+  isSenderAllowed,
+  normalizeAllowFromWithStore,
+  resolveSenderAllowMatch,
+} from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
+import {
+  handleGoal,
+  handleGoalAnswer,
+  handleGoalApprove,
+  handleGoalEdit,
+  handleGoalReject,
+  sendGoalPlanResult,
+  sendGoalReply,
+  withChatAction,
+} from "./goal-commands.js";
+import { routeTelegramText } from "./goal-router.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
-import { readTelegramAllowFromStore } from "./pairing-store.js";
+import { readTelegramAllowFromStore, upsertTelegramPairingRequest } from "./pairing-store.js";
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
+import { listRuns, loadRun } from "../goal/run-store.js";
+
+const GOAL_HELP_MESSAGE = [
+  "Moltbot goal mode:",
+  "",
+  "• Send a message to create a plan.",
+  "• Reply to a plan message to edit it.",
+  "• Approve with: approve / yes / ✅ / 👍 / ❤️",
+  "• Reject with: reject / no / 👎",
+  "",
+  "Commands: /goal, /goal_approve, /goal_reject, /goal_edit, /goal_status, /goal_list, /goal_answer",
+].join("\n");
+
+export async function handleTelegramGoalRouting(params: {
+  chatId: number;
+  threadId?: number;
+  messageText: string;
+  replyToMessageId?: number;
+  runs: SerializedRun[];
+  sendReply: (text: string) => Promise<void>;
+  sendPlanResult: (result: Awaited<ReturnType<typeof handleGoal>>) => Promise<void>;
+  runHandlers: {
+    create: (text: string) => ReturnType<typeof handleGoal>;
+    edit: (runId: string, text: string) => ReturnType<typeof handleGoalEdit>;
+    answer: (runId: string, text: string) => ReturnType<typeof handleGoalAnswer>;
+    approve: (runId: string) => ReturnType<typeof handleGoalApprove>;
+    reject: (runId: string) => ReturnType<typeof handleGoalReject>;
+  };
+}): Promise<boolean> {
+  const route = routeTelegramText({
+    chatId: params.chatId,
+    threadId: params.threadId,
+    messageText: params.messageText,
+    replyToMessageId: params.replyToMessageId,
+    runs: params.runs,
+  });
+
+  if (route.kind === "CHAT_HELP") {
+    await params.sendReply(GOAL_HELP_MESSAGE);
+    return true;
+  }
+
+  if (route.kind === "DISAMBIGUATE") {
+    await params.sendReply(route.replyText ?? "Multiple blocked runs. Use /goal_list.");
+    return true;
+  }
+
+  if (route.kind === "GOAL_CREATE") {
+    const result = await params.runHandlers.create(params.messageText);
+    await params.sendPlanResult(result);
+    return true;
+  }
+
+  if (route.kind === "GOAL_EDIT" && route.runId) {
+    const result = await params.runHandlers.edit(route.runId, params.messageText);
+    await params.sendPlanResult(result);
+    return true;
+  }
+
+  if (route.kind === "GOAL_ANSWER" && route.runId) {
+    const reply = await params.runHandlers.answer(route.runId, params.messageText);
+    await params.sendReply(reply);
+    return true;
+  }
+
+  if (route.kind === "GOAL_APPROVE" && route.runId) {
+    const reply = await params.runHandlers.approve(route.runId);
+    await params.sendReply(reply);
+    return true;
+  }
+
+  if (route.kind === "GOAL_REJECT" && route.runId) {
+    const reply = await params.runHandlers.reject(route.runId);
+    await params.sendReply(reply);
+    return true;
+  }
+
+  return false;
+}
 
 export const registerTelegramHandlers = ({
   cfg,
@@ -31,6 +128,7 @@ export const registerTelegramHandlers = ({
   runtime,
   mediaMaxBytes,
   telegramCfg,
+  allowFrom,
   groupAllowFrom,
   resolveGroupPolicy,
   resolveTelegramGroupConfig,
@@ -54,6 +152,7 @@ export const registerTelegramHandlers = ({
   };
   const textFragmentBuffer = new Map<string, TextFragmentEntry>();
   let textFragmentProcessing: Promise<void> = Promise.resolve();
+  const goalRouterEnabled = telegramCfg.goalRouter !== false;
 
   const debounceMs = resolveInboundDebounceMs({ cfg, channel: "telegram" });
   type TelegramDebounceEntry = {
@@ -110,6 +209,177 @@ export const registerTelegramHandlers = ({
     },
   });
 
+  function resolveThreadIdForRouting(params: {
+    isGroup: boolean;
+    messageThreadId?: number;
+    isForum: boolean;
+  }): number | undefined {
+    if (params.isGroup) {
+      return resolveTelegramForumThreadId({
+        isForum: params.isForum,
+        messageThreadId: params.messageThreadId,
+      });
+    }
+    return params.messageThreadId;
+  }
+
+  function loadRunsForChatThread(chatId: number, threadId?: number): SerializedRun[] {
+    return listRuns()
+      .map((summary) => loadRun(summary.runId))
+      .filter((run): run is SerializedRun => Boolean(run))
+      .filter((run) => {
+        const plan = run.telegramPlanMessage;
+        if (!plan) return false;
+        if (plan.chatId !== chatId) return false;
+        if (typeof threadId === "number") {
+          return plan.threadId === threadId;
+        }
+        return typeof plan.threadId !== "number";
+      });
+  }
+
+  async function ensureTelegramDmPolicy(params: {
+    msg: TelegramMessage;
+    chatId: number;
+    storeAllowFrom: string[];
+  }): Promise<boolean> {
+    const dmPolicy = telegramCfg.dmPolicy ?? "pairing";
+    if (dmPolicy === "disabled") return false;
+    if (dmPolicy === "open") return true;
+    const candidate = String(params.chatId);
+    const senderUsername = params.msg.from?.username ?? "";
+    const effectiveDmAllow = normalizeAllowFromWithStore({
+      allowFrom,
+      storeAllowFrom: params.storeAllowFrom,
+    });
+    const allowMatch = resolveSenderAllowMatch({
+      allow: effectiveDmAllow,
+      senderId: candidate,
+      senderUsername,
+    });
+    const allowed =
+      effectiveDmAllow.hasWildcard || (effectiveDmAllow.hasEntries && allowMatch.allowed);
+    if (allowed) return true;
+    if (dmPolicy === "pairing") {
+      try {
+        const from = params.msg.from as
+          | {
+              first_name?: string;
+              last_name?: string;
+              username?: string;
+              id?: number;
+            }
+          | undefined;
+        const telegramUserId = from?.id ? String(from.id) : candidate;
+        const { code, created } = await upsertTelegramPairingRequest({
+          chatId: candidate,
+          username: from?.username,
+          firstName: from?.first_name,
+          lastName: from?.last_name,
+        });
+        if (created) {
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            fn: () =>
+              bot.api.sendMessage(
+                params.chatId,
+                [
+                  "Moltbot: access not configured.",
+                  "",
+                  `Your Telegram user id: ${telegramUserId}`,
+                  "",
+                  `Pairing code: ${code}`,
+                  "",
+                  "Ask the bot owner to approve with:",
+                  formatCliCommand("moltbot pairing approve telegram <code>"),
+                ].join("\n"),
+              ),
+          });
+        }
+      } catch (err) {
+        logVerbose(`telegram pairing reply failed for chat ${params.chatId}: ${String(err)}`);
+      }
+      return false;
+    }
+    logVerbose(
+      `Blocked unauthorized telegram sender ${candidate} (dmPolicy=${dmPolicy}, matchKey=${allowMatch.matchKey ?? "none"})`,
+    );
+    return false;
+  }
+
+  async function routeTelegramTextMessage(params: {
+    msg: TelegramMessage;
+    text: string;
+    threadId?: number;
+  }): Promise<boolean> {
+    const chatId = params.msg.chat.id;
+    const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
+      .reply_to_message?.message_id;
+    const runs = loadRunsForChatThread(chatId, params.threadId);
+
+    return await handleTelegramGoalRouting({
+      chatId,
+      threadId: params.threadId,
+      messageText: params.text,
+      replyToMessageId,
+      runs,
+      sendReply: async (text) => {
+        await sendGoalReply(bot, chatId, text, runtime, params.threadId);
+      },
+      sendPlanResult: async (result) => {
+        await sendGoalPlanResult({
+          bot,
+          chatId,
+          runtime,
+          result,
+          threadId: params.threadId,
+        });
+      },
+      runHandlers: {
+        create: (text) =>
+          withChatAction({
+            bot,
+            chatId,
+            action: "typing",
+            threadId: params.threadId,
+            fn: () => handleGoal(text),
+          }),
+        edit: (runId, text) =>
+          withChatAction({
+            bot,
+            chatId,
+            action: "typing",
+            threadId: params.threadId,
+            fn: () => handleGoalEdit(runId, text),
+          }),
+        answer: (runId, text) =>
+          withChatAction({
+            bot,
+            chatId,
+            action: "typing",
+            threadId: params.threadId,
+            fn: () => handleGoalAnswer(runId, text),
+          }),
+        approve: (runId) =>
+          withChatAction({
+            bot,
+            chatId,
+            action: "typing",
+            threadId: params.threadId,
+            fn: () => handleGoalApprove(runId),
+          }),
+        reject: (runId) =>
+          withChatAction({
+            bot,
+            chatId,
+            action: "typing",
+            threadId: params.threadId,
+            fn: () => handleGoalReject(runId),
+          }),
+      },
+    });
+  }
+
   const processMediaGroup = async (entry: MediaGroupEntry) => {
     try {
       entry.messages.sort((a, b) => a.msg.message_id - b.msg.message_id);
@@ -160,17 +430,31 @@ export const registerTelegramHandlers = ({
         date: last.msg.date ?? first.msg.date,
       };
 
-      const storeAllowFrom = await readTelegramAllowFromStore().catch(() => []);
-      const baseCtx = first.ctx as { me?: unknown; getFile?: unknown } & Record<string, unknown>;
-      const getFile =
-        typeof baseCtx.getFile === "function" ? baseCtx.getFile.bind(baseCtx) : async () => ({});
+      if (goalRouterEnabled) {
+        const isGroup =
+          syntheticMessage.chat.type === "group" || syntheticMessage.chat.type === "supergroup";
+        const messageThreadId = (syntheticMessage as { message_thread_id?: number })
+          .message_thread_id;
+        const isForum = (syntheticMessage.chat as { is_forum?: boolean }).is_forum === true;
+        const threadId = resolveThreadIdForRouting({ isGroup, messageThreadId, isForum });
+        await routeTelegramTextMessage({
+          msg: syntheticMessage,
+          text: combinedText,
+          threadId,
+        });
+      } else {
+        const storeAllowFrom = await readTelegramAllowFromStore().catch(() => []);
+        const baseCtx = first.ctx as { me?: unknown; getFile?: unknown } & Record<string, unknown>;
+        const getFile =
+          typeof baseCtx.getFile === "function" ? baseCtx.getFile.bind(baseCtx) : async () => ({});
 
-      await processMessage(
-        { message: syntheticMessage, me: baseCtx.me, getFile },
-        [],
-        storeAllowFrom,
-        { messageIdOverride: String(last.msg.message_id) },
-      );
+        await processMessage(
+          { message: syntheticMessage, me: baseCtx.me, getFile },
+          [],
+          storeAllowFrom,
+          { messageIdOverride: String(last.msg.message_id) },
+        );
+      }
     } catch (err) {
       runtime.error?.(danger(`text fragment handler failed: ${String(err)}`));
     }
@@ -441,6 +725,21 @@ export const registerTelegramHandlers = ({
       if (!msg) return;
       if (shouldSkipUpdate(ctx)) return;
 
+      // Never process bot commands here — they are handled by bot.command() handlers.
+      // This prevents /goal (and any other slash command) from falling through to
+      // the generic chat agent.
+      const rawText = typeof msg.text === "string" ? msg.text : undefined;
+      const botUsername = ctx.me?.username;
+      if (
+        rawText &&
+        rawText.trimStart().startsWith("/") &&
+        !isControlCommandMessage(rawText, cfg, botUsername ? { botUsername } : undefined)
+      ) {
+        return;
+      }
+      const entities = (msg as { entities?: Array<{ type: string; offset: number }> }).entities;
+      if (entities?.some((e) => e.type === "bot_command" && e.offset === 0)) return;
+
       const chatId = msg.chat.id;
       const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
       const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;
@@ -533,10 +832,22 @@ export const registerTelegramHandlers = ({
         }
       }
 
+      if (!isGroup) {
+        const allowed = await ensureTelegramDmPolicy({
+          msg,
+          chatId,
+          storeAllowFrom,
+        });
+        if (!allowed) return;
+      }
+
+      const text = typeof msg.text === "string" ? msg.text : undefined;
+      const caption = typeof msg.caption === "string" ? msg.caption : undefined;
+      const textForRouting = text ?? caption;
+      const isCommandLike = (textForRouting ?? "").trim().startsWith("/");
+
       // Text fragment handling - Telegram splits long pastes into multiple inbound messages (~4096 chars).
       // We buffer “near-limit” messages and append immediately-following parts.
-      const text = typeof msg.text === "string" ? msg.text : undefined;
-      const isCommandLike = (text ?? "").trim().startsWith("/");
       if (text && !isCommandLike) {
         const nowMs = Date.now();
         const senderId = msg.from?.id != null ? String(msg.from.id) : "unknown";
@@ -593,6 +904,24 @@ export const registerTelegramHandlers = ({
           scheduleTextFragmentFlush(entry);
           return;
         }
+      }
+
+      if (goalRouterEnabled && textForRouting && !isCommandLike) {
+        const threadId = resolveThreadIdForRouting({
+          isGroup,
+          messageThreadId,
+          isForum,
+        });
+        const handled = await routeTelegramTextMessage({
+          msg,
+          text: textForRouting,
+          threadId,
+        });
+        if (handled) return;
+      }
+
+      if (goalRouterEnabled && !isCommandLike && !textForRouting) {
+        return;
       }
 
       // Media group handling - buffer multi-image messages

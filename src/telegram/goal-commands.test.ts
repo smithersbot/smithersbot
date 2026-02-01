@@ -46,6 +46,27 @@ vi.mock("../commands/goal-list.js", () => ({
   goalListCommand: (...args: unknown[]) => mockGoalListCommand(...args),
 }));
 
+// Mocks for plan revision (handleGoalEdit)
+const mockResolveEnvApiKey = vi.fn();
+vi.mock("../agents/model-auth.js", () => ({
+  resolveEnvApiKey: (...args: unknown[]) => mockResolveEnvApiKey(...args),
+}));
+
+const mockCreateGoalLlmClient = vi.fn();
+vi.mock("../goal/llm-client.js", () => ({
+  createGoalLlmClient: (...args: unknown[]) => mockCreateGoalLlmClient(...args),
+}));
+
+const mockGeneratePlanRevision = vi.fn();
+vi.mock("../goal/planner.js", () => ({
+  generatePlanRevision: (...args: unknown[]) => mockGeneratePlanRevision(...args),
+}));
+
+const mockFormatPlanOutput = vi.fn();
+vi.mock("../goal/format-output.js", () => ({
+  formatPlanOutput: (...args: unknown[]) => mockFormatPlanOutput(...args),
+}));
+
 function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
   return {
     runId: "test-run-id-1234",
@@ -107,10 +128,10 @@ describe("goal-commands telegram adapter", () => {
     it("returns usage on empty text", async () => {
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("");
-      expect(result).toContain("Usage:");
+      expect(result.text).toContain("Usage:");
     });
 
-    it("creates a plan-only run and returns plan text with hints", async () => {
+    it("creates a plan-only run and returns GoalPlanResult", async () => {
       mockGoalCommand.mockImplementation(
         async (_opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log("## Plan\n1. Do something");
@@ -128,10 +149,11 @@ describe("goal-commands telegram adapter", () => {
       expect(callArgs.diagram).toBe("mermaid");
       expect(callArgs.runId).toBeDefined();
 
-      expect(result).toContain("## Plan");
-      expect(result).toContain("/goal_approve");
-      expect(result).toContain("/goal_reject");
-      expect(result).toContain("Run ID:");
+      expect(result.text).toContain("## Plan");
+      expect(result.text).toContain("Run ID:");
+      expect(result.runId).toBeDefined();
+      expect(result.revision).toBe(1);
+      expect(result.blocked).toBeUndefined();
     });
 
     it("handles blocked-at-planning outcome", async () => {
@@ -145,8 +167,10 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Setup database");
 
-      expect(result).toContain("BLOCKED");
-      expect(result).toContain("/goal_answer");
+      expect(result.text).toContain("BLOCKED");
+      expect(result.text).toContain("/goal_answer");
+      expect(result.blocked).toBe(true);
+      expect(result.runId).toBeDefined();
     });
 
     it("handles error from goalCommand", async () => {
@@ -155,8 +179,9 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Do something");
 
-      expect(result).toContain("Error:");
-      expect(result).toContain("API key missing");
+      expect(result.text).toContain("Error:");
+      expect(result.text).toContain("API key missing");
+      expect(result.runId).toBeUndefined();
     });
   });
 
@@ -203,6 +228,33 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalApprove("test-run");
       expect(result).toContain("/goal_answer");
     });
+
+    it("returns no-op for already done run", async () => {
+      saveRun(makeRun({ state: "done" }));
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const result = await handleGoalApprove("test-run");
+      expect(result).toContain("already executing or complete");
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+    });
+
+    it("returns no-op for already executing run", async () => {
+      saveRun(makeRun({ state: "executing" }));
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const result = await handleGoalApprove("test-run");
+      expect(result).toContain("already executing or complete");
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+    });
+
+    it("returns error for rejected run", async () => {
+      saveRun(makeRun({ state: "rejected" }));
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const result = await handleGoalApprove("test-run");
+      expect(result).toContain("rejected");
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+    });
   });
 
   describe("handleGoalReject", () => {
@@ -231,6 +283,14 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalReject("test-run");
       expect(result).toContain("Cannot reject");
       expect(result).toContain("done");
+    });
+
+    it("returns no-op for already rejected run", async () => {
+      saveRun(makeRun({ state: "rejected" }));
+
+      const { handleGoalReject } = await import("./goal-commands.js");
+      const result = await handleGoalReject("test-run");
+      expect(result).toContain("already rejected");
     });
 
     it("returns error for unknown run", async () => {
@@ -335,6 +395,160 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalList } = await import("./goal-commands.js");
       const result = await handleGoalList();
       expect(result).toContain("No goal runs found.");
+    });
+  });
+
+  describe("handleGoalEdit", () => {
+    it("returns usage on empty input", async () => {
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("", "");
+      expect(result.text).toContain("Usage:");
+    });
+
+    it("creates a revision", async () => {
+      saveRun(makeRun());
+
+      mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key", source: "env" });
+      mockCreateGoalLlmClient.mockReturnValue({});
+
+      const revisedPlan = {
+        goal: "Test goal",
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            tool: { name: "mkdir", args: { path: "out" } },
+            status: "pending",
+          },
+          {
+            id: "2",
+            description: "Add README",
+            dependsOn: ["1"],
+            tool: { name: "file_write", args: { path: "README.md", content: "# Hello" } },
+            status: "pending",
+          },
+        ],
+      };
+      mockGeneratePlanRevision.mockResolvedValue(revisedPlan);
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one\n2. Add README");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "add a README step");
+
+      expect(result.text).toContain("Revision 2");
+      expect(result.text).toContain("Revised Plan");
+      expect(result.runId).toBe("test-run-id-1234");
+      expect(result.revision).toBe(2);
+
+      // Verify run was updated
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run).toBeDefined();
+      expect(run!.planRevision).toBe(2);
+      expect(run!.activePlanRevision).toBe(2);
+      expect(run!.planHistory).toHaveLength(1);
+      expect(run!.planHistory![0].revision).toBe(1);
+      expect(run!.planHistory![0].editInstructions).toBe("add a README step");
+
+      // Verify generatePlanRevision was called with run.goal
+      expect(mockGeneratePlanRevision).toHaveBeenCalledOnce();
+      expect(mockGeneratePlanRevision.mock.calls[0][1]).toBe("Test goal");
+    });
+
+    it("refuses non-awaiting_approval run", async () => {
+      saveRun(makeRun({ state: "done" }));
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "change it");
+      expect(result.text).toContain("Cannot edit");
+      expect(result.text).toContain("done");
+    });
+
+    it("refuses run without plan", async () => {
+      saveRun(makeRun({ plan: null }));
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "change it");
+      expect(result.text).toContain("no plan");
+    });
+
+    it("returns error when no API key available", async () => {
+      saveRun(makeRun());
+      mockResolveEnvApiKey.mockReturnValue(null);
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "change it");
+      expect(result.text).toContain("API key");
+    });
+
+    it("returns error for unknown run", async () => {
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("nonexistent", "change it");
+      expect(result.text).toContain("Run not found");
+    });
+
+    it("handles blocked revision", async () => {
+      saveRun(makeRun());
+      mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key", source: "env" });
+      mockCreateGoalLlmClient.mockReturnValue({});
+      mockGeneratePlanRevision.mockResolvedValue({
+        blocked: true,
+        question: "What framework?",
+      });
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "use a framework");
+      expect(result.text).toContain("Revision blocked");
+      expect(result.text).toContain("What framework?");
+      expect(result.blocked).toBe(true);
+    });
+  });
+
+  describe("findRunByPlanMessageId", () => {
+    it("matches latest messageId", async () => {
+      saveRun(
+        makeRun({
+          telegramPlanMessage: { chatId: 123, messageId: 456 },
+        }),
+      );
+
+      const { findRunByPlanMessageId } = await import("./goal-commands.js");
+      const run = findRunByPlanMessageId(123, 456);
+      expect(run).toBeDefined();
+      expect(run!.runId).toBe("test-run-id-1234");
+    });
+
+    it("matches history messageId", async () => {
+      saveRun(
+        makeRun({
+          telegramPlanMessage: { chatId: 123, messageId: 789, messageHistory: [456] },
+        }),
+      );
+
+      const { findRunByPlanMessageId } = await import("./goal-commands.js");
+      const run = findRunByPlanMessageId(123, 456);
+      expect(run).toBeDefined();
+      expect(run!.runId).toBe("test-run-id-1234");
+    });
+
+    it("returns undefined for non-goal messages", async () => {
+      saveRun(
+        makeRun({
+          telegramPlanMessage: { chatId: 123, messageId: 456 },
+        }),
+      );
+
+      const { findRunByPlanMessageId } = await import("./goal-commands.js");
+      expect(findRunByPlanMessageId(123, 999)).toBeUndefined();
+      expect(findRunByPlanMessageId(999, 456)).toBeUndefined();
+    });
+
+    it("returns undefined when no runs have telegramPlanMessage", async () => {
+      saveRun(makeRun());
+
+      const { findRunByPlanMessageId } = await import("./goal-commands.js");
+      expect(findRunByPlanMessageId(123, 456)).toBeUndefined();
     });
   });
 });

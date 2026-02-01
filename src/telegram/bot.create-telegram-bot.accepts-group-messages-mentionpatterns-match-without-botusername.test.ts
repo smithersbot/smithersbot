@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config.js";
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 
 let createTelegramBot: typeof import("./bot.js").createTelegramBot;
@@ -7,6 +8,10 @@ let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").r
 const { sessionStorePath } = vi.hoisted(() => ({
   sessionStorePath: `/tmp/moltbot-telegram-${Math.random().toString(16).slice(2)}.json`,
 }));
+
+const setTelegramConfig = (config: Record<string, unknown>) => {
+  loadConfig.mockReturnValue(withTelegramGoalRouterDisabled(config));
+};
 
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
@@ -142,7 +147,7 @@ describe("createTelegramBot", () => {
     replyModule = await import("../auto-reply/reply.js");
     process.env.TZ = "UTC";
     resetInboundDedupe();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: { dmPolicy: "open", allowFrom: ["*"] },
       },
@@ -169,7 +174,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       agents: {
         defaults: {
           envelopeTimezone: "utc",
@@ -217,7 +222,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       agents: {
         defaults: {
           envelopeTimezone: "utc",
@@ -258,7 +263,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       agents: {
         defaults: {
           envelopeTimezone: "utc",
@@ -309,7 +314,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       messages: {
         ackReaction: "👀",
         ackReactionScope: "group-mentions",
@@ -341,7 +346,7 @@ describe("createTelegramBot", () => {
     expect(setMessageReactionSpy).toHaveBeenCalledWith(7, 123, [{ type: "emoji", emoji: "👀" }]);
   });
   it("clears native commands when disabled", () => {
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       commands: { native: false },
     });
 
@@ -354,7 +359,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       messages: { groupChat: { mentionPatterns: ["\\bbert\\b"] } },
       channels: {
         telegram: {
@@ -386,7 +391,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       messages: { groupChat: { mentionPatterns: [] } },
       channels: {
         telegram: {

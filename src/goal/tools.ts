@@ -109,6 +109,22 @@ function gitAdd(args: Record<string, string>, workingDir: string): ToolResult {
 function npmInit(args: Record<string, string>, workingDir: string): ToolResult {
   const dir = resolveSafePath(args.directory ?? ".", workingDir);
   mkdirSync(dir, { recursive: true });
+
+  // npm init -y derives the package name from the directory basename.
+  // Dot-prefixed dirs (e.g. ".moltbot-goal-workspace") produce invalid names
+  // and emit noisy "npm error Invalid name" to stderr. Seed a minimal
+  // package.json with a valid name so npm init -y just fills in the rest.
+  const basename = path.basename(dir);
+  if (basename.startsWith(".")) {
+    const pkgPath = path.join(dir, "package.json");
+    try {
+      readFileSync(pkgPath);
+    } catch {
+      const safeName = basename.replace(/^\.+/, "") || "workspace";
+      writeFileSync(pkgPath, `${JSON.stringify({ name: safeName }, null, 2)}\n`, "utf8");
+    }
+  }
+
   const output = execSync("npm init -y", {
     cwd: dir,
     timeout: 30_000,

@@ -1,0 +1,149 @@
+import { describe, expect, it } from "vitest";
+
+import { routeTelegramText, TELEGRAM_GOAL_ROUTER_MESSAGES } from "./goal-router.js";
+import type { SerializedRun } from "../goal/types.js";
+
+const now = new Date().toISOString();
+
+function makeRun(partial: Partial<SerializedRun>): SerializedRun {
+  return {
+    runId: partial.runId ?? "run-1",
+    goal: "Test goal",
+    state: partial.state ?? "awaiting_approval",
+    plan: null,
+    stepResults: {},
+    blocked: partial.blocked ?? null,
+    answers: {},
+    workingDir: "/tmp",
+    model: undefined,
+    dryRun: false,
+    createdAt: now,
+    updatedAt: now,
+    telegramPlanMessage: partial.telegramPlanMessage,
+  };
+}
+
+describe("routeTelegramText", () => {
+  it("routes plain text to GOAL_CREATE", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "build a thing",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("routes reply to latest plan message to GOAL_EDIT", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        telegramPlanMessage: { chatId: 1, messageId: 42, messageHistory: [41] },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "change step 2",
+      replyToMessageId: 42,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_EDIT");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("routes reply to older plan revision to DISAMBIGUATE", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        telegramPlanMessage: { chatId: 1, messageId: 42, messageHistory: [41] },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "change step 2",
+      replyToMessageId: 41,
+      runs,
+    });
+    expect(route.kind).toBe("DISAMBIGUATE");
+    expect(route.replyText).toBe(TELEGRAM_GOAL_ROUTER_MESSAGES.OLDER_REVISION_MESSAGE);
+  });
+
+  it("routes single blocked run to GOAL_ANSWER", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "blocked",
+        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "the answer",
+      replyToMessageId: undefined,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("routes multiple blocked runs to DISAMBIGUATE", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "blocked",
+        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+      }),
+      makeRun({
+        runId: "r2",
+        state: "blocked",
+        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        telegramPlanMessage: { chatId: 1, messageId: 11 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "the answer",
+      replyToMessageId: undefined,
+      runs,
+    });
+    expect(route.kind).toBe("DISAMBIGUATE");
+    expect(route.replyText).toBe(TELEGRAM_GOAL_ROUTER_MESSAGES.MULTIPLE_BLOCKED_MESSAGE);
+  });
+
+  it("routes approval intent to GOAL_APPROVE", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "awaiting_approval",
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "approve",
+      replyToMessageId: undefined,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_APPROVE");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("routes help intent to CHAT_HELP", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "who are you?",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT_HELP");
+  });
+});

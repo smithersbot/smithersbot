@@ -105,6 +105,20 @@ export type SerializedRun = {
   dryRun: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Plan revision number (starts at 1). */
+  planRevision?: number;
+  /** Currently active plan revision number. */
+  activePlanRevision?: number;
+  /** History of previous plans (append-only). */
+  planHistory?: Array<{ revision: number; plan: Plan; editInstructions?: string }>;
+  /** Telegram plan message tracking for reply-to-plan and reaction detection. */
+  telegramPlanMessage?: {
+    chatId: number;
+    messageId: number;
+    threadId?: number;
+    /** Message IDs from older revisions. */
+    messageHistory?: number[];
+  };
 };
 
 /** Lightweight summary returned by listRuns(). */

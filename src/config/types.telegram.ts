@@ -62,6 +62,8 @@ export type TelegramAccountConfig = {
    * - "disabled": ignore all inbound DMs
    */
   dmPolicy?: DmPolicy;
+  /** Enable goal routing for non-command text messages (default: true). */
+  goalRouter?: boolean;
   /** If false, do not start this Telegram account. Default: true. */
   enabled?: boolean;
   botToken?: string;

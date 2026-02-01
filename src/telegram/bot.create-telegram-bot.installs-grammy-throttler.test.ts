@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config.js";
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 import { resolveTelegramFetch } from "./fetch.js";
 
@@ -9,6 +10,10 @@ let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").r
 const { sessionStorePath } = vi.hoisted(() => ({
   sessionStorePath: `/tmp/moltbot-telegram-throttler-${Math.random().toString(16).slice(2)}.json`,
 }));
+
+const setTelegramConfig = (config: Record<string, unknown>) => {
+  loadConfig.mockReturnValue(withTelegramGoalRouterDisabled(config));
+};
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
 }));
@@ -146,7 +151,7 @@ describe("createTelegramBot", () => {
     replyModule = await import("../auto-reply/reply.js");
     process.env.TZ = "UTC";
     resetInboundDedupe();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       agents: {
         defaults: {
           envelopeTimezone: "utc",
@@ -196,7 +201,7 @@ describe("createTelegramBot", () => {
     }
   });
   it("passes timeoutSeconds even without a custom fetch", () => {
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 60 },
       },
@@ -210,7 +215,7 @@ describe("createTelegramBot", () => {
     );
   });
   it("prefers per-account timeoutSeconds overrides", () => {
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           dmPolicy: "open",
@@ -352,7 +357,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: { telegram: { dmPolicy: "pairing" } },
     });
     readTelegramAllowFromStore.mockResolvedValue([]);
@@ -388,7 +393,7 @@ describe("createTelegramBot", () => {
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
 
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: { telegram: { dmPolicy: "pairing" } },
     });
     readTelegramAllowFromStore.mockResolvedValue([]);

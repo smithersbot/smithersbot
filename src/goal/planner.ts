@@ -173,6 +173,43 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   return { goal, steps, summary };
 }
 
+/**
+ * Generate a revised plan by sending the current plan + edit instructions to the LLM.
+ * `goal` is passed explicitly (canonical goal lives on SerializedRun, not on Plan).
+ */
+export async function generatePlanRevision(
+  client: GoalLlmClient,
+  goal: string,
+  currentPlan: Plan,
+  editInstructions: string,
+): Promise<PlanResult> {
+  const currentPlanJson = JSON.stringify(
+    {
+      summary: currentPlan.summary,
+      steps: currentPlan.steps.map((s) => ({
+        id: s.id,
+        description: s.description,
+        dependsOn: s.dependsOn,
+        tool: s.tool,
+      })),
+    },
+    null,
+    2,
+  );
+
+  const response = await client.complete({
+    systemPrompt: PLAN_SYSTEM_PROMPT,
+    userMessage: `Goal: ${goal}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
+    maxTokens: 8192,
+  });
+
+  const parsed = extractJson(response.text);
+  if (isBlockedResponse(parsed)) {
+    return { blocked: true, question: String(parsed.question ?? "Unknown reason") };
+  }
+  return validatePlan(parsed, goal);
+}
+
 function detectCycles(steps: PlanStep[]): void {
   const inDegree = new Map<string, number>();
   const adjacency = new Map<string, string[]>();

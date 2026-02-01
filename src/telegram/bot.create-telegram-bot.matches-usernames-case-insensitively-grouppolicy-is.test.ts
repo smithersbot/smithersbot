@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config.js";
 
 let createTelegramBot: typeof import("./bot.js").createTelegramBot;
 let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").resetInboundDedupe;
@@ -6,6 +7,10 @@ let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").r
 const { sessionStorePath } = vi.hoisted(() => ({
   sessionStorePath: `/tmp/moltbot-telegram-${Math.random().toString(16).slice(2)}.json`,
 }));
+
+const setTelegramConfig = (config: Record<string, unknown>) => {
+  loadConfig.mockReturnValue(withTelegramGoalRouterDisabled(config));
+};
 
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
@@ -139,9 +144,9 @@ describe("createTelegramBot", () => {
     ({ createTelegramBot } = await import("./bot.js"));
     replyModule = await import("../auto-reply/reply.js");
     resetInboundDedupe();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
-        telegram: { dmPolicy: "open", allowFrom: ["*"] },
+        telegram: { dmPolicy: "open", allowFrom: ["*"], goalRouter: false },
       },
     });
     loadWebMedia.mockReset();
@@ -162,12 +167,13 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           groupPolicy: "allowlist",
           allowFrom: ["@TestUser"], // Uppercase in config
           groups: { "*": { requireMention: false } },
+          goalRouter: false,
         },
       },
     });
@@ -192,11 +198,12 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           groupPolicy: "disabled", // Even with disabled, DMs should work
           allowFrom: ["123456789"],
+          goalRouter: false,
         },
       },
     });
@@ -221,10 +228,11 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           allowFrom: ["  TG:123456789  "],
+          goalRouter: false,
         },
       },
     });
@@ -249,10 +257,11 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           allowFrom: ["telegram:123456789"],
+          goalRouter: false,
         },
       },
     });
@@ -277,12 +286,13 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           groupPolicy: "allowlist",
           allowFrom: ["*"], // Wildcard allows everyone
           groups: { "*": { requireMention: false } },
+          goalRouter: false,
         },
       },
     });
@@ -307,11 +317,12 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           groupPolicy: "allowlist",
           allowFrom: ["123456789"],
+          goalRouter: false,
         },
       },
     });
@@ -336,12 +347,13 @@ describe("createTelegramBot", () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
     replySpy.mockReset();
-    loadConfig.mockReturnValue({
+    setTelegramConfig({
       channels: {
         telegram: {
           groupPolicy: "allowlist",
           allowFrom: ["telegram:123456789"], // Prefixed format
           groups: { "*": { requireMention: false } },
+          goalRouter: false,
         },
       },
     });
