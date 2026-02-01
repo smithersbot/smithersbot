@@ -24,8 +24,18 @@ vi.mock("../goal/run-store.js", async (importOriginal) => {
 
 // Mock generatePlan to control planning behavior
 const mockGeneratePlan = vi.fn();
+class MockPlanParseError extends Error {
+  readonly rawResponse: string;
+  constructor(message: string, rawResponse: string) {
+    super(message);
+    this.name = "PlanParseError";
+    this.rawResponse = rawResponse;
+  }
+}
 vi.mock("../goal/planner.js", () => ({
   generatePlan: (...args: unknown[]) => mockGeneratePlan(...args),
+  PlanParseError: MockPlanParseError,
+  persistRawPlanResponse: vi.fn(),
 }));
 
 // Mock model-auth to provide a test API key

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { GoalLlmError } from "./errors.js";
 import type { GoalLlmClient, Plan, PlanStep, ToolName } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 
@@ -77,11 +78,16 @@ export function persistRawPlanResponse(runId: string, rawText: string): void {
 }
 
 export async function generatePlan(client: GoalLlmClient, goal: string): Promise<PlanResult> {
-  const response = await client.complete({
-    systemPrompt: PLAN_SYSTEM_PROMPT,
-    userMessage: `Goal: ${goal}`,
-    maxTokens: 8192,
-  });
+  let response;
+  try {
+    response = await client.complete({
+      systemPrompt: PLAN_SYSTEM_PROMPT,
+      userMessage: `Goal: ${goal}`,
+      maxTokens: 8192,
+    });
+  } catch (err) {
+    throw wrapLlmCallError(err);
+  }
 
   const parsed = extractJson(response.text);
 
@@ -224,11 +230,16 @@ export async function generatePlanRevision(
     2,
   );
 
-  const response = await client.complete({
-    systemPrompt: PLAN_SYSTEM_PROMPT,
-    userMessage: `Goal: ${goal}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
-    maxTokens: 8192,
-  });
+  let response;
+  try {
+    response = await client.complete({
+      systemPrompt: PLAN_SYSTEM_PROMPT,
+      userMessage: `Goal: ${goal}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
+      maxTokens: 8192,
+    });
+  } catch (err) {
+    throw wrapLlmCallError(err);
+  }
 
   const parsed = extractJson(response.text);
   if (isBlockedResponse(parsed)) {
@@ -269,4 +280,19 @@ function detectCycles(steps: PlanStep[]): void {
   if (visited !== steps.length) {
     throw new Error("Plan contains a dependency cycle");
   }
+}
+
+const NETWORK_RE =
+  /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|EAI_AGAIN/i;
+const AUTH_RE = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
+
+/** Wrap a raw LLM call error as a typed GoalLlmError. */
+function wrapLlmCallError(err: unknown): GoalLlmError {
+  if (err instanceof GoalLlmError) return err;
+  const msg = err instanceof Error ? err.message : String(err);
+  if (NETWORK_RE.test(msg))
+    return new GoalLlmError("Network error reaching planner API", "network", err);
+  if (AUTH_RE.test(msg))
+    return new GoalLlmError("Authentication failed for planner API", "auth", err);
+  return new GoalLlmError(`Planner call failed: ${msg}`, "internal", err);
 }

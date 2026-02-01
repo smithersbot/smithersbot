@@ -46,8 +46,8 @@ export async function goalAnswerCommand(
     return;
   }
 
-  if (run.state !== "blocked") {
-    const msg = `Run is not blocked (state: ${run.state}).`;
+  if (run.state !== "blocked" && run.state !== "needs_clarification") {
+    const msg = `Run is not awaiting input (state: ${run.state}).`;
     if (isJson) {
       runtime.log(JSON.stringify({ error: msg }));
       throw new JsonExitError(1);

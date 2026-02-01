@@ -46,12 +46,12 @@ import { listRuns, loadRun } from "../goal/run-store.js";
 const GOAL_HELP_MESSAGE = [
   "Moltbot goal mode:",
   "",
-  "• Send a message to create a plan.",
+  "• Use /new_goal <description> to create a plan.",
   "• Reply to a plan message to edit it.",
   "• Approve with: approve / yes / ✅ / 👍 / ❤️",
   "• Reject with: reject / no / 👎",
   "",
-  "Commands: /goal, /goal_approve, /goal_reject, /goal_edit, /goal_status, /goal_list, /goal_answer",
+  "Commands: /new_goal, /goal_approve, /goal_reject, /goal_edit, /goal_status, /goal_list, /goal_answer",
 ].join("\n");
 
 export async function handleTelegramGoalRouting(params: {
@@ -65,7 +65,7 @@ export async function handleTelegramGoalRouting(params: {
   runHandlers: {
     create: (text: string) => ReturnType<typeof handleGoal>;
     edit: (runId: string, text: string) => ReturnType<typeof handleGoalEdit>;
-    answer: (runId: string, text: string) => ReturnType<typeof handleGoalAnswer>;
+    answer: (runId: string, text: string) => Promise<Awaited<ReturnType<typeof handleGoalAnswer>>>;
     approve: (runId: string) => ReturnType<typeof handleGoalApprove>;
     reject: (runId: string) => ReturnType<typeof handleGoalReject>;
   };
@@ -105,8 +105,12 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
-    const reply = await params.runHandlers.answer(route.runId, params.messageText);
-    await params.sendReply(reply);
+    const result = await params.runHandlers.answer(route.runId, params.messageText);
+    if (typeof result === "string") {
+      await params.sendReply(result);
+    } else {
+      await params.sendPlanResult(result);
+    }
     return true;
   }
 

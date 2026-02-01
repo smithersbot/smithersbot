@@ -1,10 +1,10 @@
 import type { Bot, Context } from "grammy";
 
 import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
-import { goalListCommand } from "../commands/goal-list.js";
 import { goalResumeCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -14,9 +14,15 @@ import type {
   TelegramGroupConfig,
   TelegramTopicConfig,
 } from "../config/types.js";
+import { formatGoalError } from "../goal/errors.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
-import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import {
+  generatePlan,
+  generatePlanRevision,
+  PlanParseError,
+  persistRawPlanResponse,
+} from "../goal/planner.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -31,12 +37,12 @@ import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 // ---------------------------------------------------------------------------
 
 export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }> = [
-  { command: "goal", description: "Plan a goal (shows plan for approval)" },
+  { command: "new_goal", description: "Plan a new goal (shows plan for approval)" },
   { command: "goal_approve", description: "Approve and execute a goal plan" },
   { command: "goal_reject", description: "Reject a goal plan" },
   { command: "goal_edit", description: "Edit a goal plan" },
   { command: "goal_status", description: "Show goal run details" },
-  { command: "goal_answer", description: "Answer a blocked goal's question" },
+  { command: "goal_answer", description: "Answer a goal's clarification question" },
   { command: "goal_list", description: "List recent goal runs" },
 ];
 
@@ -101,27 +107,8 @@ function buildGoalInlineKeyboard(runIdPrefix: string, revision: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Typing indicator helper
+// Typing indicator helpers (loop logic lives in typing-loop.ts)
 // ---------------------------------------------------------------------------
-
-type ChatAction =
-  | "typing"
-  | "upload_photo"
-  | "record_video"
-  | "upload_video"
-  | "record_voice"
-  | "upload_voice"
-  | "upload_document"
-  | "choose_sticker"
-  | "find_location"
-  | "record_video_note"
-  | "upload_video_note";
-
-const debugTyping = process.env.MOLTBOT_TELEGRAM_DEBUG_TYPING === "1";
-
-function logTyping(msg: string): void {
-  if (debugTyping) console.debug(`[typing] ${msg}`);
-}
 
 /** Send repeated chat actions (e.g. "typing") while an async function runs. */
 export async function withChatAction<T>(params: {
@@ -133,23 +120,11 @@ export async function withChatAction<T>(params: {
   fn: () => Promise<T>;
 }): Promise<T> {
   const { bot, chatId, action, threadId, label, fn } = params;
-  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  const tag = label ? `${label} ` : "";
-  logTyping(`${tag}start chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
-  const sendAction = () => {
-    bot.api.sendChatAction(chatId, action, threadParams).catch((err: unknown) => {
-      logTyping(
-        `${tag}sendChatAction error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
-  };
-  sendAction();
-  const interval = setInterval(sendAction, 4000);
+  const loop = startTypingLoop({ bot, chatId, action, threadId, label });
   try {
     return await fn();
   } finally {
-    clearInterval(interval);
-    logTyping(`${tag}stop chatId=${chatId}`);
+    loop.stop();
   }
 }
 
@@ -158,11 +133,9 @@ export async function withChatAction<T>(params: {
 // ---------------------------------------------------------------------------
 
 export const PLANNING_PREFACE = "Right away, sir.";
-const TYPING_DELAY_MS = 2000;
 
 /**
- * Send a short preface message, then run `fn`. If the operation takes longer
- * than TYPING_DELAY_MS, start a "typing" indicator loop until it completes.
+ * Send a short preface message, then run `fn` with an immediate typing loop.
  * Applied only to planning / replanning paths.
  */
 export async function withPlanningFeedback<T>(params: {
@@ -184,31 +157,12 @@ export async function withPlanningFeedback<T>(params: {
     );
   });
 
-  // Delayed typing: only kicks in if planning exceeds TYPING_DELAY_MS
-  let finished = false;
-  let typingInterval: ReturnType<typeof setInterval> | undefined;
-  const typingDelay = setTimeout(() => {
-    if (finished) return;
-    logTyping(`${tag}typing start chatId=${chatId}`);
-    const sendAction = () => {
-      if (finished) return;
-      bot.api.sendChatAction(chatId, "typing", threadParams).catch((err: unknown) => {
-        logTyping(
-          `${tag}sendChatAction error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      });
-    };
-    sendAction();
-    typingInterval = setInterval(sendAction, 4000);
-  }, TYPING_DELAY_MS);
-
+  // Start typing immediately (no delay)
+  const loop = startTypingLoop({ bot, chatId, threadId, label });
   try {
     return await fn();
   } finally {
-    finished = true;
-    clearTimeout(typingDelay);
-    if (typingInterval) clearInterval(typingInterval);
-    logTyping(`${tag}stop chatId=${chatId}`);
+    loop.stop();
   }
 }
 
@@ -237,7 +191,7 @@ export function findRunByPlanMessageId(
 /** /goal <text> -- generate a plan (planOnly mode). */
 export async function handleGoal(text: string): Promise<GoalPlanResult> {
   if (!text.trim()) {
-    return { text: "Usage: /goal <description of what you want to achieve>" };
+    return { text: "Usage: /new_goal <description of what you want to achieve>" };
   }
 
   const cap = createCaptureRuntime();
@@ -262,9 +216,9 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
     if (logs) parts.push(logs);
     if (errors) parts.push(errors);
 
-    if (outcome?.status === "blocked") {
+    if (outcome?.status === "needs_clarification" || outcome?.status === "blocked") {
       parts.push(`\nAnswer: /goal_answer ${runId.slice(0, 8)} <your answer>`);
-      return { text: parts.join("\n") || "Goal is blocked.", runId, blocked: true };
+      return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
     }
 
     // Successful plan
@@ -276,7 +230,7 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
       const errors = cap.getErrors();
       return { text: errors || logs || "Goal command failed." };
     }
-    return { text: `Error: ${err instanceof Error ? err.message : String(err)}` };
+    return { text: formatGoalError(err) };
   }
 }
 
@@ -310,7 +264,7 @@ export async function handleGoalApprove(rawId: string): Promise<string> {
     if (logs) parts.push(logs);
     if (errors) parts.push(errors);
 
-    if (outcome?.status === "blocked") {
+    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
       parts.push(`\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`);
     }
 
@@ -321,7 +275,7 @@ export async function handleGoalApprove(rawId: string): Promise<string> {
       const errors = cap.getErrors();
       return errors || logs || "Approve command failed.";
     }
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    return formatGoalError(err);
   }
 }
 
@@ -372,8 +326,11 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
   }
 }
 
-/** /goal_answer <runId> <value> -- answer a blocked goal's question (auto-resolves key). */
-export async function handleGoalAnswer(rawId: string, value: string): Promise<string> {
+/** /goal_answer <runId> <value> -- answer a blocked/needs_clarification goal's question. */
+export async function handleGoalAnswer(
+  rawId: string,
+  value: string,
+): Promise<GoalPlanResult | string> {
   if (!rawId.trim() || !value) {
     return "Usage: /goal_answer <runId> <value>";
   }
@@ -384,10 +341,59 @@ export async function handleGoalAnswer(rawId: string, value: string): Promise<st
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
-  if (run.state !== "blocked" || !run.blocked) {
-    return `Run is not blocked (state: ${run.state}).`;
+  if (run.state !== "blocked" && run.state !== "needs_clarification") {
+    return `Run is not awaiting input (state: ${run.state}).`;
+  }
+  if (!run.blocked) {
+    return `Run is in "${run.state}" but has no blocked details.`;
   }
 
+  // needs_clarification: re-run planning with the answer as additional context
+  if (run.state === "needs_clarification") {
+    const keyResult = resolveEnvApiKey("anthropic");
+    if (!keyResult) return "No Anthropic API key found. Set ANTHROPIC_API_KEY.";
+
+    const client = createGoalLlmClient({ apiKey: keyResult.apiKey, modelOverride: run.model });
+    const enrichedGoal = `${run.goal}\n\nAdditional context: ${value}`;
+
+    // Save the answer
+    run.answers[run.blocked.requiredInputKey] = value;
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+
+    try {
+      const planResult = await generatePlan(client, enrichedGoal);
+
+      if ("blocked" in planResult) {
+        // Still needs clarification — update question
+        run.blocked = { prompt: planResult.question, requiredInputKey: "step:planning:input" };
+        run.updatedAt = new Date().toISOString();
+        saveRun(run);
+        return {
+          text: `Still need more info:\n\n${planResult.question}\n\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`,
+        };
+      }
+
+      // Plan succeeded — transition to awaiting_approval
+      run.plan = planResult;
+      run.state = "awaiting_approval";
+      run.blocked = null;
+      run.planRevision = (run.planRevision ?? 0) + 1;
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+
+      const planText = formatPlanOutput(planResult, { diagram: "mermaid", format: "md" });
+      const parts: string[] = [planText, `\nRun ID: \`${resolvedId.slice(0, 8)}\``];
+      return { text: parts.join("\n"), runId: resolvedId, revision: run.planRevision };
+    } catch (err) {
+      if (err instanceof PlanParseError) {
+        persistRawPlanResponse(resolvedId, err.rawResponse);
+      }
+      return formatGoalError(err);
+    }
+  }
+
+  // blocked (execution-time): save answer via CLI command, suggest resume
   const key = run.blocked.requiredInputKey;
   const cap = createCaptureRuntime();
   try {
@@ -405,22 +411,30 @@ export async function handleGoalAnswer(rawId: string, value: string): Promise<st
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || cap.getLogs() || "Answer command failed.";
     }
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    return formatGoalError(err);
   }
 }
 
-/** /goal_list -- list recent goal runs. */
+const GOAL_LIST_LIMIT = 15;
+
+/** /goal_list -- list recent goal runs (Telegram-formatted code block). */
 export async function handleGoalList(): Promise<string> {
-  const cap = createCaptureRuntime();
-  try {
-    await goalListCommand({}, cap.runtime);
-    return cap.getLogs() || "No goal runs found.";
-  } catch (err) {
-    if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-      return cap.getErrors() || cap.getLogs() || "List command failed.";
-    }
-    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  const runs = listRuns().slice(0, GOAL_LIST_LIMIT);
+  if (runs.length === 0) return "No goal runs found.";
+
+  const lines: string[] = ["```"];
+  lines.push("ID       State               Steps Goal");
+  lines.push("\u2500".repeat(58));
+  for (const run of runs) {
+    const id = run.runId.slice(0, 8);
+    const state = run.state.padEnd(20);
+    const steps =
+      run.stepCount > 0 ? `${run.completedSteps}/${run.stepCount}`.padEnd(6) : "\u2014".padEnd(6);
+    const goal = run.goal.length > 22 ? `${run.goal.slice(0, 19)}...` : run.goal;
+    lines.push(`${id} ${state} ${steps}${goal}`);
   }
+  lines.push("```");
+  return lines.join("\n");
 }
 
 /** /goal_edit <runId> <instructions> -- revise a plan via LLM re-planning. */
@@ -484,9 +498,7 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
     if (err instanceof PlanParseError) {
       persistRawPlanResponse(resolvedId, err.rawResponse);
     }
-    return {
-      text: `Error (run ${resolvedId.slice(0, 8)}): ${err instanceof Error ? err.message : String(err)}`,
-    };
+    return { text: formatGoalError(err) };
   }
 }
 
@@ -741,7 +753,13 @@ export function registerTelegramGoalCommands({
     }
 
     if (action === "ga" || action === "gA") {
-      const reply = await handleGoalApprove(resolvedId);
+      const reply = await withPlanningFeedback({
+        bot,
+        chatId,
+        threadId,
+        label: "callback:approve",
+        fn: () => handleGoalApprove(resolvedId),
+      });
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (action === "gr") {
       const reply = await handleGoalReject(resolvedId);
@@ -797,7 +815,13 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
-      const reply = await handleGoalApprove(run.runId);
+      const reply = await withPlanningFeedback({
+        bot,
+        chatId,
+        threadId,
+        label: "reaction:approve",
+        fn: () => handleGoalApprove(run.runId),
+      });
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
@@ -811,8 +835,8 @@ export function registerTelegramGoalCommands({
   // Command handlers
   // -----------------------------------------------------------------------
 
-  // /goal <text>
-  bot.command("goal", async (ctx: TelegramGoalCommandContext) => {
+  // /new_goal <text> (with /goal as backward-compatible alias)
+  bot.command(["new_goal", "goal"], async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const text = ctx.match?.trim() ?? "";
@@ -835,7 +859,13 @@ export function registerTelegramGoalCommands({
   bot.command("goal_approve", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const reply = await handleGoalApprove(ctx.match?.trim() ?? "");
+    const reply = await withPlanningFeedback({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      label: "goal_approve",
+      fn: () => handleGoalApprove(ctx.match?.trim() ?? ""),
+    });
     await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
   });
 
@@ -901,8 +931,18 @@ export function registerTelegramGoalCommands({
     }
     const runId = raw.slice(0, spaceIdx);
     const value = raw.slice(spaceIdx + 1).trim();
-    const reply = await handleGoalAnswer(runId, value);
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    const result = await withPlanningFeedback({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      label: "goal_answer",
+      fn: () => handleGoalAnswer(runId, value),
+    });
+    if (typeof result === "string") {
+      await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+    } else {
+      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+    }
   });
 
   // /goal_list

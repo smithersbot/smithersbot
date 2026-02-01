@@ -41,10 +41,7 @@ vi.mock("../commands/goal-answer.js", () => ({
   goalAnswerCommand: (...args: unknown[]) => mockGoalAnswerCommand(...args),
 }));
 
-const mockGoalListCommand = vi.fn();
-vi.mock("../commands/goal-list.js", () => ({
-  goalListCommand: (...args: unknown[]) => mockGoalListCommand(...args),
-}));
+// goal-list.js no longer imported by goal-commands (Telegram uses listRuns directly)
 
 // Mocks for plan revision (handleGoalEdit)
 const mockResolveEnvApiKey = vi.fn();
@@ -57,9 +54,21 @@ vi.mock("../goal/llm-client.js", () => ({
   createGoalLlmClient: (...args: unknown[]) => mockCreateGoalLlmClient(...args),
 }));
 
+const mockGeneratePlan = vi.fn();
 const mockGeneratePlanRevision = vi.fn();
+class MockPlanParseError extends Error {
+  readonly rawResponse: string;
+  constructor(message: string, rawResponse: string) {
+    super(message);
+    this.name = "PlanParseError";
+    this.rawResponse = rawResponse;
+  }
+}
 vi.mock("../goal/planner.js", () => ({
+  generatePlan: (...args: unknown[]) => mockGeneratePlan(...args),
   generatePlanRevision: (...args: unknown[]) => mockGeneratePlanRevision(...args),
+  PlanParseError: MockPlanParseError,
+  persistRawPlanResponse: vi.fn(),
 }));
 
 const mockFormatPlanOutput = vi.fn();
@@ -360,7 +369,7 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "val");
-      expect(result).toContain("not blocked");
+      expect(result).toContain("not awaiting input");
     });
 
     it("returns error for unknown run", async () => {
@@ -371,27 +380,24 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("handleGoalList", () => {
-    it("returns list output", async () => {
-      mockGoalListCommand.mockImplementation(
-        async (_opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log("Goal runs:");
-          runtime.log("  abc12345  done                  1/1 steps    Build website");
-        },
+    it("returns formatted code block with runs", async () => {
+      saveRun(
+        makeRun({
+          runId: "abc12345-dead-beef-0000-000000000000",
+          goal: "Build website",
+          state: "done",
+        }),
       );
 
       const { handleGoalList } = await import("./goal-commands.js");
       const result = await handleGoalList();
-      expect(result).toContain("Goal runs:");
+      expect(result).toContain("```");
       expect(result).toContain("abc12345");
+      expect(result).toContain("done");
+      expect(result).toContain("Build website");
     });
 
     it("returns no runs message when empty", async () => {
-      mockGoalListCommand.mockImplementation(
-        async (_opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log("No goal runs found.");
-        },
-      );
-
       const { handleGoalList } = await import("./goal-commands.js");
       const result = await handleGoalList();
       expect(result).toContain("No goal runs found.");
@@ -519,19 +525,20 @@ describe("goal-commands telegram adapter", () => {
         fn: async () => {
           // sendChatAction should have been called once before fn runs
           expect(sendChatAction).toHaveBeenCalledTimes(1);
-          expect(sendChatAction).toHaveBeenCalledWith(42, "typing", {});
+          expect(sendChatAction).toHaveBeenCalledWith(42, "typing");
           return "done";
         },
       });
 
       expect(result).toBe("done");
       // At least the initial call
-      expect(sendChatAction).toHaveBeenCalledWith(42, "typing", {});
+      expect(sendChatAction).toHaveBeenCalledWith(42, "typing");
     });
 
     it("passes message_thread_id when threadId is provided", async () => {
       const sendChatAction = vi.fn().mockResolvedValue(true);
-      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+      const raw = { sendChatAction: vi.fn().mockResolvedValue(true) };
+      const mockBot = { api: { sendChatAction, raw } } as unknown as import("grammy").Bot;
 
       const { withChatAction } = await import("./goal-commands.js");
       await withChatAction({
@@ -542,7 +549,13 @@ describe("goal-commands telegram adapter", () => {
         fn: async () => "ok",
       });
 
-      expect(sendChatAction).toHaveBeenCalledWith(42, "typing", { message_thread_id: 7 });
+      expect(raw.sendChatAction).toHaveBeenCalledWith({
+        chat_id: 42,
+        action: "typing",
+        message_thread_id: 7,
+      });
+      // Standard sendChatAction should NOT be called when using raw API for threads
+      expect(sendChatAction).not.toHaveBeenCalled();
     });
 
     it("clears interval even if fn throws", async () => {
@@ -612,8 +625,9 @@ describe("goal-commands telegram adapter", () => {
     it("passes message_thread_id for preface in forum topics", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
       const sendChatAction = vi.fn().mockResolvedValue(true);
+      const raw = { sendChatAction: vi.fn().mockResolvedValue(true) };
       const mockBot = {
-        api: { sendMessage, sendChatAction },
+        api: { sendMessage, sendChatAction, raw },
       } as unknown as import("grammy").Bot;
 
       const { withPlanningFeedback, PLANNING_PREFACE } = await import("./goal-commands.js");
@@ -625,9 +639,15 @@ describe("goal-commands telegram adapter", () => {
       });
 
       expect(sendMessage).toHaveBeenCalledWith(42, PLANNING_PREFACE, { message_thread_id: 7 });
+      // Typing uses raw API for thread-scoped chat action
+      expect(raw.sendChatAction).toHaveBeenCalledWith({
+        chat_id: 42,
+        action: "typing",
+        message_thread_id: 7,
+      });
     });
 
-    it("does not start typing if fn completes quickly", async () => {
+    it("starts typing immediately even for fast operations", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
       const sendChatAction = vi.fn().mockResolvedValue(true);
       const mockBot = {
@@ -641,8 +661,8 @@ describe("goal-commands telegram adapter", () => {
         fn: async () => "fast",
       });
 
-      // fn returned instantly — typing should not fire (delayed by 2s)
-      expect(sendChatAction).not.toHaveBeenCalled();
+      // Typing now starts immediately (no 2s delay)
+      expect(sendChatAction).toHaveBeenCalledWith(42, "typing");
     });
 
     it("still runs fn if preface message fails", async () => {
@@ -681,6 +701,119 @@ describe("goal-commands telegram adapter", () => {
       ).rejects.toThrow("boom");
 
       expect(sendMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe("startTypingLoop", () => {
+    it("sends typing action immediately on start", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop = startTypingLoop({ bot: mockBot, chatId: 42, label: "test" });
+
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+      expect(sendChatAction).toHaveBeenCalledWith(42, "typing");
+      loop.stop();
+    });
+
+    it("stops cleanly via stop() — no more calls after stop", async () => {
+      vi.useFakeTimers();
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop = startTypingLoop({ bot: mockBot, chatId: 42 });
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+
+      loop.stop();
+      vi.advanceTimersByTime(8000);
+      // No additional calls after stop
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+      vi.useRealTimers();
+    });
+
+    it("prevents per-chat overlap (stops previous loop)", async () => {
+      vi.useFakeTimers();
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop1 = startTypingLoop({ bot: mockBot, chatId: 42, label: "first" });
+      expect(sendChatAction).toHaveBeenCalledTimes(1);
+
+      // Second loop for same chat should stop the first
+      const loop2 = startTypingLoop({ bot: mockBot, chatId: 42, label: "second" });
+      expect(sendChatAction).toHaveBeenCalledTimes(2);
+
+      // Advance time — only loop2's interval should fire
+      vi.advanceTimersByTime(4000);
+      expect(sendChatAction).toHaveBeenCalledTimes(3);
+
+      loop2.stop();
+      vi.useRealTimers();
+      // loop1.stop() is safe to call (idempotent, already stopped by overlap)
+      loop1.stop();
+    });
+
+    it("keeps independent loops for different threadIds", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const raw = { sendChatAction: vi.fn().mockResolvedValue(true) };
+      const mockBot = {
+        api: { sendChatAction, raw },
+      } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop1 = startTypingLoop({ bot: mockBot, chatId: 42, threadId: 1 });
+      const loop2 = startTypingLoop({ bot: mockBot, chatId: 42, threadId: 2 });
+
+      // Both should be active (different threads) — each fires once
+      expect(raw.sendChatAction).toHaveBeenCalledTimes(2);
+      loop1.stop();
+      loop2.stop();
+    });
+
+    it("does not throw when sendChatAction rejects", async () => {
+      const sendChatAction = vi.fn().mockRejectedValue(new Error("API error"));
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop = startTypingLoop({ bot: mockBot, chatId: 42 });
+
+      // Should not throw; error is caught internally
+      expect(sendChatAction).toHaveBeenCalled();
+      loop.stop();
+    });
+
+    it("stop() is idempotent", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop = startTypingLoop({ bot: mockBot, chatId: 42 });
+
+      loop.stop();
+      loop.stop(); // second call should not throw
+    });
+
+    it("uses raw API when threadId is provided", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const raw = { sendChatAction: vi.fn().mockResolvedValue(true) };
+      const mockBot = {
+        api: { sendChatAction, raw },
+      } as unknown as import("grammy").Bot;
+
+      const { startTypingLoop } = await import("./typing-loop.js");
+      const loop = startTypingLoop({ bot: mockBot, chatId: 42, threadId: 7 });
+
+      // Should use raw API for thread-scoped typing
+      expect(raw.sendChatAction).toHaveBeenCalledWith({
+        chat_id: 42,
+        action: "typing",
+        message_thread_id: 7,
+      });
+      expect(sendChatAction).not.toHaveBeenCalled();
+      loop.stop();
     });
   });
 

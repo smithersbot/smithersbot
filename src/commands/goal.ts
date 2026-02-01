@@ -129,23 +129,23 @@ export async function goalCommand(
       }
     }
 
-    // Handle blocked-at-planning
+    // Handle blocked-at-planning (pre-plan clarification, not execution-time block)
     if ("blocked" in planResult) {
-      session.state = "blocked";
+      session.state = "needs_clarification";
       session.blocked = {
         prompt: planResult.question,
         requiredInputKey: "step:planning:input",
       };
       persistRun();
       const outcome: GoalOutcome = {
-        status: "blocked",
+        status: "needs_clarification",
         question: planResult.question,
         requiredInputKey: "step:planning:input",
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
       } else {
-        runtime.log(`\nBLOCKED: ${planResult.question}`);
+        runtime.log(`\nCLARIFICATION NEEDED: ${planResult.question}`);
       }
       return outcome;
     }

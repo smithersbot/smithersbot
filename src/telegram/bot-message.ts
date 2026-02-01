@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { buildTelegramMessageContext } from "./bot-message-context.js";
 import { dispatchTelegramMessage } from "./bot-message-dispatch.js";
+import { startTypingLoop } from "./typing-loop.js";
 
 export const createTelegramMessageProcessor = (deps) => {
   const {
@@ -47,17 +48,27 @@ export const createTelegramMessageProcessor = (deps) => {
       resolveTelegramGroupConfig,
     });
     if (!context) return;
-    await dispatchTelegramMessage({
-      context,
+    const typingLoop = startTypingLoop({
       bot,
-      cfg,
-      runtime,
-      replyToMode,
-      streamMode,
-      textLimit,
-      telegramCfg,
-      opts,
-      resolveBotTopicsEnabled,
+      chatId: context.chatId,
+      threadId: context.resolvedThreadId,
+      label: "chat",
     });
+    try {
+      await dispatchTelegramMessage({
+        context,
+        bot,
+        cfg,
+        runtime,
+        replyToMode,
+        streamMode,
+        textLimit,
+        telegramCfg,
+        opts,
+        resolveBotTopicsEnabled,
+      });
+    } finally {
+      typingLoop.stop();
+    }
   };
 };

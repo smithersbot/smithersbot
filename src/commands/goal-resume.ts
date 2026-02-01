@@ -76,28 +76,29 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  // Blocked: print details and exit — user must provide answer first
-  if (run.state === "blocked") {
+  // Blocked (execution-time) or needs_clarification (pre-plan): print details and exit
+  if (run.state === "blocked" || run.state === "needs_clarification") {
     if (isJson) {
       runtime.log(
         JSON.stringify({
-          status: "blocked",
+          status: run.state === "needs_clarification" ? "needs_clarification" : "blocked",
           question: run.blocked?.prompt ?? null,
           requiredInputKey: run.blocked?.requiredInputKey ?? null,
         }),
       );
     } else {
-      runtime.log(`Blocked: ${run.blocked?.prompt ?? "Unknown reason"}`);
+      const label = run.state === "needs_clarification" ? "Needs clarification" : "Blocked";
+      runtime.log(`${label}: ${run.blocked?.prompt ?? "Unknown reason"}`);
       runtime.log(`Required input: ${run.blocked?.requiredInputKey ?? "unknown"}`);
       runtime.log(
         `Answer:  moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked?.requiredInputKey ?? "KEY"} --value <VALUE>`,
       );
     }
     return {
-      status: "blocked",
+      status: run.state === "needs_clarification" ? "needs_clarification" : "blocked",
       question: run.blocked?.prompt ?? "",
       requiredInputKey: run.blocked?.requiredInputKey ?? "unknown",
-    };
+    } as GoalOutcome;
   }
 
   // Stale/incomplete states

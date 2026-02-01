@@ -2,6 +2,7 @@
 export type GoalState =
   | "init"
   | "planning"
+  | "needs_clarification"
   | "awaiting_approval"
   | "rejected"
   | "cancelled"
@@ -85,6 +86,7 @@ export type GoalLlmClient = {
 export type GoalOutcome =
   | { status: "done"; summary: string }
   | { status: "blocked"; question: string; requiredInputKey: string }
+  | { status: "needs_clarification"; question: string; requiredInputKey: string }
   | { status: "rejected" };
 
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";

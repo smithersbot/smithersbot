@@ -24,7 +24,8 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
 }
 
 describe("routeTelegramText", () => {
-  it("routes plain text to GOAL_CREATE", () => {
+  // Default routing: free text becomes CHAT (only explicit /commands create goals)
+  it("routes plain text to CHAT (no implicit goal creation)", () => {
     const route = routeTelegramText({
       chatId: 1,
       threadId: undefined,
@@ -32,7 +33,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("routes greetings to CHAT", () => {
@@ -57,7 +58,7 @@ describe("routeTelegramText", () => {
     expect(route.kind).toBe("CHAT");
   });
 
-  it("routes clear task text to GOAL_CREATE", () => {
+  it("routes task-like text to CHAT (no implicit goal creation)", () => {
     const route = routeTelegramText({
       chatId: 1,
       threadId: undefined,
@@ -65,7 +66,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("routes reply to latest plan message to GOAL_EDIT", () => {
@@ -117,6 +118,26 @@ describe("routeTelegramText", () => {
       chatId: 1,
       threadId: undefined,
       messageText: "the answer",
+      replyToMessageId: undefined,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("routes single needs_clarification run to GOAL_ANSWER", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "needs_clarification",
+        blocked: { prompt: "What file?", requiredInputKey: "step:planning:input" },
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "foo.txt",
       replyToMessageId: undefined,
       runs,
     });
@@ -180,7 +201,7 @@ describe("routeTelegramText", () => {
     expect(route.kind).toBe("CHAT_HELP");
   });
 
-  // Regression tests: substring false positives
+  // Regression: exact matching prevents substring false positives
   it("does not treat 'build a thing' as greeting (substring 'hi' in 'thing')", () => {
     const route = routeTelegramText({
       chatId: 1,
@@ -189,7 +210,8 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    // Free text → CHAT (not greeting, not GOAL_CREATE)
+    expect(route.kind).toBe("CHAT");
   });
 
   it("does not treat 'create a file containing hello' as greeting", () => {
@@ -200,7 +222,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("does not treat 'who are you?' as greeting (substring 'yo' in 'you')", () => {
@@ -223,7 +245,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("does not treat 'deploy the ok service' as greeting", () => {
@@ -234,7 +256,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("does not treat 'update the morning cron job' as greeting", () => {
@@ -245,7 +267,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs: [],
     });
-    expect(route.kind).toBe("GOAL_CREATE");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("routes greeting with punctuation to CHAT", () => {

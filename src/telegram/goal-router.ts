@@ -149,7 +149,7 @@ function filterRunsForChatThread(params: {
 
 function isBlockedRun(run: SerializedRun): boolean {
   return (
-    run.state === "blocked" &&
+    (run.state === "blocked" || run.state === "needs_clarification") &&
     Boolean(run.blocked?.prompt?.trim()) &&
     Boolean(run.blocked?.requiredInputKey?.trim())
   );
@@ -214,8 +214,8 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     return { kind: "GOAL_REJECT", runId: awaitingRuns[0]!.runId };
   }
 
-  // GOAL_CREATE: default to creating a new plan-only run.
-  return { kind: "GOAL_CREATE" };
+  // Default: treat as regular conversation — only explicit /commands create goal runs.
+  return { kind: "CHAT" };
 }
 
 export const TELEGRAM_GOAL_ROUTER_MESSAGES = {

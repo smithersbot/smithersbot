@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { extractJson, generatePlan, PlanParseError, persistRawPlanResponse } from "./planner.js";
+import { extractJson, generatePlan, PlanParseError } from "./planner.js";
 import type { GoalLlmClient } from "./types.js";
 
 function mockClient(response: string): GoalLlmClient {
