@@ -71,7 +71,16 @@ export function startTypingLoop(params: {
       if (!errorLogged) {
         errorLogged = true;
         const errMsg = err instanceof Error ? err.message : String(err);
-        const cause = err instanceof Error && err.cause ? ` cause=${String(err.cause)}` : "";
+        let cause = "";
+        if (err instanceof Error && err.cause != null) {
+          let causeValue = "[non-string]";
+          if (typeof err.cause === "string") {
+            causeValue = err.cause;
+          } else if (err.cause instanceof Error) {
+            causeValue = err.cause.message;
+          }
+          cause = ` cause=${causeValue}`;
+        }
         logTyping(`${tag}sendChatAction error chatId=${chatId}: ${errMsg}${cause}`);
       }
     });

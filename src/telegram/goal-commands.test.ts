@@ -188,7 +188,7 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Do something");
 
-      expect(result.text).toContain("Error:");
+      expect(result.text).toMatch(/Planning failed:/);
       expect(result.text).toContain("API key missing");
       expect(result.runId).toBeUndefined();
     });
