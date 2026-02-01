@@ -35,6 +35,39 @@ describe("routeTelegramText", () => {
     expect(route.kind).toBe("GOAL_CREATE");
   });
 
+  it("routes greetings to CHAT", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "hello",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("routes thanks to CHAT", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "thanks",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("routes clear task text to GOAL_CREATE", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "write a file foo.txt containing hello",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
   it("routes reply to latest plan message to GOAL_EDIT", () => {
     const runs = [
       makeRun({
@@ -145,5 +178,95 @@ describe("routeTelegramText", () => {
       runs: [],
     });
     expect(route.kind).toBe("CHAT_HELP");
+  });
+
+  // Regression tests: substring false positives
+  it("does not treat 'build a thing' as greeting (substring 'hi' in 'thing')", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "build a thing",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("does not treat 'create a file containing hello' as greeting", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "create a file foo.txt containing hello",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("does not treat 'who are you?' as greeting (substring 'yo' in 'you')", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "who are you?",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    // Should reach CHAT_HELP, not CHAT (greeting check must not fire)
+    expect(route.kind).toBe("CHAT_HELP");
+  });
+
+  it("does not treat 'set up the help system' as help intent", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "set up the help system",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("does not treat 'deploy the ok service' as greeting", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "deploy the ok service",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("does not treat 'update the morning cron job' as greeting", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "update the morning cron job",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("GOAL_CREATE");
+  });
+
+  it("routes greeting with punctuation to CHAT", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "hello!",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("routes multi-word greeting to CHAT", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "hello there",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT");
   });
 });

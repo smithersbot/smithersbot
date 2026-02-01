@@ -1,4 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { GoalLlmClient, Plan, PlanStep, ToolName } from "./types.js";
+import { resolveRunDir } from "./run-store.js";
 
 const VALID_TOOLS: Set<string> = new Set<string>([
   "file_read",
@@ -52,6 +55,27 @@ If you cannot create a plan because you need more information, respond with:
 
 export type PlanResult = Plan | { blocked: true; question: string };
 
+/** Error thrown when JSON extraction from LLM response fails. Carries raw response for diagnostics. */
+export class PlanParseError extends Error {
+  readonly rawResponse: string;
+  constructor(message: string, rawResponse: string) {
+    super(message);
+    this.name = "PlanParseError";
+    this.rawResponse = rawResponse;
+  }
+}
+
+/** Write raw LLM response to run directory for post-mortem debugging. */
+export function persistRawPlanResponse(runId: string, rawText: string): void {
+  try {
+    const runDir = resolveRunDir(runId);
+    if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, "plan-raw.txt"), rawText, "utf8");
+  } catch {
+    // Best-effort; don't mask the original error.
+  }
+}
+
 export async function generatePlan(client: GoalLlmClient, goal: string): Promise<PlanResult> {
   const response = await client.complete({
     systemPrompt: PLAN_SYSTEM_PROMPT,
@@ -100,7 +124,10 @@ export function extractJson(text: string): Record<string, unknown> {
     }
   }
 
-  throw new Error(`Failed to parse JSON from LLM response:\n${trimmed.slice(0, 200)}`);
+  throw new PlanParseError(
+    `Failed to parse JSON from LLM response:\n${trimmed.slice(0, 500)}`,
+    text,
+  );
 }
 
 function validatePlan(raw: Record<string, unknown>, goal: string): Plan {

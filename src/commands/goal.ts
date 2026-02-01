@@ -9,7 +9,7 @@ import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executePlan } from "../goal/executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
-import { generatePlan } from "../goal/planner.js";
+import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import type { DiagramMode, GoalOutcome, GoalSession, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -267,6 +267,11 @@ export async function goalCommand(
     session.lastError = errorMsg;
     session.state = "failed";
     persistRun();
+
+    // Persist raw LLM response for post-mortem when JSON parsing fails
+    if (err instanceof PlanParseError) {
+      persistRawPlanResponse(runId, err.rawResponse);
+    }
 
     if (isJson) {
       runtime.log(JSON.stringify({ error: errorMsg, runId }));

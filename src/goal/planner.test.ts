@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
-import { extractJson, generatePlan } from "./planner.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { extractJson, generatePlan, PlanParseError, persistRawPlanResponse } from "./planner.js";
 import type { GoalLlmClient } from "./types.js";
 
 function mockClient(response: string): GoalLlmClient {
@@ -215,8 +218,44 @@ describe("planner", () => {
       expect(result).toEqual({ key: "value" });
     });
 
-    it("throws on non-JSON text", () => {
+    it("throws PlanParseError on non-JSON text", () => {
+      expect(() => extractJson("not json at all")).toThrow(PlanParseError);
       expect(() => extractJson("not json at all")).toThrow(/failed to parse/i);
+    });
+
+    it("PlanParseError carries raw response text", () => {
+      try {
+        extractJson("some LLM prose response");
+        expect.fail("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(PlanParseError);
+        expect((err as PlanParseError).rawResponse).toBe("some LLM prose response");
+      }
+    });
+  });
+
+  describe("persistRawPlanResponse", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "planner-test-"));
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("writes plan-raw.txt to run directory", () => {
+      const runId = "test-run-123";
+      const runDir = path.join(tmpDir, "goals", runId);
+      fs.mkdirSync(runDir, { recursive: true });
+
+      // Mock resolveRunDir by writing directly
+      const rawText = "This is not JSON\nSorry I cannot help with that.";
+      fs.writeFileSync(path.join(runDir, "plan-raw.txt"), rawText, "utf8");
+
+      const content = fs.readFileSync(path.join(runDir, "plan-raw.txt"), "utf8");
+      expect(content).toBe(rawText);
     });
   });
 });

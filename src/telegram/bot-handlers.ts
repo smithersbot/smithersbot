@@ -33,6 +33,7 @@ import {
   sendGoalPlanResult,
   sendGoalReply,
   withChatAction,
+  withPlanningFeedback,
 } from "./goal-commands.js";
 import { routeTelegramText } from "./goal-router.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
@@ -85,6 +86,10 @@ export async function handleTelegramGoalRouting(params: {
   if (route.kind === "DISAMBIGUATE") {
     await params.sendReply(route.replyText ?? "Multiple blocked runs. Use /goal_list.");
     return true;
+  }
+
+  if (route.kind === "CHAT") {
+    return false;
   }
 
   if (route.kind === "GOAL_CREATE") {
@@ -337,19 +342,19 @@ export const registerTelegramHandlers = ({
       },
       runHandlers: {
         create: (text) =>
-          withChatAction({
+          withPlanningFeedback({
             bot,
             chatId,
-            action: "typing",
             threadId: params.threadId,
+            label: "goal-router:create",
             fn: () => handleGoal(text),
           }),
         edit: (runId, text) =>
-          withChatAction({
+          withPlanningFeedback({
             bot,
             chatId,
-            action: "typing",
             threadId: params.threadId,
+            label: "goal-router:edit",
             fn: () => handleGoalEdit(runId, text),
           }),
         answer: (runId, text) =>
@@ -358,24 +363,11 @@ export const registerTelegramHandlers = ({
             chatId,
             action: "typing",
             threadId: params.threadId,
+            label: "goal-router:answer",
             fn: () => handleGoalAnswer(runId, text),
           }),
-        approve: (runId) =>
-          withChatAction({
-            bot,
-            chatId,
-            action: "typing",
-            threadId: params.threadId,
-            fn: () => handleGoalApprove(runId),
-          }),
-        reject: (runId) =>
-          withChatAction({
-            bot,
-            chatId,
-            action: "typing",
-            threadId: params.threadId,
-            fn: () => handleGoalReject(runId),
-          }),
+        approve: (runId) => handleGoalApprove(runId),
+        reject: (runId) => handleGoalReject(runId),
       },
     });
   }
@@ -906,6 +898,7 @@ export const registerTelegramHandlers = ({
         }
       }
 
+      // Generic auto-reply chat must never execute tools; all execution is gated by goal routing.
       if (goalRouterEnabled && textForRouting && !isCommandLike) {
         const threadId = resolveThreadIdForRouting({
           isGroup,

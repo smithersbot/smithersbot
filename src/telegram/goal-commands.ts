@@ -16,7 +16,7 @@ import type {
 } from "../config/types.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
-import { generatePlanRevision } from "../goal/planner.js";
+import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -117,24 +117,98 @@ type ChatAction =
   | "record_video_note"
   | "upload_video_note";
 
+const debugTyping = process.env.MOLTBOT_TELEGRAM_DEBUG_TYPING === "1";
+
+function logTyping(msg: string): void {
+  if (debugTyping) console.debug(`[typing] ${msg}`);
+}
+
 /** Send repeated chat actions (e.g. "typing") while an async function runs. */
 export async function withChatAction<T>(params: {
   bot: Bot;
   chatId: number;
   action: ChatAction;
   threadId?: number;
+  label?: string;
   fn: () => Promise<T>;
 }): Promise<T> {
-  const { bot, chatId, action, threadId, fn } = params;
+  const { bot, chatId, action, threadId, label, fn } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  Promise.resolve(bot.api.sendChatAction(chatId, action, threadParams)).catch(() => {});
-  const interval = setInterval(() => {
-    Promise.resolve(bot.api.sendChatAction(chatId, action, threadParams)).catch(() => {});
-  }, 4000);
+  const tag = label ? `${label} ` : "";
+  logTyping(`${tag}start chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
+  const sendAction = () => {
+    bot.api.sendChatAction(chatId, action, threadParams).catch((err: unknown) => {
+      logTyping(
+        `${tag}sendChatAction error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  };
+  sendAction();
+  const interval = setInterval(sendAction, 4000);
   try {
     return await fn();
   } finally {
     clearInterval(interval);
+    logTyping(`${tag}stop chatId=${chatId}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Planning feedback: preface message + delayed typing
+// ---------------------------------------------------------------------------
+
+export const PLANNING_PREFACE = "Right away, sir.";
+const TYPING_DELAY_MS = 2000;
+
+/**
+ * Send a short preface message, then run `fn`. If the operation takes longer
+ * than TYPING_DELAY_MS, start a "typing" indicator loop until it completes.
+ * Applied only to planning / replanning paths.
+ */
+export async function withPlanningFeedback<T>(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  label?: string;
+  fn: () => Promise<T>;
+}): Promise<T> {
+  const { bot, chatId, threadId, label, fn } = params;
+  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+  const tag = label ? `${label} ` : "";
+
+  // Preface: instant acknowledgement
+  logTyping(`${tag}preface chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
+  await bot.api.sendMessage(chatId, PLANNING_PREFACE, threadParams).catch((err: unknown) => {
+    logTyping(
+      `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
+  // Delayed typing: only kicks in if planning exceeds TYPING_DELAY_MS
+  let finished = false;
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
+  const typingDelay = setTimeout(() => {
+    if (finished) return;
+    logTyping(`${tag}typing start chatId=${chatId}`);
+    const sendAction = () => {
+      if (finished) return;
+      bot.api.sendChatAction(chatId, "typing", threadParams).catch((err: unknown) => {
+        logTyping(
+          `${tag}sendChatAction error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    };
+    sendAction();
+    typingInterval = setInterval(sendAction, 4000);
+  }, TYPING_DELAY_MS);
+
+  try {
+    return await fn();
+  } finally {
+    finished = true;
+    clearTimeout(typingDelay);
+    if (typingInterval) clearInterval(typingInterval);
+    logTyping(`${tag}stop chatId=${chatId}`);
   }
 }
 
@@ -407,7 +481,12 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
 
     return { text: parts.join("\n"), runId: resolvedId, revision: newRevision };
   } catch (err) {
-    return { text: `Error: ${err instanceof Error ? err.message : String(err)}` };
+    if (err instanceof PlanParseError) {
+      persistRawPlanResponse(resolvedId, err.rawResponse);
+    }
+    return {
+      text: `Error (run ${resolvedId.slice(0, 8)}): ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 }
 
@@ -662,13 +741,7 @@ export function registerTelegramGoalCommands({
     }
 
     if (action === "ga" || action === "gA") {
-      const reply = await withChatAction({
-        bot,
-        chatId,
-        action: "typing",
-        threadId,
-        fn: () => handleGoalApprove(resolvedId),
-      });
+      const reply = await handleGoalApprove(resolvedId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (action === "gr") {
       const reply = await handleGoalReject(resolvedId);
@@ -724,13 +797,7 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
-      const reply = await withChatAction({
-        bot,
-        chatId,
-        action: "typing",
-        threadId,
-        fn: () => handleGoalApprove(run.runId),
-      });
+      const reply = await handleGoalApprove(run.runId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
@@ -748,12 +815,18 @@ export function registerTelegramGoalCommands({
   bot.command("goal", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const result = await withChatAction({
+    const text = ctx.match?.trim() ?? "";
+    if (!text) {
+      const result = await handleGoal("");
+      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+      return;
+    }
+    const result = await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
-      action: "typing",
       threadId: resolved.threadIdForSend,
-      fn: () => handleGoal(ctx.match?.trim() ?? ""),
+      label: "goal",
+      fn: () => handleGoal(text),
     });
     await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
@@ -762,13 +835,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_approve", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const reply = await withChatAction({
-      bot,
-      chatId: resolved.chatId,
-      action: "typing",
-      threadId: resolved.threadIdForSend,
-      fn: () => handleGoalApprove(ctx.match?.trim() ?? ""),
-    });
+    const reply = await handleGoalApprove(ctx.match?.trim() ?? "");
     await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
   });
 
@@ -798,11 +865,11 @@ export function registerTelegramGoalCommands({
     }
     const runId = raw.slice(0, spaceIdx);
     const instructions = raw.slice(spaceIdx + 1).trim();
-    const result = await withChatAction({
+    const result = await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
-      action: "typing",
       threadId: resolved.threadIdForSend,
+      label: "goal_edit",
       fn: () => handleGoalEdit(runId, instructions),
     });
     await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);

@@ -505,6 +505,185 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("withChatAction", () => {
+    it("calls sendChatAction before and during fn execution", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { withChatAction } = await import("./goal-commands.js");
+      const result = await withChatAction({
+        bot: mockBot,
+        chatId: 42,
+        action: "typing",
+        label: "test",
+        fn: async () => {
+          // sendChatAction should have been called once before fn runs
+          expect(sendChatAction).toHaveBeenCalledTimes(1);
+          expect(sendChatAction).toHaveBeenCalledWith(42, "typing", {});
+          return "done";
+        },
+      });
+
+      expect(result).toBe("done");
+      // At least the initial call
+      expect(sendChatAction).toHaveBeenCalledWith(42, "typing", {});
+    });
+
+    it("passes message_thread_id when threadId is provided", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { withChatAction } = await import("./goal-commands.js");
+      await withChatAction({
+        bot: mockBot,
+        chatId: 42,
+        action: "typing",
+        threadId: 7,
+        fn: async () => "ok",
+      });
+
+      expect(sendChatAction).toHaveBeenCalledWith(42, "typing", { message_thread_id: 7 });
+    });
+
+    it("clears interval even if fn throws", async () => {
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { withChatAction } = await import("./goal-commands.js");
+      await expect(
+        withChatAction({
+          bot: mockBot,
+          chatId: 42,
+          action: "typing",
+          fn: async () => {
+            throw new Error("boom");
+          },
+        }),
+      ).rejects.toThrow("boom");
+
+      // sendChatAction should still have been called (the initial fire)
+      expect(sendChatAction).toHaveBeenCalled();
+    });
+
+    it("does not throw when sendChatAction rejects", async () => {
+      const sendChatAction = vi.fn().mockRejectedValue(new Error("API error"));
+      const mockBot = { api: { sendChatAction } } as unknown as import("grammy").Bot;
+
+      const { withChatAction } = await import("./goal-commands.js");
+      const result = await withChatAction({
+        bot: mockBot,
+        chatId: 42,
+        action: "typing",
+        fn: async () => "still works",
+      });
+
+      expect(result).toBe("still works");
+    });
+  });
+
+  describe("withPlanningFeedback", () => {
+    it("sends preface message before fn runs", async () => {
+      const callOrder: string[] = [];
+      const sendMessage = vi.fn().mockImplementation(async () => {
+        callOrder.push("sendMessage");
+        return { message_id: 1 };
+      });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const { withPlanningFeedback, PLANNING_PREFACE } = await import("./goal-commands.js");
+      const result = await withPlanningFeedback({
+        bot: mockBot,
+        chatId: 42,
+        label: "test",
+        fn: async () => {
+          callOrder.push("fn");
+          return "planned";
+        },
+      });
+
+      expect(result).toBe("planned");
+      expect(callOrder).toEqual(["sendMessage", "fn"]);
+      expect(sendMessage).toHaveBeenCalledWith(42, PLANNING_PREFACE, {});
+    });
+
+    it("passes message_thread_id for preface in forum topics", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const { withPlanningFeedback, PLANNING_PREFACE } = await import("./goal-commands.js");
+      await withPlanningFeedback({
+        bot: mockBot,
+        chatId: 42,
+        threadId: 7,
+        fn: async () => "ok",
+      });
+
+      expect(sendMessage).toHaveBeenCalledWith(42, PLANNING_PREFACE, { message_thread_id: 7 });
+    });
+
+    it("does not start typing if fn completes quickly", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const { withPlanningFeedback } = await import("./goal-commands.js");
+      await withPlanningFeedback({
+        bot: mockBot,
+        chatId: 42,
+        fn: async () => "fast",
+      });
+
+      // fn returned instantly — typing should not fire (delayed by 2s)
+      expect(sendChatAction).not.toHaveBeenCalled();
+    });
+
+    it("still runs fn if preface message fails", async () => {
+      const sendMessage = vi.fn().mockRejectedValue(new Error("send failed"));
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const { withPlanningFeedback } = await import("./goal-commands.js");
+      const result = await withPlanningFeedback({
+        bot: mockBot,
+        chatId: 42,
+        fn: async () => "still planned",
+      });
+
+      expect(result).toBe("still planned");
+    });
+
+    it("clears timers even if fn throws", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const { withPlanningFeedback } = await import("./goal-commands.js");
+      await expect(
+        withPlanningFeedback({
+          bot: mockBot,
+          chatId: 42,
+          fn: async () => {
+            throw new Error("boom");
+          },
+        }),
+      ).rejects.toThrow("boom");
+
+      expect(sendMessage).toHaveBeenCalled();
+    });
+  });
+
   describe("findRunByPlanMessageId", () => {
     it("matches latest messageId", async () => {
       saveRun(
