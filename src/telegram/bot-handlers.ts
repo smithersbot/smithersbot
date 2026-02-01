@@ -25,16 +25,16 @@ import {
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import {
-  handleGoal,
   handleGoalAnswer,
-  handleGoalApprove,
   handleGoalEdit,
-  handleGoalReject,
+  handleGoalList,
+  handleGoalStatus,
   sendGoalPlanResult,
   sendGoalReply,
   withChatAction,
   withPlanningFeedback,
 } from "./goal-commands.js";
+import type { GoalPlanResult } from "./goal-commands.js";
 import { routeTelegramText } from "./goal-router.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
@@ -46,13 +46,129 @@ import { listRuns, loadRun } from "../goal/run-store.js";
 const GOAL_HELP_MESSAGE = [
   "Moltbot goal mode:",
   "",
-  "• Use /new_goal <description> to create a plan.",
-  "• Reply to a plan message to edit it.",
-  "• Approve with: approve / yes / ✅ / 👍 / ❤️",
-  "• Reject with: reject / no / 👎",
+  "• /new_goal <description> — create a plan",
+  "• Approve: use buttons on the plan, react ❤️/👍, or /goal_approve <id>",
+  "• Reject: use 👎 button, react 👎, or /goal_reject <id>",
+  "• Edit: reply to the plan message with instructions",
+  "• Answer: reply to a question message, or /goal_answer <id> <answer>",
   "",
-  "Commands: /new_goal, /goal_approve, /goal_reject, /goal_edit, /goal_status, /goal_list, /goal_answer",
+  'Ask about goals: "list goals", "status", /goal_list, /goal_status <id>',
 ].join("\n");
+
+// ---------------------------------------------------------------------------
+// Deterministic local intent handlers (no LLM)
+// ---------------------------------------------------------------------------
+
+export type TelegramChatMode = "help" | "chat";
+
+const RUN_ID_PREFIX_RE = /^[a-f0-9]{8}$/;
+
+// A) GOAL_LIST: exact phrases or "list" + "goal"/"run" within 30 chars
+const GOAL_LIST_EXACT = new Set(["list goals", "goals", "goal list", "runs", "list runs"]);
+
+function isGoalListIntent(text: string): boolean {
+  const stripped = text.trim().toLowerCase();
+  if (GOAL_LIST_EXACT.has(stripped)) return true;
+  return /\blist\b/i.test(text) && /\b(goal|run)s?\b/i.test(text) && text.trim().length <= 60;
+}
+
+// B) GOAL_RECENT: "recent" + "goal"/"run", or starts with "what goals"/"what runs"
+function isGoalRecentIntent(text: string): boolean {
+  const trimmed = text.trim();
+  if (/\brecent\b/i.test(trimmed) && /\b(goal|run)s?\b/i.test(trimmed)) return true;
+  if (/^what\s+(goal|run)s?\b/i.test(trimmed)) return true;
+  return false;
+}
+
+// C) GOAL_STATUS: bare 8-hex-char run ID, or "status <id>" / "goal_status <id>" / "run <id>"
+function matchGoalStatusIntent(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (RUN_ID_PREFIX_RE.test(trimmed)) return trimmed;
+  const m = /^(?:status|goal_status|run)\s+([a-f0-9]{8})$/i.exec(trimmed);
+  return m ? m[1]! : undefined;
+}
+
+// D) APPROVAL_GUIDANCE: deterministic regex, never actually approves
+const APPROVAL_LIKE_RE =
+  /^(approve|approved|approve\s*it|go\s*ahead|lgtm|ship\s*it|yes\s*,?\s*approve|approve\s+(?:that\s+)?(?:the\s+)?(?:last\s+one|latest|most\s+recent))$/i;
+
+function isApprovalLikeText(text: string): boolean {
+  return APPROVAL_LIKE_RE.test(text.trim().replace(/[!.]+$/, ""));
+}
+
+// Recent runs formatter: sorted by updatedAt, prefers active states, capped at 10
+const ACTIVE_RUN_STATES = new Set(["executing", "done", "blocked", "failed", "cancelled"]);
+
+function formatRecentRuns(): string {
+  const all = listRuns(); // already sorted by updatedAt desc
+  if (all.length === 0) return "No goal runs found.";
+
+  const active = all.filter((r) => ACTIVE_RUN_STATES.has(r.state));
+  const rest = all.filter((r) => !ACTIVE_RUN_STATES.has(r.state));
+  const sorted = [...active, ...rest].slice(0, 10);
+
+  const lines: string[] = ["Most recently updated runs:", "```"];
+  lines.push("ID       State               Steps Goal");
+  lines.push("\u2500".repeat(58));
+  for (const run of sorted) {
+    const id = run.runId.slice(0, 8);
+    const state = run.state.padEnd(20);
+    const steps =
+      run.stepCount > 0 ? `${run.completedSteps}/${run.stepCount}`.padEnd(6) : "\u2014".padEnd(6);
+    const goal = run.goal.length > 22 ? `${run.goal.slice(0, 19)}...` : run.goal;
+    lines.push(`${id} ${state} ${steps}${goal}`);
+  }
+  lines.push("```");
+  return lines.join("\n");
+}
+
+/**
+ * Try all deterministic local intents. Returns reply text if matched, undefined otherwise.
+ * Intents A-D never call the LLM.
+ */
+async function tryLocalIntentHandlers(
+  messageText: string,
+  runs: SerializedRun[],
+): Promise<string | undefined> {
+  // A) GOAL_LIST
+  if (isGoalListIntent(messageText)) {
+    return await handleGoalList();
+  }
+
+  // B) GOAL_RECENT
+  if (isGoalRecentIntent(messageText)) {
+    return formatRecentRuns();
+  }
+
+  // C) GOAL_STATUS
+  const statusId = matchGoalStatusIntent(messageText);
+  if (statusId) {
+    return await handleGoalStatus(statusId);
+  }
+
+  // D) APPROVAL_GUIDANCE (never approves)
+  if (isApprovalLikeText(messageText)) {
+    const awaitingRuns = runs.filter((r) => r.state === "awaiting_approval");
+    if (awaitingRuns.length === 1) {
+      const shortId = awaitingRuns[0]!.runId.slice(0, 8);
+      return `To approve run \`${shortId}\`, use the Approve button on the plan, react 👍 or ❤️ to the plan message, or run /goal_approve ${shortId}`;
+    }
+    if (awaitingRuns.length > 1) {
+      const ids = awaitingRuns
+        .slice(0, 5)
+        .map((r) => `\`${r.runId.slice(0, 8)}\``)
+        .join(", ");
+      return `${awaitingRuns.length} runs awaiting approval: ${ids}\nUse /goal_list to see all, then /goal_approve <id> to approve.`;
+    }
+    return "Nothing is awaiting approval right now. Use /goal_list to see runs.";
+  }
+
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Goal routing handler
+// ---------------------------------------------------------------------------
 
 export async function handleTelegramGoalRouting(params: {
   chatId: number;
@@ -60,14 +176,12 @@ export async function handleTelegramGoalRouting(params: {
   messageText: string;
   replyToMessageId?: number;
   runs: SerializedRun[];
+  chatMode: TelegramChatMode;
   sendReply: (text: string) => Promise<void>;
-  sendPlanResult: (result: Awaited<ReturnType<typeof handleGoal>>) => Promise<void>;
+  sendPlanResult: (result: GoalPlanResult) => Promise<void>;
   runHandlers: {
-    create: (text: string) => ReturnType<typeof handleGoal>;
     edit: (runId: string, text: string) => ReturnType<typeof handleGoalEdit>;
     answer: (runId: string, text: string) => Promise<Awaited<ReturnType<typeof handleGoalAnswer>>>;
-    approve: (runId: string) => ReturnType<typeof handleGoalApprove>;
-    reject: (runId: string) => ReturnType<typeof handleGoalReject>;
   };
 }): Promise<boolean> {
   const route = routeTelegramText({
@@ -84,18 +198,31 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   if (route.kind === "DISAMBIGUATE") {
-    await params.sendReply(route.replyText ?? "Multiple blocked runs. Use /goal_list.");
+    await params.sendReply(route.replyText ?? "Reply to the latest plan or question message.");
     return true;
   }
 
   if (route.kind === "CHAT") {
-    return false;
-  }
+    // Try deterministic local intent handlers (A-D). Never calls LLM.
+    const localReply = await tryLocalIntentHandlers(params.messageText, params.runs);
+    if (localReply) {
+      await params.sendReply(localReply);
+      return true;
+    }
 
-  if (route.kind === "GOAL_CREATE") {
-    const result = await params.runHandlers.create(params.messageText);
-    await params.sendPlanResult(result);
-    return true;
+    // Blocked-run hint (from router)
+    if (route.replyText) {
+      await params.sendReply(route.replyText);
+    }
+
+    // E) FALLBACK: in "help" mode, always reply with help message (never fall through to LLM)
+    if (params.chatMode === "help") {
+      await params.sendReply(GOAL_HELP_MESSAGE);
+      return true;
+    }
+
+    // "chat" mode: fall through to LLM for non-goal text
+    return false;
   }
 
   if (route.kind === "GOAL_EDIT" && route.runId) {
@@ -111,18 +238,6 @@ export async function handleTelegramGoalRouting(params: {
     } else {
       await params.sendPlanResult(result);
     }
-    return true;
-  }
-
-  if (route.kind === "GOAL_APPROVE" && route.runId) {
-    const reply = await params.runHandlers.approve(route.runId);
-    await params.sendReply(reply);
-    return true;
-  }
-
-  if (route.kind === "GOAL_REJECT" && route.runId) {
-    const reply = await params.runHandlers.reject(route.runId);
-    await params.sendReply(reply);
     return true;
   }
 
@@ -232,18 +347,27 @@ export const registerTelegramHandlers = ({
     return params.messageThreadId;
   }
 
+  function matchesChatThread(
+    msg: { chatId: number; threadId?: number } | undefined,
+    targetChatId: number,
+    targetThreadId?: number,
+  ): boolean {
+    if (!msg) return false;
+    if (msg.chatId !== targetChatId) return false;
+    if (typeof targetThreadId === "number") return msg.threadId === targetThreadId;
+    return typeof msg.threadId !== "number";
+  }
+
   function loadRunsForChatThread(chatId: number, threadId?: number): SerializedRun[] {
     return listRuns()
       .map((summary) => loadRun(summary.runId))
       .filter((run): run is SerializedRun => Boolean(run))
       .filter((run) => {
-        const plan = run.telegramPlanMessage;
-        if (!plan) return false;
-        if (plan.chatId !== chatId) return false;
-        if (typeof threadId === "number") {
-          return plan.threadId === threadId;
+        if (matchesChatThread(run.telegramPlanMessage, chatId, threadId)) return true;
+        if (run.telegramQuestionMessages?.some((qm) => matchesChatThread(qm, chatId, threadId))) {
+          return true;
         }
-        return typeof plan.threadId !== "number";
+        return false;
       });
   }
 
@@ -332,6 +456,7 @@ export const registerTelegramHandlers = ({
       messageText: params.text,
       replyToMessageId,
       runs,
+      chatMode: telegramCfg.chatMode ?? "help",
       sendReply: async (text) => {
         await sendGoalReply(bot, chatId, text, runtime, params.threadId);
       },
@@ -345,14 +470,6 @@ export const registerTelegramHandlers = ({
         });
       },
       runHandlers: {
-        create: (text) =>
-          withPlanningFeedback({
-            bot,
-            chatId,
-            threadId: params.threadId,
-            label: "goal-router:create",
-            fn: () => handleGoal(text),
-          }),
         edit: (runId, text) =>
           withPlanningFeedback({
             bot,
@@ -370,8 +487,6 @@ export const registerTelegramHandlers = ({
             label: "goal-router:answer",
             fn: () => handleGoalAnswer(runId, text),
           }),
-        approve: (runId) => handleGoalApprove(runId),
-        reject: (runId) => handleGoalReject(runId),
       },
     });
   }

@@ -2,17 +2,14 @@ import type { SerializedRun } from "../goal/types.js";
 
 // Routing contract: Telegram chats feel conversational, but all side effects must flow
 // through goal runs. CHAT is read-only. Only GOAL_* routes are allowed to plan/execute.
-export type RouteKind =
-  | "GOAL_CREATE"
-  | "GOAL_EDIT"
-  | "GOAL_ANSWER"
-  | "GOAL_APPROVE"
-  | "GOAL_REJECT"
-  | "CHAT"
-  | "CHAT_HELP"
-  | "DISAMBIGUATE";
+//
+// Callback queries (inline buttons) and emoji reactions never enter routeTelegramText.
+// They are handled by dedicated Grammy middleware registered in registerTelegramGoalCommands()
+// (called from registerTelegramNativeCommands, bot.ts:348) which runs before registerTelegramHandlers
+// (bot.ts:454) where the text router lives.
+export type RouteKind = "GOAL_EDIT" | "GOAL_ANSWER" | "CHAT" | "CHAT_HELP" | "DISAMBIGUATE";
 
-export type RouterDecision = "GOAL_CREATE" | "GOAL_EDIT" | "GOAL_APPROVE" | "GOAL_ANSWER" | "CHAT";
+export type RouterDecision = "GOAL_EDIT" | "GOAL_ANSWER" | "CHAT";
 
 export type RouteResult = {
   kind: RouteKind;
@@ -27,11 +24,6 @@ type RouteInput = {
   replyToMessageId?: number;
   runs: SerializedRun[];
 };
-
-const APPROVAL_INTENTS = ["approve", "yes", "go ahead", "run it", "ship it", "do it"];
-const REJECTION_INTENTS = ["reject", "no", "stop", "cancel"];
-const APPROVAL_EMOJIS = ["✅", "👍", "❤️"];
-const REJECTION_EMOJIS = ["👎"];
 
 const HELP_INTENTS = [
   "who are you",
@@ -71,17 +63,11 @@ const GREETING_INTENTS = [
 const MAX_GREETING_WORDS = 4;
 const MAX_HELP_WORDS = 8;
 
-const MULTIPLE_BLOCKED_MESSAGE =
-  "Multiple blocked runs. Use /goal_list and /goal_answer <runId> <answer>.";
 const OLDER_REVISION_MESSAGE =
   "That's an older revision. Reply to the latest plan message to request changes.";
 
 function normalizeText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function containsIntent(text: string, intents: string[]): boolean {
-  return intents.some((intent) => text === intent || text.includes(intent));
 }
 
 function stripPunctuation(text: string): string {
@@ -98,10 +84,6 @@ function wordCount(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
-function containsEmoji(rawText: string, emojis: string[]): boolean {
-  return emojis.some((emoji) => rawText.includes(emoji));
-}
-
 function isHelpIntent(rawText: string): boolean {
   const normalized = normalizeText(rawText);
   if (!normalized) return false;
@@ -116,18 +98,19 @@ function isGreetingIntent(rawText: string): boolean {
   return matchesIntentExact(normalized, GREETING_INTENTS);
 }
 
-function hasApprovalIntent(rawText: string): boolean {
-  const normalized = normalizeText(rawText);
-  if (containsEmoji(rawText, APPROVAL_EMOJIS)) return true;
-  if (!normalized) return false;
-  return containsIntent(normalized, APPROVAL_INTENTS);
-}
+// ---------------------------------------------------------------------------
+// Chat/thread scoping helpers
+// ---------------------------------------------------------------------------
 
-function hasRejectionIntent(rawText: string): boolean {
-  const normalized = normalizeText(rawText);
-  if (containsEmoji(rawText, REJECTION_EMOJIS)) return true;
-  if (!normalized) return false;
-  return containsIntent(normalized, REJECTION_INTENTS);
+function matchesChatThread(
+  msg: { chatId: number; threadId?: number } | undefined,
+  chatId: number,
+  threadId?: number,
+): boolean {
+  if (!msg) return false;
+  if (msg.chatId !== chatId) return false;
+  if (typeof threadId === "number") return msg.threadId === threadId;
+  return typeof msg.threadId !== "number";
 }
 
 function filterRunsForChatThread(params: {
@@ -137,13 +120,11 @@ function filterRunsForChatThread(params: {
 }): SerializedRun[] {
   const { runs, chatId, threadId } = params;
   return runs.filter((run) => {
-    const plan = run.telegramPlanMessage;
-    if (!plan) return false;
-    if (plan.chatId !== chatId) return false;
-    if (typeof threadId === "number") {
-      return plan.threadId === threadId;
+    if (matchesChatThread(run.telegramPlanMessage, chatId, threadId)) return true;
+    if (run.telegramQuestionMessages?.some((qm) => matchesChatThread(qm, chatId, threadId))) {
+      return true;
     }
-    return typeof plan.threadId !== "number";
+    return false;
   });
 }
 
@@ -155,6 +136,41 @@ function isBlockedRun(run: SerializedRun): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Reply-to lookup helpers
+// ---------------------------------------------------------------------------
+
+function findRunByQuestionMessageId(
+  runs: SerializedRun[],
+  chatId: number,
+  threadId: number | undefined,
+  messageId: number,
+): SerializedRun | undefined {
+  return runs.find(
+    (run) =>
+      isBlockedRun(run) &&
+      run.telegramQuestionMessages?.some(
+        (qm) => qm.messageId === messageId && matchesChatThread(qm, chatId, threadId),
+      ),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main routing function
+// ---------------------------------------------------------------------------
+
+/**
+ * Route a Telegram text message to the appropriate handler.
+ *
+ * Routing precedence (callback queries and reactions bypass this function):
+ *   1. Empty text → CHAT_HELP
+ *   2. Non-reply greeting → CHAT
+ *   3. Reply to latest plan message → GOAL_EDIT
+ *   4. Reply to question message (blocked run) → GOAL_ANSWER
+ *   5. Reply to older plan revision → DISAMBIGUATE
+ *   6. Help intent → CHAT_HELP
+ *   7. Default → CHAT (with replyText hint if blocked runs exist)
+ */
 export function routeTelegramText(input: RouteInput): RouteResult {
   const { chatId, threadId, messageText, replyToMessageId } = input;
   const scopedRuns = filterRunsForChatThread({
@@ -172,18 +188,31 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     return { kind: "CHAT" };
   }
 
+  // Reply-to-message routing
   if (replyToMessageId != null) {
+    // GOAL_EDIT: reply to the latest plan message.
     const latestMatch = scopedRuns.find(
       (run) => run.telegramPlanMessage?.messageId === replyToMessageId,
     );
-    // GOAL_EDIT: reply to the latest plan message.
     if (latestMatch) {
       return { kind: "GOAL_EDIT", runId: latestMatch.runId };
     }
+
+    // GOAL_ANSWER: reply to a question/clarification message from a blocked run.
+    const questionMatch = findRunByQuestionMessageId(
+      scopedRuns,
+      chatId,
+      threadId,
+      replyToMessageId,
+    );
+    if (questionMatch) {
+      return { kind: "GOAL_ANSWER", runId: questionMatch.runId };
+    }
+
+    // DISAMBIGUATE: reply to an older plan revision.
     const olderMatch = scopedRuns.find((run) =>
       run.telegramPlanMessage?.messageHistory?.includes(replyToMessageId),
     );
-    // CHAT (disambiguate): reply to an older plan revision.
     if (olderMatch) {
       return { kind: "DISAMBIGUATE", replyText: OLDER_REVISION_MESSAGE };
     }
@@ -194,31 +223,20 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     return { kind: "CHAT_HELP" };
   }
 
+  // Blocked-run hint: suggest reply-to or /goal_answer instead of silently attaching.
   const blockedRuns = scopedRuns.filter(isBlockedRun);
-  // GOAL_ANSWER: exactly one blocked run is awaiting a required input.
-  if (blockedRuns.length === 1) {
-    return { kind: "GOAL_ANSWER", runId: blockedRuns[0]!.runId };
-  }
-  // CHAT (disambiguate): multiple blocked runs need explicit selection.
-  if (blockedRuns.length > 1) {
-    return { kind: "DISAMBIGUATE", replyText: MULTIPLE_BLOCKED_MESSAGE };
-  }
-
-  const awaitingRuns = scopedRuns.filter((run) => run.state === "awaiting_approval");
-  // GOAL_APPROVE: exactly one awaiting-approval run and approval intent detected.
-  if (awaitingRuns.length === 1 && hasApprovalIntent(messageText)) {
-    return { kind: "GOAL_APPROVE", runId: awaitingRuns[0]!.runId };
-  }
-  // GOAL_REJECT: exactly one awaiting-approval run and rejection intent detected.
-  if (awaitingRuns.length === 1 && hasRejectionIntent(messageText)) {
-    return { kind: "GOAL_REJECT", runId: awaitingRuns[0]!.runId };
+  if (blockedRuns.length > 0 && !isGreetingIntent(messageText)) {
+    const hint =
+      blockedRuns.length === 1
+        ? `Tip: reply to the question above or use /goal_answer ${blockedRuns[0]!.runId.slice(0, 8)} <answer>`
+        : "Tip: use /goal_list to see blocked runs, then /goal_answer <runId> <answer>";
+    return { kind: "CHAT", replyText: hint };
   }
 
-  // Default: treat as regular conversation — only explicit /commands create goal runs.
+  // Default: treat as regular conversation — only explicit controls create/manage goal runs.
   return { kind: "CHAT" };
 }
 
 export const TELEGRAM_GOAL_ROUTER_MESSAGES = {
-  MULTIPLE_BLOCKED_MESSAGE,
   OLDER_REVISION_MESSAGE,
 };

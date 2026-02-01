@@ -224,7 +224,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("DONE");
     });
 
-    it("shows answer hint when execution is blocked", async () => {
+    it("returns GoalPlanResult when execution is blocked", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
@@ -235,7 +235,11 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
-      expect(result).toContain("/goal_answer");
+      expect(typeof result).not.toBe("string");
+      expect(result).toHaveProperty("text");
+      expect(result).toHaveProperty("blocked", true);
+      expect(result).toHaveProperty("runId", "test-run-id-1234");
+      expect((result as { text: string }).text).toContain("/goal_answer");
     });
 
     it("returns no-op for already done run", async () => {
@@ -376,6 +380,33 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("nonexistent", "val");
       expect(result).toContain("Run not found");
+    });
+
+    it("returns GoalPlanResult with runId and blocked when still needs clarification", async () => {
+      saveRun(
+        makeRun({
+          state: "needs_clarification",
+          blocked: { prompt: "Which DB?", requiredInputKey: "step:planning:input" },
+        }),
+      );
+
+      mockResolveEnvApiKey.mockReturnValue({ apiKey: "sk-test" });
+      mockCreateGoalLlmClient.mockReturnValue({});
+      // generatePlan returns a blocked result (has "question" + "blocked" key)
+      mockGeneratePlan.mockResolvedValue({
+        blocked: true,
+        question: "PostgreSQL or MySQL?",
+      });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "postgres");
+
+      expect(typeof result).not.toBe("string");
+      expect(result).toHaveProperty("runId", "test-run-id-1234");
+      expect(result).toHaveProperty("blocked", true);
+      expect(result).toHaveProperty("text");
+      expect((result as { text: string }).text).toContain("Still need more info");
+      expect((result as { text: string }).text).toContain("PostgreSQL or MySQL?");
     });
   });
 

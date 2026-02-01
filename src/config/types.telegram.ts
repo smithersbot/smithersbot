@@ -64,6 +64,12 @@ export type TelegramAccountConfig = {
   dmPolicy?: DmPolicy;
   /** Enable goal routing for non-command text messages (default: true). */
   goalRouter?: boolean;
+  /**
+   * Controls non-command chat behavior:
+   * - "help" (default): deterministic local handlers only, never calls LLM
+   * - "chat": local handlers first, then falls through to LLM for unmatched text
+   */
+  chatMode?: "help" | "chat";
   /** If false, do not start this Telegram account. Default: true. */
   enabled?: boolean;
   botToken?: string;

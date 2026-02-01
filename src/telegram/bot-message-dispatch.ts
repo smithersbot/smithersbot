@@ -14,6 +14,7 @@ import { logAckFailure, logTypingFailure } from "../channels/logging.js";
 import { createReplyPrefixContext } from "../channels/reply-prefix.js";
 import { createTypingCallbacks } from "../channels/typing.js";
 import { danger, logVerbose } from "../globals.js";
+import { isRateLimitErrorMessage } from "../agents/pi-embedded-helpers/errors.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { deliverReplies } from "./bot/delivery.js";
 import { resolveTelegramDraftStreamingChunking } from "./draft-chunking.js";
@@ -209,68 +210,92 @@ export const dispatchTelegramMessage = async ({
     skippedNonSilent: 0,
   };
 
-  const { queuedFinal } = await dispatchReplyWithBufferedBlockDispatcher({
-    ctx: ctxPayload,
-    cfg,
-    dispatcherOptions: {
-      responsePrefix: prefixContext.responsePrefix,
-      responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
-      deliver: async (payload, info) => {
-        if (info.kind === "final") {
-          await flushDraft();
-          draftStream?.stop();
-        }
-        const result = await deliverReplies({
-          replies: [payload],
-          chatId: String(chatId),
-          token: opts.token,
-          runtime,
-          bot,
-          replyToMode,
-          textLimit,
-          messageThreadId: resolvedThreadId,
-          tableMode,
-          chunkMode,
-          onVoiceRecording: sendRecordVoice,
-          linkPreview: telegramCfg.linkPreview,
-          replyQuoteText,
-        });
-        if (result.delivered) {
-          deliveryState.delivered = true;
-        }
-      },
-      onSkip: (_payload, info) => {
-        if (info.reason !== "silent") deliveryState.skippedNonSilent += 1;
-      },
-      onError: (err, info) => {
-        runtime.error?.(danger(`telegram ${info.kind} reply failed: ${String(err)}`));
-      },
-      onReplyStart: createTypingCallbacks({
-        start: sendTyping,
-        onStartError: (err) => {
-          logTypingFailure({
-            log: logVerbose,
-            channel: "telegram",
-            target: String(chatId),
-            error: err,
-          });
-        },
-      }).onReplyStart,
-    },
-    replyOptions: {
-      skillFilter,
-      onPartialReply: draftStream ? (payload) => updateDraftFromPartial(payload.text) : undefined,
-      onReasoningStream: draftStream
-        ? (payload) => {
-            if (payload.text) draftStream.update(payload.text);
+  let queuedFinal: boolean;
+  try {
+    const dispatchResult = await dispatchReplyWithBufferedBlockDispatcher({
+      ctx: ctxPayload,
+      cfg,
+      dispatcherOptions: {
+        responsePrefix: prefixContext.responsePrefix,
+        responsePrefixContextProvider: prefixContext.responsePrefixContextProvider,
+        deliver: async (payload, info) => {
+          if (info.kind === "final") {
+            await flushDraft();
+            draftStream?.stop();
           }
-        : undefined,
-      disableBlockStreaming,
-      onModelSelected: (ctx) => {
-        prefixContext.onModelSelected(ctx);
+          const result = await deliverReplies({
+            replies: [payload],
+            chatId: String(chatId),
+            token: opts.token,
+            runtime,
+            bot,
+            replyToMode,
+            textLimit,
+            messageThreadId: resolvedThreadId,
+            tableMode,
+            chunkMode,
+            onVoiceRecording: sendRecordVoice,
+            linkPreview: telegramCfg.linkPreview,
+            replyQuoteText,
+          });
+          if (result.delivered) {
+            deliveryState.delivered = true;
+          }
+        },
+        onSkip: (_payload, info) => {
+          if (info.reason !== "silent") deliveryState.skippedNonSilent += 1;
+        },
+        onError: (err, info) => {
+          runtime.error?.(danger(`telegram ${info.kind} reply failed: ${String(err)}`));
+        },
+        onReplyStart: createTypingCallbacks({
+          start: sendTyping,
+          onStartError: (err) => {
+            logTypingFailure({
+              log: logVerbose,
+              channel: "telegram",
+              target: String(chatId),
+              error: err,
+            });
+          },
+        }).onReplyStart,
       },
-    },
-  });
+      replyOptions: {
+        skillFilter,
+        onPartialReply: draftStream ? (payload) => updateDraftFromPartial(payload.text) : undefined,
+        onReasoningStream: draftStream
+          ? (payload) => {
+              if (payload.text) draftStream.update(payload.text);
+            }
+          : undefined,
+        disableBlockStreaming,
+        onModelSelected: (ctx) => {
+          prefixContext.onModelSelected(ctx);
+        },
+      },
+    });
+    queuedFinal = dispatchResult.queuedFinal;
+  } catch (dispatchErr) {
+    draftStream?.stop();
+    const errMsg = dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr);
+    if (isRateLimitErrorMessage(errMsg)) {
+      await deliverReplies({
+        replies: [{ text: "I'm being rate-limited right now. Please try again in a moment." }],
+        chatId: String(chatId),
+        token: opts.token,
+        runtime,
+        bot,
+        replyToMode,
+        textLimit,
+        messageThreadId: resolvedThreadId,
+        tableMode,
+        chunkMode,
+        linkPreview: telegramCfg.linkPreview,
+      });
+      return;
+    }
+    throw dispatchErr;
+  }
   draftStream?.stop();
   let sentFallback = false;
   if (!deliveryState.delivered && deliveryState.skippedNonSilent > 0) {

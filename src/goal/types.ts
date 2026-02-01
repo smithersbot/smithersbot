@@ -121,6 +121,13 @@ export type SerializedRun = {
     /** Message IDs from older revisions. */
     messageHistory?: number[];
   };
+  /** Telegram question/clarification messages for reply-to-answer detection. Newest first, capped. */
+  telegramQuestionMessages?: Array<{
+    chatId: number;
+    messageId: number;
+    threadId?: number;
+    requiredInputKey?: string;
+  }>;
 };
 
 /** Lightweight summary returned by listRuns(). */

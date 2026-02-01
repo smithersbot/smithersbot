@@ -20,6 +20,7 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     createdAt: now,
     updatedAt: now,
     telegramPlanMessage: partial.telegramPlanMessage,
+    telegramQuestionMessages: partial.telegramQuestionMessages,
   };
 }
 
@@ -105,7 +106,8 @@ describe("routeTelegramText", () => {
     expect(route.replyText).toBe(TELEGRAM_GOAL_ROUTER_MESSAGES.OLDER_REVISION_MESSAGE);
   });
 
-  it("routes single blocked run to GOAL_ANSWER", () => {
+  // Blocked runs: plain text now routes to CHAT with hint (no implicit GOAL_ANSWER)
+  it("routes plain text with single blocked run to CHAT with hint", () => {
     const runs = [
       makeRun({
         runId: "r1",
@@ -121,11 +123,12 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs,
     });
-    expect(route.kind).toBe("GOAL_ANSWER");
-    expect(route.runId).toBe("r1");
+    expect(route.kind).toBe("CHAT");
+    expect(route.replyText).toContain("/goal_answer");
+    expect(route.replyText).toContain("r1".slice(0, 8));
   });
 
-  it("routes single needs_clarification run to GOAL_ANSWER", () => {
+  it("routes plain text with single needs_clarification run to CHAT with hint", () => {
     const runs = [
       makeRun({
         runId: "r1",
@@ -141,11 +144,11 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs,
     });
-    expect(route.kind).toBe("GOAL_ANSWER");
-    expect(route.runId).toBe("r1");
+    expect(route.kind).toBe("CHAT");
+    expect(route.replyText).toContain("/goal_answer");
   });
 
-  it("routes multiple blocked runs to DISAMBIGUATE", () => {
+  it("routes plain text with multiple blocked runs to CHAT with hint", () => {
     const runs = [
       makeRun({
         runId: "r1",
@@ -167,11 +170,12 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs,
     });
-    expect(route.kind).toBe("DISAMBIGUATE");
-    expect(route.replyText).toBe(TELEGRAM_GOAL_ROUTER_MESSAGES.MULTIPLE_BLOCKED_MESSAGE);
+    expect(route.kind).toBe("CHAT");
+    expect(route.replyText).toContain("/goal_list");
   });
 
-  it("routes approval intent to GOAL_APPROVE", () => {
+  // Approval/rejection: text-based intents no longer route to GOAL_APPROVE/REJECT
+  it("routes approval intent to CHAT (approval only via buttons/reactions/commands)", () => {
     const runs = [
       makeRun({
         runId: "r1",
@@ -186,8 +190,7 @@ describe("routeTelegramText", () => {
       replyToMessageId: undefined,
       runs,
     });
-    expect(route.kind).toBe("GOAL_APPROVE");
-    expect(route.runId).toBe("r1");
+    expect(route.kind).toBe("CHAT");
   });
 
   it("routes help intent to CHAT_HELP", () => {
@@ -290,5 +293,104 @@ describe("routeTelegramText", () => {
       runs: [],
     });
     expect(route.kind).toBe("CHAT");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reply-to-question routing (new in 6.75)
+  // ---------------------------------------------------------------------------
+
+  it("routes reply to question message to GOAL_ANSWER", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "blocked",
+        blocked: { prompt: "What file?", requiredInputKey: "input_key" },
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+        telegramQuestionMessages: [{ chatId: 1, messageId: 15, requiredInputKey: "input_key" }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "foo.txt",
+      replyToMessageId: 15,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("matches older question message in the array", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "needs_clarification",
+        blocked: { prompt: "Which DB?", requiredInputKey: "step:planning:input" },
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+        telegramQuestionMessages: [
+          { chatId: 1, messageId: 20, requiredInputKey: "step:planning:input" },
+          { chatId: 1, messageId: 15, requiredInputKey: "step:planning:input" },
+        ],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "postgres",
+      replyToMessageId: 15,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("does not route reply to question message if run is no longer blocked", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        telegramPlanMessage: { chatId: 1, messageId: 10 },
+        telegramQuestionMessages: [{ chatId: 1, messageId: 15 }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "foo.txt",
+      replyToMessageId: 15,
+      runs,
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("does not match question message from wrong chatId", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "blocked",
+        blocked: { prompt: "What file?", requiredInputKey: "input_key" },
+        telegramQuestionMessages: [{ chatId: 999, messageId: 15, requiredInputKey: "input_key" }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "foo.txt",
+      replyToMessageId: 15,
+      runs,
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("non-reply non-command text without blocked runs has no hint", () => {
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "what is the weather",
+      replyToMessageId: undefined,
+      runs: [],
+    });
+    expect(route.kind).toBe("CHAT");
+    expect(route.replyText).toBeUndefined();
   });
 });

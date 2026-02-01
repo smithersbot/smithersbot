@@ -235,7 +235,7 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
 }
 
 /** /goal_approve <runId> -- approve and execute a plan (idempotent). */
-export async function handleGoalApprove(rawId: string): Promise<string> {
+export async function handleGoalApprove(rawId: string): Promise<string | GoalPlanResult> {
   if (!rawId.trim()) {
     return "Usage: /goal_approve <runId>";
   }
@@ -266,6 +266,11 @@ export async function handleGoalApprove(rawId: string): Promise<string> {
 
     if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
       parts.push(`\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`);
+      return {
+        text: parts.join("\n") || "More information needed.",
+        runId: resolvedId,
+        blocked: true,
+      };
     }
 
     return parts.join("\n") || "Execution complete.";
@@ -371,6 +376,8 @@ export async function handleGoalAnswer(
         saveRun(run);
         return {
           text: `Still need more info:\n\n${planResult.question}\n\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`,
+          runId: resolvedId,
+          blocked: true,
         };
       }
 
@@ -512,20 +519,21 @@ export async function sendGoalReply(
   markdown: string,
   runtime: RuntimeEnv,
   threadId?: number,
-): Promise<void> {
+): Promise<number | undefined> {
   if (!markdown.trim()) {
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-    await withTelegramApiErrorLogging({
+    const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
       fn: () => bot.api.sendMessage(chatId, "No output.", threadParams),
     });
-    return;
+    return sent?.message_id;
   }
+  let lastMessageId: number | undefined;
   const chunks = markdownToTelegramChunks(markdown, 4000);
   for (const chunk of chunks) {
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-    await withTelegramApiErrorLogging({
+    const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
       fn: () =>
@@ -533,7 +541,11 @@ export async function sendGoalReply(
           .sendMessage(chatId, chunk.html, { parse_mode: "HTML", ...threadParams })
           .catch(() => bot.api.sendMessage(chatId, chunk.text, threadParams)),
     });
+    if (sent?.message_id != null) {
+      lastMessageId = sent.message_id;
+    }
   }
+  return lastMessageId;
 }
 
 /** Send plan with inline keyboard, return last message ID for tracking. */
@@ -609,6 +621,29 @@ function persistTelegramPlanMessage(params: {
   saveRun(run);
 }
 
+const TELEGRAM_QUESTION_MESSAGE_CAP = 10;
+
+/** Persist Telegram question/clarification message tracking on a run. */
+function persistTelegramQuestionMessage(params: {
+  runId: string;
+  chatId: number;
+  messageId: number;
+  threadId?: number;
+  requiredInputKey?: string;
+}): void {
+  const run = loadRun(params.runId);
+  if (!run) return;
+  const entry = {
+    chatId: params.chatId,
+    messageId: params.messageId,
+    threadId: params.threadId,
+    requiredInputKey: params.requiredInputKey,
+  };
+  const existing = run.telegramQuestionMessages ?? [];
+  run.telegramQuestionMessages = [entry, ...existing].slice(0, TELEGRAM_QUESTION_MESSAGE_CAP);
+  saveRun(run);
+}
+
 // ---------------------------------------------------------------------------
 // Exported send helper
 // ---------------------------------------------------------------------------
@@ -637,6 +672,19 @@ export async function sendGoalPlanResult(params: {
         chatId,
         messageId: sentId,
         threadId,
+      });
+    }
+  } else if (result.runId && result.blocked) {
+    // Question/clarification message — track for reply-to-answer routing
+    const sentId = await sendGoalReply(bot, chatId, result.text, runtime, threadId);
+    if (sentId != null) {
+      const run = loadRun(result.runId);
+      persistTelegramQuestionMessage({
+        runId: result.runId,
+        chatId,
+        messageId: sentId,
+        threadId,
+        requiredInputKey: run?.blocked?.requiredInputKey,
       });
     }
   } else {
@@ -760,7 +808,11 @@ export function registerTelegramGoalCommands({
         label: "callback:approve",
         fn: () => handleGoalApprove(resolvedId),
       });
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      if (typeof reply === "string") {
+        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      } else {
+        await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+      }
     } else if (action === "gr") {
       const reply = await handleGoalReject(resolvedId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -822,7 +874,11 @@ export function registerTelegramGoalCommands({
         label: "reaction:approve",
         fn: () => handleGoalApprove(run.runId),
       });
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      if (typeof reply === "string") {
+        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      } else {
+        await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+      }
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -866,7 +922,17 @@ export function registerTelegramGoalCommands({
       label: "goal_approve",
       fn: () => handleGoalApprove(ctx.match?.trim() ?? ""),
     });
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    if (typeof reply === "string") {
+      await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    } else {
+      await sendGoalPlanResult({
+        bot,
+        chatId: resolved.chatId,
+        runtime,
+        result: reply,
+        threadId: resolved.threadIdForSend,
+      });
+    }
   });
 
   // /goal_reject <runId>
