@@ -4,13 +4,6 @@ const buildTelegramMessageContext = vi.hoisted(() => vi.fn());
 const dispatchTelegramMessage = vi.hoisted(() => vi.fn());
 const mockStop = vi.hoisted(() => vi.fn());
 const mockStartTypingLoop = vi.hoisted(() => vi.fn(() => ({ stop: mockStop })));
-const mockProofStop = vi.hoisted(() => vi.fn());
-const mockProofUpdate = vi.hoisted(() => vi.fn().mockResolvedValue(true));
-const mockProofFinish = vi.hoisted(() => vi.fn().mockResolvedValue(true));
-const mockBeginProofOfLife = vi.hoisted(() =>
-  vi.fn(() => ({ update: mockProofUpdate, finish: mockProofFinish, stop: mockProofStop })),
-);
-const mockStartProofOfLifePulse = vi.hoisted(() => vi.fn(() => ({ stop: mockProofStop })));
 
 vi.mock("./bot-message-context.js", () => ({
   buildTelegramMessageContext,
@@ -24,11 +17,6 @@ vi.mock("./typing-loop.js", () => ({
   startTypingLoop: mockStartTypingLoop,
 }));
 
-vi.mock("./proof-of-life.js", () => ({
-  beginProofOfLife: mockBeginProofOfLife,
-  startProofOfLifePulse: mockStartProofOfLifePulse,
-}));
-
 import { createTelegramMessageProcessor } from "./bot-message.js";
 
 describe("telegram bot message processor", () => {
@@ -37,11 +25,6 @@ describe("telegram bot message processor", () => {
     dispatchTelegramMessage.mockReset();
     mockStartTypingLoop.mockClear().mockReturnValue({ stop: mockStop });
     mockStop.mockClear();
-    mockBeginProofOfLife.mockClear();
-    mockStartProofOfLifePulse.mockClear();
-    mockProofStop.mockClear();
-    mockProofUpdate.mockClear();
-    mockProofFinish.mockClear();
   });
 
   const baseDeps = {
