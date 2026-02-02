@@ -15,8 +15,11 @@ import type { MoltbotConfig } from "../config/config.js";
 import { createGoalTools } from "./goal-tools.js";
 import { formatPlanAsContext } from "./planner.js";
 import { resolveAgentSessionFile } from "./run-store.js";
-import { topologicalSort } from "./executor.js";
-import { computeCpm } from "./cpm.js";
+import {
+  computeCriticalPathScores,
+  orderStepsCriticalPathFirst,
+  type CriticalPathScores,
+} from "./plan-order.js";
 import type { GoalOutcome, GoalSession, Plan, PlanStep, TaskExecutionResult } from "./types.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
@@ -204,49 +207,57 @@ function buildGoalSummary(steps: PlanStep[]): string {
   return `${parts.join(", ")}.`;
 }
 
+function buildSuccessorMap(steps: PlanStep[]): Map<string, Set<string>> {
+  const successors = new Map<string, Set<string>>();
+  for (const step of steps) {
+    successors.set(step.id, new Set());
+  }
+  for (const step of steps) {
+    for (const dep of step.dependsOn) {
+      const list = successors.get(dep);
+      if (list) list.add(step.id);
+    }
+  }
+  return successors;
+}
+
 /**
- * Pick the next task from runnable candidates using CPM on the residual graph.
+ * Pick the next task from runnable candidates using static critical-path scores.
  *
  * Policy:
- *   1. Compute CPM on non-done steps (shallow copies to avoid mutating originals).
- *   2. If any runnable step has slack === 0 (critical path), restrict to those.
- *   3. Otherwise sort by ascending slack.
- *   4. Tie-break: lexicographic step id.
+ *   1. Prefer higher critical-path score (longer remaining path).
+ *   2. When scores tie, prefer direct successors of the last executed task.
+ *   3. Tie-break by original plan order.
  */
-function pickNextTask(runnable: PlanStep[], allSteps: PlanStep[]): PlanStep {
+function pickNextTask(
+  runnable: PlanStep[],
+  scores: CriticalPathScores,
+  orderIndex: Map<string, number>,
+  successors: Map<string, Set<string>>,
+  lastExecutedId: string | null,
+): PlanStep {
   if (runnable.length <= 1) return runnable[0]!;
 
-  // Build residual plan from non-done steps with deps pointing only to non-done steps
-  const doneIds = new Set(allSteps.filter((s) => s.status === "done").map((s) => s.id));
-  const residualSteps: PlanStep[] = allSteps
-    .filter((s) => s.status !== "done")
-    .map((s) => ({
-      ...s,
-      dependsOn: s.dependsOn.filter((depId) => !doneIds.has(depId)),
-    }));
-
-  try {
-    const cpm = computeCpm({ goal: "", summary: "", steps: residualSteps });
-    const runnableIds = new Set(runnable.map((s) => s.id));
-
-    // Separate critical (slack=0) from non-critical
-    const critical = runnable.filter((s) => runnableIds.has(s.id) && cpm.steps[s.id]?.slack === 0);
-    const candidates = critical.length > 0 ? critical : runnable;
-
-    // Sort by slack ascending, then lexicographic id
-    candidates.sort((a, b) => {
-      const slackA = cpm.steps[a.id]?.slack ?? Infinity;
-      const slackB = cpm.steps[b.id]?.slack ?? Infinity;
-      if (slackA !== slackB) return slackA - slackB;
-      return a.id.localeCompare(b.id);
-    });
-
-    return candidates[0]!;
-  } catch {
-    // If CPM fails (e.g. cycle), fall back to lexicographic
-    runnable.sort((a, b) => a.id.localeCompare(b.id));
-    return runnable[0]!;
+  let maxScore = Number.NEGATIVE_INFINITY;
+  for (const step of runnable) {
+    const score = scores.get(step.id) ?? 0;
+    if (score > maxScore) maxScore = score;
   }
+
+  let candidates = runnable.filter((step) => (scores.get(step.id) ?? 0) === maxScore);
+  if (lastExecutedId) {
+    const successorSet = successors.get(lastExecutedId);
+    if (successorSet && successorSet.size > 0) {
+      const successorCandidates = candidates.filter((step) => successorSet.has(step.id));
+      if (successorCandidates.length > 0) candidates = successorCandidates;
+    }
+  }
+
+  candidates.sort((a, b) => {
+    return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
+  });
+
+  return candidates[0]!;
 }
 
 /**
@@ -276,8 +287,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   session.state = "executing";
 
-  // Ensure steps are in dependency order
-  const orderedSteps = topologicalSort(plan.steps);
+  const scores = computeCriticalPathScores(plan.steps);
+  const orderIndex = new Map(plan.steps.map((step, idx) => [step.id, idx]));
+  const successors = buildSuccessorMap(plan.steps);
+  let lastExecutedId: string | null = null;
+  // Ensure steps are in dependency order (critical-path-first tie-break)
+  const orderedSteps = orderStepsCriticalPathFirst(plan.steps, scores);
 
   // Spam control: track which steps we've already notified as blocked
   const previouslyBlockedIds = new Set<string>();
@@ -354,8 +369,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const runnable = findRunnableTasks(orderedSteps, session.answers);
       if (runnable.length === 0) break;
 
-      // Pick task via CPM-aware selection (prefer critical path, lowest slack, lexicographic)
-      const task = pickNextTask(runnable, orderedSteps);
+      // Pick task via static critical-path scores (prefer longer path, then successor, then plan order)
+      const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
       goalTools.reset();
 
       // If resuming a previously-blocked task with an answer, prepare it
@@ -473,6 +488,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         blockedReason: task.blockedReason,
       };
       onTaskUpdate?.(result);
+      lastExecutedId = task.id;
 
       // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
       if (task.status === "blocked" && !previouslyBlockedIds.has(task.id) && onStatusChange) {

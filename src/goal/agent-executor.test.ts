@@ -809,14 +809,15 @@ describe("agent-executor", () => {
     });
 
     // -----------------------------------------------------------------------
-    // CPM-based task selection
+    // Critical-path-first task selection
     // -----------------------------------------------------------------------
 
-    it("CPM selection: picks critical-path task first (higher duration)", async () => {
-      // A(3m) and B(1m) are independent roots. A is on the critical path (slack=0).
-      const stepA = makeStep({ id: "A", description: "Long task", durationMinutes: 3 });
-      const stepB = makeStep({ id: "B", description: "Short task", durationMinutes: 1 });
-      const plan = makePlan([stepB, stepA]); // deliberately B before A
+    it("critical-path-first selection: prefers longer downstream path", async () => {
+      // A has a downstream child; B is a standalone root.
+      const stepA = makeStep({ id: "A", description: "Long root" });
+      const stepB = makeStep({ id: "B", description: "Short root" });
+      const stepC = makeStep({ id: "C", description: "Child of A", dependsOn: ["A"] });
+      const plan = makePlan([stepB, stepA, stepC]); // deliberately B before A
       const session = makeSession(plan);
 
       const taskOrder: string[] = [];
@@ -834,13 +835,13 @@ describe("agent-executor", () => {
       });
 
       expect(result.status).toBe("done");
-      // A should be picked first (on critical path, slack=0)
-      expect(taskOrder).toEqual(["A", "B"]);
+      // A should be picked first (longer remaining path), then its successor
+      expect(taskOrder).toEqual(["A", "C", "B"]);
     });
 
-    it("CPM selection: lexicographic tie-break with equal durations", async () => {
-      const stepA = makeStep({ id: "A", description: "Task A", durationMinutes: 1 });
-      const stepB = makeStep({ id: "B", description: "Task B", durationMinutes: 1 });
+    it("critical-path-first selection: tie-break by plan order", async () => {
+      const stepA = makeStep({ id: "A", description: "Task A" });
+      const stepB = makeStep({ id: "B", description: "Task B" });
       const plan = makePlan([stepB, stepA]); // deliberately B before A
       const session = makeSession(plan);
 
@@ -858,8 +859,8 @@ describe("agent-executor", () => {
         workingDir: "/tmp/ws",
       });
 
-      // Both slack=0, tie-break by lexicographic id: A before B
-      expect(taskOrder).toEqual(["A", "B"]);
+      // Equal scores, tie-break by plan order: B before A
+      expect(taskOrder).toEqual(["B", "A"]);
     });
 
     it("scheduler continues executing branch C after branch B blocks", async () => {
@@ -877,7 +878,7 @@ describe("agent-executor", () => {
           // A completes
           mockCompleteSignal = { summary: "A done" };
         } else if (promptIdx === 2) {
-          // B blocks (first runnable after A; CPM picks B or C)
+          // B blocks (first runnable after A; score-based ordering picks B or C)
           mockBlockedSignal = { question: "Need info for B" };
         } else if (promptIdx === 3) {
           // C completes

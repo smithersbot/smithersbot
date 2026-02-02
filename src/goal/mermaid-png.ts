@@ -53,6 +53,8 @@ export function renderMermaidToPng(mermaidText: string): Buffer | null {
         outputPath,
         "-b",
         MERMAID_PNG_BACKGROUND,
+        "-s",
+        "3",
         "--quiet",
         "-c",
         configPath,

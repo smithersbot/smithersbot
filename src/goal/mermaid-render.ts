@@ -1,6 +1,7 @@
 import type { CpmResult } from "./cpm.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
-import type { Plan, PlanStep } from "./types.js";
+import type { Plan } from "./types.js";
+import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
 
 /** Init directive — must precede the graph declaration. */
 const INIT_DIRECTIVE = [
@@ -18,11 +19,11 @@ const INIT_DIRECTIVE = [
 
 /** Class definitions for each execution status. */
 const CLASS_DEFS = [
-  `classDef pending fill:#2D3748,stroke:#718096,stroke-width:2px,color:#CBD5E0,stroke-dasharray: 5 5;`,
-  `classDef waiting fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF;`,
-  `classDef done fill:#3F4F3A,stroke:#84CC16,stroke-width:3px,color:#ECFCCB;`,
-  `classDef blocked fill:#450a0a,stroke:#EF4444,stroke-width:4px,color:#FECACA,stroke-dasharray: 8 4;`,
-  `classDef inprog fill:#1F2937,stroke:#A855F7,color:#E9D5FF,stroke-width:2px,rx:14,ry:14;`,
+  `classDef pending fill:#2D3748,stroke:#718096,stroke-width:2px,color:#CBD5E0,stroke-dasharray: 5 5,rx:4,ry:4;`,
+  `classDef waiting fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF,rx:4,ry:4;`,
+  `classDef done fill:#3F4F3A,stroke:#84CC16,stroke-width:3px,color:#ECFCCB,rx:4,ry:4;`,
+  `classDef blocked fill:#450a0a,stroke:#EF4444,stroke-width:4px,color:#FECACA,stroke-dasharray: 8 4,rx:4,ry:4;`,
+  `classDef inprog fill:#1F2937,stroke:#A855F7,color:#E9D5FF,stroke-width:2px,rx:4,ry:4;`,
 ].join("\n");
 
 /** Default link style applied to all edges. */
@@ -101,50 +102,6 @@ export function normalizeLabel(raw: string): string {
 }
 
 /**
- * Kahn's algorithm topological sort. Returns step IDs in dependency order.
- * Falls back to input order if the graph has cycles.
- */
-export function topologicalSort(steps: PlanStep[]): string[] {
-  const inDegree = new Map<string, number>();
-  const adj = new Map<string, string[]>();
-  for (const step of steps) {
-    inDegree.set(step.id, 0);
-    adj.set(step.id, []);
-  }
-  for (const step of steps) {
-    for (const dep of step.dependsOn) {
-      if (adj.has(dep)) {
-        adj.get(dep)!.push(step.id);
-        inDegree.set(step.id, (inDegree.get(step.id) ?? 0) + 1);
-      }
-    }
-  }
-
-  // Seed queue with roots, sorted by original position for stability
-  const idxMap = new Map(steps.map((s, i) => [s.id, i]));
-  const queue: string[] = steps.filter((s) => (inDegree.get(s.id) ?? 0) === 0).map((s) => s.id);
-
-  const result: string[] = [];
-  while (queue.length > 0) {
-    // Sort queue by original position for deterministic output
-    queue.sort((a, b) => (idxMap.get(a) ?? 0) - (idxMap.get(b) ?? 0));
-    const id = queue.shift()!;
-    result.push(id);
-    for (const next of adj.get(id) ?? []) {
-      const deg = (inDegree.get(next) ?? 1) - 1;
-      inDegree.set(next, deg);
-      if (deg === 0) queue.push(next);
-    }
-  }
-
-  // Cycle fallback: return input order
-  if (result.length !== steps.length) {
-    return steps.map((s) => s.id);
-  }
-  return result;
-}
-
-/**
  * Renders a plan as a Mermaid flowchart DAG.
  *
  * When `cpm` is provided, node labels include duration and critical-path
@@ -160,11 +117,12 @@ export function renderMermaid(
 ): string {
   const lines: string[] = [INIT_DIRECTIVE, "", "flowchart TD"];
 
-  // Compute topo-sorted numeric labels: stepId → 1-based number
-  const topoOrder = topologicalSort(plan.steps);
-  const topoNum = new Map<string, number>();
-  for (let i = 0; i < topoOrder.length; i++) {
-    topoNum.set(topoOrder[i], i + 1);
+  // Compute critical-path-first numeric labels: stepId → 1-based number
+  const scores = computeCriticalPathScores(plan.steps);
+  const order = orderStepIdsCriticalPathFirst(plan.steps, scores);
+  const orderNum = new Map<string, number>();
+  for (let i = 0; i < order.length; i++) {
+    orderNum.set(order[i], i + 1);
   }
 
   // Node declarations
@@ -172,7 +130,7 @@ export function renderMermaid(
     const status = displayStatuses?.get(step.id) ?? "pending";
     const emoji = displayStatuses ? STATUS_EMOJI[status] : "";
     const prefix = emoji ? `${emoji} ` : "";
-    const num = topoNum.get(step.id) ?? 0;
+    const num = orderNum.get(step.id) ?? 0;
     const shortDesc = normalizeLabel(step.description);
     const dur = cpm ? `<br/>~${cpm.steps[step.id].durationMinutesEffective} min` : "";
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;

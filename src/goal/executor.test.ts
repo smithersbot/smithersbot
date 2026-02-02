@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { executePlan, topologicalSort } from "./executor.js";
+import { executePlan } from "./executor.js";
+import { orderStepsCriticalPathFirst } from "./plan-order.js";
 import type { GoalLlmClient, GoalSession, Plan } from "./types.js";
 
 const mockRuntime = {
@@ -341,9 +342,9 @@ describe("executor", () => {
   });
 });
 
-describe("topologicalSort", () => {
-  it("sorts linear dependencies correctly", () => {
-    const sorted = topologicalSort([
+describe("orderStepsCriticalPathFirst", () => {
+  it("orders linear dependencies correctly", () => {
+    const sorted = orderStepsCriticalPathFirst([
       {
         id: "3",
         description: "C",
@@ -372,8 +373,8 @@ describe("topologicalSort", () => {
     expect(ids.indexOf("2")).toBeLessThan(ids.indexOf("3"));
   });
 
-  it("handles independent steps", () => {
-    const sorted = topologicalSort([
+  it("handles independent steps in plan order", () => {
+    const sorted = orderStepsCriticalPathFirst([
       {
         id: "a",
         description: "A",
@@ -391,5 +392,35 @@ describe("topologicalSort", () => {
     ]);
 
     expect(sorted).toHaveLength(2);
+    expect(sorted.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  it("prioritizes longer downstream paths over plan order", () => {
+    const sorted = orderStepsCriticalPathFirst([
+      {
+        id: "B",
+        description: "Short",
+        dependsOn: [],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+      },
+      {
+        id: "A",
+        description: "Long root",
+        dependsOn: [],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+      },
+      {
+        id: "C",
+        description: "Child of A",
+        dependsOn: ["A"],
+        tool: { name: "mkdir", args: {} },
+        status: "pending",
+      },
+    ]);
+
+    const ids = sorted.map((s) => s.id);
+    expect(ids).toEqual(["A", "C", "B"]);
   });
 });

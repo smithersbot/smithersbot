@@ -9,6 +9,7 @@ import type {
   StepResult,
 } from "./types.js";
 import { executeTool } from "./tools.js";
+import { computeCriticalPathScores, orderStepsCriticalPathFirst } from "./plan-order.js";
 
 export async function executePlan(params: {
   session: GoalSession;
@@ -23,7 +24,8 @@ export async function executePlan(params: {
   if (!plan) throw new Error("No plan to execute");
 
   session.state = "executing";
-  const order = topologicalSort(plan.steps);
+  const scores = computeCriticalPathScores(plan.steps);
+  const order = orderStepsCriticalPathFirst(plan.steps, scores);
 
   for (const step of order) {
     // Skip steps already completed or blocked (resume scenario)
@@ -125,45 +127,6 @@ export async function executePlan(params: {
 
   session.state = "done";
   return { status: "done", summary: buildDoneSummary(session) };
-}
-
-/**
- * Topological sort using Kahn's algorithm. Returns steps in
- * dependency-respecting execution order.
- */
-export function topologicalSort(steps: PlanStep[]): PlanStep[] {
-  const stepMap = new Map(steps.map((s) => [s.id, s]));
-  const inDegree = new Map<string, number>();
-  const adjacency = new Map<string, string[]>();
-
-  for (const step of steps) {
-    inDegree.set(step.id, step.dependsOn.length);
-    for (const dep of step.dependsOn) {
-      const children = adjacency.get(dep) ?? [];
-      children.push(step.id);
-      adjacency.set(dep, children);
-    }
-  }
-
-  const queue: string[] = [];
-  for (const step of steps) {
-    if ((inDegree.get(step.id) ?? 0) === 0) queue.push(step.id);
-  }
-
-  const result: PlanStep[] = [];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    const step = stepMap.get(current);
-    if (step) result.push(step);
-
-    for (const child of adjacency.get(current) ?? []) {
-      const newDeg = (inDegree.get(child) ?? 1) - 1;
-      inDegree.set(child, newDeg);
-      if (newDeg === 0) queue.push(child);
-    }
-  }
-
-  return result;
 }
 
 const ASSESS_SYSTEM_PROMPT = `You are evaluating whether a step failure blocks the overall goal.

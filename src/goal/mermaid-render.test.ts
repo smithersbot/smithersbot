@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { computeCpm } from "./cpm.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
-import { normalizeLabel, renderMermaid, topologicalSort } from "./mermaid-render.js";
+import { normalizeLabel, renderMermaid } from "./mermaid-render.js";
+import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
 import type { Plan, PlanStep } from "./types.js";
 
 function makePlan(steps: Plan["steps"]): Plan {
@@ -95,19 +96,19 @@ describe("normalizeLabel", () => {
   });
 });
 
-describe("topologicalSort", () => {
+describe("orderStepIdsCriticalPathFirst", () => {
   it("sorts a linear chain", () => {
     const steps = [
       step({ id: "1" }),
       step({ id: "2", dependsOn: ["1"] }),
       step({ id: "3", dependsOn: ["2"] }),
     ];
-    expect(topologicalSort(steps)).toEqual(["1", "2", "3"]);
+    expect(orderStepIdsCriticalPathFirst(steps)).toEqual(["1", "2", "3"]);
   });
 
   it("handles independent roots in input order", () => {
     const steps = [step({ id: "a" }), step({ id: "b" }), step({ id: "c" })];
-    expect(topologicalSort(steps)).toEqual(["a", "b", "c"]);
+    expect(orderStepIdsCriticalPathFirst(steps)).toEqual(["a", "b", "c"]);
   });
 
   it("handles diamond graph", () => {
@@ -117,7 +118,7 @@ describe("topologicalSort", () => {
       step({ id: "C", dependsOn: ["A"] }),
       step({ id: "D", dependsOn: ["B", "C"] }),
     ];
-    expect(topologicalSort(steps)).toEqual(["A", "B", "C", "D"]);
+    expect(orderStepIdsCriticalPathFirst(steps)).toEqual(["A", "B", "C", "D"]);
   });
 
   it("produces correct numbering with out-of-order input", () => {
@@ -128,7 +129,7 @@ describe("topologicalSort", () => {
       step({ id: "A" }),
       step({ id: "C", dependsOn: ["A"] }),
     ];
-    const sorted = topologicalSort(steps);
+    const sorted = orderStepIdsCriticalPathFirst(steps);
     // A must come first; B and C after A; D last
     expect(sorted.indexOf("A")).toBe(0);
     expect(sorted.indexOf("D")).toBe(3);
@@ -136,7 +137,14 @@ describe("topologicalSort", () => {
     expect(sorted.indexOf("C")).toBeLessThan(sorted.indexOf("D"));
   });
 
-  it("emits labels 1., 2., 3. in topo order for out-of-order input", () => {
+  it("prioritizes longer downstream paths over plan order", () => {
+    const steps = [step({ id: "B" }), step({ id: "A" }), step({ id: "C", dependsOn: ["A"] })];
+    const scores = computeCriticalPathScores(steps);
+    const sorted = orderStepIdsCriticalPathFirst(steps, scores);
+    expect(sorted).toEqual(["A", "C", "B"]);
+  });
+
+  it("emits labels 1., 2., 3. in critical-path order for out-of-order input", () => {
     const plan = makePlan([
       step({ id: "C", dependsOn: ["B"], description: "Third" }),
       step({ id: "A", description: "First" }),
@@ -403,11 +411,7 @@ describe("renderMermaid", () => {
 
   describe("execution status styling", () => {
     // A(done, no deps), B(blocked, deps:A), C(pending, no deps), D(in_progress, no deps)
-    // Topo order: A=1, B=4 (deps:A, processed after all roots), C=2, D=3
-    // Wait — let me trace through: roots sorted by index = A(0), C(2), D(3).
-    // Process A → B's in-degree drops to 0, queued. Queue now: [C, D, B].
-    // Sort by original index: B(idx=1), C(idx=2), D(idx=3) → process B first.
-    // So topo: A=1, B=2, C=3, D=4.
+    // Critical-path-first order: A=1, then B, C, D by plan order.
     const statusPlan = makePlan([
       {
         id: "A",
@@ -541,7 +545,7 @@ describe("renderMermaid", () => {
     });
   });
 
-  it("uses topo-sorted numbering even with out-of-order step IDs", () => {
+  it("uses critical-path-first numbering even with out-of-order step IDs", () => {
     // Steps in reverse order in the array, but deps create: Z→Y→X
     const plan = makePlan([
       {
@@ -567,7 +571,7 @@ describe("renderMermaid", () => {
       },
     ]);
     const out = renderMermaid(plan);
-    // Z should be #1 (root), Y #2, X #3 in topo order
+    // Z should be #1 (root), Y #2, X #3 in dependency order
     expect(out).toContain('Z["1. First task"]');
     expect(out).toContain('Y["2. Middle task"]');
     expect(out).toContain('X["3. Last task"]');
