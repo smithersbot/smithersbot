@@ -108,6 +108,50 @@ describe("run-store", () => {
     expect(runs[0]!.completedSteps).toBe(1);
   });
 
+  it("listRuns computes completedSteps from step statuses (not stepResults)", () => {
+    saveRun(
+      {
+        ...sampleRun,
+        runId: "status-progress-run",
+        plan: {
+          goal: "Test",
+          summary: "Progress test",
+          steps: [
+            {
+              id: "1",
+              description: "Done step",
+              dependsOn: [],
+              tool: { name: "mkdir", args: { path: "a" } },
+              status: "done",
+            },
+            {
+              id: "2",
+              description: "Also done",
+              dependsOn: [],
+              tool: { name: "mkdir", args: { path: "b" } },
+              status: "done",
+            },
+            {
+              id: "3",
+              description: "Still pending",
+              dependsOn: ["1", "2"],
+              tool: { name: "mkdir", args: { path: "c" } },
+              status: "pending",
+            },
+          ],
+        },
+        // stepResults is empty — agent executor doesn't populate it
+        stepResults: {},
+      },
+      tmpDir,
+    );
+    const runs = listRuns(tmpDir);
+    const run = runs.find((r) => r.runId === "status-progress-run");
+    expect(run).toBeDefined();
+    expect(run!.stepCount).toBe(3);
+    expect(run!.completedSteps).toBe(2);
+  });
+
   it("deleteRun removes the run directory", () => {
     saveRun(sampleRun, tmpDir);
     expect(deleteRun("test-run-123", tmpDir)).toBe(true);

@@ -193,8 +193,8 @@ describe("formatPlanOutput", () => {
 
     it("mermaid diagram includes duration labels when present", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "md" });
-      expect(out).toContain("[1m]");
-      expect(out).toContain("classDef critical stroke-width:3px;");
+      expect(out).toContain("~1 min");
+      expect(out).toContain("linkStyle");
     });
   });
 
@@ -285,7 +285,7 @@ describe("formatPlanOutput", () => {
     it("JSON mermaid diagram contains duration labels", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "json" });
       const parsed = JSON.parse(out);
-      expect(parsed.diagrams.mermaid).toContain("[1m]");
+      expect(parsed.diagrams.mermaid).toContain("~1 min");
     });
   });
 });

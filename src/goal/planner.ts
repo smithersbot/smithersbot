@@ -12,6 +12,7 @@ const VALID_TOOLS: Set<string> = new Set<string>([
   "git_add",
   "npm_init",
   "shell_exec",
+  "request_user_input",
 ]);
 
 const SHELL_READ_ONLY_ALLOWLIST: readonly string[] = [
@@ -24,7 +25,7 @@ const SHELL_READ_ONLY_ALLOWLIST: readonly string[] = [
 
 const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, generate a structured execution plan as JSON.
 
-Each step must use exactly one tool from: file_read, file_write, file_modify, mkdir, git_add, npm_init, shell_exec.
+Each step must use exactly one tool from: file_read, file_write, file_modify, mkdir, git_add, npm_init, shell_exec, request_user_input.
 
 Tool argument schemas:
 - file_read: { "path": "<relative-path>" }
@@ -35,6 +36,10 @@ Tool argument schemas:
 - npm_init: { "directory": "<relative-path>" }
 - shell_exec: { "command": "<read-only-command>" }
   Allowed shell_exec commands (read-only): ls, cat, git status, git diff, git log
+- request_user_input: { "question": "<exact question to ask the user>" }
+  Use this when a step must pause and wait for the user's answer before continuing.
+  NEVER use shell_exec with echo/printf/read to interact with the user.
+  NEVER use shell_exec for any kind of user prompting or printing messages.
 
 All file paths are relative to the workspace root.
 
@@ -176,6 +181,14 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       );
       if (!allowed) {
         throw new Error(`Step ${id}: shell_exec command not in read-only allowlist: "${cmd}"`);
+      }
+    }
+
+    // Validate request_user_input requires a question string
+    if (tool.name === "request_user_input") {
+      const args = (tool.args ?? {}) as Record<string, string>;
+      if (!args.question || typeof args.question !== "string") {
+        throw new Error(`Step ${id}: request_user_input requires a "question" argument`);
       }
     }
 

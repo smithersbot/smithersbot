@@ -1,5 +1,7 @@
+import { lstatSync, rmSync } from "node:fs";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { resolveSafePath } from "./tools.js";
 
 /** Signal emitted by goal-specific tools during agent execution. */
 export type GoalToolSignal =
@@ -12,8 +14,11 @@ export type GoalToolSignal =
  * Returns tool definitions plus a signal getter and reset function.
  * The executor checks `getSignal()` after each `session.prompt()` call
  * to determine whether the agent marked the task complete or needs user input.
+ *
+ * When `workingDir` is provided, includes the `delete_path` tool for safe
+ * filesystem deletion within the workspace.
  */
-export function createGoalTools(): {
+export function createGoalTools(workingDir?: string): {
   tools: ToolDefinition[];
   getSignal: () => GoalToolSignal | null;
   reset: () => void;
@@ -85,8 +90,74 @@ export function createGoalTools(): {
     },
   };
 
+  const tools: ToolDefinition[] = [markTaskComplete, requestUserInput];
+
+  // delete_path: safe filesystem deletion within the workspace
+  if (workingDir) {
+    const deletePath: ToolDefinition = {
+      name: "delete_path",
+      label: "Delete Path",
+      description:
+        "Delete a file or directory within the workspace. " +
+        "Use recursive: true for directories. Symlinks are refused for safety.",
+      parameters: Type.Object({
+        path: Type.String({ description: "Relative path within the workspace to delete" }),
+        recursive: Type.Optional(
+          Type.Boolean({ description: "Set true to delete directories recursively" }),
+        ),
+      }),
+      async execute(_toolCallId: string, params: { path: string; recursive?: boolean }) {
+        try {
+          const resolved = resolveSafePath(params.path, workingDir);
+
+          // Refuse workspace root
+          if (resolved === workingDir) {
+            return {
+              content: [{ type: "text", text: "Error: cannot delete the workspace root." }],
+              details: {},
+            };
+          }
+
+          // Refuse symlinks
+          let stat;
+          try {
+            stat = lstatSync(resolved);
+          } catch {
+            return {
+              content: [{ type: "text", text: `Error: path does not exist: ${params.path}` }],
+              details: {},
+            };
+          }
+          if (stat.isSymbolicLink()) {
+            return {
+              content: [{ type: "text", text: "Error: refusing to delete symlink for safety." }],
+              details: {},
+            };
+          }
+
+          rmSync(resolved, { recursive: Boolean(params.recursive), force: true });
+          return {
+            content: [{ type: "text", text: `Deleted: ${params.path}` }],
+            details: {},
+          };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            details: {},
+          };
+        }
+      },
+    };
+    tools.push(deletePath);
+  }
+
   return {
-    tools: [markTaskComplete, requestUserInput],
+    tools,
     // Blocked always takes precedence over complete.
     getSignal: () => {
       if (blockedSignal) {

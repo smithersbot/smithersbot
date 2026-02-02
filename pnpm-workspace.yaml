@@ -11,4 +11,5 @@ onlyBuiltDependencies:
   - authenticate-pam
   - esbuild
   - protobufjs
+  - puppeteer
   - sharp

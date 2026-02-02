@@ -17,6 +17,11 @@ async function catchJsonExit(fn: () => Promise<unknown>): Promise<void> {
 
 let testGoalsDir: string;
 
+// Mock goal-resume so goalAnswerCommand's auto-resume doesn't invoke the real agent executor
+vi.mock("./goal-resume.js", () => ({
+  goalResumeCommand: vi.fn(async () => ({ status: "done", summary: "Done." })),
+}));
+
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
   return {
@@ -100,7 +105,9 @@ describe("goal-answer command", () => {
     expect(run!.state).toBe("executing");
     expect(rt.logs.join("\n")).toContain('Answer saved for key "db_password"');
     expect(rt.logs.join("\n")).toContain("Warning:");
-    expect(rt.logs.join("\n")).toContain("Resume:");
+    // Auto-resume is called (mocked goalResumeCommand)
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    expect(goalResumeCommand).toHaveBeenCalled();
   });
 
   it("rejects mismatched key", async () => {
@@ -121,11 +128,11 @@ describe("goal-answer command", () => {
     const rt = mockRuntime();
     await goalAnswerCommand("answer-test-run", { key: "db_password", value: "val" }, rt);
 
-    expect(rt.errors.join("\n")).toContain("Run is not blocked");
+    expect(rt.errors.join("\n")).toContain("Run is not awaiting input");
   });
 
   it("JSON mode outputs strict JSON with answered status", async () => {
-    saveRun(makeBlockedRun());
+    saveRun(makeBlockedRun({ state: "needs_clarification" }));
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const rt = mockRuntime();
     await goalAnswerCommand(
@@ -153,7 +160,7 @@ describe("goal-answer command", () => {
     const raw = rt.logs.join("");
     expect(raw.trimStart()[0]).toBe("{");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    expect(parsed.error).toContain("not blocked");
+    expect(parsed.error).toContain("not awaiting input");
   });
 
   it("unknown run ID returns error", async () => {

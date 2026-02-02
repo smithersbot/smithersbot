@@ -1,4 +1,5 @@
 import { JsonExitError } from "../cli/cli-utils.js";
+import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { GoalOutcome, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -9,6 +10,8 @@ export type GoalAnswerOptions = {
   value: string;
   json?: boolean;
   output?: OutputFormat;
+  quiet?: boolean;
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
 };
 
 /** Resolve whether JSON mode is active: --output wins over --json. */
@@ -95,7 +98,13 @@ export async function goalAnswerCommand(
     if (!isJson) runtime.log("");
     const outcome = await goalResumeCommand(
       resolvedId,
-      { yes: true, json: isJson, output: opts.output },
+      {
+        yes: true,
+        json: isJson,
+        output: opts.output,
+        quiet: opts.quiet,
+        onStatusChange: opts.onStatusChange,
+      },
       runtime,
     );
     return outcome;

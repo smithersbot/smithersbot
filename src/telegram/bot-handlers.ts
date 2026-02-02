@@ -25,6 +25,7 @@ import {
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import {
+  buildOnStatusChange,
   handleGoalAnswer,
   handleGoalEdit,
   handleGoalList,
@@ -233,6 +234,7 @@ export async function handleTelegramGoalRouting(params: {
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
     const result = await params.runHandlers.answer(route.runId, params.messageText);
+    if (result == null) return true;
     if (typeof result === "string") {
       await params.sendReply(result);
     } else {
@@ -478,15 +480,23 @@ export const registerTelegramHandlers = ({
             label: "goal-router:edit",
             fn: () => handleGoalEdit(runId, text),
           }),
-        answer: (runId, text) =>
-          withChatAction({
+        answer: (runId, text) => {
+          const statusCb = buildOnStatusChange({
+            bot,
+            chatId,
+            threadId: params.threadId,
+            runtime,
+            runId,
+          });
+          return withChatAction({
             bot,
             chatId,
             action: "typing",
             threadId: params.threadId,
             label: "goal-router:answer",
-            fn: () => handleGoalAnswer(runId, text),
-          }),
+            fn: () => handleGoalAnswer(runId, text, statusCb),
+          });
+        },
       },
     });
   }

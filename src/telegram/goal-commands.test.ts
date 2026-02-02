@@ -155,7 +155,7 @@ describe("goal-commands telegram adapter", () => {
       const callArgs = mockGoalCommand.mock.calls[0][0];
       expect(callArgs.goal).toBe("Build a website");
       expect(callArgs.planOnly).toBe(true);
-      expect(callArgs.diagram).toBe("mermaid");
+      expect(callArgs.diagram).toBe("none");
       expect(callArgs.runId).toBeDefined();
 
       expect(result.text).toContain("## Plan");
@@ -207,11 +207,10 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Run not found");
     });
 
-    it("executes an approved run", async () => {
+    it("executes an approved run and returns short ack (quiet mode)", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log("DONE: All steps completed.");
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "done", summary: "All steps completed." };
         },
       );
@@ -220,26 +219,28 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalApprove("test-run");
 
       expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand.mock.calls[0][1]).toEqual({ yes: true });
-      expect(result).toContain("DONE");
+      const opts = mockGoalResumeCommand.mock.calls[0][1] as Record<string, unknown>;
+      expect(opts.yes).toBe(true);
+      expect(opts.quiet).toBe(true);
+      // Returns short ack, not transcript
+      expect(result).toContain("Executing:");
+      expect(result).toContain("test-run");
     });
 
-    it("returns GoalPlanResult when execution is blocked", async () => {
+    it("returns short ack when execution is blocked (onStatusChange handles DAG)", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log("BLOCKED: Need credentials");
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "blocked", question: "Need credentials", requiredInputKey: "creds" };
         },
       );
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
-      expect(typeof result).not.toBe("string");
-      expect(result).toHaveProperty("text");
-      expect(result).toHaveProperty("blocked", true);
-      expect(result).toHaveProperty("runId", "test-run-id-1234");
-      expect((result as { text: string }).text).toContain("/goal_answer");
+      // Returns short ack string, not GoalPlanResult
+      expect(typeof result).toBe("string");
+      expect(result).toContain("Executing:");
+      expect(result).toContain("notify you if input is needed");
     });
 
     it("returns no-op for already done run", async () => {
@@ -267,6 +268,27 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalApprove("test-run");
       expect(result).toContain("rejected");
       expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+    });
+
+    it("returns undefined when onStatusChange is provided (no stray message)", async () => {
+      saveRun(makeRun());
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalApprove("test-run", statusCb);
+
+      expect(result).toBeUndefined();
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      const opts = mockGoalResumeCommand.mock.calls[0][1] as Record<string, unknown>;
+      expect(opts.onStatusChange).toBe(statusCb);
+    });
+
+    it("still returns error strings even when onStatusChange is provided", async () => {
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalApprove("nonexistent", statusCb);
+      expect(result).toContain("Run not found");
     });
   });
 
@@ -342,7 +364,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Usage:");
     });
 
-    it("auto-resolves key and calls goalAnswerCommand", async () => {
+    it("auto-resolves key, passes quiet:true, and returns short ack", async () => {
       saveRun(
         makeRun({
           state: "blocked",
@@ -351,9 +373,7 @@ describe("goal-commands telegram adapter", () => {
       );
 
       mockGoalAnswerCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log('Answer saved for key "db_password".');
-          runtime.log("DONE: All steps completed.");
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "done", summary: "All steps completed." };
         },
       );
@@ -366,10 +386,10 @@ describe("goal-commands telegram adapter", () => {
       expect(id).toBe("test-run-id-1234");
       expect(opts.key).toBe("db_password");
       expect(opts.value).toBe("s3cret");
-      // Auto-resumes now — no /goal_approve suggestion
+      expect(opts.quiet).toBe(true);
+      // Returns short ack, not captured logs
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Answer saved");
-      expect(text).not.toContain("/goal_approve");
+      expect(text).toContain("Resuming:");
     });
 
     it("returns error for non-blocked run", async () => {
@@ -386,7 +406,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Run not found");
     });
 
-    it("auto-resumes execution after answering a blocked run", async () => {
+    it("auto-resumes execution after answering a blocked run (short ack)", async () => {
       saveRun(
         makeRun({
           state: "blocked",
@@ -394,11 +414,8 @@ describe("goal-commands telegram adapter", () => {
         }),
       );
 
-      // goalAnswerCommand now auto-resumes via goalResumeCommand
       mockGoalAnswerCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log('Answer saved for key "task:1:input".');
-          runtime.log("DONE: All steps completed.");
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "done", summary: "All steps completed." };
         },
       );
@@ -407,15 +424,12 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "s3cret");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      // Should NOT contain /goal_approve suggestion
-      expect(typeof result === "string" ? result : (result as { text: string }).text).not.toContain(
-        "/goal_approve",
-      );
-      // Should contain execution output
-      expect(typeof result === "string" ? result : "").toContain("DONE");
+      const text = typeof result === "string" ? result : (result as { text: string }).text;
+      expect(text).toContain("Resuming:");
+      expect(text).not.toContain("/goal_approve");
     });
 
-    it("returns GoalPlanResult when auto-resume results in blocked again", async () => {
+    it("returns short ack when auto-resume results in blocked again", async () => {
       saveRun(
         makeRun({
           state: "blocked",
@@ -424,8 +438,7 @@ describe("goal-commands telegram adapter", () => {
       );
 
       mockGoalAnswerCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
-          runtime.log("BLOCKED: Need more info");
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return {
             status: "blocked",
             question: "Need more info",
@@ -437,10 +450,9 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "s3cret");
 
-      expect(typeof result).not.toBe("string");
-      expect(result).toHaveProperty("blocked", true);
-      expect(result).toHaveProperty("runId", "test-run-id-1234");
-      expect((result as { text: string }).text).toContain("/goal_answer");
+      // Returns short ack string (onStatusChange handles DAG PNGs)
+      expect(typeof result).toBe("string");
+      expect(result).toContain("Resuming:");
     });
 
     it("returns GoalPlanResult with runId and blocked when still needs clarification", async () => {
@@ -468,6 +480,32 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toHaveProperty("text");
       expect((result as { text: string }).text).toContain("Still need more info");
       expect((result as { text: string }).text).toContain("PostgreSQL or MySQL?");
+    });
+
+    it("returns undefined when onStatusChange is provided (blocked path, no stray message)", async () => {
+      saveRun(
+        makeRun({
+          state: "blocked",
+          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+        }),
+      );
+      mockGoalAnswerCommand.mockResolvedValue({ status: "done", summary: "All done." });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalAnswer("test-run", "s3cret", statusCb);
+
+      expect(result).toBeUndefined();
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
+      expect(opts.onStatusChange).toBe(statusCb);
+    });
+
+    it("still returns error strings even when onStatusChange is provided (answer path)", async () => {
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalAnswer("nonexistent", "val", statusCb);
+      expect(result).toContain("Run not found");
     });
   });
 

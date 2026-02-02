@@ -1,6 +1,8 @@
-import type { Bot, Context } from "grammy";
+import { InputFile, type Bot, type Context } from "grammy";
+import type { InlineKeyboardMarkup } from "grammy/types";
 
 import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { warn } from "../globals.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
@@ -14,9 +16,14 @@ import type {
   TelegramGroupConfig,
   TelegramTopicConfig,
 } from "../config/types.js";
+import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { computeCpm } from "../goal/cpm.js";
 import { formatGoalError } from "../goal/errors.js";
+import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
+import { renderMermaid } from "../goal/mermaid-render.js";
+import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import {
   generatePlan,
   generatePlanRevision,
@@ -24,7 +31,7 @@ import {
   persistRawPlanResponse,
 } from "../goal/planner.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
-import type { SerializedRun } from "../goal/types.js";
+import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks } from "./format.js";
@@ -87,6 +94,8 @@ export type GoalPlanResult = {
   runId?: string;
   revision?: number;
   blocked?: boolean;
+  /** Plan object for PNG rendering (when available, sendGoalPlanResult renders a DAG photo). */
+  plan?: Plan;
 };
 
 // ---------------------------------------------------------------------------
@@ -204,7 +213,7 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
         goal: text.trim(),
         planOnly: true,
         runId,
-        diagram: "mermaid",
+        diagram: "none",
       },
       cap.runtime,
     );
@@ -221,9 +230,15 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
       return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
     }
 
-    // Successful plan
+    // Successful plan — load plan for PNG rendering in sendGoalPlanResult
+    const savedRun = loadRun(runId);
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
-    return { text: parts.join("\n") || "No plan output.", runId, revision: 1 };
+    return {
+      text: parts.join("\n") || "No plan output.",
+      runId,
+      revision: 1,
+      plan: savedRun?.plan ?? undefined,
+    };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       const logs = cap.getLogs();
@@ -235,7 +250,10 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
 }
 
 /** /goal_approve <runId> -- approve and execute a plan (idempotent). */
-export async function handleGoalApprove(rawId: string): Promise<string | GoalPlanResult> {
+export async function handleGoalApprove(
+  rawId: string,
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+): Promise<string | GoalPlanResult | undefined> {
   if (!rawId.trim()) {
     return "Usage: /goal_approve <runId>";
   }
@@ -253,32 +271,32 @@ export async function handleGoalApprove(rawId: string): Promise<string | GoalPla
     return "Run was rejected. Start a new /goal.";
   }
 
+  const prefix = resolvedId.slice(0, 8);
+  const stepCount = run.plan?.steps?.length ?? 0;
   const cap = createCaptureRuntime();
   try {
-    const outcome = await goalResumeCommand(resolvedId, { yes: true }, cap.runtime);
+    const outcome = await goalResumeCommand(
+      resolvedId,
+      { yes: true, quiet: true, onStatusChange },
+      cap.runtime,
+    );
 
-    const logs = cap.getLogs();
     const errors = cap.getErrors();
-    const parts: string[] = [];
+    if (errors) return errors;
 
-    if (logs) parts.push(logs);
-    if (errors) parts.push(errors);
+    // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
+    // return undefined so callers don't send a stray message after the notifications.
+    if (onStatusChange) return undefined;
 
     if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
-      parts.push(`\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`);
-      return {
-        text: parts.join("\n") || "More information needed.",
-        runId: resolvedId,
-        blocked: true,
-      };
+      return `Executing: ${prefix} (0/${stepCount}). I'll notify you if input is needed.`;
     }
 
-    return parts.join("\n") || "Execution complete.";
+    return `Executing: ${prefix} (0/${stepCount}). I'll notify you if input is needed.`;
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-      const logs = cap.getLogs();
       const errors = cap.getErrors();
-      return errors || logs || "Approve command failed.";
+      return errors || "Approve command failed.";
     }
     return formatGoalError(err);
   }
@@ -335,7 +353,8 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
 export async function handleGoalAnswer(
   rawId: string,
   value: string,
-): Promise<GoalPlanResult | string> {
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+): Promise<GoalPlanResult | string | undefined> {
   if (!rawId.trim() || !value) {
     return "Usage: /goal_answer <runId> <value>";
   }
@@ -389,9 +408,14 @@ export async function handleGoalAnswer(
       run.updatedAt = new Date().toISOString();
       saveRun(run);
 
-      const planText = formatPlanOutput(planResult, { diagram: "mermaid", format: "md" });
+      const planText = formatPlanOutput(planResult, { diagram: "none", format: "md" });
       const parts: string[] = [planText, `\nRun ID: \`${resolvedId.slice(0, 8)}\``];
-      return { text: parts.join("\n"), runId: resolvedId, revision: run.planRevision };
+      return {
+        text: parts.join("\n"),
+        runId: resolvedId,
+        revision: run.planRevision,
+        plan: planResult,
+      };
     } catch (err) {
       if (err instanceof PlanParseError) {
         persistRawPlanResponse(resolvedId, err.rawResponse);
@@ -402,29 +426,30 @@ export async function handleGoalAnswer(
 
   // blocked (execution-time): save answer and auto-resume execution
   const key = run.blocked.requiredInputKey;
+  const prefix = resolvedId.slice(0, 8);
   const cap = createCaptureRuntime();
   try {
-    const outcome = await goalAnswerCommand(resolvedId, { key, value }, cap.runtime);
-    const logs = cap.getLogs();
-    const errors = cap.getErrors();
-    const parts: string[] = [];
+    const outcome = await goalAnswerCommand(
+      resolvedId,
+      { key, value, quiet: true, onStatusChange },
+      cap.runtime,
+    );
 
-    if (logs) parts.push(logs);
-    if (errors) parts.push(errors);
+    const errors = cap.getErrors();
+    if (errors) return errors;
+
+    // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
+    // return undefined so callers don't send a stray message after the notifications.
+    if (onStatusChange) return undefined;
 
     if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
-      parts.push(`\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`);
-      return {
-        text: parts.join("\n") || "More information needed.",
-        runId: resolvedId,
-        blocked: true,
-      };
+      return `Resuming: ${prefix}...`;
     }
 
-    return parts.join("\n") || "Execution complete.";
+    return `Resuming: ${prefix}...`;
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-      return cap.getErrors() || cap.getLogs() || "Answer command failed.";
+      return cap.getErrors() || "Answer command failed.";
     }
     return formatGoalError(err);
   }
@@ -502,13 +527,13 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
     run.updatedAt = new Date().toISOString();
     saveRun(run);
 
-    const planText = formatPlanOutput(result, { diagram: "mermaid", format: "md" });
+    const planText = formatPlanOutput(result, { diagram: "none", format: "md" });
     const parts: string[] = [];
     parts.push(`**Revision ${newRevision}**\n`);
     parts.push(planText);
     parts.push(`\nRun ID: \`${resolvedId.slice(0, 8)}\``);
 
-    return { text: parts.join("\n"), runId: resolvedId, revision: newRevision };
+    return { text: parts.join("\n"), runId: resolvedId, revision: newRevision, plan: result };
   } catch (err) {
     if (err instanceof PlanParseError) {
       persistRawPlanResponse(resolvedId, err.rawResponse);
@@ -665,12 +690,56 @@ export async function sendGoalPlanResult(params: {
 }): Promise<void> {
   const { bot, chatId, runtime, result, threadId } = params;
   if (result.runId && result.revision) {
+    const runIdPrefix = result.runId.slice(0, 8);
+    const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);
+
+    // Try to send plan DAG as a single PNG photo with inline keyboard
+    if (result.plan) {
+      const pngId = await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        plan: result.plan,
+        steps: result.plan.steps,
+        caption: `Plan: ${result.plan.summary}`,
+        replyMarkup,
+      });
+      if (pngId != null) {
+        // Single-message success: photo with keyboard is the plan message
+        persistTelegramPlanMessage({ runId: result.runId, chatId, messageId: pngId, threadId });
+        if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+          warn(
+            `telegram-goal: plan sent as single photo messageId=${pngId} (sendGoalPlanMessage skipped)`,
+          );
+        }
+        return;
+      }
+    }
+
+    // PNG failed — fall back to text message with Mermaid code block
+    let markdown = result.text;
+    if (result.plan) {
+      let cpm: ReturnType<typeof computeCpm> | undefined;
+      try {
+        cpm = computeCpm(result.plan);
+      } catch {
+        /* non-critical */
+      }
+      const mermaidText = renderMermaid(result.plan, cpm);
+      markdown += `\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
+    }
+
+    if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+      warn("telegram-goal: PNG failed, falling back to sendGoalPlanMessage text");
+    }
+
     const sentId = await sendGoalPlanMessage({
       bot,
       chatId,
-      markdown: result.text,
+      markdown,
       runtime,
-      runIdPrefix: result.runId.slice(0, 8),
+      runIdPrefix,
       revision: result.revision,
       threadId,
     });
@@ -698,6 +767,138 @@ export async function sendGoalPlanResult(params: {
   } else {
     await sendGoalReply(bot, chatId, result.text, runtime, threadId);
   }
+}
+
+// ---------------------------------------------------------------------------
+// DAG PNG delivery (status-coloured Mermaid diagram via Telegram photo)
+// ---------------------------------------------------------------------------
+
+async function sendDagPng(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  runtime: RuntimeEnv;
+  plan: Plan;
+  steps: PlanStep[];
+  caption: string;
+  replyMarkup?: InlineKeyboardMarkup;
+}): Promise<number | undefined> {
+  const { bot, chatId, threadId, runtime, plan, steps, caption, replyMarkup } = params;
+  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+
+  const displayStatuses = computeDisplayStatuses(steps);
+  let cpm: ReturnType<typeof computeCpm> | undefined;
+  try {
+    cpm = computeCpm(plan);
+  } catch {
+    // CPM not critical for visual output
+  }
+  const mermaidText = renderMermaid(plan, cpm, displayStatuses);
+  const pngBuffer = renderMermaidToPng(mermaidText);
+
+  if (pngBuffer) {
+    try {
+      const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
+        caption,
+        ...threadParams,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      });
+      if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+        warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
+      }
+      return sent.message_id;
+    } catch {
+      // Fall through to text fallback
+    }
+  }
+
+  // Fallback: send Mermaid code block as text
+  return await sendGoalReply(
+    bot,
+    chatId,
+    `${caption}\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``,
+    runtime,
+    threadId,
+  );
+}
+
+/** Build an onStatusChange callback wired to a specific Telegram chat. */
+export function buildOnStatusChange(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  runtime: RuntimeEnv;
+  runId: string;
+}): (event: GoalStatusChangeEvent) => Promise<void> {
+  const { bot, chatId, threadId, runtime, runId } = params;
+  const prefix = runId.slice(0, 8);
+  return async (event: GoalStatusChangeEvent) => {
+    const run = loadRun(runId);
+    const plan = run?.plan;
+    if (!plan) return;
+
+    if (event.type === "step_blocked") {
+      const caption = [
+        `BLOCKED (${prefix}): Step ${event.stepId} needs input`,
+        "",
+        event.question,
+        "",
+        `Next: /goal_answer ${prefix} <your answer>`,
+      ].join("\n");
+      const sentId = await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        plan,
+        steps: event.steps,
+        caption,
+      });
+      // Persist the photo message ID so reply-to routing works
+      if (sentId != null) {
+        persistTelegramQuestionMessage({
+          runId,
+          chatId,
+          messageId: sentId,
+          threadId,
+          requiredInputKey: `task:${event.stepId}:input`,
+        });
+      }
+    } else if (event.type === "fully_blocked") {
+      const lines: string[] = [
+        `FULLY BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
+      ];
+      const blocked = event.steps.filter((s) => s.status === "blocked");
+      if (blocked.length > 0) {
+        lines.push("");
+        for (const s of blocked.slice(0, 3)) {
+          lines.push(`• Step ${s.id}: ${s.blockedQuestion ?? s.blockedReason ?? "needs input"}`);
+        }
+        if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
+      }
+      lines.push("");
+      lines.push(`Next: /goal_answer ${prefix} <answer>`);
+      await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        plan,
+        steps: event.steps,
+        caption: lines.join("\n"),
+      });
+    } else if (event.type === "all_done") {
+      await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        plan,
+        steps: event.steps,
+        caption: `DONE (${prefix}): ${event.summary}`,
+      });
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -809,13 +1010,15 @@ export function registerTelegramGoalCommands({
     }
 
     if (action === "ga" || action === "gA") {
+      const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
       const reply = await withPlanningFeedback({
         bot,
         chatId,
         threadId,
         label: "callback:approve",
-        fn: () => handleGoalApprove(resolvedId),
+        fn: () => handleGoalApprove(resolvedId, statusCb),
       });
+      if (reply == null) return;
       if (typeof reply === "string") {
         await sendGoalReply(bot, chatId, reply, runtime, threadId);
       } else {
@@ -875,13 +1078,15 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
+      const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: run.runId });
       const reply = await withPlanningFeedback({
         bot,
         chatId,
         threadId,
         label: "reaction:approve",
-        fn: () => handleGoalApprove(run.runId),
+        fn: () => handleGoalApprove(run.runId, statusCb),
       });
+      if (reply == null) return;
       if (typeof reply === "string") {
         await sendGoalReply(bot, chatId, reply, runtime, threadId);
       } else {
@@ -923,13 +1128,25 @@ export function registerTelegramGoalCommands({
   bot.command("goal_approve", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const rawId = ctx.match?.trim() ?? "";
+    const approveRunId = resolveRunId(rawId);
+    const statusCb = approveRunId
+      ? buildOnStatusChange({
+          bot,
+          chatId: resolved.chatId,
+          threadId: resolved.threadIdForSend,
+          runtime,
+          runId: approveRunId,
+        })
+      : undefined;
     const reply = await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal_approve",
-      fn: () => handleGoalApprove(ctx.match?.trim() ?? ""),
+      fn: () => handleGoalApprove(rawId, statusCb),
     });
+    if (reply == null) return;
     if (typeof reply === "string") {
       await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
     } else {
@@ -1005,13 +1222,24 @@ export function registerTelegramGoalCommands({
     }
     const runId = raw.slice(0, spaceIdx);
     const value = raw.slice(spaceIdx + 1).trim();
+    const answerRunId = resolveRunId(runId);
+    const statusCb = answerRunId
+      ? buildOnStatusChange({
+          bot,
+          chatId: resolved.chatId,
+          threadId: resolved.threadIdForSend,
+          runtime,
+          runId: answerRunId,
+        })
+      : undefined;
     const result = await withPlanningFeedback({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal_answer",
-      fn: () => handleGoalAnswer(runId, value),
+      fn: () => handleGoalAnswer(runId, value, statusCb),
     });
+    if (result == null) return;
     if (typeof result === "string") {
       await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
     } else {

@@ -807,5 +807,97 @@ describe("agent-executor", () => {
         expect(result2.summary).not.toContain("skipped");
       }
     });
+
+    // -----------------------------------------------------------------------
+    // CPM-based task selection
+    // -----------------------------------------------------------------------
+
+    it("CPM selection: picks critical-path task first (higher duration)", async () => {
+      // A(3m) and B(1m) are independent roots. A is on the critical path (slack=0).
+      const stepA = makeStep({ id: "A", description: "Long task", durationMinutes: 3 });
+      const stepB = makeStep({ id: "B", description: "Short task", durationMinutes: 1 });
+      const plan = makePlan([stepB, stepA]); // deliberately B before A
+      const session = makeSession(plan);
+
+      const taskOrder: string[] = [];
+      mockPrompt.mockImplementation(async (prompt: string) => {
+        const m = /task (\S+)/i.exec(prompt);
+        if (m) taskOrder.push(m[1]!);
+        mockCompleteSignal = { summary: "done" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-cpm-1",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("done");
+      // A should be picked first (on critical path, slack=0)
+      expect(taskOrder).toEqual(["A", "B"]);
+    });
+
+    it("CPM selection: lexicographic tie-break with equal durations", async () => {
+      const stepA = makeStep({ id: "A", description: "Task A", durationMinutes: 1 });
+      const stepB = makeStep({ id: "B", description: "Task B", durationMinutes: 1 });
+      const plan = makePlan([stepB, stepA]); // deliberately B before A
+      const session = makeSession(plan);
+
+      const taskOrder: string[] = [];
+      mockPrompt.mockImplementation(async (prompt: string) => {
+        const m = /task (\S+)/i.exec(prompt);
+        if (m) taskOrder.push(m[1]!);
+        mockCompleteSignal = { summary: "done" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      await executeGoalWithAgent({
+        session,
+        runId: "test-cpm-2",
+        workingDir: "/tmp/ws",
+      });
+
+      // Both slack=0, tie-break by lexicographic id: A before B
+      expect(taskOrder).toEqual(["A", "B"]);
+    });
+
+    it("scheduler continues executing branch C after branch B blocks", async () => {
+      // A -> B (blocks), A -> C (completes)
+      const stepA = makeStep({ id: "A", description: "Root" });
+      const stepB = makeStep({ id: "B", description: "Blocks", dependsOn: ["A"] });
+      const stepC = makeStep({ id: "C", description: "Completes", dependsOn: ["A"] });
+      const plan = makePlan([stepA, stepB, stepC]);
+      const session = makeSession(plan);
+
+      let promptIdx = 0;
+      mockPrompt.mockImplementation(async () => {
+        promptIdx++;
+        if (promptIdx === 1) {
+          // A completes
+          mockCompleteSignal = { summary: "A done" };
+        } else if (promptIdx === 2) {
+          // B blocks (first runnable after A; CPM picks B or C)
+          mockBlockedSignal = { question: "Need info for B" };
+        } else if (promptIdx === 3) {
+          // C completes
+          mockCompleteSignal = { summary: "C done" };
+        }
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-cpm-branch",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(stepA.status).toBe("done");
+      expect(stepB.status).toBe("blocked");
+      expect(stepC.status).toBe("done");
+      expect(result.status).toBe("blocked");
+      // 3 prompts: A, then B (blocks), then C
+      expect(mockPrompt).toHaveBeenCalledTimes(3);
+    });
   });
 });

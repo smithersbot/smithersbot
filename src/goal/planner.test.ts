@@ -176,6 +176,75 @@ describe("planner", () => {
       );
     });
 
+    it("accepts request_user_input with a question", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Ask user",
+          steps: [
+            {
+              id: "1",
+              description: "Ask user for confirmation",
+              dependsOn: [],
+              tool: {
+                name: "request_user_input",
+                args: { question: "Should we create b.txt? (yes/no)" },
+              },
+            },
+          ],
+        }),
+      );
+
+      const result = await generatePlan(client, "Ask user");
+      expect("blocked" in result).toBe(false);
+      if (!("blocked" in result)) {
+        expect(result.steps[0].tool.name).toBe("request_user_input");
+        expect(result.steps[0].tool.args.question).toBe("Should we create b.txt? (yes/no)");
+      }
+    });
+
+    it("rejects request_user_input without a question", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Bad ask",
+          steps: [
+            {
+              id: "1",
+              description: "Ask user",
+              dependsOn: [],
+              tool: { name: "request_user_input", args: {} },
+            },
+          ],
+        }),
+      );
+
+      await expect(generatePlan(client, "Bad ask")).rejects.toThrow(
+        /request_user_input requires a "question"/i,
+      );
+    });
+
+    it("rejects shell_exec echo (user interaction must use request_user_input)", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Echo hack",
+          steps: [
+            {
+              id: "1",
+              description: "Ask user via echo",
+              dependsOn: [],
+              tool: {
+                name: "shell_exec",
+                args: { command: "echo 'Should we create b.txt? (yes/no)'" },
+              },
+            },
+          ],
+        }),
+      );
+
+      await expect(generatePlan(client, "Echo hack")).rejects.toThrow(
+        /not in read-only allowlist/i,
+      );
+    });
+
     it("accepts shell_exec with allowed read-only command", async () => {
       const client = mockClient(
         JSON.stringify({

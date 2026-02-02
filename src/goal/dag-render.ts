@@ -4,11 +4,9 @@ function statusChar(status: PlanStep["status"]): string {
   switch (status) {
     case "done":
       return "x";
-    case "failed":
+    case "blocked":
       return "!";
-    case "skipped":
-      return "-";
-    case "running":
+    case "in_progress":
       return ">";
     default:
       return " ";
@@ -88,7 +86,7 @@ export function renderDag(plan: Plan): string {
   }
 
   lines.push("");
-  lines.push("Legend: [ ] pending  [x] done  [!] failed  [-] skipped  [>] running");
+  lines.push("Legend: [ ] pending  [x] done  [!] blocked  [>] in_progress");
 
   return lines.join("\n");
 }

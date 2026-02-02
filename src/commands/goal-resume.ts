@@ -2,7 +2,7 @@ import { confirm, isCancel } from "@clack/prompts";
 import { mkdirSync } from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
-import { executeGoalWithAgent } from "../goal/agent-executor.js";
+import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import {
   loadRun,
@@ -18,6 +18,8 @@ export type GoalResumeOptions = {
   yes?: boolean;
   json?: boolean;
   output?: OutputFormat;
+  quiet?: boolean;
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
 };
 
 /** Resolve whether JSON mode is active: --output wins over --json. */
@@ -32,6 +34,7 @@ export async function goalResumeCommand(
   runtime: RuntimeEnv,
 ): Promise<GoalOutcome | undefined> {
   const isJson = resolveIsJson(opts);
+  const quiet = Boolean(opts.quiet);
 
   const resolvedId = resolveRunId(runId);
   if (!resolvedId) {
@@ -140,7 +143,7 @@ export async function goalResumeCommand(
 
   if (needsApproval) {
     if (session.plan) {
-      if (!isJson) {
+      if (!isJson && !quiet) {
         runtime.log(formatPlanOutput(session.plan, { diagram: "both", format: "md" }));
         runtime.log("");
       }
@@ -184,7 +187,11 @@ export async function goalResumeCommand(
     for (const step of session.plan.steps) {
       const result = session.stepResults.get(step.id);
       if (result) {
-        step.status = result.success ? "done" : "failed";
+        step.status = result.success ? "done" : "blocked";
+        if (!result.success) {
+          step.blockedReason = "error";
+          step.blockedQuestion = result.error ?? "Step failed in a previous run.";
+        }
       }
     }
   }
@@ -200,13 +207,13 @@ export async function goalResumeCommand(
     };
     if (isJson) {
       runtime.log(JSON.stringify(outcome, null, 2));
-    } else {
+    } else if (!quiet) {
       runtime.log("All steps already completed.");
     }
     return outcome;
   }
 
-  if (!isJson) {
+  if (!isJson && !quiet) {
     runtime.log(`Resuming: ${resumableSteps.length} remaining step(s).`);
     runtime.log("");
   }
@@ -220,19 +227,22 @@ export async function goalResumeCommand(
     timeoutMs: 300_000,
     onTaskUpdate: () => persistRun(),
     onProgress: (text) => {
-      if (!isJson) runtime.log(text);
+      if (!isJson && !quiet) runtime.log(text);
     },
+    onStatusChange: opts.onStatusChange,
   });
 
   persistRun();
 
-  if (!isJson) runtime.log("");
+  if (!isJson && !quiet) runtime.log("");
   if (isJson) {
     runtime.log(JSON.stringify(outcome, null, 2));
-  } else if (outcome.status === "done") {
-    runtime.log(`DONE: ${outcome.summary}`);
-  } else if (outcome.status === "blocked") {
-    runtime.log(`BLOCKED: ${outcome.question}`);
+  } else if (!quiet) {
+    if (outcome.status === "done") {
+      runtime.log(`DONE: ${outcome.summary}`);
+    } else if (outcome.status === "blocked") {
+      runtime.log(`BLOCKED: ${outcome.question}`);
+    }
   }
 
   return outcome;

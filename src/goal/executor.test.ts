@@ -123,8 +123,9 @@ describe("executor", () => {
       progress: noopProgress,
     });
 
-    // Step 2 should be skipped
-    expect(plan.steps[1].status).toBe("skipped");
+    // Step 2 should be blocked (dependency failed)
+    expect(plan.steps[1].status).toBe("blocked");
+    expect(plan.steps[1].blockedQuestion).toBe("Dependency failed — replan or resume needed.");
     expect(fs.existsSync(path.join(tmpDir, "output.txt"))).toBe(false);
     // Overall should still be "done" since LLM said not blocked
     expect(result.status).toBe("done");
@@ -201,8 +202,9 @@ describe("executor", () => {
       progress: noopProgress,
     });
 
-    // The step should fail (tool returns error for path traversal)
-    expect(plan.steps[0].status).toBe("failed");
+    // The step should be blocked (tool returns error for path traversal)
+    expect(plan.steps[0].status).toBe("blocked");
+    expect(plan.steps[0].blockedReason).toBe("error");
     // File should NOT exist outside sandbox
     expect(fs.existsSync("/etc/passwd_hacked")).toBe(false);
   });
@@ -242,6 +244,68 @@ describe("executor", () => {
 
     expect(result.status).toBe("done");
     expect(fs.readFileSync(path.join(tmpDir, "readme.md"), "utf8")).toBe("Hello Moltbot");
+  });
+
+  it("marks request_user_input step as blocked immediately", async () => {
+    const plan: Plan = {
+      goal: "test",
+      summary: "User input test",
+      steps: [
+        {
+          id: "1",
+          description: "Write a.txt",
+          dependsOn: [],
+          tool: { name: "file_write", args: { path: "a.txt", content: "A" } },
+          status: "pending",
+        },
+        {
+          id: "2",
+          description: "Ask user for confirmation",
+          dependsOn: ["1"],
+          tool: {
+            name: "request_user_input",
+            args: { question: "Should we create b.txt? (yes/no)" },
+          },
+          status: "pending",
+        },
+        {
+          id: "3",
+          description: "Write b.txt",
+          dependsOn: ["2"],
+          tool: { name: "file_write", args: { path: "b.txt", content: "B" } },
+          status: "pending",
+        },
+      ],
+    };
+
+    const session = createSession(plan);
+    const result = await executePlan({
+      session,
+      client: mockClient(),
+      workingDir: tmpDir,
+      runtime: mockRuntime,
+      progress: noopProgress,
+    });
+
+    // Step 1 should be done
+    expect(plan.steps[0].status).toBe("done");
+    expect(fs.existsSync(path.join(tmpDir, "a.txt"))).toBe(true);
+
+    // Step 2 should be blocked with the question
+    expect(plan.steps[1].status).toBe("blocked");
+    expect(plan.steps[1].blockedReason).toBe("user_input");
+    expect(plan.steps[1].blockedQuestion).toBe("Should we create b.txt? (yes/no)");
+
+    // Step 3 should still be pending (never reached)
+    expect(plan.steps[2].status).toBe("pending");
+    expect(fs.existsSync(path.join(tmpDir, "b.txt"))).toBe(false);
+
+    // Overall outcome should be blocked
+    expect(result.status).toBe("blocked");
+    if (result.status === "blocked") {
+      expect(result.question).toBe("Should we create b.txt? (yes/no)");
+      expect(result.requiredInputKey).toBe("step:2:input");
+    }
   });
 
   it("falls back to step ID for requiredInputKey when LLM omits it", async () => {

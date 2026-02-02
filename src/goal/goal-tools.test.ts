@@ -1,13 +1,23 @@
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createGoalTools } from "./goal-tools.js";
 
 describe("goal-tools", () => {
   describe("createGoalTools", () => {
-    it("returns two tool definitions", () => {
+    it("returns two tool definitions without workingDir", () => {
       const { tools } = createGoalTools();
       expect(tools).toHaveLength(2);
       expect(tools[0]!.name).toBe("mark_task_complete");
       expect(tools[1]!.name).toBe("request_user_input");
+    });
+
+    it("returns three tool definitions with workingDir", () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "goal-tools-"));
+      const { tools } = createGoalTools(dir);
+      expect(tools).toHaveLength(3);
+      expect(tools[2]!.name).toBe("delete_path");
     });
 
     it("signal is null initially", () => {
@@ -116,6 +126,64 @@ describe("goal-tools", () => {
       await markComplete!.execute("call-2", { summary: "Done" });
       reset();
       expect(getSignal()).toBeNull();
+    });
+  });
+
+  describe("delete_path", () => {
+    function setup() {
+      const dir = mkdtempSync(path.join(tmpdir(), "goal-tools-del-"));
+      const { tools } = createGoalTools(dir);
+      const deletePath = tools.find((t) => t.name === "delete_path")!;
+      return { dir, deletePath };
+    }
+
+    it("deletes a file inside the workspace", async () => {
+      const { dir, deletePath } = setup();
+      const filePath = path.join(dir, "foo.txt");
+      writeFileSync(filePath, "hello");
+      const result = await deletePath.execute("c1", { path: "foo.txt" });
+      expect(result.content[0]).toHaveProperty("text", "Deleted: foo.txt");
+      expect(() => readFileSync(filePath)).toThrow();
+    });
+
+    it("deletes a directory recursively", async () => {
+      const { dir, deletePath } = setup();
+      mkdirSync(path.join(dir, "sub", "deep"), { recursive: true });
+      writeFileSync(path.join(dir, "sub", "deep", "a.txt"), "a");
+      const result = await deletePath.execute("c1", { path: "sub", recursive: true });
+      expect(result.content[0]).toHaveProperty("text", "Deleted: sub");
+      expect(() => readFileSync(path.join(dir, "sub", "deep", "a.txt"))).toThrow();
+    });
+
+    it("rejects path traversal (../)", async () => {
+      const { deletePath } = setup();
+      const result = await deletePath.execute("c1", { path: "../escape" });
+      expect((result.content[0] as { text: string }).text).toMatch(/Error.*escapes/i);
+    });
+
+    it("rejects deleting the workspace root", async () => {
+      const { deletePath } = setup();
+      const result = await deletePath.execute("c1", { path: "." });
+      expect((result.content[0] as { text: string }).text).toMatch(
+        /cannot delete the workspace root/i,
+      );
+    });
+
+    it("refuses symlinks", async () => {
+      const { dir, deletePath } = setup();
+      const target = path.join(dir, "real.txt");
+      writeFileSync(target, "data");
+      symlinkSync(target, path.join(dir, "link.txt"));
+      const result = await deletePath.execute("c1", { path: "link.txt" });
+      expect((result.content[0] as { text: string }).text).toMatch(/symlink/i);
+      // Original file should still exist
+      expect(readFileSync(target, "utf-8")).toBe("data");
+    });
+
+    it("returns error for nonexistent path", async () => {
+      const { deletePath } = setup();
+      const result = await deletePath.execute("c1", { path: "nope.txt" });
+      expect((result.content[0] as { text: string }).text).toMatch(/does not exist/i);
     });
   });
 });

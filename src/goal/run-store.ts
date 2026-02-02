@@ -2,7 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadJsonFile } from "../infra/json-file.js";
-import type { GoalSession, RunSummary, SerializedRun, StepResult, BlockedDetail } from "./types.js";
+import type {
+  GoalSession,
+  PlanStep,
+  RunSummary,
+  SerializedRun,
+  StepResult,
+  BlockedDetail,
+} from "./types.js";
 
 const GOALS_DIRNAME = "goals";
 const RUN_FILENAME = "run.json";
@@ -47,7 +54,7 @@ export function loadRun(
   return migrateRun(data as Record<string, unknown>) as SerializedRun;
 }
 
-/** Migrate old run data (blockReason → blocked, add answers). */
+/** Migrate old run data (blockReason → blocked, add answers, step status normalization). */
 function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
   // Backward compat: migrate blockReason → structured blocked
   if (!data.blocked && typeof data.blockReason === "string") {
@@ -65,6 +72,32 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
     data.activePlanRevision = 1;
   }
   delete data.blockReason;
+
+  // Migrate legacy step statuses (running/failed/skipped → new enum)
+  const plan = data.plan as { steps?: Array<Record<string, unknown>> } | null;
+  if (plan?.steps) {
+    for (const step of plan.steps) {
+      if (step.status === "running") {
+        // Process crash mid-task → reset to pending so it re-runs
+        step.status = "pending";
+      } else if (step.status === "in_progress") {
+        // Process crash mid-task → reset to pending
+        step.status = "pending";
+      } else if (step.status === "failed") {
+        step.status = "blocked";
+        step.blockedReason = step.blockedReason ?? "error";
+        step.blockedQuestion =
+          step.blockedQuestion ?? "Step failed in a previous run — replan or resume.";
+      } else if (step.status === "skipped") {
+        step.status = "blocked";
+        step.blockedReason = step.blockedReason ?? "error";
+        step.blockedQuestion =
+          step.blockedQuestion ??
+          "Step was skipped in a previous run due to dependency failure — replan or resume.";
+      }
+    }
+  }
+
   return data;
 }
 
@@ -86,8 +119,8 @@ export function listRuns(goalsDir: string = resolveGoalsDir()): RunSummary[] {
     if (!data || typeof data !== "object") continue;
     const run = data as SerializedRun;
     const stepCount = run.plan?.steps?.length ?? 0;
-    const completedSteps = Object.values(run.stepResults ?? {}).filter(
-      (r) => (r as StepResult).success,
+    const completedSteps = (run.plan?.steps ?? []).filter(
+      (s) => (s as PlanStep).status === "done",
     ).length;
     summaries.push({
       runId: run.runId,

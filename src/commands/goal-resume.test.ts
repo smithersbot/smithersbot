@@ -50,6 +50,26 @@ vi.mock("../goal/llm-client.js", () => ({
   }),
 }));
 
+// Mock the agent executor so resume tests don't need a real PI agent session
+vi.mock("../goal/agent-executor.js", () => ({
+  executeGoalWithAgent: vi.fn(
+    async (params: {
+      session: { plan: { steps: Array<{ status: string }> } | null; state: string };
+    }) => {
+      // Mark all pending/blocked steps as done
+      if (params.session.plan) {
+        for (const step of params.session.plan.steps) {
+          if (step.status === "pending" || step.status === "blocked") {
+            step.status = "done";
+          }
+        }
+      }
+      params.session.state = "done";
+      return { status: "done", summary: "All tasks completed." };
+    },
+  ),
+}));
+
 function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
   const logs: string[] = [];
   const errors: string[] = [];
@@ -396,6 +416,89 @@ describe("goal-resume command", () => {
     }
   });
 
+  it("quiet mode suppresses progress output but preserves return value", async () => {
+    // This test verifies quiet mode by using a run with all steps already done
+    // (no agent executor needed — resumableSteps === 0)
+    const donePlan: Plan = {
+      goal: "Test goal",
+      summary: "Already done plan",
+      steps: [
+        {
+          id: "1",
+          description: "Create dir",
+          dependsOn: [],
+          tool: { name: "mkdir", args: { path: "out" } },
+          status: "done",
+        },
+      ],
+    };
+
+    saveRun(
+      makeRun({
+        runId: "quiet-run",
+        state: "awaiting_approval",
+        plan: donePlan,
+        stepResults: {
+          "1": { stepId: "1", success: true, output: "Created", durationMs: 1 },
+        },
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand("quiet-run", { yes: true, quiet: true }, rt);
+
+    // Return value is still correct
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("done");
+
+    // No progress/transcript output printed — quiet suppresses everything
+    expect(rt.logs).toHaveLength(0);
+
+    // State still persisted
+    const persisted = loadRun("quiet-run", testGoalsDir);
+    expect(persisted?.state).toBe("done");
+  });
+
+  it("non-quiet mode prints plan and status output for same scenario", async () => {
+    const donePlan: Plan = {
+      goal: "Test goal",
+      summary: "Already done plan",
+      steps: [
+        {
+          id: "1",
+          description: "Create dir",
+          dependsOn: [],
+          tool: { name: "mkdir", args: { path: "out" } },
+          status: "done",
+        },
+      ],
+    };
+
+    saveRun(
+      makeRun({
+        runId: "loud-run",
+        state: "awaiting_approval",
+        plan: donePlan,
+        stepResults: {
+          "1": { stepId: "1", success: true, output: "Created", durationMs: 1 },
+        },
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand("loud-run", { yes: true }, rt);
+
+    // Return value is the same
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("done");
+
+    // Non-quiet mode DOES print output
+    const allLogs = rt.logs.join("\n");
+    expect(allLogs).toContain("All steps already completed.");
+  });
+
   it("resume after answering runs remaining steps", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-answered-ws-"));
     // Start with a blocked run that has a pending step
@@ -409,26 +512,23 @@ describe("goal-resume command", () => {
       }),
     );
 
-    // Answer the question (transitions state to executing, clears blocked)
+    // Answer the question — auto-resumes blocked runs via goalResumeCommand
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const answerRt = mockRuntime();
-    await goalAnswerCommand("answered-run", { key: "some_key", value: "the_answer" }, answerRt);
+    const result = await goalAnswerCommand(
+      "answered-run",
+      { key: "some_key", value: "the_answer" },
+      answerRt,
+    );
 
-    // Verify answer was persisted and state transitioned (no auto-execution)
-    const afterAnswer = loadRun("answered-run", testGoalsDir);
-    expect(afterAnswer!.state).toBe("executing");
-    expect(afterAnswer!.blocked).toBeNull();
-    expect(afterAnswer!.answers.some_key).toBe("the_answer");
-
-    // Now resume — should pick up executing state and run the pending step
-    const { goalResumeCommand } = await import("./goal-resume.js");
-    const resumeRt = mockRuntime();
-    const result = await goalResumeCommand("answered-run", { yes: true }, resumeRt);
+    // Auto-resume should complete the run
     expect(result).toBeDefined();
     expect(result!.status).toBe("done");
 
     const finalRun = loadRun("answered-run", testGoalsDir);
     expect(finalRun?.state).toBe("done");
+    expect(finalRun!.answers.some_key).toBe("the_answer");
+    expect(finalRun!.blocked).toBeNull();
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 });

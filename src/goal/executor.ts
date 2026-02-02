@@ -26,27 +26,58 @@ export async function executePlan(params: {
   const order = topologicalSort(plan.steps);
 
   for (const step of order) {
-    // Skip steps already completed (resume scenario)
-    if (step.status === "done" || step.status === "failed" || step.status === "skipped") {
+    // Skip steps already completed or blocked (resume scenario)
+    if (step.status === "done" || step.status === "blocked") {
       progress.tick();
       continue;
     }
 
-    // Skip if any dependency failed or was skipped
+    // Block if any dependency is not successfully completed
     const depsOk = step.dependsOn.every((depId) => {
       const result = session.stepResults.get(depId);
       return result?.success === true;
     });
     if (!depsOk) {
-      step.status = "skipped";
-      runtime.log(`  [-] ${step.id}. ${step.description} (skipped: dependency failed)`);
+      step.status = "blocked";
+      step.blockedReason = "error";
+      step.blockedQuestion = "Dependency failed — replan or resume needed.";
+      runtime.log(`  [!] ${step.id}. ${step.description} (blocked: dependency failed)`);
       progress.tick();
       continue;
     }
 
-    step.status = "running";
+    step.status = "in_progress";
     progress.setLabel(`Step ${step.id}: ${step.description}`);
     runtime.log(`  [>] ${step.id}. ${step.description}...`);
+
+    // request_user_input: mark step blocked immediately (no tool execution)
+    if (step.tool.name === "request_user_input") {
+      const question = step.tool.args.question ?? "User input needed";
+      step.status = "blocked";
+      step.blockedReason = "user_input";
+      step.blockedQuestion = question;
+      runtime.log(`  [!] ${step.id}. Blocked: ${question}`);
+      session.stepResults.set(step.id, {
+        stepId: step.id,
+        success: false,
+        output: "",
+        error: question,
+        durationMs: 0,
+      });
+      progress.tick();
+
+      session.state = "blocked";
+      session.blocked = {
+        prompt: question,
+        requiredInputKey: `step:${step.id}:input`,
+      };
+      params.onStepComplete?.();
+      return {
+        status: "blocked",
+        question,
+        requiredInputKey: `step:${step.id}:input`,
+      };
+    }
 
     const startMs = Date.now();
     const toolResult = executeTool(step.tool, workingDir);
@@ -67,8 +98,10 @@ export async function executePlan(params: {
       runtime.log(`  [x] ${step.id}. Done (${durationMs}ms)`);
       params.onStepComplete?.();
     } else {
-      step.status = "failed";
-      runtime.log(`  [!] ${step.id}. Failed: ${toolResult.error}`);
+      step.status = "blocked";
+      step.blockedReason = "error";
+      step.blockedQuestion = toolResult.error ?? "Step failed";
+      runtime.log(`  [!] ${step.id}. Blocked: ${toolResult.error}`);
       params.onStepComplete?.();
 
       // Ask LLM whether this failure blocks the overall goal
@@ -192,13 +225,11 @@ async function assessFailure(
 function buildDoneSummary(session: GoalSession): string {
   const results = Array.from(session.stepResults.values());
   const succeeded = results.filter((r) => r.success).length;
-  const failed = results.filter((r) => !r.success).length;
-  const skipped = session.plan?.steps.filter((s) => s.status === "skipped").length ?? 0;
+  const blocked = session.plan?.steps.filter((s) => s.status === "blocked").length ?? 0;
   const total = session.plan?.steps.length ?? 0;
 
   const parts = [`${succeeded}/${total} steps completed`];
-  if (failed > 0) parts.push(`${failed} failed`);
-  if (skipped > 0) parts.push(`${skipped} skipped`);
+  if (blocked > 0) parts.push(`${blocked} blocked`);
 
   return `Goal "${session.goal}" finished. ${parts.join(", ")}.`;
 }

@@ -16,12 +16,18 @@ import { createGoalTools } from "./goal-tools.js";
 import { formatPlanAsContext } from "./planner.js";
 import { resolveAgentSessionFile } from "./run-store.js";
 import { topologicalSort } from "./executor.js";
+import { computeCpm } from "./cpm.js";
 import type { GoalOutcome, GoalSession, Plan, PlanStep, TaskExecutionResult } from "./types.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes per prompt
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
+
+export type GoalStatusChangeEvent =
+  | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
+  | { type: "fully_blocked"; steps: PlanStep[] }
+  | { type: "all_done"; steps: PlanStep[]; summary: string };
 
 export type ExecuteGoalParams = {
   session: GoalSession;
@@ -34,6 +40,7 @@ export type ExecuteGoalParams = {
   timeoutMs?: number;
   onTaskUpdate?: (result: TaskExecutionResult) => void;
   onProgress?: (text: string) => void;
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
   abortSignal?: AbortSignal;
 };
 
@@ -53,6 +60,7 @@ function buildGoalSystemPrompt(goal: string, plan: Plan | null): string {
   lines.push("TASK MANAGEMENT TOOLS:");
   lines.push("- mark_task_complete(summary): Call when done with the current task.");
   lines.push("- request_user_input(question): Call ONLY when genuinely stuck and need the user.");
+  lines.push("- delete_path(path, recursive?): Delete a file or directory within the workspace.");
   lines.push("");
   lines.push("RULES:");
   lines.push("- Focus exclusively on the current task you are given.");
@@ -197,6 +205,51 @@ function buildGoalSummary(steps: PlanStep[]): string {
 }
 
 /**
+ * Pick the next task from runnable candidates using CPM on the residual graph.
+ *
+ * Policy:
+ *   1. Compute CPM on non-done steps (shallow copies to avoid mutating originals).
+ *   2. If any runnable step has slack === 0 (critical path), restrict to those.
+ *   3. Otherwise sort by ascending slack.
+ *   4. Tie-break: lexicographic step id.
+ */
+function pickNextTask(runnable: PlanStep[], allSteps: PlanStep[]): PlanStep {
+  if (runnable.length <= 1) return runnable[0]!;
+
+  // Build residual plan from non-done steps with deps pointing only to non-done steps
+  const doneIds = new Set(allSteps.filter((s) => s.status === "done").map((s) => s.id));
+  const residualSteps: PlanStep[] = allSteps
+    .filter((s) => s.status !== "done")
+    .map((s) => ({
+      ...s,
+      dependsOn: s.dependsOn.filter((depId) => !doneIds.has(depId)),
+    }));
+
+  try {
+    const cpm = computeCpm({ goal: "", summary: "", steps: residualSteps });
+    const runnableIds = new Set(runnable.map((s) => s.id));
+
+    // Separate critical (slack=0) from non-critical
+    const critical = runnable.filter((s) => runnableIds.has(s.id) && cpm.steps[s.id]?.slack === 0);
+    const candidates = critical.length > 0 ? critical : runnable;
+
+    // Sort by slack ascending, then lexicographic id
+    candidates.sort((a, b) => {
+      const slackA = cpm.steps[a.id]?.slack ?? Infinity;
+      const slackB = cpm.steps[b.id]?.slack ?? Infinity;
+      if (slackA !== slackB) return slackA - slackB;
+      return a.id.localeCompare(b.id);
+    });
+
+    return candidates[0]!;
+  } catch {
+    // If CPM fails (e.g. cycle), fall back to lexicographic
+    runnable.sort((a, b) => a.id.localeCompare(b.id));
+    return runnable[0]!;
+  }
+}
+
+/**
  * Execute a goal's tasks using the PI coding agent.
  *
  * Walks plan steps in dependency order, giving each task up to
@@ -214,6 +267,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     timeoutMs = DEFAULT_TIMEOUT_MS,
     onTaskUpdate,
     onProgress,
+    onStatusChange,
     abortSignal,
   } = params;
 
@@ -224,6 +278,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   // Ensure steps are in dependency order
   const orderedSteps = topologicalSort(plan.steps);
+
+  // Spam control: track which steps we've already notified as blocked
+  const previouslyBlockedIds = new Set<string>();
 
   // --- Resolve model ---
   const providerId = params.provider ?? DEFAULT_PROVIDER;
@@ -252,7 +309,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const sessionFilePath = resolveAgentSessionFile(runId);
 
   // --- Create goal tools ---
-  const goalTools = createGoalTools();
+  const goalTools = createGoalTools(workingDir);
 
   // --- Create PI agent session ---
   onProgress?.(`Creating agent session (${providerId}/${modelId})...`);
@@ -297,8 +354,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const runnable = findRunnableTasks(orderedSteps, session.answers);
       if (runnable.length === 0) break;
 
-      // Pick first available task
-      const task = runnable[0]!;
+      // Pick task via CPM-aware selection (prefer critical path, lowest slack, lexicographic)
+      const task = pickNextTask(runnable, orderedSteps);
       goalTools.reset();
 
       // If resuming a previously-blocked task with an answer, prepare it
@@ -316,6 +373,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       let turnsUsed = task.turnsUsed ?? 0;
       const taskStartMs = Date.now();
 
+      task.status = "in_progress";
       onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
 
       // Per-task prompt loop
@@ -396,7 +454,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       }
 
       // If turns exhausted without completion
-      if (turnsUsed >= maxTurnsPerTask && task.status === "pending") {
+      if (turnsUsed >= maxTurnsPerTask && task.status === "in_progress") {
         task.status = "blocked";
         task.blockedReason = "turn_limit";
         task.blockedQuestion = `Task did not complete within ${maxTurnsPerTask} turns.`;
@@ -415,19 +473,37 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         blockedReason: task.blockedReason,
       };
       onTaskUpdate?.(result);
+
+      // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
+      if (task.status === "blocked" && !previouslyBlockedIds.has(task.id) && onStatusChange) {
+        previouslyBlockedIds.add(task.id);
+        await onStatusChange({
+          type: "step_blocked",
+          stepId: task.id,
+          question: task.blockedQuestion ?? "Unknown",
+          steps: [...orderedSteps],
+        });
+      }
     }
 
     // --- Determine goal outcome ---
     const allDone = orderedSteps.every((s) => s.status === "done");
     if (allDone) {
       session.state = "done";
-      return { status: "done", summary: buildGoalSummary(orderedSteps) };
+      const summary = buildGoalSummary(orderedSteps);
+      if (onStatusChange) {
+        await onStatusChange({ type: "all_done", steps: [...orderedSteps], summary });
+      }
+      return { status: "done", summary };
     }
 
     // Some tasks blocked
     const aggregated = aggregateBlockedQuestions(orderedSteps);
     session.state = "blocked";
     session.blocked = aggregated;
+    if (onStatusChange) {
+      await onStatusChange({ type: "fully_blocked", steps: [...orderedSteps] });
+    }
     return {
       status: "blocked",
       question: aggregated.prompt,

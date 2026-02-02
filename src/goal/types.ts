@@ -32,7 +32,7 @@ export type PlanStep = {
   description: string;
   dependsOn: string[];
   tool: ToolCall;
-  status: "pending" | "running" | "done" | "failed" | "skipped" | "blocked";
+  status: "pending" | "in_progress" | "done" | "blocked";
   durationMinutes?: number;
   /** Number of agent prompt cycles used for this task (agent executor). */
   turnsUsed?: number;
@@ -65,7 +65,8 @@ export type ToolName =
   | "mkdir"
   | "git_add"
   | "npm_init"
-  | "shell_exec";
+  | "shell_exec"
+  | "request_user_input";
 
 export type ToolCall = {
   name: ToolName;
