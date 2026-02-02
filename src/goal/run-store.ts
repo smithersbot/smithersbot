@@ -138,6 +138,9 @@ export function sessionToSerialized(params: {
   dryRun: boolean;
   createdAt: string;
   updatedAt?: string;
+  agentSessionFile?: string;
+  agentSessionId?: string;
+  agentMaxTurnsPerTask?: number;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
   return {
@@ -154,7 +157,15 @@ export function sessionToSerialized(params: {
     dryRun,
     createdAt,
     updatedAt: params.updatedAt ?? new Date().toISOString(),
+    ...(params.agentSessionFile ? { agentSessionFile: params.agentSessionFile } : {}),
+    ...(params.agentSessionId ? { agentSessionId: params.agentSessionId } : {}),
+    ...(params.agentMaxTurnsPerTask ? { agentMaxTurnsPerTask: params.agentMaxTurnsPerTask } : {}),
   };
+}
+
+/** Resolve the agent session file path for a goal run. */
+export function resolveAgentSessionFile(runId: string, goalsDir?: string): string {
+  return path.join(resolveRunDir(runId, goalsDir), "session.jsonl");
 }
 
 /** Convert a serialized run back to an in-memory GoalSession. */

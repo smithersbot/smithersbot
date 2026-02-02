@@ -6,7 +6,7 @@ import path from "node:path";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
-import { executePlan } from "../goal/executor.js";
+import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
@@ -224,43 +224,38 @@ export async function goalCommand(
     }
 
     // Phase 3: Execution
-    const execProgress = createCliProgress({
-      label: "Executing plan...",
-      total: planResult.steps.length,
-      enabled: !isJson,
+    if (!isJson) runtime.log("");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId,
+      workingDir,
+      model: opts.model,
+      maxTurnsPerTask: 5,
+      timeoutMs: 300_000,
+      onTaskUpdate: () => persistRun(),
+      onProgress: (text) => {
+        if (!isJson) runtime.log(text);
+      },
     });
-    try {
-      if (!isJson) runtime.log("");
-      const outcome = await executePlan({
-        session,
-        client,
-        workingDir,
-        runtime,
-        progress: execProgress,
-        onStepComplete: persistRun,
-      });
 
-      persistRun();
+    persistRun();
 
-      // Final result
-      if (isJson) {
-        const planData = JSON.parse(
-          formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
-        );
-        runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
-      } else {
-        runtime.log("");
-        if (outcome.status === "done") {
-          runtime.log(`DONE: ${outcome.summary}`);
-        } else if (outcome.status === "blocked") {
-          runtime.log(`BLOCKED: ${outcome.question}`);
-        }
+    // Final result
+    if (isJson) {
+      const planData = JSON.parse(
+        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+      );
+      runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
+    } else {
+      runtime.log("");
+      if (outcome.status === "done") {
+        runtime.log(`DONE: ${outcome.summary}`);
+      } else if (outcome.status === "blocked") {
+        runtime.log(`BLOCKED: ${outcome.question}`);
       }
-
-      return outcome;
-    } finally {
-      execProgress.done();
     }
+
+    return outcome;
   } catch (err) {
     // Persist the failure so the run record is always available
     const errorMsg = err instanceof Error ? err.message : String(err);

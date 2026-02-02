@@ -32,8 +32,16 @@ export type PlanStep = {
   description: string;
   dependsOn: string[];
   tool: ToolCall;
-  status: "pending" | "running" | "done" | "failed" | "skipped";
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "blocked";
   durationMinutes?: number;
+  /** Number of agent prompt cycles used for this task (agent executor). */
+  turnsUsed?: number;
+  /** Question from the agent when the task is blocked on user input. */
+  blockedQuestion?: string;
+  /** Why this task is blocked. */
+  blockedReason?: "user_input" | "turn_limit" | "timeout" | "error";
+  /** Completion summary from mark_task_complete tool. */
+  taskSummary?: string;
 };
 
 export type Plan = {
@@ -128,6 +136,23 @@ export type SerializedRun = {
     threadId?: number;
     requiredInputKey?: string;
   }>;
+  /** PI agent session file path (JSONL transcript). */
+  agentSessionFile?: string;
+  /** Stable session ID for the PI agent. */
+  agentSessionId?: string;
+  /** Maximum agent prompt cycles per task. */
+  agentMaxTurnsPerTask?: number;
+};
+
+/** Result of executing a single task with the agent. */
+export type TaskExecutionResult = {
+  taskId: string;
+  turnsUsed: number;
+  durationMs: number;
+  outcome: "done" | "blocked" | "skipped";
+  summary?: string;
+  blockedQuestion?: string;
+  blockedReason?: string;
 };
 
 /** Lightweight summary returned by listRuns(). */

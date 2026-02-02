@@ -2,11 +2,8 @@ import { confirm, isCancel } from "@clack/prompts";
 import { mkdirSync } from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
-import { createCliProgress } from "../cli/progress.js";
-import { resolveEnvApiKey } from "../agents/model-auth.js";
-import { executePlan } from "../goal/executor.js";
+import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
-import { createGoalLlmClient } from "../goal/llm-client.js";
 import {
   loadRun,
   saveRun,
@@ -114,19 +111,6 @@ export async function goalResumeCommand(
   // Resumable: awaiting_approval, rejected, cancelled, executing
   // (rejected and cancelled both return to the approval flow)
 
-  // Resolve API key
-  const authResult = resolveEnvApiKey("anthropic");
-  if (!authResult) {
-    throw new Error(
-      "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
-    );
-  }
-
-  const client = createGoalLlmClient({
-    apiKey: authResult.apiKey,
-    modelOverride: run.model,
-  });
-
   // Capture run fields for closure (TypeScript can't narrow across closures)
   const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
 
@@ -223,38 +207,32 @@ export async function goalResumeCommand(
 
   if (!isJson) {
     runtime.log(`Resuming: ${pendingSteps.length} pending step(s) remaining.`);
+    runtime.log("");
   }
 
-  const execProgress = createCliProgress({
-    label: "Executing plan...",
-    total: pendingSteps.length,
-    enabled: !isJson,
+  const outcome = await executeGoalWithAgent({
+    session,
+    runId: savedRunId,
+    workingDir,
+    model,
+    maxTurnsPerTask: 5,
+    timeoutMs: 300_000,
+    onTaskUpdate: () => persistRun(),
+    onProgress: (text) => {
+      if (!isJson) runtime.log(text);
+    },
   });
 
-  try {
-    if (!isJson) runtime.log("");
-    const outcome = await executePlan({
-      session,
-      client,
-      workingDir,
-      runtime,
-      progress: execProgress,
-      onStepComplete: persistRun,
-    });
+  persistRun();
 
-    persistRun();
-
-    if (!isJson) runtime.log("");
-    if (isJson) {
-      runtime.log(JSON.stringify(outcome, null, 2));
-    } else if (outcome.status === "done") {
-      runtime.log(`DONE: ${outcome.summary}`);
-    } else if (outcome.status === "blocked") {
-      runtime.log(`BLOCKED: ${outcome.question}`);
-    }
-
-    return outcome;
-  } finally {
-    execProgress.done();
+  if (!isJson) runtime.log("");
+  if (isJson) {
+    runtime.log(JSON.stringify(outcome, null, 2));
+  } else if (outcome.status === "done") {
+    runtime.log(`DONE: ${outcome.summary}`);
+  } else if (outcome.status === "blocked") {
+    runtime.log(`BLOCKED: ${outcome.question}`);
   }
+
+  return outcome;
 }

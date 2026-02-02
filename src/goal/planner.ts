@@ -282,6 +282,21 @@ function detectCycles(steps: PlanStep[]): void {
   }
 }
 
+/**
+ * Format an approved plan as readable advisory context for the agent's system prompt.
+ * The agent uses this to understand what tasks it will be given, in what order.
+ */
+export function formatPlanAsContext(plan: Plan): string {
+  const lines: string[] = [];
+  lines.push(`Summary: ${plan.summary}`);
+  lines.push("");
+  for (const step of plan.steps) {
+    const deps = step.dependsOn.length > 0 ? ` (depends on: ${step.dependsOn.join(", ")})` : "";
+    lines.push(`- Task ${step.id}: ${step.description}${deps}`);
+  }
+  return lines.join("\n");
+}
+
 const NETWORK_RE =
   /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|EAI_AGAIN/i;
 const AUTH_RE = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
