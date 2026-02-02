@@ -400,20 +400,28 @@ export async function handleGoalAnswer(
     }
   }
 
-  // blocked (execution-time): save answer via CLI command, suggest resume
+  // blocked (execution-time): save answer and auto-resume execution
   const key = run.blocked.requiredInputKey;
   const cap = createCaptureRuntime();
   try {
-    await goalAnswerCommand(resolvedId, { key, value }, cap.runtime);
+    const outcome = await goalAnswerCommand(resolvedId, { key, value }, cap.runtime);
     const logs = cap.getLogs();
     const errors = cap.getErrors();
     const parts: string[] = [];
 
     if (logs) parts.push(logs);
     if (errors) parts.push(errors);
-    parts.push(`Resume: /goal_approve ${resolvedId.slice(0, 8)}`);
 
-    return parts.join("\n") || "Answer saved.";
+    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
+      parts.push(`\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`);
+      return {
+        text: parts.join("\n") || "More information needed.",
+        runId: resolvedId,
+        blocked: true,
+      };
+    }
+
+    return parts.join("\n") || "Execution complete.";
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || cap.getLogs() || "Answer command failed.";

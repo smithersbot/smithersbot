@@ -149,7 +149,7 @@ export type TaskExecutionResult = {
   taskId: string;
   turnsUsed: number;
   durationMs: number;
-  outcome: "done" | "blocked" | "skipped";
+  outcome: "done" | "blocked";
   summary?: string;
   blockedQuestion?: string;
   blockedReason?: string;

@@ -93,34 +93,68 @@ function buildContinuePrompt(task: PlanStep, turnsUsed: number, maxTurns: number
   return lines.join("\n");
 }
 
-/** Find tasks that are runnable: pending with all deps done. */
-function findRunnableTasks(steps: PlanStep[]): PlanStep[] {
+/** Build the prompt for resuming a previously-blocked task with the user's answer. */
+function buildResumeTaskPrompt(
+  task: PlanStep,
+  totalTasks: number,
+  answer: string,
+  question?: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`Continue working on this task: ${task.description}`);
+  lines.push("");
+  lines.push(`Task ${task.id} of ${totalTasks}.`);
+  lines.push("");
+  lines.push(`You previously asked the user: ${question ?? "a question"}`);
+  lines.push(`The user answered: ${answer}`);
+  lines.push("");
+  lines.push("Use this information to continue and complete the task.");
+  lines.push("");
+  lines.push(
+    "When you have completed this task, call the mark_task_complete tool with a brief summary.",
+  );
+  lines.push(
+    "If you are stuck and need information from the user, call request_user_input with your question.",
+  );
+  return lines.join("\n");
+}
+
+/** Check if a blocked task has a matching answer in the session. */
+function hasAnswerForTask(taskId: string, answers: Record<string, string>): boolean {
+  // Direct single-task key
+  if (answers[`task:${taskId}:input`] != null) return true;
+  // Aggregated multi-task key (tasks:id1,id2,...:input)
+  for (const key of Object.keys(answers)) {
+    const match = /^tasks:([^:]+):input$/.exec(key);
+    if (match && match[1]!.split(",").includes(taskId)) return true;
+  }
+  return false;
+}
+
+/** Get the answer text for a blocked task from the session answers. */
+function getAnswerForTask(taskId: string, answers: Record<string, string>): string | undefined {
+  const direct = answers[`task:${taskId}:input`];
+  if (direct != null) return direct;
+  for (const [key, value] of Object.entries(answers)) {
+    const match = /^tasks:([^:]+):input$/.exec(key);
+    if (match && match[1]!.split(",").includes(taskId)) return value;
+  }
+  return undefined;
+}
+
+/** Find tasks that are runnable: pending with all deps done, or blocked with an answer. */
+function findRunnableTasks(steps: PlanStep[], answers?: Record<string, string>): PlanStep[] {
   return steps.filter((step) => {
-    if (step.status !== "pending") return false;
-    return step.dependsOn.every((depId) => {
+    const depsReady = step.dependsOn.every((depId) => {
       const dep = steps.find((s) => s.id === depId);
       return dep?.status === "done";
     });
+    if (!depsReady) return false;
+    if (step.status === "pending") return true;
+    // A blocked task is runnable if the user has provided an answer
+    if (step.status === "blocked" && answers && hasAnswerForTask(step.id, answers)) return true;
+    return false;
   });
-}
-
-/** Mark tasks whose dependencies are blocked/failed as skipped. */
-function markUnreachableTasks(steps: PlanStep[]): void {
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const step of steps) {
-      if (step.status !== "pending") continue;
-      const hasBlockedDep = step.dependsOn.some((depId) => {
-        const dep = steps.find((s) => s.id === depId);
-        return dep?.status === "blocked" || dep?.status === "failed" || dep?.status === "skipped";
-      });
-      if (hasBlockedDep) {
-        step.status = "skipped";
-        changed = true;
-      }
-    }
-  }
 }
 
 /** Aggregate blocked task info into a single message for the user. */
@@ -153,10 +187,8 @@ function aggregateBlockedQuestions(steps: PlanStep[]): {
 function buildGoalSummary(steps: PlanStep[]): string {
   const done = steps.filter((s) => s.status === "done");
   const blocked = steps.filter((s) => s.status === "blocked");
-  const skipped = steps.filter((s) => s.status === "skipped");
   const parts = [`${done.length}/${steps.length} tasks completed`];
   if (blocked.length > 0) parts.push(`${blocked.length} blocked`);
-  if (skipped.length > 0) parts.push(`${skipped.length} skipped`);
   const summaries = done.filter((s) => s.taskSummary).map((s) => `- ${s.id}: ${s.taskSummary}`);
   if (summaries.length > 0) {
     return `${parts.join(", ")}.\n\n${summaries.join("\n")}`;
@@ -262,15 +294,25 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     while (true) {
       if (abortSignal?.aborted) break;
 
-      // Mark unreachable tasks (deps blocked)
-      markUnreachableTasks(orderedSteps);
-
-      const runnable = findRunnableTasks(orderedSteps);
+      const runnable = findRunnableTasks(orderedSteps, session.answers);
       if (runnable.length === 0) break;
 
       // Pick first available task
       const task = runnable[0]!;
       goalTools.reset();
+
+      // If resuming a previously-blocked task with an answer, prepare it
+      let resumeAnswer: string | undefined;
+      let resumeQuestion: string | undefined;
+      if (task.status === "blocked") {
+        resumeAnswer = getAnswerForTask(task.id, session.answers);
+        resumeQuestion = task.blockedQuestion;
+        task.turnsUsed = 0;
+        task.blockedReason = undefined;
+        task.blockedQuestion = undefined;
+        task.status = "pending";
+      }
+
       let turnsUsed = task.turnsUsed ?? 0;
       const taskStartMs = Date.now();
 
@@ -285,9 +327,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         }
 
         const prompt =
-          turnsUsed === 0
-            ? buildFirstTaskPrompt(task, plan.steps.length)
-            : buildContinuePrompt(task, turnsUsed, maxTurnsPerTask);
+          turnsUsed === 0 && resumeAnswer
+            ? buildResumeTaskPrompt(task, plan.steps.length, resumeAnswer, resumeQuestion)
+            : turnsUsed === 0
+              ? buildFirstTaskPrompt(task, plan.steps.length)
+              : buildContinuePrompt(task, turnsUsed, maxTurnsPerTask);
 
         onProgress?.(`  [turn ${turnsUsed + 1}/${maxTurnsPerTask}]`);
 
@@ -374,9 +418,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
 
     // --- Determine goal outcome ---
-    markUnreachableTasks(orderedSteps);
-
-    const allDone = orderedSteps.every((s) => s.status === "done" || s.status === "skipped");
+    const allDone = orderedSteps.every((s) => s.status === "done");
     if (allDone) {
       session.state = "done";
       return { status: "done", summary: buildGoalSummary(orderedSteps) };

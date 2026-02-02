@@ -353,6 +353,8 @@ describe("goal-commands telegram adapter", () => {
       mockGoalAnswerCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log('Answer saved for key "db_password".');
+          runtime.log("DONE: All steps completed.");
+          return { status: "done", summary: "All steps completed." };
         },
       );
 
@@ -364,8 +366,10 @@ describe("goal-commands telegram adapter", () => {
       expect(id).toBe("test-run-id-1234");
       expect(opts.key).toBe("db_password");
       expect(opts.value).toBe("s3cret");
-      expect(result).toContain("Answer saved");
-      expect(result).toContain("/goal_approve");
+      // Auto-resumes now — no /goal_approve suggestion
+      const text = typeof result === "string" ? result : (result as { text: string }).text;
+      expect(text).toContain("Answer saved");
+      expect(text).not.toContain("/goal_approve");
     });
 
     it("returns error for non-blocked run", async () => {
@@ -380,6 +384,63 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("nonexistent", "val");
       expect(result).toContain("Run not found");
+    });
+
+    it("auto-resumes execution after answering a blocked run", async () => {
+      saveRun(
+        makeRun({
+          state: "blocked",
+          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+        }),
+      );
+
+      // goalAnswerCommand now auto-resumes via goalResumeCommand
+      mockGoalAnswerCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log('Answer saved for key "task:1:input".');
+          runtime.log("DONE: All steps completed.");
+          return { status: "done", summary: "All steps completed." };
+        },
+      );
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "s3cret");
+
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      // Should NOT contain /goal_approve suggestion
+      expect(typeof result === "string" ? result : (result as { text: string }).text).not.toContain(
+        "/goal_approve",
+      );
+      // Should contain execution output
+      expect(typeof result === "string" ? result : "").toContain("DONE");
+    });
+
+    it("returns GoalPlanResult when auto-resume results in blocked again", async () => {
+      saveRun(
+        makeRun({
+          state: "blocked",
+          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+        }),
+      );
+
+      mockGoalAnswerCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("BLOCKED: Need more info");
+          return {
+            status: "blocked",
+            question: "Need more info",
+            requiredInputKey: "task:1:input",
+          };
+        },
+      );
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "s3cret");
+
+      expect(typeof result).not.toBe("string");
+      expect(result).toHaveProperty("blocked", true);
+      expect(result).toHaveProperty("runId", "test-run-id-1234");
+      expect((result as { text: string }).text).toContain("/goal_answer");
     });
 
     it("returns GoalPlanResult with runId and blocked when still needs clarification", async () => {

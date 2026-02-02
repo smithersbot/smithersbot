@@ -189,8 +189,9 @@ export async function goalResumeCommand(
     }
   }
 
-  const pendingSteps = session.plan?.steps.filter((s) => s.status === "pending") ?? [];
-  if (pendingSteps.length === 0) {
+  const resumableSteps =
+    session.plan?.steps.filter((s) => s.status === "pending" || s.status === "blocked") ?? [];
+  if (resumableSteps.length === 0) {
     session.state = "done";
     persistRun();
     const outcome: GoalOutcome = {
@@ -206,7 +207,7 @@ export async function goalResumeCommand(
   }
 
   if (!isJson) {
-    runtime.log(`Resuming: ${pendingSteps.length} pending step(s) remaining.`);
+    runtime.log(`Resuming: ${resumableSteps.length} remaining step(s).`);
     runtime.log("");
   }
 

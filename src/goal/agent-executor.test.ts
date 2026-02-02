@@ -245,7 +245,7 @@ describe("agent-executor", () => {
       expect(promptOrder).toEqual(["1", "2"]);
     });
 
-    it("skips tasks whose dependencies are blocked", async () => {
+    it("leaves dependent tasks pending when their dep is blocked", async () => {
       const step1 = makeStep({ id: "1", description: "Step 1" });
       const step2 = makeStep({ id: "2", description: "Step 2", dependsOn: ["1"] });
       const plan = makePlan([step1, step2]);
@@ -263,9 +263,10 @@ describe("agent-executor", () => {
       });
 
       expect(step1.status).toBe("blocked");
-      expect(step2.status).toBe("skipped");
+      // Step 2 stays pending (not skipped) — it can run once step 1 is answered
+      expect(step2.status).toBe("pending");
       expect(result.status).toBe("blocked");
-      // Only step 1 should have been prompted (step 2 is unreachable)
+      // Only step 1 should have been prompted (step 2's dep not done)
       expect(mockPrompt).toHaveBeenCalledOnce();
     });
 
@@ -506,6 +507,123 @@ describe("agent-executor", () => {
       expect(step.turnsUsed).toBe(1);
     });
 
+    it("resumes a blocked task when session has a matching answer", async () => {
+      const step = makeStep({ id: "1", description: "Setup DB" });
+      // Pre-set the step as blocked (simulating a previous run that parked it)
+      step.status = "blocked";
+      step.blockedReason = "user_input";
+      step.blockedQuestion = "What database?";
+      step.turnsUsed = 2;
+
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+      // Provide the answer
+      session.answers["task:1:input"] = "PostgreSQL";
+
+      mockPrompt.mockImplementation(async () => {
+        mockCompleteSignal = { summary: "DB set up with PostgreSQL" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-run-resume-1",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("done");
+      expect(step.status).toBe("done");
+      expect(step.taskSummary).toBe("DB set up with PostgreSQL");
+      // turnsUsed should be reset (fresh turns for resumed task)
+      expect(step.turnsUsed).toBe(1);
+      expect(mockPrompt).toHaveBeenCalledOnce();
+    });
+
+    it("injects user answer into the prompt for a resumed blocked task", async () => {
+      const step = makeStep({ id: "1", description: "Configure server" });
+      step.status = "blocked";
+      step.blockedReason = "user_input";
+      step.blockedQuestion = "Which port?";
+
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+      session.answers["task:1:input"] = "8080";
+
+      let capturedPrompt = "";
+      mockPrompt.mockImplementation(async (prompt: string) => {
+        capturedPrompt = prompt;
+        mockCompleteSignal = { summary: "Server configured on port 8080" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      await executeGoalWithAgent({
+        session,
+        runId: "test-run-resume-2",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(capturedPrompt).toContain("Which port?");
+      expect(capturedPrompt).toContain("8080");
+      expect(capturedPrompt).toContain("Continue working on this task");
+    });
+
+    it("resumes blocked task with aggregated multi-task answer key", async () => {
+      const step1 = makeStep({ id: "1", description: "Step 1" });
+      step1.status = "blocked";
+      step1.blockedReason = "user_input";
+      step1.blockedQuestion = "Need info for step 1";
+
+      const step2 = makeStep({ id: "2", description: "Step 2" });
+      step2.status = "blocked";
+      step2.blockedReason = "user_input";
+      step2.blockedQuestion = "Need info for step 2";
+
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+      // Aggregated answer key for multiple blocked tasks
+      session.answers["tasks:1,2:input"] = "Use defaults for both";
+
+      mockPrompt.mockImplementation(async () => {
+        mockCompleteSignal = { summary: "Done" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-run-resume-3",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("done");
+      expect(step1.status).toBe("done");
+      expect(step2.status).toBe("done");
+      // Both tasks should have been prompted
+      expect(mockPrompt).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not resume blocked tasks without an answer", async () => {
+      const step = makeStep({ id: "1", description: "Step 1" });
+      step.status = "blocked";
+      step.blockedReason = "user_input";
+      step.blockedQuestion = "What DB?";
+
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+      // No answer provided
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-run-resume-4",
+        workingDir: "/tmp/ws",
+      });
+
+      // Should still be blocked — no answer means not runnable
+      expect(result.status).toBe("blocked");
+      expect(step.status).toBe("blocked");
+      expect(mockPrompt).not.toHaveBeenCalled();
+    });
+
     it("goal does not report DONE when any task is blocked", async () => {
       const step1 = makeStep({ id: "1", description: "Step 1" });
       const step2 = makeStep({ id: "2", description: "Step 2" });
@@ -539,6 +657,155 @@ describe("agent-executor", () => {
       expect(step2.status).toBe("done");
       // "DONE" must not appear in progress
       expect(progress.every((p) => !p.startsWith("DONE"))).toBe(true);
+    });
+
+    // -----------------------------------------------------------------------
+    // 4-step plan: step3 blocks, step4 depends on step3, user answer resumes
+    // -----------------------------------------------------------------------
+
+    it("4-step plan: answer 'yes' → all 4 tasks complete, no skipped", async () => {
+      const step1 = makeStep({ id: "1", description: "Read config" });
+      const step2 = makeStep({ id: "2", description: "Validate config" });
+      const step3 = makeStep({
+        id: "3",
+        description: "Confirm delete",
+        dependsOn: ["1", "2"],
+      });
+      const step4 = makeStep({
+        id: "4",
+        description: "Write artifact",
+        dependsOn: ["3"],
+      });
+      const plan = makePlan([step1, step2, step3, step4]);
+      const session = makeSession(plan);
+
+      // Phase 1: steps 1 and 2 complete, step 3 blocks asking a question
+      let promptIdx = 0;
+      mockPrompt.mockImplementation(async () => {
+        promptIdx++;
+        if (promptIdx <= 2) {
+          // Steps 1 and 2: complete
+          mockCompleteSignal = { summary: `Step ${promptIdx} done` };
+        } else if (promptIdx === 3) {
+          // Step 3: blocks asking user
+          mockBlockedSignal = { question: "Delete tmp_block_test? yes or no" };
+        }
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result1 = await executeGoalWithAgent({
+        session,
+        runId: "test-4step-yes",
+        workingDir: "/tmp/ws",
+      });
+
+      // After phase 1: steps 1,2 done, step 3 blocked, step 4 pending (NOT skipped)
+      expect(step1.status).toBe("done");
+      expect(step2.status).toBe("done");
+      expect(step3.status).toBe("blocked");
+      expect(step4.status).toBe("pending");
+      expect(result1.status).toBe("blocked");
+
+      // Phase 2: user answers "yes", resume execution
+      session.answers["task:3:input"] = "yes";
+
+      promptIdx = 0;
+      mockPrompt.mockImplementation(async (prompt: string) => {
+        promptIdx++;
+        if (promptIdx === 1) {
+          // Step 3 resumed: completes with "deleted"
+          expect(prompt).toContain("yes");
+          mockCompleteSignal = { summary: "Confirmed deletion" };
+        } else if (promptIdx === 2) {
+          // Step 4: writes artifact based on the answer
+          mockCompleteSignal = { summary: "Wrote: deleted" };
+        }
+      });
+
+      const result2 = await executeGoalWithAgent({
+        session,
+        runId: "test-4step-yes",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result2.status).toBe("done");
+      expect(step3.status).toBe("done");
+      expect(step4.status).toBe("done");
+      // Verify summary shows 4/4, no "skipped"
+      if (result2.status === "done") {
+        expect(result2.summary).toContain("4/4");
+        expect(result2.summary).not.toContain("skipped");
+      }
+    });
+
+    it("4-step plan: answer 'no' → all 4 tasks complete, no skipped", async () => {
+      const step1 = makeStep({ id: "1", description: "Read config" });
+      const step2 = makeStep({ id: "2", description: "Validate config" });
+      const step3 = makeStep({
+        id: "3",
+        description: "Confirm delete",
+        dependsOn: ["1", "2"],
+      });
+      const step4 = makeStep({
+        id: "4",
+        description: "Write artifact",
+        dependsOn: ["3"],
+      });
+      const plan = makePlan([step1, step2, step3, step4]);
+      const session = makeSession(plan);
+
+      // Phase 1: steps 1 and 2 complete, step 3 blocks
+      let promptIdx = 0;
+      mockPrompt.mockImplementation(async () => {
+        promptIdx++;
+        if (promptIdx <= 2) {
+          mockCompleteSignal = { summary: `Step ${promptIdx} done` };
+        } else if (promptIdx === 3) {
+          mockBlockedSignal = { question: "Delete tmp_block_test? yes or no" };
+        }
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result1 = await executeGoalWithAgent({
+        session,
+        runId: "test-4step-no",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(step3.status).toBe("blocked");
+      expect(step4.status).toBe("pending");
+      expect(result1.status).toBe("blocked");
+
+      // Phase 2: user answers "no", resume execution
+      session.answers["task:3:input"] = "no";
+
+      promptIdx = 0;
+      mockPrompt.mockImplementation(async (prompt: string) => {
+        promptIdx++;
+        if (promptIdx === 1) {
+          // Step 3 resumed with "no" answer
+          expect(prompt).toContain("no");
+          mockCompleteSignal = { summary: "Skipped deletion" };
+        } else if (promptIdx === 2) {
+          // Step 4: writes artifact based on "no" answer
+          mockCompleteSignal = { summary: "Wrote: kept" };
+        }
+      });
+
+      const result2 = await executeGoalWithAgent({
+        session,
+        runId: "test-4step-no",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result2.status).toBe("done");
+      expect(step3.status).toBe("done");
+      expect(step4.status).toBe("done");
+      // Verify summary shows 4/4, no "skipped"
+      if (result2.status === "done") {
+        expect(result2.summary).toContain("4/4");
+        expect(result2.summary).not.toContain("skipped");
+      }
     });
   });
 });

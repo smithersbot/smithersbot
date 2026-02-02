@@ -1,7 +1,8 @@
 import { JsonExitError } from "../cli/cli-utils.js";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
-import type { OutputFormat } from "../goal/types.js";
+import type { GoalOutcome, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { goalResumeCommand } from "./goal-resume.js";
 
 export type GoalAnswerOptions = {
   key: string;
@@ -23,7 +24,7 @@ export async function goalAnswerCommand(
   runId: string,
   opts: GoalAnswerOptions,
   runtime: RuntimeEnv,
-): Promise<void> {
+): Promise<GoalOutcome | undefined> {
   const isJson = resolveIsJson(opts);
 
   const resolvedId = resolveRunId(runId);
@@ -77,19 +78,34 @@ export async function goalAnswerCommand(
   }
 
   // Persist the answer and transition state
+  const wasBlocked = run.state === "blocked";
   run.answers[opts.key] = opts.value;
   run.blocked = null;
   run.state = "executing";
   run.updatedAt = new Date().toISOString();
   saveRun(run);
 
+  if (!isJson) {
+    runtime.log(`Answer saved for key "${opts.key}".`);
+    runtime.log(`Warning: ${PLAINTEXT_WARNING}`);
+  }
+
+  // Auto-resume execution for blocked (execution-time) runs
+  if (wasBlocked) {
+    if (!isJson) runtime.log("");
+    const outcome = await goalResumeCommand(
+      resolvedId,
+      { yes: true, json: isJson, output: opts.output },
+      runtime,
+    );
+    return outcome;
+  }
+
+  // needs_clarification: just confirm the answer was saved (planning resumes separately)
   if (isJson) {
     runtime.log(
       JSON.stringify({ status: "answered", key: opts.key, warning: PLAINTEXT_WARNING }, null, 2),
     );
-  } else {
-    runtime.log(`Answer saved for key "${opts.key}".`);
-    runtime.log(`Warning: ${PLAINTEXT_WARNING}`);
-    runtime.log(`Resume: moltbot goal resume ${run.runId.slice(0, 8)} --yes`);
   }
+  return undefined;
 }
