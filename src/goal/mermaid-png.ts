@@ -10,8 +10,8 @@ import { warn } from "../globals.js";
 const PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR ?? path.join(userInfo().homedir, ".cache", "puppeteer");
 
-/** Dark background matching the Telegram dark-theme chat area. */
-export const MERMAID_PNG_BACKGROUND = "#0B1220";
+/** Transparent background so the PNG blends with any chat theme. */
+export const MERMAID_PNG_BACKGROUND = "transparent";
 
 /** mmdc config: fontFamily must be set here (init directives don't propagate in mmdc v11). */
 const MERMAID_CONFIG = {

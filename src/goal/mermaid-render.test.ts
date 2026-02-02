@@ -71,6 +71,28 @@ describe("normalizeLabel", () => {
   it("handles empty string", () => {
     expect(normalizeLabel("")).toBe("");
   });
+
+  it("converts 'Write file X containing Y' to 'Write X'", () => {
+    expect(normalizeLabel("write-a-txt. Write file a.txt containing 'A'")).toBe("Write a.txt");
+  });
+
+  it("converts 'Write file X containing Y' after numeric prefix", () => {
+    expect(normalizeLabel("1. Write file a.txt containing 'A'")).toBe("Write a.txt");
+  });
+
+  it("strips trailing 'step' after letter prefix", () => {
+    expect(normalizeLabel("A. Do the cleanup step")).toBe("Do the cleanup");
+  });
+
+  it("converts 'Ask user yes/no question about creating X' to 'Ask: create X?'", () => {
+    expect(normalizeLabel("Ask user yes/no question about creating b.txt")).toBe(
+      "Ask: create b.txt?",
+    );
+  });
+
+  it("strips 'containing' suffix and 'if user answered yes'", () => {
+    expect(normalizeLabel("Create b.txt containing 'B' if user answered yes")).toBe("Create b.txt");
+  });
 });
 
 describe("topologicalSort", () => {
@@ -113,6 +135,18 @@ describe("topologicalSort", () => {
     expect(sorted.indexOf("B")).toBeLessThan(sorted.indexOf("D"));
     expect(sorted.indexOf("C")).toBeLessThan(sorted.indexOf("D"));
   });
+
+  it("emits labels 1., 2., 3. in topo order for out-of-order input", () => {
+    const plan = makePlan([
+      step({ id: "C", dependsOn: ["B"], description: "Third" }),
+      step({ id: "A", description: "First" }),
+      step({ id: "B", dependsOn: ["A"], description: "Second" }),
+    ]);
+    const out = renderMermaid(plan);
+    expect(out).toContain('A["1. First"]');
+    expect(out).toContain('B["2. Second"]');
+    expect(out).toContain('C["3. Third"]');
+  });
 });
 
 describe("renderMermaid", () => {
@@ -142,7 +176,7 @@ describe("renderMermaid", () => {
     ]);
 
     const out = renderMermaid(plan);
-    expect(out).toContain("graph TD");
+    expect(out).toContain("flowchart TD");
     expect(out).toContain("1. Create dir");
     expect(out).not.toContain("(mkdir)");
     expect(out).toContain("2. Write file");
@@ -170,7 +204,7 @@ describe("renderMermaid", () => {
     ]);
 
     const out = renderMermaid(plan);
-    expect(out).toContain("graph TD");
+    expect(out).toContain("flowchart TD");
     expect(out).not.toContain("-->");
   });
 
@@ -318,8 +352,8 @@ describe("renderMermaid", () => {
     const cpm = computeCpm(plan);
     const out = renderMermaid(plan, cpm);
     // Edges: A→B (index 0), A→C (index 1). A and B are critical; C is not.
-    expect(out).toContain("linkStyle 0 stroke:#334155,stroke-width:4px;");
-    expect(out).not.toContain("linkStyle 1 stroke:#334155,stroke-width:4px;");
+    expect(out).toContain("linkStyle 0 stroke:#718096,stroke-width:4px;");
+    expect(out).not.toContain("linkStyle 1 stroke:#718096,stroke-width:4px;");
   });
 
   it("critical-path linkStyle indices correct for diamond graph", () => {
@@ -361,10 +395,10 @@ describe("renderMermaid", () => {
     const cpm = computeCpm(plan);
     const out = renderMermaid(plan, cpm);
     // Edges emitted in order: A→B(0), A→C(1), B→D(2), C→D(3) — all critical
-    expect(out).toContain("linkStyle 0 stroke:#334155,stroke-width:4px;");
-    expect(out).toContain("linkStyle 1 stroke:#334155,stroke-width:4px;");
-    expect(out).toContain("linkStyle 2 stroke:#334155,stroke-width:4px;");
-    expect(out).toContain("linkStyle 3 stroke:#334155,stroke-width:4px;");
+    expect(out).toContain("linkStyle 0 stroke:#718096,stroke-width:4px;");
+    expect(out).toContain("linkStyle 1 stroke:#718096,stroke-width:4px;");
+    expect(out).toContain("linkStyle 2 stroke:#718096,stroke-width:4px;");
+    expect(out).toContain("linkStyle 3 stroke:#718096,stroke-width:4px;");
   });
 
   describe("execution status styling", () => {
@@ -414,11 +448,11 @@ describe("renderMermaid", () => {
         ["D", "in_progress"],
       ]);
       const out = renderMermaid(statusPlan, undefined, statuses);
-      expect(out).toContain("classDef blocked fill:#3F0B15");
-      expect(out).toContain("classDef waiting fill:#111827");
+      expect(out).toContain("classDef blocked fill:#450a0a");
+      expect(out).toContain("classDef waiting fill:#4C1D95");
       expect(out).toContain("classDef inprog fill:#1F2937");
-      expect(out).toContain("classDef done fill:#052E1B");
-      expect(out).toContain("classDef pending fill:#0F172A");
+      expect(out).toContain("classDef done fill:#3F4F3A");
+      expect(out).toContain("classDef pending fill:#2D3748");
     });
 
     it("assigns per-node class matching the status map", () => {
@@ -568,7 +602,7 @@ describe("renderMermaid", () => {
     ]);
     const out = renderMermaid(plan);
     expect(out).toContain("%%{init:");
-    expect(out).toContain('"theme":"dark"');
+    expect(out).toContain('"theme": "base"');
     expect(out).toContain("linkStyle default");
   });
 
@@ -584,7 +618,7 @@ describe("renderMermaid", () => {
     ]);
     const out = renderMermaid(plan);
     const initIdx = out.indexOf("%%{init:");
-    const graphIdx = out.indexOf("graph TD");
+    const graphIdx = out.indexOf("flowchart TD");
     const classDefIdx = out.indexOf("classDef pending");
     expect(initIdx).toBeLessThan(graphIdx);
     expect(graphIdx).toBeLessThan(classDefIdx);
@@ -601,6 +635,6 @@ describe("renderMermaid", () => {
       },
     ]);
     const out = renderMermaid(plan);
-    expect(out).toMatch(/fontFamily.*sans-serif"/);
+    expect(out).toMatch(/fontFamily.*serif"/);
   });
 });

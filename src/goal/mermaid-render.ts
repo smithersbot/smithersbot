@@ -4,28 +4,29 @@ import type { Plan, PlanStep } from "./types.js";
 
 /** Init directive — must precede the graph declaration. */
 const INIT_DIRECTIVE = [
-  `%%{init:{`,
-  `  "theme":"dark",`,
-  `  "flowchart":{"curve":"basis","nodeSpacing":28,"rankSpacing":44},`,
-  `  "themeVariables":{`,
-  `    "fontFamily":"Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Noto Sans, DejaVu Sans, Liberation Sans, Arial, sans-serif",`,
-  `    "fontSize":"16px",`,
-  `    "lineColor":"#334155",`,
-  `    "primaryTextColor":"#E5E7EB",`,
-  `    "primaryBorderColor":"#334155"`,
+  `%%{init: {`,
+  `  "theme": "base",`,
+  `  "themeVariables": {`,
+  `    "fontFamily": "Times New Roman, Times, serif",`,
+  `    "fontSize": "18px",`,
+  `    "primaryColor": "#fff",`,
+  `    "primaryTextColor": "#fff",`,
+  `    "lineColor": "#A1A1AA"`,
   `  }`,
   `}}%%`,
 ].join("\n");
 
-/** Graph-level style definitions — must follow `graph TD`. */
-const GRAPH_STYLES = [
-  `  classDef pending fill:#0F172A,stroke:#334155,color:#E5E7EB,stroke-width:2px,rx:14,ry:14;`,
-  `  classDef done fill:#052E1B,stroke:#22C55E,color:#BBF7D0,stroke-width:2px,rx:14,ry:14;`,
-  `  classDef blocked fill:#3F0B15,stroke:#EF4444,color:#FECDD3,stroke-width:2px,rx:14,ry:14;`,
-  `  classDef waiting fill:#111827,stroke:#475569,color:#CBD5E1,stroke-width:2px,rx:14,ry:14;`,
-  `  classDef inprog fill:#1F2937,stroke:#A855F7,color:#E9D5FF,stroke-width:2px,rx:14,ry:14;`,
-  `  linkStyle default stroke:#334155,stroke-width:2px;`,
+/** Class definitions for each execution status. */
+const CLASS_DEFS = [
+  `classDef pending fill:#2D3748,stroke:#718096,stroke-width:2px,color:#CBD5E0,stroke-dasharray: 5 5;`,
+  `classDef waiting fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF;`,
+  `classDef done fill:#3F4F3A,stroke:#84CC16,stroke-width:3px,color:#ECFCCB;`,
+  `classDef blocked fill:#450a0a,stroke:#EF4444,stroke-width:4px,color:#FECACA,stroke-dasharray: 8 4;`,
+  `classDef inprog fill:#1F2937,stroke:#A855F7,color:#E9D5FF,stroke-width:2px,rx:14,ry:14;`,
 ].join("\n");
+
+/** Default link style applied to all edges. */
+const LINK_STYLE_DEFAULT = `linkStyle default stroke:#718096,stroke-width:2px,fill:none;`;
 
 const STATUS_CLASS: Record<ExecutionDisplayStatus, string> = {
   done: "done",
@@ -66,6 +67,22 @@ export function normalizeLabel(raw: string): string {
   s = s.replace(/^[A-Za-z0-9][\w-]*[.)]\s*/, "");
   // Also strip "A-" style prefix (single letter/digit dash)
   s = s.replace(/^[A-Za-z0-9]-\s*/, "");
+
+  // "Ask user yes/no question about X" → "Ask: X?"
+  s = s.replace(
+    /^Ask(?:\s+(?:the\s+)?user)?\s+(?:a\s+)?(?:yes\/no\s+)?question\s+about\s+(.+)/i,
+    (_m, topic) => {
+      let t = topic.trim();
+      t = t.replace(/^creating\b/i, "create");
+      return `Ask: ${t}${t.endsWith("?") ? "" : "?"}`;
+    },
+  );
+
+  // "Write file X containing Y" → "Write X"
+  s = s.replace(/^Write file\s+(\S+)\s+containing\b.*/i, "Write $1");
+
+  // Generic "containing ..." suffix strip
+  s = s.replace(/\s+containing\b.*$/i, "");
 
   // Strip verbose filler phrases (case-insensitive)
   s = s.replace(/\s+in parallel\b/gi, "");
@@ -141,7 +158,7 @@ export function renderMermaid(
   cpm?: CpmResult,
   displayStatuses?: Map<string, ExecutionDisplayStatus>,
 ): string {
-  const lines: string[] = [INIT_DIRECTIVE, "", "graph TD", GRAPH_STYLES];
+  const lines: string[] = [INIT_DIRECTIVE, "", "flowchart TD"];
 
   // Compute topo-sorted numeric labels: stepId → 1-based number
   const topoOrder = topologicalSort(plan.steps);
@@ -175,15 +192,19 @@ export function renderMermaid(
     }
   }
 
-  // Critical path edge styling
-  for (const idx of criticalEdgeIndices) {
-    lines.push(`  linkStyle ${idx} stroke:#334155,stroke-width:4px;`);
-  }
+  // classDefs + linkStyle default
+  lines.push(CLASS_DEFS);
+  lines.push(LINK_STYLE_DEFAULT);
 
   // Per-node status class assignment (always applied; defaults to pending)
   for (const step of plan.steps) {
     const status = displayStatuses?.get(step.id) ?? "pending";
     lines.push(`  class ${step.id} ${STATUS_CLASS[status]};`);
+  }
+
+  // Critical-path linkStyle overrides (same stroke color, thicker width)
+  for (const idx of criticalEdgeIndices) {
+    lines.push(`  linkStyle ${idx} stroke:#718096,stroke-width:4px;`);
   }
 
   return lines.join("\n");
