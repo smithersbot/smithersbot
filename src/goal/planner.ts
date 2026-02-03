@@ -1,47 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { GoalLlmError } from "./errors.js";
-import type { GoalLlmClient, Plan, PlanStep, ToolName } from "./types.js";
+import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 
-const VALID_TOOLS: Set<string> = new Set<string>([
-  "file_read",
-  "file_write",
-  "file_modify",
-  "mkdir",
-  "git_add",
-  "npm_init",
-  "shell_exec",
-  "request_user_input",
-]);
+const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
-const SHELL_READ_ONLY_ALLOWLIST: readonly string[] = [
-  "ls",
-  "cat",
-  "git status",
-  "git diff",
-  "git log",
-];
+Each step describes a task that an autonomous coding agent will carry out. The agent has full access to the filesystem, shell commands (bash), and can read/write/edit files. Within a single turn the agent can chain as many tool calls as it needs — read dozens of files, edit many, run builds and tests — so each step can encompass substantial work. You do NOT need to specify tools — just describe what to do.
 
-const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, generate a structured execution plan as JSON.
+GRANULARITY RULES (strict):
+- Default to 3–7 steps for most goals. Only exceed 7 for genuinely large, multi-component efforts.
+- Each step is a shippable milestone: it starts from exploration/understanding, includes implementation, and ends with verification (tests pass, build succeeds, or a smoke check).
+- Target 30–120 minutes of real work per step, not 5–10 minutes.
+- DO NOT create separate steps for "explore the repo", "understand the code", "read the files", or "plan the approach". Fold exploration and understanding into the implementation step that needs it.
+- DO NOT split "write code" and "write tests" into separate steps. Implementation + tests belong in the same step.
+- DO NOT create a standalone "run tests" or "verify" step at the end. Each step must verify its own work before completing.
+- When in doubt, merge steps. Fewer, meatier steps are always better than many tiny ones.
 
-Each step must use exactly one tool from: file_read, file_write, file_modify, mkdir, git_add, npm_init, shell_exec, request_user_input.
-
-Tool argument schemas:
-- file_read: { "path": "<relative-path>" }
-- file_write: { "path": "<relative-path>", "content": "<file-contents>" }
-- file_modify: { "path": "<relative-path>", "search": "<text-to-find>", "replace": "<replacement>" }
-- mkdir: { "path": "<relative-path>" }
-- git_add: { "paths": "<space-separated-relative-paths>" }
-- npm_init: { "directory": "<relative-path>" }
-- shell_exec: { "command": "<read-only-command>" }
-  Allowed shell_exec commands (read-only): ls, cat, git status, git diff, git log
-- request_user_input: { "question": "<exact question to ask the user>" }
-  Use this when a step must pause and wait for the user's answer before continuing.
-  NEVER use shell_exec with echo/printf/read to interact with the user.
-  NEVER use shell_exec for any kind of user prompting or printing messages.
-
-All file paths are relative to the workspace root.
+Step schema:
+- id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
+- description: clear, actionable description of what the agent should do, including what "done" looks like
+- dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
+- durationMinutes: estimated duration in minutes (integer, 30–120 typical)
 
 Respond ONLY with a JSON object (no markdown fences) matching this schema:
 {
@@ -49,9 +29,9 @@ Respond ONLY with a JSON object (no markdown fences) matching this schema:
   "steps": [
     {
       "id": "unique-step-id",
-      "description": "What this step does",
+      "description": "What this step does and how to verify it is done",
       "dependsOn": ["step-ids-that-must-complete-first"],
-      "tool": { "name": "tool_name", "args": { ... } }
+      "durationMinutes": 45
     }
   ]
 }
@@ -71,14 +51,19 @@ export class PlanParseError extends Error {
   }
 }
 
-/** Write raw LLM response to run directory for post-mortem debugging. */
-export function persistRawPlanResponse(runId: string, rawText: string): void {
+/** Write raw LLM response for post-mortem debugging. Returns the file path on success. */
+export function persistRawPlanResponse(runId: string, rawText: string): string | undefined {
   try {
     const runDir = resolveRunDir(runId);
     if (!fs.existsSync(runDir)) fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(runDir, "plan-raw.txt"), rawText, "utf8");
+    const filePath = path.join(runDir, "plan-raw.txt");
+    fs.writeFileSync(filePath, rawText, "utf8");
+
+    console.error(`[goal] Plan parse failed. Raw LLM output saved to:\n  ${filePath}`);
+    return filePath;
   } catch {
     // Best-effort; don't mask the original error.
+    return undefined;
   }
 }
 
@@ -164,43 +149,16 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
 
     const dependsOn = Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [];
 
-    const tool = step.tool as Record<string, unknown> | undefined;
-    if (!tool || typeof tool.name !== "string") {
-      throw new Error(`Step ${id}: tool with name is required`);
-    }
-    if (!VALID_TOOLS.has(tool.name)) {
-      throw new Error(`Step ${id}: unknown tool "${tool.name}"`);
-    }
-
-    // Validate shell_exec against read-only allowlist at plan time
-    if (tool.name === "shell_exec") {
-      const args = (tool.args ?? {}) as Record<string, string>;
-      const cmd = (args.command ?? "").trim();
-      const allowed = SHELL_READ_ONLY_ALLOWLIST.some(
-        (prefix) => cmd === prefix || cmd.startsWith(`${prefix} `),
-      );
-      if (!allowed) {
-        throw new Error(`Step ${id}: shell_exec command not in read-only allowlist: "${cmd}"`);
-      }
-    }
-
-    // Validate request_user_input requires a question string
-    if (tool.name === "request_user_input") {
-      const args = (tool.args ?? {}) as Record<string, string>;
-      if (!args.question || typeof args.question !== "string") {
-        throw new Error(`Step ${id}: request_user_input requires a "question" argument`);
-      }
-    }
+    const rawDuration = step.durationMinutes;
+    const durationMinutes =
+      typeof rawDuration === "number" && rawDuration > 0 ? Math.round(rawDuration) : undefined;
 
     steps.push({
       id,
       description,
       dependsOn,
-      tool: {
-        name: tool.name as ToolName,
-        args: (tool.args ?? {}) as Record<string, string>,
-      },
       status: "pending",
+      durationMinutes,
     });
   }
 
@@ -236,7 +194,7 @@ export async function generatePlanRevision(
         id: s.id,
         description: s.description,
         dependsOn: s.dependsOn,
-        tool: s.tool,
+        durationMinutes: s.durationMinutes,
       })),
     },
     null,
