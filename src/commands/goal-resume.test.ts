@@ -96,8 +96,8 @@ const samplePlan: Plan = {
       id: "1",
       description: "Create dir",
       dependsOn: [],
-      tool: { name: "mkdir", args: { path: "out" } },
       status: "pending",
+      durationMinutes: 1,
     },
   ],
 };
@@ -427,8 +427,8 @@ describe("goal-resume command", () => {
           id: "1",
           description: "Create dir",
           dependsOn: [],
-          tool: { name: "mkdir", args: { path: "out" } },
           status: "done",
+          durationMinutes: 1,
         },
       ],
     };
@@ -469,8 +469,8 @@ describe("goal-resume command", () => {
           id: "1",
           description: "Create dir",
           dependsOn: [],
-          tool: { name: "mkdir", args: { path: "out" } },
           status: "done",
+          durationMinutes: 1,
         },
       ],
     };

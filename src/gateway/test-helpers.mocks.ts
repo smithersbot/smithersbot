@@ -232,15 +232,26 @@ vi.mock("@mariozechner/pi-coding-agent", async () => {
     "@mariozechner/pi-coding-agent",
   );
 
-  return {
-    ...actual,
-    discoverModels: (...args: unknown[]) => {
+  const OrigModelRegistry = actual.ModelRegistry;
+  // Use a Proxy to intercept ModelRegistry construction when mocking is enabled
+  const MockModelRegistry = new Proxy(OrigModelRegistry, {
+    construct(target, args) {
       if (!piSdkMock.enabled) {
-        return (actual.discoverModels as (...args: unknown[]) => unknown)(...args);
+        return Reflect.construct(target, args);
       }
       piSdkMock.discoverCalls += 1;
-      return piSdkMock.models;
+      const mockModels = piSdkMock.models;
+      return {
+        getAll: () => mockModels,
+        getAvailable: () => [],
+        find: () => undefined,
+        authStorage: args[0],
+      };
     },
+  });
+  return {
+    ...actual,
+    ModelRegistry: MockModelRegistry,
   };
 });
 

@@ -6,7 +6,6 @@ function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
   return {
     description: `Step ${overrides.id}`,
     dependsOn: [],
-    tool: { name: "mkdir", args: {} },
     status: "pending",
     ...overrides,
   };

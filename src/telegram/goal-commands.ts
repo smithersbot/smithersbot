@@ -245,7 +245,7 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
       const errors = cap.getErrors();
       return { text: errors || logs || "Goal command failed." };
     }
-    return { text: formatGoalError(err) };
+    return { text: formatGoalError(err, runId) };
   }
 }
 
@@ -298,7 +298,7 @@ export async function handleGoalApprove(
       const errors = cap.getErrors();
       return errors || "Approve command failed.";
     }
-    return formatGoalError(err);
+    return formatGoalError(err, resolvedId);
   }
 }
 
@@ -420,7 +420,7 @@ export async function handleGoalAnswer(
       if (err instanceof PlanParseError) {
         persistRawPlanResponse(resolvedId, err.rawResponse);
       }
-      return formatGoalError(err);
+      return formatGoalError(err, resolvedId);
     }
   }
 
@@ -451,7 +451,7 @@ export async function handleGoalAnswer(
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || "Answer command failed.";
     }
-    return formatGoalError(err);
+    return formatGoalError(err, resolvedId);
   }
 }
 
@@ -538,7 +538,7 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
     if (err instanceof PlanParseError) {
       persistRawPlanResponse(resolvedId, err.rawResponse);
     }
-    return { text: formatGoalError(err) };
+    return { text: formatGoalError(err, resolvedId) };
   }
 }
 

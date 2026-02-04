@@ -105,6 +105,7 @@
 
 ## Troubleshooting
 - Rebrand/migration issues or legacy config/service warnings: run `moltbot doctor` (see `docs/gateway/doctor.md`).
+- Goal planner debug logs: when `/new_goal` fails to parse the LLM response, the raw output is saved per-run at `~/.moltbot/goals/<runId>/plan-raw.txt`. List recent failures with `ls -lt ~/.moltbot/goals/*/plan-raw.txt`. The gateway stderr also logs the path.
 
 ## Agent-Specific Notes
 - Vocabulary: "makeup" = "mac app".

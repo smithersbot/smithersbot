@@ -11,6 +11,7 @@ import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
+import { runScout, type ScoutResult } from "../goal/scout.js";
 import type { DiagramMode, GoalOutcome, GoalSession, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -29,6 +30,8 @@ export type GoalCommandOptions = {
   planOnly?: boolean;
   /** Use this run ID instead of generating a new one. */
   runId?: string;
+  /** Skip the scout pre-pass (claude -p codebase analysis). */
+  noScout?: boolean;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -113,7 +116,45 @@ export async function goalCommand(
       modelOverride: opts.model,
     });
 
-    // Phase 1: Planning
+    // Phase 0: Scout pre-pass (optional, best-effort)
+    let scoutData: ScoutResult | undefined;
+    if (!opts.noScout) {
+      const scoutProgress = createCliProgress({
+        label: "Running scout analysis...",
+        indeterminate: true,
+        enabled: !isJson,
+      });
+      try {
+        scoutData = await runScout({ runId, goalText: goal });
+        if (scoutData.status === "blocked") {
+          // Scout needs clarification — surface as needs_clarification
+          session.state = "needs_clarification";
+          session.blocked = {
+            prompt: scoutData.question,
+            requiredInputKey: "step:planning:input",
+          };
+          persistRun();
+          const outcome: GoalOutcome = {
+            status: "needs_clarification",
+            question: scoutData.question,
+            requiredInputKey: "step:planning:input",
+          };
+          if (isJson) {
+            runtime.log(JSON.stringify(outcome, null, 2));
+          } else {
+            runtime.log(`\nCLARIFICATION NEEDED: ${scoutData.question}`);
+          }
+          return outcome;
+        }
+        if (scoutData.status === "error" && !isJson) {
+          runtime.log(`Scout error (falling back to blind planner): ${scoutData.error}`);
+        }
+      } finally {
+        scoutProgress.done();
+      }
+    }
+
+    // Phase 1: Planning (enriched with scout data when available)
     session.state = "planning";
     let planResult;
     {
@@ -123,7 +164,7 @@ export async function goalCommand(
         enabled: !isJson,
       });
       try {
-        planResult = await generatePlan(client, goal);
+        planResult = await generatePlan(client, goal, scoutData);
       } finally {
         progress.done();
       }

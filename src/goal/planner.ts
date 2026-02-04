@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { GoalLlmError } from "./errors.js";
+import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 
@@ -67,12 +68,39 @@ export function persistRawPlanResponse(runId: string, rawText: string): string |
   }
 }
 
-export async function generatePlan(client: GoalLlmClient, goal: string): Promise<PlanResult> {
+/** Build the user message for the planner, optionally enriched with scout data. */
+export function buildPlannerUserMessage(goal: string, scoutData?: ScoutResult): string {
+  if (!scoutData || scoutData.status !== "success") {
+    return `Goal: ${goal}`;
+  }
+
+  const lines: string[] = [`Goal: ${goal}`];
+  lines.push("");
+  lines.push("--- Scout Report (pre-analysis by Claude Code) ---");
+  lines.push(JSON.stringify(scoutData.report, null, 2));
+  lines.push("");
+  lines.push("--- Plan Draft ---");
+  lines.push(scoutData.planDraft);
+  lines.push("---");
+  lines.push("");
+  lines.push(
+    "Use the scout analysis above as your primary reference. " +
+      "Normalize node IDs, descriptions, dependencies, and durations " +
+      "into the JSON plan format. Preserve the dependency graph structure from the scout report.",
+  );
+  return lines.join("\n");
+}
+
+export async function generatePlan(
+  client: GoalLlmClient,
+  goal: string,
+  scoutData?: ScoutResult,
+): Promise<PlanResult> {
   let response;
   try {
     response = await client.complete({
       systemPrompt: PLAN_SYSTEM_PROMPT,
-      userMessage: `Goal: ${goal}`,
+      userMessage: buildPlannerUserMessage(goal, scoutData),
       maxTokens: 8192,
     });
   } catch (err) {

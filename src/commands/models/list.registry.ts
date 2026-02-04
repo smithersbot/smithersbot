@@ -1,5 +1,6 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { discoverAuthStorage, discoverModels } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import path from "node:path";
 
 import { resolveMoltbotAgentDir } from "../../agents/agent-paths.js";
 import type { AuthProfileStore } from "../../agents/auth-profiles.js";
@@ -41,8 +42,8 @@ const hasAuthForProvider = (provider: string, cfg: MoltbotConfig, authStore: Aut
 export async function loadModelRegistry(cfg: MoltbotConfig) {
   await ensureMoltbotModelsJson(cfg);
   const agentDir = resolveMoltbotAgentDir();
-  const authStorage = discoverAuthStorage(agentDir);
-  const registry = discoverModels(authStorage, agentDir);
+  const authStorage = new AuthStorage(path.join(agentDir, "auth.json"));
+  const registry = new ModelRegistry(authStorage, path.join(agentDir, "models.json"));
   const models = registry.getAll() as Model<Api>[];
   const availableModels = registry.getAvailable() as Model<Api>[];
   const availableKeys = new Set(availableModels.map((model) => modelKey(model.provider, model.id)));

@@ -66,7 +66,7 @@ export function renderDag(plan: Plan): string {
     rendered.add(step.id);
 
     const icon = statusChar(step.status);
-    lines.push(`[${icon}] ${step.id}. ${step.description} (${step.tool.name})`);
+    lines.push(`[${icon}] ${step.id}. ${step.description}`);
 
     const children = childrenOf.get(step.id) ?? [];
     if (children.length > 0) {
@@ -110,7 +110,7 @@ export function renderAsciiDependencies(plan: Plan): string {
 
   for (const step of plan.steps) {
     const deps = step.dependsOn.length > 0 ? step.dependsOn.join(", ") : "none";
-    blocks.push(`[ ] ${step.id} (${step.tool.name})\n    deps: ${deps}`);
+    blocks.push(`[ ] ${step.id}\n    deps: ${deps}`);
   }
 
   return blocks.join("\n\n");

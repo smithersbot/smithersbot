@@ -10,12 +10,13 @@ type ModelEntry = { id: string; contextWindow?: number };
 const MODEL_CACHE = new Map<string, number>();
 const loadPromise = (async () => {
   try {
-    const { discoverAuthStorage, discoverModels } = await import("@mariozechner/pi-coding-agent");
+    const { AuthStorage, ModelRegistry } = await import("@mariozechner/pi-coding-agent");
+    const pathMod = await import("node:path");
     const cfg = loadConfig();
     await ensureMoltbotModelsJson(cfg);
     const agentDir = resolveMoltbotAgentDir();
-    const authStorage = discoverAuthStorage(agentDir);
-    const modelRegistry = discoverModels(authStorage, agentDir);
+    const authStorage = new AuthStorage(pathMod.join(agentDir, "auth.json"));
+    const modelRegistry = new ModelRegistry(authStorage, pathMod.join(agentDir, "models.json"));
     const models = modelRegistry.getAll() as ModelEntry[];
     for (const m of models) {
       if (!m?.id) continue;

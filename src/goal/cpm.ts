@@ -20,7 +20,6 @@ export type CpmResult = {
 /** Resolve effective duration for a step. */
 function effectiveDuration(step: PlanStep): number {
   if (step.durationMinutes != null) return Math.round(step.durationMinutes);
-  if (step.tool.name === "shell_exec") return 2;
   return 1;
 }
 

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { type MoltbotConfig, loadConfig } from "../config/config.js";
 import { resolveMoltbotAgentDir } from "./agent-paths.js";
 import { ensureMoltbotModelsJson } from "./models-config.js";
@@ -64,8 +65,8 @@ export async function loadModelCatalog(params?: {
       // will keep failing until restart).
       const piSdk = await importPiSdk();
       const agentDir = resolveMoltbotAgentDir();
-      const authStorage = piSdk.discoverAuthStorage(agentDir);
-      const registry = piSdk.discoverModels(authStorage, agentDir) as
+      const authStorage = new piSdk.AuthStorage(path.join(agentDir, "auth.json"));
+      const registry = new piSdk.ModelRegistry(authStorage, path.join(agentDir, "models.json")) as
         | {
             getAll: () => Array<DiscoveredModel>;
           }

@@ -10,22 +10,22 @@ const samplePlan: Plan = {
       id: "1",
       description: "Create directory",
       dependsOn: [],
-      tool: { name: "mkdir", args: { path: "site" } },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "2",
       description: "Write index.html",
       dependsOn: ["1"],
-      tool: { name: "file_write", args: { path: "site/index.html", content: "<h1>Hi</h1>" } },
       status: "pending",
+      durationMinutes: 2,
     },
     {
       id: "3",
       description: "Stage files",
       dependsOn: ["2"],
-      tool: { name: "git_add", args: { paths: "site/" } },
       status: "pending",
+      durationMinutes: 1,
     },
   ],
 };
@@ -39,22 +39,22 @@ const branchingPlan: Plan = {
       id: "A",
       description: "Root step",
       dependsOn: [],
-      tool: { name: "mkdir", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "B",
       description: "Left branch",
       dependsOn: ["A"],
-      tool: { name: "file_write", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "C",
       description: "Right branch",
       dependsOn: ["A"],
-      tool: { name: "file_write", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
   ],
 };
@@ -68,29 +68,29 @@ const fanInPlan: Plan = {
       id: "A",
       description: "Root",
       dependsOn: [],
-      tool: { name: "mkdir", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "B",
       description: "Left",
       dependsOn: ["A"],
-      tool: { name: "file_write", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "C",
       description: "Right",
       dependsOn: ["A"],
-      tool: { name: "file_write", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
     {
       id: "D",
       description: "Join",
       dependsOn: ["B", "C"],
-      tool: { name: "git_add", args: {} },
       status: "pending",
+      durationMinutes: 1,
     },
   ],
 };
@@ -107,7 +107,7 @@ describe("formatPlanOutput", () => {
       expect(out).toContain("### Dependencies (ASCII)");
       expect(out).toContain("### Dependency Graph (Mermaid)");
       expect(out).toContain("```mermaid");
-      expect(out).toContain("graph TD");
+      expect(out).toContain("flowchart TD");
     });
 
     it("includes only ASCII when diagram=ascii", () => {
@@ -135,7 +135,6 @@ describe("formatPlanOutput", () => {
     it("lists steps with dependencies", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "none", format: "md" });
       expect(out).toContain("**Create directory**");
-      expect(out).toContain("`mkdir`");
       expect(out).toContain("(depends on: none)");
       expect(out).toContain("(depends on: 1)");
     });
@@ -161,34 +160,35 @@ describe("formatPlanOutput", () => {
 
     it("renders branching DAG with correct deps per step", () => {
       const out = formatPlanOutput(branchingPlan, { diagram: "ascii", format: "md" });
-      expect(out).toContain("[ ] A (mkdir)");
-      expect(out).toContain("[ ] B (file_write)");
-      expect(out).toContain("[ ] C (file_write)");
+      expect(out).toContain("[ ] A");
+      expect(out).toContain("[ ] B");
+      expect(out).toContain("[ ] C");
       // A has no deps
-      expect(out).toMatch(/\[ \] A \(mkdir\)\n\s+deps: none/);
+      expect(out).toMatch(/\[ \] A\n\s+deps: none/);
       // B depends on A
-      expect(out).toMatch(/\[ \] B \(file_write\)\n\s+deps: A/);
+      expect(out).toMatch(/\[ \] B\n\s+deps: A/);
       // C depends on A
-      expect(out).toMatch(/\[ \] C \(file_write\)\n\s+deps: A/);
+      expect(out).toMatch(/\[ \] C\n\s+deps: A/);
     });
 
     it("renders fan-in DAG with correct deps per step", () => {
       const out = formatPlanOutput(fanInPlan, { diagram: "ascii", format: "md" });
-      expect(out).toContain("[ ] D (git_add)");
+      expect(out).toContain("[ ] D");
       // D depends on B and C
-      expect(out).toMatch(/\[ \] D \(git_add\)\n\s+deps: B, C/);
+      expect(out).toMatch(/\[ \] D\n\s+deps: B, C/);
     });
 
     it("includes CPM schedule section with total duration and critical path", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "none", format: "md" });
       expect(out).toContain("### Schedule (CPM)");
-      expect(out).toContain("**Total duration:** 3m");
+      expect(out).toContain("**Total duration:** 4m");
       expect(out).toContain("**Critical path:** 1");
     });
 
     it("includes duration markers in step listing", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "none", format: "md" });
       expect(out).toContain("[1m]");
+      expect(out).toContain("[2m]");
     });
 
     it("mermaid diagram includes duration labels when present", () => {
@@ -205,9 +205,9 @@ describe("formatPlanOutput", () => {
       expect(parsed.goal).toBe("Create a landing page");
       expect(parsed.summary).toBe("Build a simple landing page");
       expect(parsed.steps).toHaveLength(3);
-      expect(parsed.diagrams.ascii).toContain("[ ] 1 (mkdir)");
+      expect(parsed.diagrams.ascii).toContain("[ ] 1");
       expect(parsed.diagrams.ascii).toContain("deps:");
-      expect(parsed.diagrams.mermaid).toContain("graph TD");
+      expect(parsed.diagrams.mermaid).toContain("flowchart TD");
     });
 
     it("outputs empty diagrams object when none", () => {
@@ -219,7 +219,7 @@ describe("formatPlanOutput", () => {
     it("outputs only mermaid when diagram=mermaid", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "json" });
       const parsed = JSON.parse(out);
-      expect(parsed.diagrams.mermaid).toContain("graph TD");
+      expect(parsed.diagrams.mermaid).toContain("flowchart TD");
       expect(parsed.diagrams.ascii).toBeUndefined();
     });
 
@@ -245,7 +245,6 @@ describe("formatPlanOutput", () => {
         expect(step.status).toBeUndefined();
         expect(step.id).toBeTruthy();
         expect(step.description).toBeTruthy();
-        expect(step.tool).toBeTruthy();
       }
     });
 
@@ -253,23 +252,23 @@ describe("formatPlanOutput", () => {
       const out = formatPlanOutput(branchingPlan, { diagram: "ascii", format: "json" });
       const parsed = JSON.parse(out);
       const ascii = parsed.diagrams.ascii as string;
-      expect(ascii).toContain("[ ] A (mkdir)");
-      expect(ascii).toMatch(/\[ \] B \(file_write\)\n\s+deps: A/);
-      expect(ascii).toMatch(/\[ \] C \(file_write\)\n\s+deps: A/);
+      expect(ascii).toContain("[ ] A");
+      expect(ascii).toMatch(/\[ \] B\n\s+deps: A/);
+      expect(ascii).toMatch(/\[ \] C\n\s+deps: A/);
     });
 
     it("renders fan-in DAG correctly in JSON ascii", () => {
       const out = formatPlanOutput(fanInPlan, { diagram: "ascii", format: "json" });
       const parsed = JSON.parse(out);
       const ascii = parsed.diagrams.ascii as string;
-      expect(ascii).toMatch(/\[ \] D \(git_add\)\n\s+deps: B, C/);
+      expect(ascii).toMatch(/\[ \] D\n\s+deps: B, C/);
     });
 
     it("includes CPM schedule in JSON output", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "none", format: "json" });
       const parsed = JSON.parse(out);
       expect(parsed.schedule).toBeDefined();
-      expect(parsed.schedule.totalDurationMinutes).toBe(3);
+      expect(parsed.schedule.totalDurationMinutes).toBe(4);
       expect(parsed.schedule.criticalPathStepIds).toEqual(["1", "2", "3"]);
       expect(parsed.schedule.steps["1"].isCritical).toBe(true);
     });
@@ -277,9 +276,9 @@ describe("formatPlanOutput", () => {
     it("includes durationMinutesEffective on each step in JSON", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "none", format: "json" });
       const parsed = JSON.parse(out);
-      for (const step of parsed.steps) {
-        expect(step.durationMinutesEffective).toBe(1);
-      }
+      expect(parsed.steps[0].durationMinutesEffective).toBe(1);
+      expect(parsed.steps[1].durationMinutesEffective).toBe(2);
+      expect(parsed.steps[2].durationMinutesEffective).toBe(1);
     });
 
     it("JSON mermaid diagram contains duration labels", () => {

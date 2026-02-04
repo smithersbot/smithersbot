@@ -60,7 +60,6 @@ const sampleRun: SerializedRun = {
         id: "1",
         description: "Create dir",
         dependsOn: [],
-        tool: { name: "mkdir", args: { path: "x" } },
         status: "done",
       },
     ],

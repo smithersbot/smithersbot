@@ -66,7 +66,6 @@ function makeBlockedRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
           id: "1",
           description: "Create dir",
           dependsOn: [],
-          tool: { name: "mkdir", args: { path: "out" } },
           status: "pending",
         },
       ],

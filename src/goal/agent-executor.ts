@@ -1,9 +1,11 @@
+import path from "node:path";
 import { getModel } from "@mariozechner/pi-ai";
 import {
+  AuthStorage,
   createAgentSession,
   createCodingTools,
-  discoverAuthStorage,
-  discoverModels,
+  DefaultResourceLoader,
+  ModelRegistry,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
@@ -311,8 +313,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   // --- Resolve auth ---
   const agentDir = resolveMoltbotAgentDir();
   await ensureMoltbotModelsJson(config);
-  const authStorage = discoverAuthStorage(agentDir);
-  const modelRegistry = discoverModels(authStorage, agentDir);
+  const authStorage = new AuthStorage(path.join(agentDir, "auth.json"));
+  const modelRegistry = new ModelRegistry(authStorage, path.join(agentDir, "models.json"));
 
   // Set runtime API key from env if available
   const envAuth = resolveEnvApiKey(providerId);
@@ -334,22 +336,30 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     retry: { enabled: true, maxRetries: 2 },
   });
 
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: workingDir,
+    agentDir,
+    settingsManager,
+    systemPrompt: buildGoalSystemPrompt(session.goal, plan),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+  });
+  await resourceLoader.reload();
+
   const { session: piSession } = await createAgentSession({
     cwd: workingDir,
     agentDir,
     model,
     thinkingLevel: "low",
-    systemPrompt: buildGoalSystemPrompt(session.goal, plan),
     tools: createCodingTools(workingDir),
     customTools: goalTools.tools,
     sessionManager: SessionManager.open(sessionFilePath),
     settingsManager,
     authStorage,
     modelRegistry,
-    extensions: [],
-    skills: [],
-    contextFiles: [],
-    promptTemplates: [],
+    resourceLoader,
   });
 
   // Subscribe to events for progress

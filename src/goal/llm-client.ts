@@ -21,10 +21,11 @@ export function createGoalLlmClient(params: {
       const res = await completeSimple(
         model,
         {
+          systemPrompt,
           messages: [
             {
               role: "user",
-              content: `${systemPrompt}\n\n${userMessage}`,
+              content: userMessage,
               timestamp: Date.now(),
             },
           ],
@@ -40,6 +41,17 @@ export function createGoalLlmClient(params: {
         .filter(isTextBlock)
         .map((block) => block.text)
         .join("");
+
+      if (res.errorMessage || res.stopReason === "error") {
+        throw new Error(res.errorMessage || "LLM request failed (no error details)");
+      }
+
+      if (!text) {
+        const blockTypes = res.content.map((b) => b.type).join(", ") || "none";
+        console.error(
+          `[goal] LLM returned no text. blocks=[${blockTypes}] stopReason=${res.stopReason}`,
+        );
+      }
 
       return {
         text,

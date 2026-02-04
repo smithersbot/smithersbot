@@ -16,7 +16,8 @@ export class GoalLlmError extends Error {
 
 const NETWORK_PATTERNS =
   /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|network|EAI_AGAIN/i;
-const AUTH_PATTERNS = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
+const AUTH_PATTERNS =
+  /401|403|unauthorized|forbidden|invalid.*key|authentication|credit balance|billing/i;
 
 /** Classify a raw error into a GoalErrorKind. */
 export function classifyGoalError(err: unknown): GoalErrorKind {
@@ -30,15 +31,19 @@ export function classifyGoalError(err: unknown): GoalErrorKind {
 }
 
 /** Produce a concise, honest user-facing error message. */
-export function formatGoalError(err: unknown): string {
+export function formatGoalError(err: unknown, runId?: string): string {
   const kind = classifyGoalError(err);
   switch (kind) {
     case "network":
       return "Network error reaching the planner API. Check your connection and try again.";
     case "auth":
       return "Authentication failed. Verify your API key is set correctly.";
-    case "parse":
-      return "Failed to parse the planner response. Raw output saved for debugging.";
+    case "parse": {
+      const hint = runId
+        ? `Debug: cat $STATE_DIR/goals/${runId}/plan-raw.txt`
+        : "Debug: ls -lt $STATE_DIR/goals/*/plan-raw.txt";
+      return `Failed to parse the planner response. ${hint}`;
+    }
     case "internal":
       return `Planning failed: ${err instanceof Error ? err.message : String(err)}`;
   }

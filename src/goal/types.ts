@@ -31,7 +31,6 @@ export type PlanStep = {
   id: string;
   description: string;
   dependsOn: string[];
-  tool: ToolCall;
   status: "pending" | "in_progress" | "done" | "blocked";
   durationMinutes?: number;
   /** Number of agent prompt cycles used for this task (agent executor). */
@@ -56,27 +55,6 @@ export type StepResult = {
   output: string;
   error?: string;
   durationMs: number;
-};
-
-export type ToolName =
-  | "file_read"
-  | "file_write"
-  | "file_modify"
-  | "mkdir"
-  | "git_add"
-  | "npm_init"
-  | "shell_exec"
-  | "request_user_input";
-
-export type ToolCall = {
-  name: ToolName;
-  args: Record<string, string>;
-};
-
-export type ToolResult = {
-  success: boolean;
-  output: string;
-  error?: string;
 };
 
 export type GoalLlmResponse = {

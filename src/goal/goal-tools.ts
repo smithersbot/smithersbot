@@ -1,7 +1,21 @@
 import { lstatSync, rmSync } from "node:fs";
+import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { resolveSafePath } from "./tools.js";
+
+/**
+ * Resolves a relative path against the working directory and ensures
+ * the result stays inside the sandbox. Throws on path traversal.
+ */
+export function resolveSafePath(relativePath: string, workingDir: string): string {
+  if (!relativePath) throw new Error("Path is required");
+  const resolved = path.resolve(workingDir, relativePath);
+  // Trailing separator ensures /foo doesn't match /foobar
+  if (!resolved.startsWith(workingDir + path.sep) && resolved !== workingDir) {
+    throw new Error(`Path escapes working directory: ${relativePath}`);
+  }
+  return resolved;
+}
 
 /** Signal emitted by goal-specific tools during agent execution. */
 export type GoalToolSignal =

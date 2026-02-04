@@ -62,10 +62,13 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
     },
   })),
   createCodingTools: vi.fn(() => []),
-  discoverAuthStorage: vi.fn(() => ({
-    setRuntimeApiKey: vi.fn(),
-  })),
-  discoverModels: vi.fn(() => ({})),
+  AuthStorage: class {
+    setRuntimeApiKey = vi.fn();
+  },
+  ModelRegistry: class {},
+  DefaultResourceLoader: class {
+    async reload() {}
+  },
   SessionManager: { open: vi.fn(() => ({})) },
   SettingsManager: { inMemory: vi.fn(() => ({})) },
 }));
@@ -79,8 +82,8 @@ function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
     id: "1",
     description: "Create file",
     dependsOn: [],
-    tool: { name: "file_write", args: { path: "test.txt", content: "hello" } },
     status: "pending",
+    durationMinutes: 1,
     ...overrides,
   };
 }

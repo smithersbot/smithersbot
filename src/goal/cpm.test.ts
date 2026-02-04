@@ -6,7 +6,6 @@ function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
   return {
     description: `Step ${overrides.id}`,
     dependsOn: [],
-    tool: { name: "mkdir", args: {} },
     status: "pending",
     ...overrides,
   };
@@ -96,17 +95,14 @@ describe("computeCpm", () => {
     expect(result.steps.B.isCritical).toBe(true);
   });
 
-  it("default duration heuristic: mkdir=1, shell_exec=2", () => {
-    const plan = makePlan([
-      step({ id: "A", tool: { name: "mkdir", args: {} } }),
-      step({ id: "B", tool: { name: "shell_exec", args: { command: "ls" } } }),
-    ]);
+  it("default duration heuristic: steps without durationMinutes default to 1", () => {
+    const plan = makePlan([step({ id: "A" }), step({ id: "B", durationMinutes: 3 })]);
 
     const result = computeCpm(plan);
 
     expect(result.steps.A.durationMinutesEffective).toBe(1);
-    expect(result.steps.B.durationMinutesEffective).toBe(2);
-    expect(result.totalDurationMinutes).toBe(2);
+    expect(result.steps.B.durationMinutesEffective).toBe(3);
+    expect(result.totalDurationMinutes).toBe(3);
   });
 
   it("single step: total=duration, step is critical", () => {

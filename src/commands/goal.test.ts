@@ -51,6 +51,11 @@ vi.mock("../goal/llm-client.js", () => ({
   }),
 }));
 
+// Mock scout to skip real claude -p execution in unit tests
+vi.mock("../goal/scout.js", () => ({
+  runScout: vi.fn().mockResolvedValue({ status: "skipped", reason: "mocked in test" }),
+}));
+
 // Mock progress
 vi.mock("../cli/progress.js", () => ({
   createCliProgress: () => ({
@@ -102,9 +107,7 @@ describe("goal command — early failure persistence", () => {
   });
 
   it("persists run.json with lastError when generatePlan throws", async () => {
-    mockGeneratePlan.mockRejectedValue(
-      new Error('Step s1: shell_exec command not in read-only allowlist: "rm -rf /"'),
-    );
+    mockGeneratePlan.mockRejectedValue(new Error("Plan must contain at least one step"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -118,7 +121,7 @@ describe("goal command — early failure persistence", () => {
         },
         rt,
       ),
-    ).rejects.toThrow("shell_exec command not in read-only allowlist");
+    ).rejects.toThrow("Plan must contain at least one step");
 
     // Run should be persisted despite the error
     const runs = listRuns(testGoalsDir);
@@ -127,7 +130,7 @@ describe("goal command — early failure persistence", () => {
     const run = loadRun(runs[0]!.runId, testGoalsDir);
     expect(run).toBeDefined();
     expect(run!.state).toBe("failed");
-    expect(run!.lastError).toContain("shell_exec command not in read-only allowlist");
+    expect(run!.lastError).toContain("Plan must contain at least one step");
   });
 
   it("persists run.json with lastError when API key is missing", async () => {

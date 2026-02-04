@@ -38,9 +38,7 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
   for (const step of plan.steps) {
     const deps = step.dependsOn.length > 0 ? step.dependsOn.join(", ") : "none";
     const dur = cpm.steps[step.id].durationMinutesEffective;
-    lines.push(
-      `${step.id}. **${step.description}** -- \`${step.tool.name}\` (depends on: ${deps}) [${dur}m]`,
-    );
+    lines.push(`${step.id}. **${step.description}** (depends on: ${deps}) [${dur}m]`);
   }
 
   // CPM schedule section
@@ -82,7 +80,7 @@ function formatJson(plan: Plan, diagram: DiagramMode): string {
       id: s.id,
       description: s.description,
       dependsOn: s.dependsOn,
-      tool: s.tool,
+      durationMinutes: s.durationMinutes,
       durationMinutesEffective: cpm.steps[s.id].durationMinutesEffective,
     })),
     schedule: {

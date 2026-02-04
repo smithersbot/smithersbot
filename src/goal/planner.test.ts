@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { extractJson, generatePlan, PlanParseError } from "./planner.js";
+import { buildPlannerUserMessage, extractJson, generatePlan, PlanParseError } from "./planner.js";
+import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
 
 function mockClient(response: string): GoalLlmClient {
@@ -13,38 +14,66 @@ function mockClient(response: string): GoalLlmClient {
 
 describe("planner", () => {
   describe("generatePlan", () => {
-    it("generates a valid plan from LLM response", async () => {
+    it("generates a valid task-based plan from LLM response", async () => {
       const client = mockClient(
         JSON.stringify({
-          summary: "Create a landing page",
+          summary: "Fix tests and write report",
           steps: [
             {
-              id: "1",
-              description: "Create directory",
+              id: "run-tests",
+              description: "Run pnpm test and capture errors",
               dependsOn: [],
-              tool: { name: "mkdir", args: { path: "site" } },
+              durationMinutes: 3,
             },
             {
-              id: "2",
-              description: "Write index.html",
-              dependsOn: ["1"],
-              tool: {
-                name: "file_write",
-                args: { path: "site/index.html", content: "<h1>Hello</h1>" },
-              },
+              id: "fix-errors",
+              description: "Fix all test errors found",
+              dependsOn: ["run-tests"],
+              durationMinutes: 10,
+            },
+            {
+              id: "write-report",
+              description: "Write a file saying all tests cleared",
+              dependsOn: ["fix-errors"],
+              durationMinutes: 1,
             },
           ],
         }),
       );
 
-      const plan = await generatePlan(client, "Create a landing page");
+      const plan = await generatePlan(client, "Fix tests and write report");
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
-        expect(plan.steps).toHaveLength(2);
-        expect(plan.steps[0].tool.name).toBe("mkdir");
-        expect(plan.steps[1].dependsOn).toEqual(["1"]);
-        expect(plan.summary).toBe("Create a landing page");
-        expect(plan.goal).toBe("Create a landing page");
+        expect(plan.steps).toHaveLength(3);
+        expect(plan.steps[0].id).toBe("run-tests");
+        expect(plan.steps[0].description).toBe("Run pnpm test and capture errors");
+        expect(plan.steps[0].durationMinutes).toBe(3);
+        expect(plan.steps[1].dependsOn).toEqual(["run-tests"]);
+        expect(plan.steps[2].durationMinutes).toBe(1);
+        expect(plan.summary).toBe("Fix tests and write report");
+        expect(plan.goal).toBe("Fix tests and write report");
+      }
+    });
+
+    it("allows shell commands like pnpm test in step descriptions", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Run tests",
+          steps: [
+            {
+              id: "run-tests",
+              description: "Run 'pnpm test' in the moltbot directory",
+              dependsOn: [],
+              durationMinutes: 5,
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Run tests");
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.steps[0].description).toContain("pnpm test");
       }
     });
 
@@ -63,41 +92,13 @@ describe("planner", () => {
       }
     });
 
-    it("rejects unknown tool names", async () => {
-      const client = mockClient(
-        JSON.stringify({
-          summary: "Bad plan",
-          steps: [
-            {
-              id: "1",
-              description: "Hack",
-              dependsOn: [],
-              tool: { name: "rm_rf", args: {} },
-            },
-          ],
-        }),
-      );
-
-      await expect(generatePlan(client, "Do something")).rejects.toThrow(/unknown tool/i);
-    });
-
     it("rejects circular dependencies", async () => {
       const client = mockClient(
         JSON.stringify({
           summary: "Circular",
           steps: [
-            {
-              id: "1",
-              description: "Step A",
-              dependsOn: ["2"],
-              tool: { name: "mkdir", args: { path: "a" } },
-            },
-            {
-              id: "2",
-              description: "Step B",
-              dependsOn: ["1"],
-              tool: { name: "mkdir", args: { path: "b" } },
-            },
+            { id: "1", description: "Step A", dependsOn: ["2"], durationMinutes: 1 },
+            { id: "2", description: "Step B", dependsOn: ["1"], durationMinutes: 1 },
           ],
         }),
       );
@@ -110,18 +111,8 @@ describe("planner", () => {
         JSON.stringify({
           summary: "Dupes",
           steps: [
-            {
-              id: "1",
-              description: "Step A",
-              dependsOn: [],
-              tool: { name: "mkdir", args: { path: "a" } },
-            },
-            {
-              id: "1",
-              description: "Step B",
-              dependsOn: [],
-              tool: { name: "mkdir", args: { path: "b" } },
-            },
+            { id: "1", description: "Step A", dependsOn: [], durationMinutes: 1 },
+            { id: "1", description: "Step B", dependsOn: [], durationMinutes: 1 },
           ],
         }),
       );
@@ -133,14 +124,7 @@ describe("planner", () => {
       const client = mockClient(
         JSON.stringify({
           summary: "Bad dep",
-          steps: [
-            {
-              id: "1",
-              description: "Step A",
-              dependsOn: ["99"],
-              tool: { name: "mkdir", args: { path: "a" } },
-            },
-          ],
+          steps: [{ id: "1", description: "Step A", dependsOn: ["99"], durationMinutes: 1 }],
         }),
       );
 
@@ -153,120 +137,52 @@ describe("planner", () => {
       await expect(generatePlan(client, "Empty")).rejects.toThrow(/at least one step/i);
     });
 
-    it("rejects shell_exec with disallowed command at plan time", async () => {
+    it("defaults durationMinutes to undefined when not provided", async () => {
       const client = mockClient(
         JSON.stringify({
-          summary: "Shell attack",
-          steps: [
-            {
-              id: "1",
-              description: "Delete everything",
-              dependsOn: [],
-              tool: {
-                name: "shell_exec",
-                args: { command: "rm -rf /" },
-              },
-            },
-          ],
+          summary: "No duration",
+          steps: [{ id: "1", description: "Do something", dependsOn: [] }],
         }),
       );
 
-      await expect(generatePlan(client, "Shell attack")).rejects.toThrow(
-        /not in read-only allowlist/i,
-      );
-    });
-
-    it("accepts request_user_input with a question", async () => {
-      const client = mockClient(
-        JSON.stringify({
-          summary: "Ask user",
-          steps: [
-            {
-              id: "1",
-              description: "Ask user for confirmation",
-              dependsOn: [],
-              tool: {
-                name: "request_user_input",
-                args: { question: "Should we create b.txt? (yes/no)" },
-              },
-            },
-          ],
-        }),
-      );
-
-      const result = await generatePlan(client, "Ask user");
-      expect("blocked" in result).toBe(false);
-      if (!("blocked" in result)) {
-        expect(result.steps[0].tool.name).toBe("request_user_input");
-        expect(result.steps[0].tool.args.question).toBe("Should we create b.txt? (yes/no)");
+      const plan = await generatePlan(client, "No duration");
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.steps[0].durationMinutes).toBeUndefined();
       }
     });
 
-    it("rejects request_user_input without a question", async () => {
+    it("rounds fractional durationMinutes", async () => {
       const client = mockClient(
         JSON.stringify({
-          summary: "Bad ask",
-          steps: [
-            {
-              id: "1",
-              description: "Ask user",
-              dependsOn: [],
-              tool: { name: "request_user_input", args: {} },
-            },
-          ],
+          summary: "Fractional duration",
+          steps: [{ id: "1", description: "Do something", dependsOn: [], durationMinutes: 2.7 }],
         }),
       );
 
-      await expect(generatePlan(client, "Bad ask")).rejects.toThrow(
-        /request_user_input requires a "question"/i,
-      );
+      const plan = await generatePlan(client, "Fractional duration");
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.steps[0].durationMinutes).toBe(3);
+      }
     });
 
-    it("rejects shell_exec echo (user interaction must use request_user_input)", async () => {
+    it("coerces numeric step IDs to strings", async () => {
       const client = mockClient(
         JSON.stringify({
-          summary: "Echo hack",
+          summary: "Numeric IDs",
           steps: [
-            {
-              id: "1",
-              description: "Ask user via echo",
-              dependsOn: [],
-              tool: {
-                name: "shell_exec",
-                args: { command: "echo 'Should we create b.txt? (yes/no)'" },
-              },
-            },
+            { id: 1, description: "Step one", dependsOn: [], durationMinutes: 1 },
+            { id: 2, description: "Step two", dependsOn: ["1"], durationMinutes: 1 },
           ],
         }),
       );
 
-      await expect(generatePlan(client, "Echo hack")).rejects.toThrow(
-        /not in read-only allowlist/i,
-      );
-    });
-
-    it("accepts shell_exec with allowed read-only command", async () => {
-      const client = mockClient(
-        JSON.stringify({
-          summary: "Check status",
-          steps: [
-            {
-              id: "1",
-              description: "Check git status",
-              dependsOn: [],
-              tool: {
-                name: "shell_exec",
-                args: { command: "git status" },
-              },
-            },
-          ],
-        }),
-      );
-
-      const result = await generatePlan(client, "Check status");
-      expect("blocked" in result).toBe(false);
-      if (!("blocked" in result)) {
-        expect(result.steps[0].tool.args.command).toBe("git status");
+      const plan = await generatePlan(client, "Numeric IDs");
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.steps[0].id).toBe("1");
+        expect(plan.steps[1].id).toBe("2");
       }
     });
   });
@@ -300,6 +216,53 @@ describe("planner", () => {
         expect(err).toBeInstanceOf(PlanParseError);
         expect((err as PlanParseError).rawResponse).toBe("some LLM prose response");
       }
+    });
+  });
+
+  describe("buildPlannerUserMessage", () => {
+    it("returns simple goal message without scout data", () => {
+      const msg = buildPlannerUserMessage("Fix tests");
+      expect(msg).toBe("Goal: Fix tests");
+    });
+
+    it("returns simple goal message when scout errored", () => {
+      const scout: ScoutResult = { status: "error", error: "timeout" };
+      const msg = buildPlannerUserMessage("Fix tests", scout);
+      expect(msg).toBe("Goal: Fix tests");
+    });
+
+    it("returns simple goal message when scout was skipped", () => {
+      const scout: ScoutResult = { status: "skipped", reason: "no binary" };
+      const msg = buildPlannerUserMessage("Fix tests", scout);
+      expect(msg).toBe("Goal: Fix tests");
+    });
+
+    it("includes scout report and plan draft when scout succeeded", () => {
+      const scout: ScoutResult = {
+        status: "success",
+        report: {
+          goal_id: "abc-123",
+          nodes: [
+            {
+              id: "n1",
+              type: "Impl",
+              objective: "Do X",
+              verification: "pnpm test",
+              effort: 3,
+              risk: 2,
+              uncertainty: 1,
+            },
+          ],
+          edges: [],
+        },
+        planDraft: "BEGIN_PLAN_DRAFT\nGOAL_ID: abc-123\ngraph TD\nEND_PLAN_DRAFT",
+      };
+      const msg = buildPlannerUserMessage("Fix tests", scout);
+      expect(msg).toContain("Goal: Fix tests");
+      expect(msg).toContain("Scout Report");
+      expect(msg).toContain("BEGIN_PLAN_DRAFT");
+      expect(msg).toContain('"n1"');
+      expect(msg).toContain("Normalize");
     });
   });
 
