@@ -24,7 +24,34 @@ vi.mock("../agents/model-auth.js", () => ({
 // Mock run-store
 vi.mock("./run-store.js", () => ({
   resolveAgentSessionFile: vi.fn(() => "/tmp/mock-session.jsonl"),
+  resolveAgentTaskSessionFile: vi.fn(
+    (_runId: string, taskId: string) => `/tmp/mock-sessions/${taskId}.jsonl`,
+  ),
+  resolveWorkingFile: vi.fn((_runId: string, stepId: string) => `/tmp/mock-working/${stepId}.md`),
+  resolveGoalWorkingFile: vi.fn(() => "/tmp/mock-working/WORKING.md"),
 }));
+
+// Mock scout (resolveScoutDir is imported by agent-executor for node spec loading)
+vi.mock("./scout.js", () => ({
+  resolveScoutDir: vi.fn(() => "/tmp/mock-scout"),
+}));
+
+// Mock fs for directory creation, node spec loading, and working notes
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      existsSync: vi.fn(() => true),
+      mkdirSync: vi.fn(),
+      readFileSync: vi.fn(() => {
+        throw new Error("ENOENT");
+      }),
+      appendFileSync: vi.fn(),
+    },
+  };
+});
 
 // Mock createGoalTools — dual-signal tracking mirrors the real implementation
 let mockBlockedSignal: { question: string; context?: string } | null = null;
@@ -43,6 +70,7 @@ vi.mock("./goal-tools.js", () => ({
     tools: [],
     getSignal: () => getMockSignal(),
     reset: () => mockReset(),
+    setActiveTask: vi.fn(),
   })),
 }));
 

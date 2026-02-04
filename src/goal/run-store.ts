@@ -201,6 +201,25 @@ export function resolveAgentSessionFile(runId: string, goalsDir?: string): strin
   return path.join(resolveRunDir(runId, goalsDir), "session.jsonl");
 }
 
+/** Resolve per-task working notes file path. */
+export function resolveWorkingFile(runId: string, stepId: string, goalsDir?: string): string {
+  return path.join(resolveRunDir(runId, goalsDir), "working", `${stepId}.md`);
+}
+
+/** Resolve top-level WORKING.md for the goal run. */
+export function resolveGoalWorkingFile(runId: string, goalsDir?: string): string {
+  return path.join(resolveRunDir(runId, goalsDir), "WORKING.md");
+}
+
+/** Resolve a per-task agent session file path. */
+export function resolveAgentTaskSessionFile(
+  runId: string,
+  taskId: string,
+  goalsDir?: string,
+): string {
+  return path.join(resolveRunDir(runId, goalsDir), "sessions", `${taskId}.jsonl`);
+}
+
 /** Convert a serialized run back to an in-memory GoalSession. */
 export function serializedToSession(run: SerializedRun): GoalSession {
   const stepResults = new Map<string, StepResult>();

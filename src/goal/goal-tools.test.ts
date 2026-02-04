@@ -6,18 +6,20 @@ import { createGoalTools } from "./goal-tools.js";
 
 describe("goal-tools", () => {
   describe("createGoalTools", () => {
-    it("returns two tool definitions without workingDir", () => {
+    it("returns four tool definitions without workingDir", () => {
       const { tools } = createGoalTools();
-      expect(tools).toHaveLength(2);
+      expect(tools).toHaveLength(4);
       expect(tools[0]!.name).toBe("mark_task_complete");
       expect(tools[1]!.name).toBe("request_user_input");
+      expect(tools[2]!.name).toBe("mark_task_failed");
+      expect(tools[3]!.name).toBe("update_working_notes");
     });
 
-    it("returns three tool definitions with workingDir", () => {
+    it("returns five tool definitions with workingDir", () => {
       const dir = mkdtempSync(path.join(tmpdir(), "goal-tools-"));
       const { tools } = createGoalTools(dir);
-      expect(tools).toHaveLength(3);
-      expect(tools[2]!.name).toBe("delete_path");
+      expect(tools).toHaveLength(5);
+      expect(tools[4]!.name).toBe("delete_path");
     });
 
     it("signal is null initially", () => {
@@ -124,6 +126,97 @@ describe("goal-tools", () => {
       const [markComplete, requestInput] = tools;
       await requestInput!.execute("call-1", { question: "Q?" });
       await markComplete!.execute("call-2", { summary: "Done" });
+      reset();
+      expect(getSignal()).toBeNull();
+    });
+  });
+
+  describe("mark_task_failed", () => {
+    it("sets task_failed signal with structured fields", async () => {
+      const { tools, getSignal } = createGoalTools();
+      const markFailed = tools.find((t) => t.name === "mark_task_failed")!;
+      const result = await markFailed.execute("call-1", {
+        reason: "Build fails",
+        whatTried: "Added dependency, ran build",
+        errorType: "build_failure",
+        suggestedNext: "Check TypeScript config",
+        needsRevert: true,
+      });
+      expect(result.content).toEqual([
+        { type: "text", text: "Task marked as failed. Do not call any more tools for this task." },
+      ]);
+      const signal = getSignal();
+      expect(signal).toEqual({
+        type: "task_failed",
+        reason: "Build fails",
+        whatTried: "Added dependency, ran build",
+        errorType: "build_failure",
+        suggestedNext: "Check TypeScript config",
+        needsRevert: true,
+      });
+    });
+
+    it("is no-op after request_user_input", async () => {
+      const { tools } = createGoalTools();
+      const requestInput = tools.find((t) => t.name === "request_user_input")!;
+      const markFailed = tools.find((t) => t.name === "mark_task_failed")!;
+      await requestInput.execute("c1", { question: "Q?" });
+      const result = await markFailed.execute("c2", {
+        reason: "r",
+        whatTried: "w",
+        errorType: "other",
+        suggestedNext: "s",
+        needsRevert: false,
+      });
+      expect((result.content[0] as { text: string }).text).toMatch(/paused waiting for user input/);
+    });
+  });
+
+  describe("signal precedence with task_failed", () => {
+    it("blocked wins over failed", async () => {
+      const { tools, getSignal } = createGoalTools();
+      const markFailed = tools.find((t) => t.name === "mark_task_failed")!;
+      const requestInput = tools.find((t) => t.name === "request_user_input")!;
+      await markFailed.execute("c1", {
+        reason: "r",
+        whatTried: "w",
+        errorType: "other",
+        suggestedNext: "s",
+        needsRevert: false,
+      });
+      await requestInput.execute("c2", { question: "Q?" });
+      expect(getSignal()!.type).toBe("user_input_needed");
+    });
+
+    it("failed wins over complete", async () => {
+      const { tools, getSignal } = createGoalTools();
+      const markComplete = tools.find((t) => t.name === "mark_task_complete")!;
+      const markFailed = tools.find((t) => t.name === "mark_task_failed")!;
+      await markComplete.execute("c1", { summary: "Done" });
+      await markFailed.execute("c2", {
+        reason: "r",
+        whatTried: "w",
+        errorType: "other",
+        suggestedNext: "s",
+        needsRevert: false,
+      });
+      expect(getSignal()!.type).toBe("task_failed");
+    });
+
+    it("reset clears all three signals", async () => {
+      const { tools, getSignal, reset } = createGoalTools();
+      const markComplete = tools.find((t) => t.name === "mark_task_complete")!;
+      const requestInput = tools.find((t) => t.name === "request_user_input")!;
+      const markFailed = tools.find((t) => t.name === "mark_task_failed")!;
+      await requestInput.execute("c1", { question: "Q?" });
+      await markFailed.execute("c2", {
+        reason: "r",
+        whatTried: "w",
+        errorType: "other",
+        suggestedNext: "s",
+        needsRevert: false,
+      });
+      await markComplete.execute("c3", { summary: "Done" });
       reset();
       expect(getSignal()).toBeNull();
     });

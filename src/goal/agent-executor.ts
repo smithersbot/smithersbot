@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { getModel } from "@mariozechner/pi-ai";
 import {
@@ -16,7 +17,12 @@ import { resolveEnvApiKey } from "../agents/model-auth.js";
 import type { MoltbotConfig } from "../config/config.js";
 import { createGoalTools } from "./goal-tools.js";
 import { formatPlanAsContext } from "./planner.js";
-import { resolveAgentSessionFile } from "./run-store.js";
+import {
+  resolveAgentTaskSessionFile,
+  resolveWorkingFile,
+  resolveGoalWorkingFile,
+} from "./run-store.js";
+import { resolveScoutDir } from "./scout.js";
 import {
   computeCriticalPathScores,
   orderStepsCriticalPathFirst,
@@ -25,7 +31,7 @@ import {
 import type { GoalOutcome, GoalSession, Plan, PlanStep, TaskExecutionResult } from "./types.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes per prompt
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt (fallback when step has no durationMinutes)
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
 
@@ -49,8 +55,51 @@ export type ExecuteGoalParams = {
   abortSignal?: AbortSignal;
 };
 
-/** Build the goal-level system prompt set once at session creation. */
-function buildGoalSystemPrompt(goal: string, plan: Plan | null): string {
+/** Load a scout node spec file for a given step. Returns null if not found. */
+function loadNodeSpec(runId: string, stepId: string): string | null {
+  try {
+    const specPath = path.join(resolveScoutDir(runId), "node_specs", `${stepId}.md`);
+    return fs.readFileSync(specPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Load working notes for a given step. Returns null if not found or empty. */
+function loadWorkingNotes(runId: string, stepId: string): string | null {
+  try {
+    const notesPath = resolveWorkingFile(runId, stepId);
+    const content = fs.readFileSync(notesPath, "utf8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Append a summary line to the top-level WORKING.md for this goal run. */
+function appendGoalWorkingEntry(
+  runId: string,
+  stepId: string,
+  status: string,
+  detail: string,
+): void {
+  try {
+    const filePath = resolveGoalWorkingFile(runId);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const entry = `\n## ${stepId} — ${status}\n${detail}\n`;
+    fs.appendFileSync(filePath, entry, "utf8");
+  } catch {
+    // Best-effort; don't mask task execution errors.
+  }
+}
+
+/** Build the goal-level system prompt, optionally including completed task summaries. */
+function buildGoalSystemPrompt(
+  goal: string,
+  plan: Plan | null,
+  completedSummaries?: Array<{ id: string; summary: string }>,
+): string {
   const lines: string[] = [];
   lines.push("You are executing tasks for a goal. You will receive tasks one at a time.");
   lines.push("For each task, use your tools (read, write, edit, bash) to complete it.");
@@ -61,27 +110,66 @@ function buildGoalSystemPrompt(goal: string, plan: Plan | null): string {
     lines.push("FULL PLAN (for context — you will work on tasks one at a time):");
     lines.push(formatPlanAsContext(plan));
   }
+  if (completedSummaries && completedSummaries.length > 0) {
+    lines.push("");
+    lines.push("COMPLETED TASKS:");
+    for (const { id, summary } of completedSummaries) {
+      lines.push(`- ${id}: ${summary}`);
+    }
+  }
   lines.push("");
   lines.push("TASK MANAGEMENT TOOLS:");
   lines.push("- mark_task_complete(summary): Call when done with the current task.");
+  lines.push(
+    "- mark_task_failed(reason, whatTried, errorType, suggestedNext, needsRevert): " +
+      "Call when you have genuinely tried and cannot complete the task. Provide what you tried and what went wrong.",
+  );
   lines.push("- request_user_input(question): Call ONLY when genuinely stuck and need the user.");
   lines.push("- delete_path(path, recursive?): Delete a file or directory within the workspace.");
+  lines.push(
+    "- update_working_notes(notes): Record what you've tried and learned. Persists across retries.",
+  );
   lines.push("");
   lines.push("RULES:");
   lines.push("- Focus exclusively on the current task you are given.");
   lines.push("- Debug and fix errors yourself. Only call request_user_input as a last resort.");
   lines.push("- Always call mark_task_complete with a brief summary when a task is done.");
+  lines.push(
+    "- When you encounter difficulty: write working notes capturing what failed, " +
+      "key hypotheses tried, and the unblocker or next step.",
+  );
+  lines.push(
+    "- When you complete a task: write a brief completion note (3–6 bullets max) " +
+      "covering what changed, what verification ran, and any follow-ups.",
+  );
+  lines.push("- If you didn't struggle, keep the completion note minimal.");
   return lines.join("\n");
 }
 
 /** Build the prompt for the first turn of a task. */
-function buildFirstTaskPrompt(task: PlanStep, totalTasks: number): string {
+function buildFirstTaskPrompt(
+  task: PlanStep,
+  totalTasks: number,
+  opts?: { nodeSpec?: string | null; workingNotes?: string | null },
+): string {
   const lines: string[] = [];
   lines.push(`Work on this task: ${task.description}`);
   lines.push("");
   lines.push(`Task ${task.id} of ${totalTasks}.`);
   if (task.dependsOn.length > 0) {
     lines.push(`Dependencies completed: ${task.dependsOn.join(", ")}.`);
+  }
+  if (opts?.nodeSpec) {
+    lines.push("");
+    lines.push("NODE SPEC (from scout analysis):");
+    lines.push(opts.nodeSpec);
+  }
+  if (opts?.workingNotes) {
+    lines.push("");
+    lines.push("WORKING NOTES (from previous attempts):");
+    lines.push(opts.workingNotes);
+    lines.push("");
+    lines.push("Do NOT repeat approaches that already failed.");
   }
   lines.push("");
   lines.push(
@@ -112,11 +200,24 @@ function buildResumeTaskPrompt(
   totalTasks: number,
   answer: string,
   question?: string,
+  opts?: { nodeSpec?: string | null; workingNotes?: string | null },
 ): string {
   const lines: string[] = [];
   lines.push(`Continue working on this task: ${task.description}`);
   lines.push("");
   lines.push(`Task ${task.id} of ${totalTasks}.`);
+  if (opts?.nodeSpec) {
+    lines.push("");
+    lines.push("NODE SPEC (from scout analysis):");
+    lines.push(opts.nodeSpec);
+  }
+  if (opts?.workingNotes) {
+    lines.push("");
+    lines.push("WORKING NOTES (from previous attempts):");
+    lines.push(opts.workingNotes);
+    lines.push("");
+    lines.push("Do NOT repeat approaches that already failed.");
+  }
   lines.push("");
   lines.push(`You previously asked the user: ${question ?? "a question"}`);
   lines.push(`The user answered: ${answer}`);
@@ -322,67 +423,76 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     authStorage.setRuntimeApiKey(providerId, envAuth.apiKey);
   }
 
-  // --- Resolve session file ---
-  const sessionFilePath = resolveAgentSessionFile(runId);
+  // --- Create goal tools (shared across tasks) ---
+  const goalTools = createGoalTools(workingDir, runId);
 
-  // --- Create goal tools ---
-  const goalTools = createGoalTools(workingDir);
-
-  // --- Create PI agent session ---
-  onProgress?.(`Creating agent session (${providerId}/${modelId})...`);
-
+  // --- Shared settings (reused per task session) ---
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: true },
     retry: { enabled: true, maxRetries: 2 },
   });
 
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: workingDir,
-    agentDir,
-    settingsManager,
-    systemPrompt: buildGoalSystemPrompt(session.goal, plan),
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-  });
-  await resourceLoader.reload();
+  const codingTools = createCodingTools(workingDir);
 
-  const { session: piSession } = await createAgentSession({
-    cwd: workingDir,
-    agentDir,
-    model,
-    thinkingLevel: "low",
-    tools: createCodingTools(workingDir),
-    customTools: goalTools.tools,
-    sessionManager: SessionManager.open(sessionFilePath),
-    settingsManager,
-    authStorage,
-    modelRegistry,
-    resourceLoader,
-  });
+  // --- Minimal task loop ---
+  // Keep looping while there are runnable tasks
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (abortSignal?.aborted) break;
 
-  // Subscribe to events for progress
-  const unsubscribe = piSession.subscribe((event) => {
-    if (event.type === "tool_execution_start") {
-      onProgress?.(`  [tool] ${event.toolName}`);
-    }
-  });
+    const runnable = findRunnableTasks(orderedSteps, session.answers);
+    if (runnable.length === 0) break;
 
-  try {
-    // --- Minimal task loop ---
-    // Keep looping while there are runnable tasks
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      if (abortSignal?.aborted) break;
+    // Pick task via static critical-path scores (prefer longer path, then successor, then plan order)
+    const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
+    goalTools.reset();
+    goalTools.setActiveTask(task.id);
 
-      const runnable = findRunnableTasks(orderedSteps, session.answers);
-      if (runnable.length === 0) break;
+    // --- Create fresh PI session for this task ---
+    const completedSummaries = orderedSteps
+      .filter((s) => s.status === "done" && s.taskSummary)
+      .map((s) => ({ id: s.id, summary: s.taskSummary! }));
 
-      // Pick task via static critical-path scores (prefer longer path, then successor, then plan order)
-      const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
-      goalTools.reset();
+    const taskSessionFile = resolveAgentTaskSessionFile(runId, task.id);
+    // Ensure sessions directory exists
+    const sessionsDir = path.dirname(taskSessionFile);
+    if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
 
+    onProgress?.(`Creating agent session for task ${task.id} (${providerId}/${modelId})...`);
+
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: workingDir,
+      agentDir,
+      settingsManager,
+      systemPrompt: buildGoalSystemPrompt(session.goal, plan, completedSummaries),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+    });
+    await resourceLoader.reload();
+
+    const { session: piSession } = await createAgentSession({
+      cwd: workingDir,
+      agentDir,
+      model,
+      thinkingLevel: "low",
+      tools: codingTools,
+      customTools: goalTools.tools,
+      sessionManager: SessionManager.open(taskSessionFile),
+      settingsManager,
+      authStorage,
+      modelRegistry,
+      resourceLoader,
+    });
+
+    const unsubscribe = piSession.subscribe((event) => {
+      if (event.type === "tool_execution_start") {
+        onProgress?.(`  [tool] ${event.toolName}`);
+      }
+    });
+
+    try {
       // If resuming a previously-blocked task with an answer, prepare it
       let resumeAnswer: string | undefined;
       let resumeQuestion: string | undefined;
@@ -401,6 +511,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       task.status = "in_progress";
       onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
 
+      // Dynamic timeout: min(durationMinutes * 2, 2 hours), fallback to global default
+      const MAX_TIMEOUT_MS = 2 * 60 * 60_000; // 2 hours
+      const taskTimeoutMs = task.durationMinutes
+        ? Math.min(task.durationMinutes * 2 * 60_000, MAX_TIMEOUT_MS)
+        : timeoutMs;
+
       // Per-task prompt loop
       while (turnsUsed < maxTurnsPerTask) {
         if (abortSignal?.aborted) {
@@ -409,11 +525,24 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           break;
         }
 
+        const firstTurnOpts =
+          turnsUsed === 0
+            ? {
+                nodeSpec: loadNodeSpec(runId, task.id),
+                workingNotes: loadWorkingNotes(runId, task.id),
+              }
+            : undefined;
         const prompt =
           turnsUsed === 0 && resumeAnswer
-            ? buildResumeTaskPrompt(task, plan.steps.length, resumeAnswer, resumeQuestion)
+            ? buildResumeTaskPrompt(
+                task,
+                plan.steps.length,
+                resumeAnswer,
+                resumeQuestion,
+                firstTurnOpts,
+              )
             : turnsUsed === 0
-              ? buildFirstTaskPrompt(task, plan.steps.length)
+              ? buildFirstTaskPrompt(task, plan.steps.length, firstTurnOpts)
               : buildContinuePrompt(task, turnsUsed, maxTurnsPerTask);
 
         onProgress?.(`  [turn ${turnsUsed + 1}/${maxTurnsPerTask}]`);
@@ -421,7 +550,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         try {
           // Create a timeout for this prompt
           const timeoutController = new AbortController();
-          const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+          const timer = setTimeout(() => timeoutController.abort(), taskTimeoutMs);
           const combinedAbort = abortSignal
             ? AbortSignal.any([abortSignal, timeoutController.signal])
             : timeoutController.signal;
@@ -455,7 +584,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         turnsUsed++;
         task.turnsUsed = turnsUsed;
 
-        // Check goal tool signals — blocked always takes precedence over complete
+        // Check goal tool signals — precedence: blocked > failed > complete
         const signal = goalTools.getSignal();
         if (signal) {
           if (signal.type === "user_input_needed") {
@@ -463,6 +592,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             task.blockedReason = "user_input";
             task.blockedQuestion = signal.question;
             onProgress?.(`  [blocked] ${signal.question}`);
+            break;
+          }
+          if (signal.type === "task_failed") {
+            task.status = "blocked";
+            task.blockedReason = "task_failed";
+            task.blockedQuestion = signal.reason;
+            task.failedDetail = {
+              whatTried: signal.whatTried,
+              errorType: signal.errorType,
+              suggestedNext: signal.suggestedNext,
+              needsRevert: signal.needsRevert,
+            };
+            onProgress?.(`  [failed] ${signal.reason}`);
             break;
           }
           if (signal.type === "task_complete") {
@@ -492,13 +634,30 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         taskId: task.id,
         turnsUsed,
         durationMs,
-        outcome: task.status === "done" ? "done" : "blocked",
+        outcome:
+          task.status === "done"
+            ? "done"
+            : task.blockedReason === "task_failed"
+              ? "task_failed"
+              : "blocked",
         summary: task.taskSummary,
         blockedQuestion: task.blockedQuestion,
         blockedReason: task.blockedReason,
       };
       onTaskUpdate?.(result);
       lastExecutedId = task.id;
+
+      // Write top-level WORKING.md entry
+      if (task.status === "done") {
+        appendGoalWorkingEntry(runId, task.id, "done", task.taskSummary ?? "Completed.");
+      } else if (task.blockedReason === "task_failed") {
+        appendGoalWorkingEntry(
+          runId,
+          task.id,
+          "failed",
+          task.failedDetail?.whatTried ?? task.blockedQuestion ?? "Failed.",
+        );
+      }
 
       // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
       if (task.status === "blocked" && !previouslyBlockedIds.has(task.id) && onStatusChange) {
@@ -510,33 +669,33 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           steps: [...orderedSteps],
         });
       }
+    } finally {
+      unsubscribe();
+      piSession.dispose();
     }
-
-    // --- Determine goal outcome ---
-    const allDone = orderedSteps.every((s) => s.status === "done");
-    if (allDone) {
-      session.state = "done";
-      const summary = buildGoalSummary(orderedSteps);
-      if (onStatusChange) {
-        await onStatusChange({ type: "all_done", steps: [...orderedSteps], summary });
-      }
-      return { status: "done", summary };
-    }
-
-    // Some tasks blocked
-    const aggregated = aggregateBlockedQuestions(orderedSteps);
-    session.state = "blocked";
-    session.blocked = aggregated;
-    if (onStatusChange) {
-      await onStatusChange({ type: "fully_blocked", steps: [...orderedSteps] });
-    }
-    return {
-      status: "blocked",
-      question: aggregated.prompt,
-      requiredInputKey: aggregated.requiredInputKey,
-    };
-  } finally {
-    unsubscribe();
-    piSession.dispose();
   }
+
+  // --- Determine goal outcome ---
+  const allDone = orderedSteps.every((s) => s.status === "done");
+  if (allDone) {
+    session.state = "done";
+    const summary = buildGoalSummary(orderedSteps);
+    if (onStatusChange) {
+      await onStatusChange({ type: "all_done", steps: [...orderedSteps], summary });
+    }
+    return { status: "done", summary };
+  }
+
+  // Some tasks blocked
+  const aggregated = aggregateBlockedQuestions(orderedSteps);
+  session.state = "blocked";
+  session.blocked = aggregated;
+  if (onStatusChange) {
+    await onStatusChange({ type: "fully_blocked", steps: [...orderedSteps] });
+  }
+  return {
+    status: "blocked",
+    question: aggregated.prompt,
+    requiredInputKey: aggregated.requiredInputKey,
+  };
 }

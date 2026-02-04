@@ -38,9 +38,16 @@ export type PlanStep = {
   /** Question from the agent when the task is blocked on user input. */
   blockedQuestion?: string;
   /** Why this task is blocked. */
-  blockedReason?: "user_input" | "turn_limit" | "timeout" | "error";
+  blockedReason?: "user_input" | "turn_limit" | "timeout" | "error" | "task_failed";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;
+  /** Structured failure detail from mark_task_failed tool. */
+  failedDetail?: {
+    whatTried: string;
+    errorType: string;
+    suggestedNext: string;
+    needsRevert: boolean;
+  };
 };
 
 export type Plan = {
@@ -128,7 +135,7 @@ export type TaskExecutionResult = {
   taskId: string;
   turnsUsed: number;
   durationMs: number;
-  outcome: "done" | "blocked";
+  outcome: "done" | "blocked" | "task_failed";
   summary?: string;
   blockedQuestion?: string;
   blockedReason?: string;

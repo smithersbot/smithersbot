@@ -120,7 +120,7 @@ describe("renderScoutTemplate", () => {
       goalText: "y",
       outputDir: "/tmp",
     });
-    expect(result).toBe("MIN=3 MAX=7");
+    expect(result).toBe("MIN=1 MAX=10");
   });
 
   it("replaces multiple occurrences of the same placeholder", () => {
@@ -161,10 +161,17 @@ describe("validateScoutOutput", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns blocked when plan_blocked.md exists", () => {
-    fs.writeFileSync(path.join(tmpDir, "plan_blocked.md"), "What framework are you using?", "utf8");
+  it("returns needs_clarification when plan_needs_clarification.md exists", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "plan_needs_clarification.md"),
+      "What framework are you using?",
+      "utf8",
+    );
     const result = validateScoutOutput(tmpDir);
-    expect(result).toEqual({ status: "blocked", question: "What framework are you using?" });
+    expect(result).toEqual({
+      status: "needs_clarification",
+      question: "What framework are you using?",
+    });
   });
 
   it("returns error when plan_draft.md is missing", () => {

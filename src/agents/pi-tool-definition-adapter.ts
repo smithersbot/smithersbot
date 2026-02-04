@@ -1,8 +1,4 @@
-import type {
-  AgentTool,
-  AgentToolResult,
-  AgentToolUpdateCallback,
-} from "@mariozechner/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { ClientToolDefinition } from "./pi-embedded-runner/run/params.js";
 import { logDebug, logError } from "../logger.js";
@@ -38,7 +34,7 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
         params,
         signal,
         onUpdate,
-        ctx,
+        _ctx,
       ): Promise<AgentToolResult<unknown>> => {
         try {
           return await tool.execute(toolCallId, params, signal, onUpdate);

@@ -1,7 +1,8 @@
-import { lstatSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { resolveWorkingFile } from "./run-store.js";
 
 /**
  * Resolves a relative path against the working directory and ensures
@@ -20,7 +21,15 @@ export function resolveSafePath(relativePath: string, workingDir: string): strin
 /** Signal emitted by goal-specific tools during agent execution. */
 export type GoalToolSignal =
   | { type: "task_complete"; summary: string }
-  | { type: "user_input_needed"; question: string; context?: string };
+  | { type: "user_input_needed"; question: string; context?: string }
+  | {
+      type: "task_failed";
+      reason: string;
+      whatTried: string;
+      errorType: string;
+      suggestedNext: string;
+      needsRevert: boolean;
+    };
 
 /**
  * Create goal-specific custom tools for the PI agent session.
@@ -32,14 +41,26 @@ export type GoalToolSignal =
  * When `workingDir` is provided, includes the `delete_path` tool for safe
  * filesystem deletion within the workspace.
  */
-export function createGoalTools(workingDir?: string): {
+export function createGoalTools(
+  workingDir?: string,
+  runId?: string,
+): {
   tools: ToolDefinition[];
   getSignal: () => GoalToolSignal | null;
   reset: () => void;
+  setActiveTask: (taskId: string) => void;
 } {
-  // Track both signal types independently so request_user_input always wins
-  // even if the model also calls mark_task_complete in the same prompt cycle.
+  let activeTaskId: string | null = null;
+
+  // Track all signal types independently. Precedence: blocked > failed > complete.
   let blockedSignal: { question: string; context?: string } | null = null;
+  let failedSignal: {
+    reason: string;
+    whatTried: string;
+    errorType: string;
+    suggestedNext: string;
+    needsRevert: boolean;
+  } | null = null;
   let completeSignal: { summary: string } | null = null;
 
   const markTaskComplete: ToolDefinition = {
@@ -104,7 +125,111 @@ export function createGoalTools(workingDir?: string): {
     },
   };
 
-  const tools: ToolDefinition[] = [markTaskComplete, requestUserInput];
+  const markTaskFailed: ToolDefinition = {
+    name: "mark_task_failed",
+    label: "Mark Task Failed",
+    description:
+      "Call this tool when you have genuinely tried and cannot complete the current task. " +
+      "Provide structured details about what you tried and what went wrong.",
+    parameters: Type.Object({
+      reason: Type.String({ description: "Why the task cannot be completed" }),
+      whatTried: Type.String({ description: "What approaches were attempted" }),
+      errorType: Type.String({
+        description:
+          'Category: "build_failure", "test_failure", "missing_dependency", "design_unclear", or "other"',
+      }),
+      suggestedNext: Type.String({ description: "What should be tried differently next time" }),
+      needsRevert: Type.Boolean({ description: "Whether changes made should be reverted" }),
+    }),
+    async execute(
+      _toolCallId: string,
+      params: {
+        reason: string;
+        whatTried: string;
+        errorType: string;
+        suggestedNext: string;
+        needsRevert: boolean;
+      },
+    ) {
+      // If already blocked on user input, this is a no-op.
+      if (blockedSignal) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "This task is paused waiting for user input. Do not call any more tools.",
+            },
+          ],
+          details: {},
+        };
+      }
+      failedSignal = {
+        reason: params.reason,
+        whatTried: params.whatTried,
+        errorType: params.errorType,
+        suggestedNext: params.suggestedNext,
+        needsRevert: params.needsRevert,
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Task marked as failed. Do not call any more tools for this task.",
+          },
+        ],
+        details: {},
+      };
+    },
+  };
+
+  const updateWorkingNotes: ToolDefinition = {
+    name: "update_working_notes",
+    label: "Update Working Notes",
+    description:
+      "Record what you've tried and learned for this task. " +
+      "Notes persist across retries so future attempts can avoid repeating failures. " +
+      "On difficulty: capture what failed, key hypotheses tried, and the next step. " +
+      "On completion: write a brief note (3–6 bullets) covering what changed and what verification ran.",
+    parameters: Type.Object({
+      notes: Type.String({ description: "Markdown content to append to the working notes" }),
+    }),
+    async execute(_toolCallId: string, params: { notes: string }) {
+      if (!runId || !activeTaskId) {
+        return {
+          content: [{ type: "text", text: "Error: no active task context for working notes." }],
+          details: {},
+        };
+      }
+      try {
+        const filePath = resolveWorkingFile(runId, activeTaskId);
+        const dir = path.dirname(filePath);
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        const header = `\n## Attempt at ${new Date().toISOString()}\n\n`;
+        appendFileSync(filePath, header + params.notes + "\n", "utf8");
+        return {
+          content: [{ type: "text", text: "Working notes updated." }],
+          details: {},
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error writing working notes: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          details: {},
+        };
+      }
+    },
+  };
+
+  const tools: ToolDefinition[] = [
+    markTaskComplete,
+    requestUserInput,
+    markTaskFailed,
+    updateWorkingNotes,
+  ];
 
   // delete_path: safe filesystem deletion within the workspace
   if (workingDir) {
@@ -172,13 +297,23 @@ export function createGoalTools(workingDir?: string): {
 
   return {
     tools,
-    // Blocked always takes precedence over complete.
+    // Precedence: blocked > failed > complete.
     getSignal: () => {
       if (blockedSignal) {
         return {
           type: "user_input_needed",
           question: blockedSignal.question,
           context: blockedSignal.context,
+        };
+      }
+      if (failedSignal) {
+        return {
+          type: "task_failed",
+          reason: failedSignal.reason,
+          whatTried: failedSignal.whatTried,
+          errorType: failedSignal.errorType,
+          suggestedNext: failedSignal.suggestedNext,
+          needsRevert: failedSignal.needsRevert,
         };
       }
       if (completeSignal) {
@@ -188,7 +323,11 @@ export function createGoalTools(workingDir?: string): {
     },
     reset: () => {
       blockedSignal = null;
+      failedSignal = null;
       completeSignal = null;
+    },
+    setActiveTask: (taskId: string) => {
+      activeTaskId = taskId;
     },
   };
 }

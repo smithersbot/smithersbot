@@ -11,7 +11,7 @@ import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
-import { runScout, type ScoutResult } from "../goal/scout.js";
+import { runScoutWithRetry, type ScoutResult } from "../goal/scout.js";
 import type { DiagramMode, GoalOutcome, GoalSession, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -125,9 +125,8 @@ export async function goalCommand(
         enabled: !isJson,
       });
       try {
-        scoutData = await runScout({ runId, goalText: goal });
-        if (scoutData.status === "blocked") {
-          // Scout needs clarification — surface as needs_clarification
+        scoutData = await runScoutWithRetry({ runId, goalText: goal });
+        if (scoutData.status === "needs_clarification") {
           session.state = "needs_clarification";
           session.blocked = {
             prompt: scoutData.question,
@@ -146,8 +145,27 @@ export async function goalCommand(
           }
           return outcome;
         }
-        if (scoutData.status === "error" && !isJson) {
-          runtime.log(`Scout error (falling back to blind planner): ${scoutData.error}`);
+        if (scoutData.status === "error") {
+          const hint = "Run with --no-scout to skip scout analysis.";
+          const kind = scoutData.errorKind;
+          let message: string;
+          if (kind === "timeout") {
+            message = `Scout timed out. Try again later or increase the timeout. ${hint}`;
+          } else if (kind === "rate_limit") {
+            message = `Scout hit a rate limit. Try again later. ${hint}`;
+          } else if (kind === "validation") {
+            message = `Scout failed to produce valid output after retry. ${hint}`;
+          } else {
+            message = `Scout failed: ${scoutData.error}. ${hint}`;
+          }
+          session.state = "failed";
+          session.lastError = message;
+          persistRun();
+          if (isJson) {
+            runtime.log(JSON.stringify({ error: message, runId }));
+            throw new JsonExitError(1);
+          }
+          throw new Error(message);
         }
       } finally {
         scoutProgress.done();
