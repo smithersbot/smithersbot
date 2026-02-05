@@ -15,7 +15,14 @@ import { resolveMoltbotAgentDir } from "../agents/agent-paths.js";
 import { ensureMoltbotModelsJson } from "../agents/models-config.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import type { MoltbotConfig } from "../config/config.js";
-import { createGoalTools } from "./goal-tools.js";
+import { createGoalTools, createTurnTracker, type TurnTracker } from "./goal-tools.js";
+import {
+  createCheckpoint,
+  isGitRepo,
+  isWorkingTreeClean,
+  resetToCheckpoint,
+  type GitCheckpoint,
+} from "./git-checkpoint.js";
 import { formatPlanAsContext } from "./planner.js";
 import {
   resolveAgentTaskSessionFile,
@@ -29,12 +36,30 @@ import {
   type CriticalPathScores,
 } from "./plan-order.js";
 import { aggregateBlockedDetails } from "./blocked.js";
-import type { GoalOutcome, GoalSession, Plan, PlanStep, TaskExecutionResult } from "./types.js";
+import type {
+  GitCheckpointConfig,
+  GoalOutcome,
+  GoalSession,
+  Plan,
+  PlanStep,
+  RetryConfig,
+  TaskExecutionResult,
+} from "./types.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt (fallback when step has no durationMinutes)
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
+
+const DEFAULT_MAX_ATTEMPTS = 2;
+const DEFAULT_RETRY_DELAY_MS = 1000;
+
+// Conservative: only clearly transient errors
+const RETRYABLE_REASONS: PlanStep["blockedReason"][] = ["timeout", "network", "rate_limit"];
+
+function isRetryable(reason: PlanStep["blockedReason"]): boolean {
+  return reason != null && RETRYABLE_REASONS.includes(reason);
+}
 
 // --- Executor error classification ---
 type ExecutorErrorKind = "rate_limit" | "out_of_credits" | "auth" | "network" | "timeout" | "other";
@@ -138,6 +163,8 @@ export type ExecuteGoalParams = {
   model?: string;
   maxTurnsPerTask?: number;
   timeoutMs?: number;
+  retryConfig?: Partial<RetryConfig>;
+  gitCheckpointConfig?: Partial<GitCheckpointConfig>;
   onTaskUpdate?: (result: TaskExecutionResult) => void;
   onProgress?: (text: string) => void;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
@@ -180,6 +207,63 @@ function appendGoalWorkingEntry(
     fs.appendFileSync(filePath, entry, "utf8");
   } catch {
     // Best-effort; don't mask task execution errors.
+  }
+}
+
+/** Auto-generate working notes when the agent skips update_working_notes. */
+function autoGenerateWorkingNotes(
+  runId: string,
+  stepId: string,
+  attempt: number,
+  turnNumber: number,
+  tracker: TurnTracker,
+  errorInfo?: string,
+): void {
+  try {
+    const filePath = resolveWorkingFile(runId, stepId);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const tools = [...new Set(tracker.toolCalls)];
+    const lines = [
+      `\n## Auto-note Attempt ${attempt} Turn ${turnNumber} (${new Date().toISOString()})\n`,
+      `Tools: ${tools.length ? tools.join(", ") : "none"}`,
+      errorInfo ? `Error: ${errorInfo}` : null,
+      ``,
+      `Next attempt must change strategy.`,
+      `StrategyChange: <to be filled by agent>`,
+    ].filter(Boolean);
+
+    fs.appendFileSync(filePath, lines.join("\n") + "\n", "utf8");
+  } catch {
+    // Best-effort
+  }
+}
+
+/** Append retry context to working notes when an attempt fails with a retryable error. */
+function appendRetryContext(
+  runId: string,
+  stepId: string,
+  attempt: number,
+  reason: string,
+  detail: string,
+): void {
+  try {
+    const filePath = resolveWorkingFile(runId, stepId);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const content = [
+      `\n## Attempt #${attempt} FAILED (${new Date().toISOString()})\n`,
+      `**Reason:** ${reason}`,
+      `**Detail:** ${detail}`,
+      ``,
+      `DO NOT repeat the same approach. Try a different strategy.`,
+      `StrategyChange: <describe what will be different>`,
+    ].join("\n");
+    fs.appendFileSync(filePath, content + "\n", "utf8");
+  } catch {
+    // Best-effort
   }
 }
 
@@ -442,6 +526,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     config,
     maxTurnsPerTask = DEFAULT_MAX_TURNS_PER_TASK,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    retryConfig,
+    gitCheckpointConfig,
     onTaskUpdate,
     onProgress,
     onStatusChange,
@@ -452,6 +538,16 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   if (!plan) throw new Error("No plan to execute");
 
   session.state = "executing";
+
+  // --- Git dirty check: block immediately if working tree is dirty and checkpoints are enabled ---
+  if (gitCheckpointConfig?.enabled && isGitRepo(workingDir) && !isWorkingTreeClean(workingDir)) {
+    session.state = "blocked";
+    const msg =
+      "Git working tree has uncommitted changes. Commit or stash before running goal with git checkpoints.";
+    session.blocked = { prompt: msg, requiredInputKey: "git_dirty" };
+    onProgress?.(`[git] Blocked: dirty working tree`);
+    return { status: "blocked", question: msg, requiredInputKey: "git_dirty" };
+  }
 
   const scores = computeCriticalPathScores(plan.steps);
   const orderIndex = new Map(plan.steps.map((step, idx) => [step.id, idx]));
@@ -511,300 +607,369 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     // Pick task via static critical-path scores (prefer longer path, then successor, then plan order)
     const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
-    goalTools.reset();
     goalTools.setActiveTask(task.id);
 
-    // --- Create fresh PI session for this task ---
-    const completedSummaries = orderedSteps
-      .filter((s) => s.status === "done" && s.taskSummary)
-      .map((s) => ({ id: s.id, summary: s.taskSummary! }));
+    const maxAttempts = retryConfig?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    const retryDelayMs = retryConfig?.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    const taskStartMs = Date.now();
 
-    const taskSessionFile = resolveAgentTaskSessionFile(runId, task.id);
-    // Ensure sessions directory exists
-    const sessionsDir = path.dirname(taskSessionFile);
-    if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
-
-    onProgress?.(`Creating agent session for task ${task.id} (${providerId}/${modelId})...`);
-
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: workingDir,
-      agentDir,
-      settingsManager,
-      systemPrompt: buildGoalSystemPrompt(session.goal, plan, completedSummaries),
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-    });
-    await resourceLoader.reload();
-
-    const { session: piSession } = await createAgentSession({
-      cwd: workingDir,
-      agentDir,
-      model,
-      thinkingLevel: "low",
-      tools: codingTools,
-      customTools: goalTools.tools,
-      sessionManager: SessionManager.open(taskSessionFile),
-      settingsManager,
-      authStorage,
-      modelRegistry,
-      resourceLoader,
-    });
-
-    const unsubscribe = piSession.subscribe((event) => {
-      if (event.type === "tool_execution_start") {
-        onProgress?.(`  [tool] ${event.toolName}`);
+    // If resuming a previously-blocked task with an answer, prepare it
+    let resumeAnswer: string | undefined;
+    let resumeQuestion: string | undefined;
+    if (task.status === "blocked") {
+      resumeAnswer = getAnswerForTask(task.id, session.answers);
+      resumeQuestion = task.blockedQuestion;
+      task.turnsUsed = 0;
+      task.blockedReason = undefined;
+      task.blockedQuestion = undefined;
+      task.status = "pending";
+      // Consume the answer so we don't retry infinitely if task blocks again
+      const answerKey = `task:${task.id}:input`;
+      if (session.answers[answerKey]) {
+        delete session.answers[answerKey];
       }
-    });
+    }
 
-    try {
-      // If resuming a previously-blocked task with an answer, prepare it
-      let resumeAnswer: string | undefined;
-      let resumeQuestion: string | undefined;
-      if (task.status === "blocked") {
-        resumeAnswer = getAnswerForTask(task.id, session.answers);
-        resumeQuestion = task.blockedQuestion;
-        task.turnsUsed = 0;
-        task.blockedReason = undefined;
-        task.blockedQuestion = undefined;
-        task.status = "pending";
-        // Consume the answer so we don't retry infinitely if task blocks again
-        const answerKey = `task:${task.id}:input`;
-        if (session.answers[answerKey]) {
-          delete session.answers[answerKey];
-        }
-      }
-
-      let turnsUsed = task.turnsUsed ?? 0;
-      const taskStartMs = Date.now();
-
-      task.status = "in_progress";
-      onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
-
-      const handlePromptError = (
-        errMsg: string,
-        requestId?: string,
-      ): { kind: ExecutorErrorKind; message: string } | null => {
-        const errorKind = classifyExecutorError(errMsg);
-        const formatted = formatExecutorError(errorKind, errMsg, requestId, providerId, modelId);
-
-        // Set task blocked with specific errorKind as blockedReason
-        task.status = "blocked";
-        task.blockedReason = errorKind;
-        task.blockedQuestion = formatted;
-
-        // Persist stepResults immediately so progress isn't lost
-        session.stepResults.set(task.id, {
-          stepId: task.id,
-          success: false,
-          output: "",
-          error: task.blockedQuestion,
-          durationMs: Date.now() - taskStartMs,
-        });
-
-        // Fatal errors: stop the entire goal and mark remaining runnable tasks as blocked
-        if (FATAL_ERRORS.includes(errorKind)) {
-          session.lastError = task.blockedQuestion;
-          return { kind: errorKind, message: formatted };
-        }
-
-        return null;
-      };
-
-      // Dynamic timeout: min(durationMinutes * 2, 2 hours), fallback to global default
-      const MAX_TIMEOUT_MS = 2 * 60 * 60_000; // 2 hours
-      const taskTimeoutMs = task.durationMinutes
-        ? Math.min(task.durationMinutes * 2 * 60_000, MAX_TIMEOUT_MS)
-        : timeoutMs;
-
-      // Per-task prompt loop
-      while (turnsUsed < maxTurnsPerTask) {
-        if (abortSignal?.aborted) {
-          task.status = "blocked";
-          task.blockedReason = "timeout";
-          break;
-        }
-
-        const firstTurnOpts =
-          turnsUsed === 0
-            ? {
-                nodeSpec: loadNodeSpec(runId, task.id),
-                workingNotes: loadWorkingNotes(runId, task.id),
-              }
-            : undefined;
-        const prompt =
-          turnsUsed === 0 && resumeAnswer
-            ? buildResumeTaskPrompt(
-                task,
-                plan.steps.length,
-                resumeAnswer,
-                resumeQuestion,
-                firstTurnOpts,
-              )
-            : turnsUsed === 0
-              ? buildFirstTaskPrompt(task, plan.steps.length, firstTurnOpts)
-              : buildContinuePrompt(task, turnsUsed, maxTurnsPerTask);
-
-        onProgress?.(`  [turn ${turnsUsed + 1}/${maxTurnsPerTask}]`);
-
-        let promptError: AssistantErrorInfo | null = null;
-        try {
-          // Create a timeout for this prompt
-          const timeoutController = new AbortController();
-          const timer = setTimeout(() => timeoutController.abort(), taskTimeoutMs);
-          const combinedAbort = abortSignal
-            ? AbortSignal.any([abortSignal, timeoutController.signal])
-            : timeoutController.signal;
-
-          // Listen for abort to abort the session
-          const onAbort = () => void piSession.abort();
-          combinedAbort.addEventListener("abort", onAbort, { once: true });
-
-          try {
-            await piSession.prompt(prompt);
-          } finally {
-            clearTimeout(timer);
-            combinedAbort.removeEventListener("abort", onAbort);
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          promptError = { message: errMsg, requestId: extractRequestId(err) };
-        }
-
-        turnsUsed++;
-        task.turnsUsed = turnsUsed;
-
-        if (!promptError) {
-          promptError = getLastAssistantError(piSession);
-        }
-
-        if (promptError) {
-          const fatalBlock = handlePromptError(promptError.message, promptError.requestId);
-          if (fatalBlock) {
-            globalBlock = fatalBlock;
-            stopAllTasks = true;
-          }
-          // Break out of turn loop (fatal errors stop the entire goal below)
-          break;
-        }
-
-        // Check goal tool signals — precedence: blocked > failed > complete
-        const signal = goalTools.getSignal();
-        if (signal) {
-          if (signal.type === "user_input_needed") {
-            task.status = "blocked";
-            task.blockedReason = "user_input";
-            task.blockedQuestion = signal.question;
-            onProgress?.(`  [blocked] ${signal.question}`);
-            break;
-          }
-          if (signal.type === "task_failed") {
-            task.status = "blocked";
-            task.blockedReason = "task_failed";
-            task.blockedQuestion = signal.reason;
-            task.failedDetail = {
-              whatTried: signal.whatTried,
-              errorType: signal.errorType,
-              suggestedNext: signal.suggestedNext,
-              needsRevert: signal.needsRevert,
-            };
-            onProgress?.(`  [failed] ${signal.reason}`);
-            break;
-          }
-          if (signal.type === "task_complete") {
-            task.status = "done";
-            task.taskSummary = signal.summary;
-            onProgress?.(`  [done] ${signal.summary}`);
-            break;
-          }
-        }
-
-        // No signal — agent finished the prompt naturally.
-        // If it's the last allowed turn, we'll catch it below.
-        // Otherwise, continue prompting.
-      }
-
-      // If turns exhausted without completion
-      if (turnsUsed >= maxTurnsPerTask && task.status === "in_progress") {
-        task.status = "blocked";
-        task.blockedReason = "turn_limit";
-        task.blockedQuestion = `Task did not complete within ${maxTurnsPerTask} turns.`;
-        onProgress?.(`  [blocked] Turn limit reached (${maxTurnsPerTask})`);
-      }
-
-      // Mark as running → final status was already set
-      const durationMs = Date.now() - taskStartMs;
-      const result: TaskExecutionResult = {
-        taskId: task.id,
-        turnsUsed,
-        durationMs,
-        outcome:
-          task.status === "done"
-            ? "done"
-            : task.blockedReason === "task_failed"
-              ? "task_failed"
-              : "blocked",
-        summary: task.taskSummary,
-        blockedQuestion: task.blockedQuestion,
-        blockedReason: task.blockedReason,
-      };
-      onTaskUpdate?.(result);
-      lastExecutedId = task.id;
-
-      // Write top-level WORKING.md entry
-      if (task.status === "done") {
-        appendGoalWorkingEntry(runId, task.id, "done", task.taskSummary ?? "Completed.");
-      } else if (task.blockedReason === "task_failed") {
-        appendGoalWorkingEntry(
-          runId,
-          task.id,
-          "failed",
-          task.failedDetail?.whatTried ?? task.blockedQuestion ?? "Failed.",
+    // --- Git checkpoint: created once per task, persists across retry attempts ---
+    let checkpoint: GitCheckpoint | null = null;
+    if (gitCheckpointConfig?.enabled) {
+      checkpoint = createCheckpoint(workingDir, runId, task.id);
+      if (checkpoint) {
+        onProgress?.(
+          `  [git] Checkpoint at ${checkpoint.sha.slice(0, 7)} on ${checkpoint.branch || "current branch"}`,
         );
       }
+    }
 
-      // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
-      if (stopAllTasks && globalBlock && !globalBlockApplied) {
-        const blockedMessage = globalBlock.message;
-        for (const step of orderedSteps) {
-          if (step.status !== "pending") continue;
-          const depsReady = step.dependsOn.every((depId) => {
-            const dep = orderedSteps.find((s) => s.id === depId);
-            return dep?.status === "done";
-          });
-          if (!depsReady) continue;
-          step.status = "blocked";
-          step.blockedReason = globalBlock.kind;
-          step.blockedQuestion = blockedMessage;
+    // === ATTEMPT LOOP ===
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Fresh tracker per attempt; goalTools stays the same
+      const turnTracker = createTurnTracker();
+      goalTools.reset();
+      goalTools.setTurnTracker(turnTracker);
+
+      if (attempt > 1) {
+        task.turnsUsed = 0;
+        task.status = "pending";
+        task.blockedReason = undefined;
+        task.blockedQuestion = undefined;
+
+        // Reset git state on retry if checkpoint exists
+        if (checkpoint && gitCheckpointConfig?.resetOnRetry !== false) {
+          const resetResult = resetToCheckpoint(workingDir, checkpoint);
+          if (resetResult.success) {
+            onProgress?.(`  [git] Reset to ${checkpoint.sha.slice(0, 7)}`);
+          } else {
+            onProgress?.(`  [git] Reset failed: ${resetResult.error}`);
+          }
         }
-        globalBlockApplied = true;
+
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+        onProgress?.(`  [ralph] Attempt ${attempt}/${maxAttempts}`);
       }
 
-      const hasRunnable = findRunnableTasks(orderedSteps, session.answers).length > 0;
+      // --- Create fresh PI session for this attempt ---
+      const completedSummaries = orderedSteps
+        .filter((s) => s.status === "done" && s.taskSummary)
+        .map((s) => ({ id: s.id, summary: s.taskSummary! }));
 
-      // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
-      if (
-        task.status === "blocked" &&
-        !previouslyBlockedIds.has(task.id) &&
-        onStatusChange &&
-        hasRunnable
-      ) {
-        previouslyBlockedIds.add(task.id);
-        await onStatusChange({
-          type: "step_blocked",
-          stepId: task.id,
-          question: task.blockedQuestion ?? "Unknown",
-          steps: [...orderedSteps],
+      const taskSessionFile = resolveAgentTaskSessionFile(runId, task.id);
+      const sessionsDir = path.dirname(taskSessionFile);
+      if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
+
+      onProgress?.(`Creating agent session for task ${task.id} (${providerId}/${modelId})...`);
+
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: workingDir,
+        agentDir,
+        settingsManager,
+        systemPrompt: buildGoalSystemPrompt(session.goal, plan, completedSummaries),
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+      });
+      await resourceLoader.reload();
+
+      const { session: piSession } = await createAgentSession({
+        cwd: workingDir,
+        agentDir,
+        model,
+        thinkingLevel: "low",
+        tools: codingTools,
+        customTools: goalTools.tools,
+        sessionManager: SessionManager.open(taskSessionFile),
+        settingsManager,
+        authStorage,
+        modelRegistry,
+        resourceLoader,
+      });
+
+      const unsubscribe = piSession.subscribe((event) => {
+        if (event.type === "tool_execution_start") {
+          onProgress?.(`  [tool] ${event.toolName}`);
+          turnTracker.recordTool(event.toolName);
+        }
+      });
+
+      try {
+        let turnsUsed = task.turnsUsed ?? 0;
+
+        task.status = "in_progress";
+        if (attempt === 1) {
+          onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
+        }
+
+        const handlePromptError = (
+          errMsg: string,
+          requestId?: string,
+        ): { kind: ExecutorErrorKind; message: string } | null => {
+          const errorKind = classifyExecutorError(errMsg);
+          const formatted = formatExecutorError(errorKind, errMsg, requestId, providerId, modelId);
+
+          task.status = "blocked";
+          task.blockedReason = errorKind;
+          task.blockedQuestion = formatted;
+
+          session.stepResults.set(task.id, {
+            stepId: task.id,
+            success: false,
+            output: "",
+            error: task.blockedQuestion,
+            durationMs: Date.now() - taskStartMs,
+          });
+
+          if (FATAL_ERRORS.includes(errorKind)) {
+            session.lastError = task.blockedQuestion;
+            return { kind: errorKind, message: formatted };
+          }
+
+          return null;
+        };
+
+        // Dynamic timeout: min(durationMinutes * 2, 2 hours), fallback to global default
+        const MAX_TIMEOUT_MS = 2 * 60 * 60_000; // 2 hours
+        const taskTimeoutMs = task.durationMinutes
+          ? Math.min(task.durationMinutes * 2 * 60_000, MAX_TIMEOUT_MS)
+          : timeoutMs;
+
+        // Per-attempt prompt loop
+        while (turnsUsed < maxTurnsPerTask) {
+          if (abortSignal?.aborted) {
+            task.status = "blocked";
+            task.blockedReason = "timeout";
+            break;
+          }
+
+          // Reset tracker at start of each turn
+          turnTracker.reset();
+
+          const firstTurnOpts =
+            turnsUsed === 0
+              ? {
+                  nodeSpec: loadNodeSpec(runId, task.id),
+                  workingNotes: loadWorkingNotes(runId, task.id),
+                }
+              : undefined;
+          const prompt =
+            turnsUsed === 0 && resumeAnswer
+              ? buildResumeTaskPrompt(
+                  task,
+                  plan.steps.length,
+                  resumeAnswer,
+                  resumeQuestion,
+                  firstTurnOpts,
+                )
+              : turnsUsed === 0
+                ? buildFirstTaskPrompt(task, plan.steps.length, firstTurnOpts)
+                : buildContinuePrompt(task, turnsUsed, maxTurnsPerTask);
+
+          onProgress?.(`  [turn ${turnsUsed + 1}/${maxTurnsPerTask}]`);
+
+          let promptError: AssistantErrorInfo | null = null;
+          try {
+            const timeoutController = new AbortController();
+            const timer = setTimeout(() => timeoutController.abort(), taskTimeoutMs);
+            const combinedAbort = abortSignal
+              ? AbortSignal.any([abortSignal, timeoutController.signal])
+              : timeoutController.signal;
+
+            const onAbort = () => void piSession.abort();
+            combinedAbort.addEventListener("abort", onAbort, { once: true });
+
+            try {
+              await piSession.prompt(prompt);
+            } finally {
+              clearTimeout(timer);
+              combinedAbort.removeEventListener("abort", onAbort);
+            }
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            promptError = { message: errMsg, requestId: extractRequestId(err) };
+          }
+
+          turnsUsed++;
+          task.turnsUsed = turnsUsed;
+
+          // Auto-generate working notes if agent didn't write any and task isn't completing
+          const taskCompleting = turnTracker.toolCalls.includes("mark_task_complete");
+          if (!turnTracker.notesWritten && !taskCompleting) {
+            autoGenerateWorkingNotes(
+              runId,
+              task.id,
+              attempt,
+              turnsUsed,
+              turnTracker,
+              promptError?.message,
+            );
+          }
+
+          if (!promptError) {
+            promptError = getLastAssistantError(piSession);
+          }
+
+          if (promptError) {
+            const fatalBlock = handlePromptError(promptError.message, promptError.requestId);
+            if (fatalBlock) {
+              globalBlock = fatalBlock;
+              stopAllTasks = true;
+            }
+            break;
+          }
+
+          // Check goal tool signals -- precedence: blocked > failed > complete
+          const signal = goalTools.getSignal();
+          if (signal) {
+            if (signal.type === "user_input_needed") {
+              task.status = "blocked";
+              task.blockedReason = "user_input";
+              task.blockedQuestion = signal.question;
+              onProgress?.(`  [blocked] ${signal.question}`);
+              break;
+            }
+            if (signal.type === "task_failed") {
+              task.status = "blocked";
+              task.blockedReason = "task_failed";
+              task.blockedQuestion = signal.reason;
+              task.failedDetail = {
+                whatTried: signal.whatTried,
+                errorType: signal.errorType,
+                suggestedNext: signal.suggestedNext,
+                needsRevert: signal.needsRevert,
+              };
+              onProgress?.(`  [failed] ${signal.reason}`);
+              break;
+            }
+            if (signal.type === "task_complete") {
+              task.status = "done";
+              task.taskSummary = signal.summary;
+              onProgress?.(`  [done] ${signal.summary}`);
+              break;
+            }
+          }
+
+          // No signal -- agent finished the prompt naturally; continue prompting.
+        }
+
+        // If turns exhausted without completion
+        if (turnsUsed >= maxTurnsPerTask && task.status === "in_progress") {
+          task.status = "blocked";
+          task.blockedReason = "turn_limit";
+          task.blockedQuestion = `Task did not complete within ${maxTurnsPerTask} turns.`;
+          onProgress?.(`  [blocked] Turn limit reached (${maxTurnsPerTask})`);
+        }
+      } finally {
+        unsubscribe();
+        piSession.dispose();
+      }
+
+      // Check if should retry
+      if (task.status === "blocked" && isRetryable(task.blockedReason)) {
+        if (attempt < maxAttempts) {
+          appendRetryContext(
+            runId,
+            task.id,
+            attempt,
+            task.blockedReason!,
+            task.blockedQuestion ?? "Unknown",
+          );
+          continue;
+        }
+      }
+      break; // Success, non-retryable, or max attempts reached
+    }
+    // === END ATTEMPT LOOP ===
+
+    // Clean up tracker ref after task is done
+    goalTools.setTurnTracker(null);
+
+    // Record task result
+    const durationMs = Date.now() - taskStartMs;
+    const result: TaskExecutionResult = {
+      taskId: task.id,
+      turnsUsed: task.turnsUsed ?? 0,
+      durationMs,
+      outcome:
+        task.status === "done"
+          ? "done"
+          : task.blockedReason === "task_failed"
+            ? "task_failed"
+            : "blocked",
+      summary: task.taskSummary,
+      blockedQuestion: task.blockedQuestion,
+      blockedReason: task.blockedReason,
+    };
+    onTaskUpdate?.(result);
+    lastExecutedId = task.id;
+
+    // Write top-level WORKING.md entry
+    if (task.status === "done") {
+      appendGoalWorkingEntry(runId, task.id, "done", task.taskSummary ?? "Completed.");
+    } else if (task.blockedReason === "task_failed") {
+      appendGoalWorkingEntry(
+        runId,
+        task.id,
+        "failed",
+        task.failedDetail?.whatTried ?? task.blockedQuestion ?? "Failed.",
+      );
+    }
+
+    // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
+    if (stopAllTasks && globalBlock && !globalBlockApplied) {
+      const blockedMessage = globalBlock.message;
+      for (const step of orderedSteps) {
+        if (step.status !== "pending") continue;
+        const depsReady = step.dependsOn.every((depId) => {
+          const dep = orderedSteps.find((s) => s.id === depId);
+          return dep?.status === "done";
         });
+        if (!depsReady) continue;
+        step.status = "blocked";
+        step.blockedReason = globalBlock.kind;
+        step.blockedQuestion = blockedMessage;
       }
+      globalBlockApplied = true;
+    }
 
-      if (stopAllTasks) {
-        break;
-      }
-    } finally {
-      unsubscribe();
-      piSession.dispose();
+    const hasRunnable = findRunnableTasks(orderedSteps, session.answers).length > 0;
+
+    if (
+      task.status === "blocked" &&
+      !previouslyBlockedIds.has(task.id) &&
+      onStatusChange &&
+      hasRunnable
+    ) {
+      previouslyBlockedIds.add(task.id);
+      await onStatusChange({
+        type: "step_blocked",
+        stepId: task.id,
+        question: task.blockedQuestion ?? "Unknown",
+        steps: [...orderedSteps],
+      });
+    }
+
+    if (stopAllTasks) {
+      break;
     }
   }
 

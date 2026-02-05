@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createGoalTools } from "./goal-tools.js";
+import { createGoalTools, createTurnTracker } from "./goal-tools.js";
 
 describe("goal-tools", () => {
   describe("createGoalTools", () => {
@@ -277,6 +277,70 @@ describe("goal-tools", () => {
       const { deletePath } = setup();
       const result = await deletePath.execute("c1", { path: "nope.txt" });
       expect((result.content[0] as { text: string }).text).toMatch(/does not exist/i);
+    });
+  });
+
+  describe("createTurnTracker", () => {
+    it("starts with empty state", () => {
+      const tracker = createTurnTracker();
+      expect(tracker.toolCalls).toEqual([]);
+      expect(tracker.notesWritten).toBe(false);
+    });
+
+    it("records tool calls", () => {
+      const tracker = createTurnTracker();
+      tracker.recordTool("read_file");
+      tracker.recordTool("write_file");
+      expect(tracker.toolCalls).toEqual(["read_file", "write_file"]);
+    });
+
+    it("marks notes written", () => {
+      const tracker = createTurnTracker();
+      tracker.markNotesWritten();
+      expect(tracker.notesWritten).toBe(true);
+    });
+
+    it("resets all state", () => {
+      const tracker = createTurnTracker();
+      tracker.recordTool("bash");
+      tracker.markNotesWritten();
+      tracker.reset();
+      expect(tracker.toolCalls).toEqual([]);
+      expect(tracker.notesWritten).toBe(false);
+    });
+  });
+
+  describe("setTurnTracker integration", () => {
+    it("setTurnTracker is a function on goalTools", () => {
+      const goalTools = createGoalTools();
+      expect(typeof goalTools.setTurnTracker).toBe("function");
+    });
+
+    it("update_working_notes marks tracker as notes written", async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "goal-tools-tracker-"));
+      // We need a runId for working notes — use a fake goals dir
+      const fakeRunId = "tracker-test-run";
+      const goalTools = createGoalTools(dir, fakeRunId);
+      const tracker = createTurnTracker();
+      goalTools.setTurnTracker(tracker);
+      goalTools.setActiveTask("step1");
+
+      const updateNotes = goalTools.tools.find((t) => t.name === "update_working_notes")!;
+      await updateNotes.execute("c1", { notes: "Test note" });
+
+      expect(tracker.notesWritten).toBe(true);
+    });
+
+    it("null tracker does not crash update_working_notes", async () => {
+      const fakeRunId = "tracker-null-test";
+      const goalTools = createGoalTools(undefined, fakeRunId);
+      goalTools.setTurnTracker(null);
+      goalTools.setActiveTask("step1");
+
+      const updateNotes = goalTools.tools.find((t) => t.name === "update_working_notes")!;
+      const result = await updateNotes.execute("c1", { notes: "Test" });
+      // Should succeed (or return error for no active task) but not crash
+      expect(result.content).toBeDefined();
     });
   });
 });

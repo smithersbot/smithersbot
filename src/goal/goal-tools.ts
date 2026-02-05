@@ -4,6 +4,37 @@ import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { resolveWorkingFile } from "./run-store.js";
 
+export type TurnTracker = {
+  toolCalls: string[];
+  notesWritten: boolean;
+  reset: () => void;
+  recordTool: (name: string) => void;
+  markNotesWritten: () => void;
+};
+
+export function createTurnTracker(): TurnTracker {
+  let toolCalls: string[] = [];
+  let notesWritten = false;
+  return {
+    get toolCalls() {
+      return toolCalls;
+    },
+    get notesWritten() {
+      return notesWritten;
+    },
+    reset() {
+      toolCalls = [];
+      notesWritten = false;
+    },
+    recordTool(name: string) {
+      toolCalls.push(name);
+    },
+    markNotesWritten() {
+      notesWritten = true;
+    },
+  };
+}
+
 /**
  * Resolves a relative path against the working directory and ensures
  * the result stays inside the sandbox. Throws on path traversal.
@@ -49,8 +80,10 @@ export function createGoalTools(
   getSignal: () => GoalToolSignal | null;
   reset: () => void;
   setActiveTask: (taskId: string) => void;
+  setTurnTracker: (tracker: TurnTracker | null) => void;
 } {
   let activeTaskId: string | null = null;
+  let turnTracker: TurnTracker | null = null;
 
   // Track all signal types independently. Precedence: blocked > failed > complete.
   let blockedSignal: { question: string; context?: string } | null = null;
@@ -206,6 +239,7 @@ export function createGoalTools(
         if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
         const header = `\n## Attempt at ${new Date().toISOString()}\n\n`;
         appendFileSync(filePath, header + params.notes + "\n", "utf8");
+        turnTracker?.markNotesWritten();
         return {
           content: [{ type: "text", text: "Working notes updated." }],
           details: {},
@@ -328,6 +362,9 @@ export function createGoalTools(
     },
     setActiveTask: (taskId: string) => {
       activeTaskId = taskId;
+    },
+    setTurnTracker: (tracker: TurnTracker | null) => {
+      turnTracker = tracker;
     },
   };
 }

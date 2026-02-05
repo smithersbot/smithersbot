@@ -71,7 +71,23 @@ vi.mock("./goal-tools.js", () => ({
     getSignal: () => getMockSignal(),
     reset: () => mockReset(),
     setActiveTask: vi.fn(),
+    setTurnTracker: vi.fn(),
   })),
+  createTurnTracker: vi.fn(() => ({
+    toolCalls: [],
+    notesWritten: false,
+    reset: vi.fn(),
+    recordTool: vi.fn(),
+    markNotesWritten: vi.fn(),
+  })),
+}));
+
+// Mock git-checkpoint (disabled by default; no gitCheckpointConfig passed)
+vi.mock("./git-checkpoint.js", () => ({
+  isGitRepo: vi.fn(() => false),
+  isWorkingTreeClean: vi.fn(() => true),
+  createCheckpoint: vi.fn(() => null),
+  resetToCheckpoint: vi.fn(() => ({ success: true, sha: "abc1234" })),
 }));
 
 // Mock the PI coding agent SDK
@@ -490,6 +506,7 @@ describe("agent-executor", () => {
         session,
         runId: "test-run-13",
         workingDir: "/tmp/ws",
+        retryConfig: { maxAttempts: 1 },
       });
 
       expect(mockDispose).toHaveBeenCalledOnce();
@@ -984,6 +1001,152 @@ describe("agent-executor", () => {
       expect(result.status).toBe("blocked");
       // 3 prompts: A, then B (blocks), then C
       expect(mockPrompt).toHaveBeenCalledTimes(3);
+    });
+
+    // -----------------------------------------------------------------------
+    // Retry (ralph) behavior
+    // -----------------------------------------------------------------------
+
+    it("retries on transient timeout error (default maxAttempts=2)", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      let callCount = 0;
+      mockPrompt.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First attempt: timeout error (retryable)
+          throw new Error("The operation was aborted");
+        }
+        // Second attempt: succeeds
+        mockCompleteSignal = { summary: "Done on retry" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-retry-1",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("done");
+      expect(step.status).toBe("done");
+      // 2 prompts: first attempt fails, second attempt succeeds
+      expect(mockPrompt).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry on non-retryable user_input block", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      mockPrompt.mockImplementation(async () => {
+        mockBlockedSignal = { question: "What DB?" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-retry-2",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("blocked");
+      expect(step.blockedReason).toBe("user_input");
+      // Only 1 prompt — no retry for user_input
+      expect(mockPrompt).toHaveBeenCalledOnce();
+    });
+
+    it("does not retry on fatal auth error", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      mockPrompt.mockRejectedValue(new Error("401 Unauthorized"));
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-retry-3",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("blocked");
+      expect(step.blockedReason).toBe("auth");
+      // Only 1 prompt — fatal errors are not retried
+      expect(mockPrompt).toHaveBeenCalledOnce();
+    });
+
+    it("retryConfig maxAttempts=1 disables retry", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      mockPrompt.mockRejectedValue(new Error("The operation was aborted"));
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-retry-4",
+        workingDir: "/tmp/ws",
+        retryConfig: { maxAttempts: 1 },
+      });
+
+      expect(result.status).toBe("blocked");
+      expect(step.blockedReason).toBe("timeout");
+      // Only 1 prompt — retry disabled
+      expect(mockPrompt).toHaveBeenCalledOnce();
+    });
+
+    it("creates fresh PI session per retry attempt", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      let callCount = 0;
+      mockPrompt.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error("Rate limit exceeded");
+        }
+        mockCompleteSignal = { summary: "Done on retry" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      await executeGoalWithAgent({
+        session,
+        runId: "test-retry-5",
+        workingDir: "/tmp/ws",
+      });
+
+      // dispose called once per attempt (2 attempts)
+      expect(mockDispose).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries on rate_limit error", async () => {
+      const step = makeStep();
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      let callCount = 0;
+      mockPrompt.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error("Rate limit exceeded");
+        }
+        mockCompleteSignal = { summary: "Done" };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-retry-6",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("done");
+      expect(step.status).toBe("done");
     });
   });
 });

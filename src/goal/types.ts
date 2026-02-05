@@ -94,6 +94,16 @@ export type GoalOutcome =
   | { status: "rejected" }
   | { status: "failed"; error: string; errorKind: string };
 
+export type RetryConfig = {
+  maxAttempts: number; // default 2 (one retry)
+  retryDelayMs: number; // default 1000
+};
+
+export type GitCheckpointConfig = {
+  enabled: boolean; // default false
+  resetOnRetry: boolean; // default true
+};
+
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
 export type OutputFormat = "md" | "json";
 
