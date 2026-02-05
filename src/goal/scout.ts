@@ -289,17 +289,13 @@ export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
   const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
 
   try {
-    const stdout = execFileSync(
-      claudeBin,
-      ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write", "--max-budget-usd", SCOUT_BUDGET_USD],
-      {
-        input: brief,
-        encoding: "utf8",
-        timeout,
-        maxBuffer: SCOUT_MAX_BUFFER,
-        cwd: process.cwd(),
-      },
-    );
+    const stdout = execFileSync(claudeBin, ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"], {
+      input: brief,
+      encoding: "utf8",
+      timeout,
+      maxBuffer: SCOUT_MAX_BUFFER,
+      cwd: process.cwd(),
+    });
     fs.writeFileSync(stdoutPath, stdout, "utf8");
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -383,17 +379,13 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
   const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
 
   try {
-    const stdout = execFileSync(
-      claudeBin,
-      ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write", "--max-budget-usd", SCOUT_BUDGET_USD],
-      {
-        input: retryBrief,
-        encoding: "utf8",
-        timeout,
-        maxBuffer: SCOUT_MAX_BUFFER,
-        cwd: process.cwd(),
-      },
-    );
+    const stdout = execFileSync(claudeBin, ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"], {
+      input: retryBrief,
+      encoding: "utf8",
+      timeout,
+      maxBuffer: SCOUT_MAX_BUFFER,
+      cwd: process.cwd(),
+    });
     fs.writeFileSync(stdoutPath, stdout, "utf8");
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

@@ -620,8 +620,17 @@ export async function sendGoalReply(
       runtime,
       fn: () =>
         bot.api
-          .sendMessage(chatId, chunk.html, { parse_mode: "HTML", ...threadParams })
-          .catch(() => bot.api.sendMessage(chatId, chunk.text, threadParams)),
+          .sendMessage(chatId, chunk.html, {
+            parse_mode: "HTML",
+            link_preview_options: { is_disabled: true },
+            ...threadParams,
+          })
+          .catch(() =>
+            bot.api.sendMessage(chatId, chunk.text, {
+              link_preview_options: { is_disabled: true },
+              ...threadParams,
+            }),
+          ),
     });
     if (sent?.message_id != null) {
       lastMessageId = sent.message_id;
@@ -822,6 +831,24 @@ export async function sendGoalPlanResult(params: {
 // DAG PNG delivery (status-coloured Mermaid diagram via Telegram photo)
 // ---------------------------------------------------------------------------
 
+const TELEGRAM_CAPTION_LIMIT = 1024;
+
+function splitTelegramCaption(caption: string): { caption: string; remainder?: string } {
+  if (caption.length <= TELEGRAM_CAPTION_LIMIT) return { caption };
+  const preferred = caption.lastIndexOf("\n", TELEGRAM_CAPTION_LIMIT);
+  const minSplit = Math.floor(TELEGRAM_CAPTION_LIMIT * 0.6);
+  const splitAt = preferred >= minSplit ? preferred : TELEGRAM_CAPTION_LIMIT;
+  const head = caption.slice(0, splitAt).trimEnd();
+  const tail = caption.slice(splitAt).trimStart();
+  if (!head) {
+    return {
+      caption: caption.slice(0, TELEGRAM_CAPTION_LIMIT),
+      remainder: caption.slice(TELEGRAM_CAPTION_LIMIT).trimStart(),
+    };
+  }
+  return { caption: head, remainder: tail || undefined };
+}
+
 async function sendDagPng(params: {
   bot: Bot;
   chatId: number;
@@ -834,6 +861,7 @@ async function sendDagPng(params: {
 }): Promise<number | undefined> {
   const { bot, chatId, threadId, runtime, plan, steps, caption, replyMarkup } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+  const split = splitTelegramCaption(caption);
 
   const displayStatuses = computeDisplayStatuses(steps);
   let cpm: ReturnType<typeof computeCpm> | undefined;
@@ -848,12 +876,15 @@ async function sendDagPng(params: {
   if (pngBuffer) {
     try {
       const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
-        caption,
+        caption: split.caption,
         ...threadParams,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       });
       if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
         warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
+      }
+      if (split.remainder) {
+        await sendGoalReply(bot, chatId, split.remainder, runtime, threadId);
       }
       return sent.message_id;
     } catch {
