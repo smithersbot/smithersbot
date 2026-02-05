@@ -1,6 +1,7 @@
 import { JsonExitError } from "../cli/cli-utils.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
+import { aggregateBlockedDetails } from "../goal/blocked.js";
 import type { GoalOutcome, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { goalResumeCommand } from "./goal-resume.js";
@@ -22,6 +23,16 @@ function resolveIsJson(opts: GoalAnswerOptions): boolean {
 
 const PLAINTEXT_WARNING =
   "Answers are stored in plain text. Do not store secrets without additional protection.";
+
+function parseTasksKey(key: string): string[] | null {
+  if (!key.startsWith("tasks:") || !key.endsWith(":input")) return null;
+  const raw = key.slice("tasks:".length, -":input".length);
+  const ids = raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  return ids.length > 0 ? ids : null;
+}
 
 export async function goalAnswerCommand(
   runId: string,
@@ -50,7 +61,7 @@ export async function goalAnswerCommand(
     return;
   }
 
-  if (run.state !== "blocked" && run.state !== "needs_clarification") {
+  if (run.state !== "blocked" && run.state !== "needs_clarification" && run.state !== "failed") {
     const msg = `Run is not awaiting input (state: ${run.state}).`;
     if (isJson) {
       runtime.log(JSON.stringify({ error: msg }));
@@ -58,6 +69,16 @@ export async function goalAnswerCommand(
     }
     runtime.error(msg);
     return;
+  }
+
+  if (!run.blocked && run.state === "failed") {
+    const synthesized = run.plan ? aggregateBlockedDetails(run.plan.steps) : null;
+    if (synthesized) {
+      run.blocked = synthesized;
+      run.state = "blocked";
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+    }
   }
 
   if (!run.blocked) {
@@ -82,7 +103,14 @@ export async function goalAnswerCommand(
 
   // Persist the answer and transition state
   const wasBlocked = run.state === "blocked";
-  run.answers[opts.key] = opts.value;
+  const taskIds = parseTasksKey(opts.key);
+  if (taskIds) {
+    for (const id of taskIds) {
+      run.answers[`task:${id}:input`] = opts.value;
+    }
+  } else {
+    run.answers[opts.key] = opts.value;
+  }
   run.blocked = null;
   run.state = "executing";
   run.updatedAt = new Date().toISOString();

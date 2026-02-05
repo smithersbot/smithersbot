@@ -109,6 +109,32 @@ describe("goal-answer command", () => {
     expect(goalResumeCommand).toHaveBeenCalled();
   });
 
+  it("fans out multi-task blocked answers", async () => {
+    saveRun(
+      makeBlockedRun({
+        blocked: { prompt: "Need creds for multiple steps", requiredInputKey: "tasks:1,2:input" },
+        plan: {
+          goal: "Test goal",
+          summary: "A test plan",
+          steps: [
+            { id: "1", description: "Step 1", dependsOn: [], status: "blocked" },
+            { id: "2", description: "Step 2", dependsOn: [], status: "blocked" },
+          ],
+        },
+      }),
+    );
+    const { goalAnswerCommand } = await import("./goal-answer.js");
+    const rt = mockRuntime();
+    await goalAnswerCommand("answer-test-run", { key: "tasks:1,2:input", value: "ok" }, rt);
+
+    const run = loadRun("answer-test-run", testGoalsDir);
+    expect(run).toBeDefined();
+    expect(run!.answers["task:1:input"]).toBe("ok");
+    expect(run!.answers["task:2:input"]).toBe("ok");
+    expect(run!.blocked).toBeNull();
+    expect(run!.state).toBe("executing");
+  });
+
   it("rejects mismatched key", async () => {
     saveRun(makeBlockedRun());
     const { goalAnswerCommand } = await import("./goal-answer.js");
@@ -128,6 +154,38 @@ describe("goal-answer command", () => {
     await goalAnswerCommand("answer-test-run", { key: "db_password", value: "val" }, rt);
 
     expect(rt.errors.join("\n")).toContain("Run is not awaiting input");
+  });
+
+  it("recovers failed run by synthesizing blocked details", async () => {
+    saveRun(
+      makeBlockedRun({
+        state: "failed",
+        blocked: null,
+        plan: {
+          goal: "Test goal",
+          summary: "A test plan",
+          steps: [
+            {
+              id: "1",
+              description: "Create dir",
+              dependsOn: [],
+              status: "blocked",
+              blockedQuestion: "Need creds",
+            },
+          ],
+        },
+      }),
+    );
+
+    const { goalAnswerCommand } = await import("./goal-answer.js");
+    const rt = mockRuntime();
+    await goalAnswerCommand("answer-test-run", { key: "task:1:input", value: "ok" }, rt);
+
+    const run = loadRun("answer-test-run", testGoalsDir);
+    expect(run).toBeDefined();
+    expect(run!.answers["task:1:input"]).toBe("ok");
+    expect(run!.blocked).toBeNull();
+    expect(run!.state).toBe("executing");
   });
 
   it("JSON mode outputs strict JSON with answered status", async () => {

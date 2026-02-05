@@ -343,7 +343,7 @@ describe("agent-executor", () => {
       expect(step.blockedQuestion).toContain("Rate limited by API");
     });
 
-    it("returns failed status for out_of_credits error and stops immediately", async () => {
+    it("returns blocked status for out_of_credits error and stops immediately", async () => {
       const step1 = makeStep({ id: "1" });
       const step2 = makeStep({ id: "2" });
       const plan = makePlan([step1, step2]);
@@ -358,17 +358,13 @@ describe("agent-executor", () => {
         workingDir: "/tmp/ws",
       });
 
-      // Should return failed status, not blocked
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.errorKind).toBe("out_of_credits");
-        expect(result.error).toContain("Out of API credits");
-      }
-      // Session should be in failed state
-      expect(session.state).toBe("failed");
-      // First step blocked, second step never executed (still pending)
+      // Should return blocked status and stop execution
+      expect(result.status).toBe("blocked");
+      // Session should be in blocked state
+      expect(session.state).toBe("blocked");
+      // First step blocked, second runnable step also blocked (global block)
       expect(step1.status).toBe("blocked");
-      expect(step2.status).toBe("pending");
+      expect(step2.status).toBe("blocked");
     });
 
     it("detects assistant error messages when prompt resolves", async () => {
@@ -392,13 +388,10 @@ describe("agent-executor", () => {
         workingDir: "/tmp/ws",
       });
 
-      expect(result.status).toBe("failed");
-      if (result.status === "failed") {
-        expect(result.errorKind).toBe("out_of_credits");
-      }
-      expect(session.state).toBe("failed");
+      expect(result.status).toBe("blocked");
+      expect(session.state).toBe("blocked");
       expect(step1.status).toBe("blocked");
-      expect(step2.status).toBe("pending");
+      expect(step2.status).toBe("blocked");
     });
 
     it("calls onTaskUpdate for each task", async () => {

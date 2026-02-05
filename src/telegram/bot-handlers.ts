@@ -32,7 +32,6 @@ import {
   handleGoalStatus,
   sendGoalPlanResult,
   sendGoalReply,
-  withChatAction,
   withPlanningFeedback,
 } from "./goal-commands.js";
 import type { GoalPlanResult } from "./goal-commands.js";
@@ -488,10 +487,9 @@ export const registerTelegramHandlers = ({
             runtime,
             runId,
           });
-          return withChatAction({
+          return withPlanningFeedback({
             bot,
             chatId,
-            action: "typing",
             threadId: params.threadId,
             label: "goal-router:answer",
             fn: () => handleGoalAnswer(runId, text, statusCb),

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import {
   loadRun,
@@ -66,14 +67,22 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  // Terminal: failed is not resumable
+  // Failed can be recoverable if we can synthesize blocked details from the plan.
   if (run.state === "failed") {
-    if (isJson) {
-      runtime.log(JSON.stringify({ error: "Run failed.", lastError: run.lastError ?? null }));
-      throw new JsonExitError(1);
+    const synthesized = run.blocked ?? (run.plan ? aggregateBlockedDetails(run.plan.steps) : null);
+    if (synthesized) {
+      run.blocked = synthesized;
+      run.state = "blocked";
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+    } else {
+      if (isJson) {
+        runtime.log(JSON.stringify({ error: "Run failed.", lastError: run.lastError ?? null }));
+        throw new JsonExitError(1);
+      }
+      runtime.error(`Run failed: ${run.lastError ?? "Unknown error"}`);
+      return undefined;
     }
-    runtime.error(`Run failed: ${run.lastError ?? "Unknown error"}`);
-    return undefined;
   }
 
   // Blocked (execution-time) or needs_clarification (pre-plan): print details and exit
@@ -125,6 +134,7 @@ export async function goalResumeCommand(
 
   // Helper to persist
   function persistRun(): void {
+    const previousRun = loadRun(savedRunId);
     saveRun(
       sessionToSerialized({
         session,
@@ -133,6 +143,7 @@ export async function goalResumeCommand(
         model,
         dryRun,
         createdAt,
+        previousRun,
       }),
     );
   }

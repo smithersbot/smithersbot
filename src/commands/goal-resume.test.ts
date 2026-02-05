@@ -229,23 +229,37 @@ describe("goal-resume command", () => {
     expect(rt.errors).toContain("Run already completed.");
   });
 
-  it("refuses to resume a failed run", async () => {
+  it("treats failed run with blocked steps as recoverable (blocked)", async () => {
     saveRun(
       makeRun({
         runId: "failed-run",
         state: "failed",
         lastError: "shell_exec command not in read-only allowlist",
+        plan: {
+          goal: "Test goal",
+          summary: "A test plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "blocked",
+              blockedQuestion: "Need creds",
+            },
+          ],
+        },
       }),
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("failed-run", {}, rt);
-    expect(result).toBeUndefined();
-    expect(rt.errors.join("\n")).toContain("Run failed:");
-    expect(rt.errors.join("\n")).toContain("shell_exec command not in read-only allowlist");
+    expect(result?.status).toBe("blocked");
+    expect(rt.logs.join("\n")).toContain("Blocked:");
+    const run = loadRun("failed-run", testGoalsDir);
+    expect(run?.state).toBe("blocked");
   });
 
-  it("failed run in JSON mode outputs error JSON with lastError", async () => {
+  it("failed run without blocked details still errors", async () => {
     saveRun(
       makeRun({
         runId: "failed-json",
@@ -255,12 +269,10 @@ describe("goal-resume command", () => {
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
-    await catchJsonExit(() => goalResumeCommand("failed-json", { json: true }, rt));
-    const raw = rt.logs.join("");
-    expect(raw.trimStart()[0]).toBe("{");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    expect(parsed.error).toBe("Run failed.");
-    expect(parsed.lastError).toBe("Planning error");
+    const result = await goalResumeCommand("failed-json", {}, rt);
+    expect(result).toBeUndefined();
+    expect(rt.errors.join("\n")).toContain("Run failed:");
+    expect(rt.errors.join("\n")).toContain("Planning error");
   });
 
   it("refuses stale init state", async () => {

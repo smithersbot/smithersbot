@@ -270,4 +270,56 @@ describe("session serialization", () => {
 
     expect(serialized.dryRun).toBe(true);
   });
+
+  it("preserves run metadata when previousRun is provided", () => {
+    const session: GoalSession = {
+      goal: "Metadata test",
+      state: "executing",
+      plan: null,
+      stepResults: new Map(),
+      blockReason: null,
+    };
+
+    const previousRun: SerializedRun = {
+      runId: "meta-id",
+      goal: "Metadata test",
+      state: "blocked",
+      plan: null,
+      stepResults: {},
+      blocked: null,
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+      planRevision: 2,
+      activePlanRevision: 2,
+      planHistory: [{ revision: 1, plan: { goal: "Meta", steps: [], summary: "meta" } }],
+      telegramPlanMessage: { chatId: 1, messageId: 2 },
+      telegramQuestionMessages: [{ chatId: 1, messageId: 3, requiredInputKey: "task:1:input" }],
+      agentSessionFile: "/tmp/session.jsonl",
+      agentSessionId: "agent-1",
+      agentMaxTurnsPerTask: 7,
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "meta-id",
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      previousRun,
+    });
+
+    expect(serialized.planRevision).toBe(2);
+    expect(serialized.activePlanRevision).toBe(2);
+    expect(serialized.planHistory).toHaveLength(1);
+    expect(serialized.telegramPlanMessage?.messageId).toBe(2);
+    expect(serialized.telegramQuestionMessages?.[0]?.messageId).toBe(3);
+    expect(serialized.agentSessionFile).toBe("/tmp/session.jsonl");
+    expect(serialized.agentSessionId).toBe("agent-1");
+    expect(serialized.agentMaxTurnsPerTask).toBe(7);
+  });
 });

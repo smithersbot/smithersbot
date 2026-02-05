@@ -174,9 +174,10 @@ export function sessionToSerialized(params: {
   agentSessionFile?: string;
   agentSessionId?: string;
   agentMaxTurnsPerTask?: number;
+  previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
-  return {
+  const serialized: SerializedRun = {
     runId,
     goal: session.goal,
     state: session.state,
@@ -194,6 +195,27 @@ export function sessionToSerialized(params: {
     ...(params.agentSessionId ? { agentSessionId: params.agentSessionId } : {}),
     ...(params.agentMaxTurnsPerTask ? { agentMaxTurnsPerTask: params.agentMaxTurnsPerTask } : {}),
   };
+  const previous = params.previousRun;
+  if (!previous) return serialized;
+
+  if (previous.planRevision != null) serialized.planRevision = previous.planRevision;
+  if (previous.activePlanRevision != null)
+    serialized.activePlanRevision = previous.activePlanRevision;
+  if (previous.planHistory) serialized.planHistory = previous.planHistory;
+  if (previous.telegramPlanMessage) serialized.telegramPlanMessage = previous.telegramPlanMessage;
+  if (previous.telegramQuestionMessages) {
+    serialized.telegramQuestionMessages = previous.telegramQuestionMessages;
+  }
+  if (!serialized.agentSessionFile && previous.agentSessionFile) {
+    serialized.agentSessionFile = previous.agentSessionFile;
+  }
+  if (!serialized.agentSessionId && previous.agentSessionId) {
+    serialized.agentSessionId = previous.agentSessionId;
+  }
+  if (!serialized.agentMaxTurnsPerTask && previous.agentMaxTurnsPerTask) {
+    serialized.agentMaxTurnsPerTask = previous.agentMaxTurnsPerTask;
+  }
+  return serialized;
 }
 
 /** Resolve the agent session file path for a goal run. */

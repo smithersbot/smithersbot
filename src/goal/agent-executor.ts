@@ -28,6 +28,7 @@ import {
   orderStepsCriticalPathFirst,
   type CriticalPathScores,
 } from "./plan-order.js";
+import { aggregateBlockedDetails } from "./blocked.js";
 import type { GoalOutcome, GoalSession, Plan, PlanStep, TaskExecutionResult } from "./types.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
@@ -359,32 +360,6 @@ function findRunnableTasks(steps: PlanStep[], answers?: Record<string, string>):
   });
 }
 
-/** Aggregate blocked task info into a single message for the user. */
-function aggregateBlockedQuestions(steps: PlanStep[]): {
-  prompt: string;
-  requiredInputKey: string;
-} {
-  const blocked = steps.filter((s) => s.status === "blocked");
-  if (blocked.length === 0) {
-    return { prompt: "All tasks completed.", requiredInputKey: "none" };
-  }
-  if (blocked.length === 1) {
-    const task = blocked[0]!;
-    const question =
-      task.blockedQuestion ?? `Task ${task.id} is blocked (${task.blockedReason ?? "unknown"}).`;
-    return { prompt: question, requiredInputKey: `task:${task.id}:input` };
-  }
-  // Multiple blocked tasks: aggregate
-  const lines = blocked.map((task) => {
-    const reason = task.blockedQuestion ?? task.blockedReason ?? "unknown";
-    return `- Task ${task.id} (${task.description}): ${reason}`;
-  });
-  return {
-    prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
-    requiredInputKey: `tasks:${blocked.map((t) => t.id).join(",")}:input`,
-  };
-}
-
 /** Build a summary of all completed tasks. */
 function buildGoalSummary(steps: PlanStep[]): string {
   const done = steps.filter((s) => s.status === "done");
@@ -487,6 +462,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   // Spam control: track which steps we've already notified as blocked
   const previouslyBlockedIds = new Set<string>();
+  let stopAllTasks = false;
+  let globalBlock: { kind: ExecutorErrorKind; message: string } | null = null;
+  let globalBlockApplied = false;
 
   // --- Resolve model ---
   const providerId = params.provider ?? DEFAULT_PROVIDER;
@@ -604,9 +582,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       task.status = "in_progress";
       onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
 
-      const handlePromptError = (errMsg: string, requestId?: string): GoalOutcome | null => {
+      const handlePromptError = (
+        errMsg: string,
+        requestId?: string,
+      ): { kind: ExecutorErrorKind; message: string } | null => {
         const errorKind = classifyExecutorError(errMsg);
-        const formatted = formatExecutorError(errorKind, errMsg, requestId);
+        const formatted = formatExecutorError(errorKind, errMsg, requestId, providerId, modelId);
 
         // Set task blocked with specific errorKind as blockedReason
         task.status = "blocked";
@@ -622,17 +603,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           durationMs: Date.now() - taskStartMs,
         });
 
-        // Fatal errors: stop the entire goal and return early
-        // Note: don't call unsubscribe/dispose here - the finally block handles cleanup
+        // Fatal errors: stop the entire goal and mark remaining runnable tasks as blocked
         if (FATAL_ERRORS.includes(errorKind)) {
-          session.state = "failed";
           session.lastError = task.blockedQuestion;
-
-          return {
-            status: "failed",
-            error: task.blockedQuestion,
-            errorKind,
-          };
+          return { kind: errorKind, message: formatted };
         }
 
         return null;
@@ -706,9 +680,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         }
 
         if (promptError) {
-          const fatal = handlePromptError(promptError.message, promptError.requestId);
-          if (fatal) return fatal;
-          // Non-fatal: break out of turn loop, continue to next task
+          const fatalBlock = handlePromptError(promptError.message, promptError.requestId);
+          if (fatalBlock) {
+            globalBlock = fatalBlock;
+            stopAllTasks = true;
+          }
+          // Break out of turn loop (fatal errors stop the entire goal below)
           break;
         }
 
@@ -788,7 +765,31 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       }
 
       // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
-      if (task.status === "blocked" && !previouslyBlockedIds.has(task.id) && onStatusChange) {
+      if (stopAllTasks && globalBlock && !globalBlockApplied) {
+        const blockedMessage = globalBlock.message;
+        for (const step of orderedSteps) {
+          if (step.status !== "pending") continue;
+          const depsReady = step.dependsOn.every((depId) => {
+            const dep = orderedSteps.find((s) => s.id === depId);
+            return dep?.status === "done";
+          });
+          if (!depsReady) continue;
+          step.status = "blocked";
+          step.blockedReason = globalBlock.kind;
+          step.blockedQuestion = blockedMessage;
+        }
+        globalBlockApplied = true;
+      }
+
+      const hasRunnable = findRunnableTasks(orderedSteps, session.answers).length > 0;
+
+      // Fire step_blocked on transition (not on re-encounter of already-blocked tasks)
+      if (
+        task.status === "blocked" &&
+        !previouslyBlockedIds.has(task.id) &&
+        onStatusChange &&
+        hasRunnable
+      ) {
         previouslyBlockedIds.add(task.id);
         await onStatusChange({
           type: "step_blocked",
@@ -796,6 +797,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           question: task.blockedQuestion ?? "Unknown",
           steps: [...orderedSteps],
         });
+      }
+
+      if (stopAllTasks) {
+        break;
       }
     } finally {
       unsubscribe();
@@ -815,7 +820,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   }
 
   // Some tasks blocked
-  const aggregated = aggregateBlockedQuestions(orderedSteps);
+  const aggregated =
+    aggregateBlockedDetails(orderedSteps) ??
+    ({
+      prompt: "All tasks completed.",
+      requiredInputKey: "none",
+    } as const);
   session.state = "blocked";
   session.blocked = aggregated;
   if (onStatusChange) {

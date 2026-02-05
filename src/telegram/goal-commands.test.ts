@@ -471,6 +471,43 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Resuming:");
     });
 
+    it("recovers failed run by synthesizing blocked details", async () => {
+      saveRun(
+        makeRun({
+          state: "failed",
+          blocked: null,
+          plan: {
+            goal: "Test goal",
+            summary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedQuestion: "Need input",
+              },
+            ],
+          },
+        }),
+      );
+
+      mockGoalAnswerCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
+          return { status: "done", summary: "All steps completed." };
+        },
+      );
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "ok");
+
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      const [, opts] = mockGoalAnswerCommand.mock.calls[0];
+      expect((opts as Record<string, unknown>).key).toBe("task:1:input");
+      const text = typeof result === "string" ? result : (result as { text: string }).text;
+      expect(text).toContain("Resuming:");
+    });
+
     it("returns GoalPlanResult with runId and blocked when still needs clarification", async () => {
       saveRun(
         makeRun({

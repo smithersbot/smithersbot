@@ -18,6 +18,7 @@ import type {
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { computeCpm } from "../goal/cpm.js";
+import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { formatPlanOutput } from "../goal/format-output.js";
@@ -398,8 +399,19 @@ export async function handleGoalAnswer(
     }
   }
 
+  if (run.state === "failed" && !run.blocked) {
+    const synthesized = run.plan ? aggregateBlockedDetails(run.plan.steps) : null;
+    if (synthesized) {
+      run.blocked = synthesized;
+      run.state = "blocked";
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+    }
+  }
+
   if (run.state !== "blocked" && run.state !== "needs_clarification") {
-    return `Run is not awaiting input (state: ${run.state}).`;
+    const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
+    return `Run is not awaiting input (state: ${run.state}).${suffix}`;
   }
   if (!run.blocked) {
     return `Run is in "${run.state}" but has no blocked details.`;
@@ -876,7 +888,7 @@ export function buildOnStatusChange(params: {
 
     if (event.type === "step_blocked") {
       const caption = [
-        `BLOCKED (${prefix}): Step ${event.stepId} needs input`,
+        `TASK BLOCKED (${prefix}): Step ${event.stepId} needs input`,
         "",
         event.question,
         "",
@@ -903,7 +915,7 @@ export function buildOnStatusChange(params: {
       }
     } else if (event.type === "fully_blocked") {
       const lines: string[] = [
-        `FULLY BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
+        `GOAL BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
       ];
       const blocked = event.steps.filter((s) => s.status === "blocked");
       if (blocked.length > 0) {
@@ -914,8 +926,8 @@ export function buildOnStatusChange(params: {
         if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
       }
       lines.push("");
-      lines.push(`Next: /goal_answer ${prefix} <answer>`);
-      await sendDagPng({
+      lines.push(`Next: reply with your answer or /goal_answer ${prefix} <answer>`);
+      const sentId = await sendDagPng({
         bot,
         chatId,
         threadId,
@@ -924,6 +936,23 @@ export function buildOnStatusChange(params: {
         steps: event.steps,
         caption: lines.join("\n"),
       });
+      if (sentId != null) {
+        const blockedSteps =
+          blocked.length > 0 ? blocked : event.steps.filter((s) => s.status === "blocked");
+        const requiredInputKey =
+          blockedSteps.length <= 1
+            ? blockedSteps[0]
+              ? `task:${blockedSteps[0].id}:input`
+              : undefined
+            : `tasks:${blockedSteps.map((s) => s.id).join(",")}:input`;
+        persistTelegramQuestionMessage({
+          runId,
+          chatId,
+          messageId: sentId,
+          threadId,
+          requiredInputKey,
+        });
+      }
     } else if (event.type === "all_done") {
       await sendDagPng({
         bot,
