@@ -242,6 +242,8 @@ export async function goalResumeCommand(
       runtime.log(`DONE: ${outcome.summary}`);
     } else if (outcome.status === "blocked") {
       runtime.log(`BLOCKED: ${outcome.question}`);
+    } else if (outcome.status === "failed") {
+      runtime.log(`FAILED: ${outcome.error}`);
     }
   }
 

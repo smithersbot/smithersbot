@@ -311,6 +311,9 @@ export async function goalCommand(
         runtime.log(`DONE: ${outcome.summary}`);
       } else if (outcome.status === "blocked") {
         runtime.log(`BLOCKED: ${outcome.question}`);
+      } else if (outcome.status === "failed") {
+        runtime.log(`FAILED: ${outcome.error}`);
+        // No /goal_answer prompt - this error requires user action outside the bot
       }
     }
 

@@ -284,6 +284,22 @@ describe("goal-commands telegram adapter", () => {
       expect(opts.onStatusChange).toBe(statusCb);
     });
 
+    it("returns failure message even when onStatusChange is provided", async () => {
+      saveRun(makeRun());
+      mockGoalResumeCommand.mockResolvedValue({
+        status: "failed",
+        error: "Out of credits",
+        errorKind: "out_of_credits",
+      });
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalApprove("test-run", statusCb);
+
+      expect(result).toContain("Run failed:");
+      expect(result).toContain("Out of credits");
+    });
+
     it("still returns error strings even when onStatusChange is provided", async () => {
       const { handleGoalApprove } = await import("./goal-commands.js");
       const statusCb = vi.fn();
@@ -499,6 +515,27 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
       expect(opts.onStatusChange).toBe(statusCb);
+    });
+
+    it("returns failure message even when onStatusChange is provided (answer path)", async () => {
+      saveRun(
+        makeRun({
+          state: "blocked",
+          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+        }),
+      );
+      mockGoalAnswerCommand.mockResolvedValue({
+        status: "failed",
+        error: "Out of credits",
+        errorKind: "out_of_credits",
+      });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalAnswer("test-run", "s3cret", statusCb);
+
+      expect(result).toContain("Run failed:");
+      expect(result).toContain("Out of credits");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {

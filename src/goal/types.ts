@@ -38,7 +38,17 @@ export type PlanStep = {
   /** Question from the agent when the task is blocked on user input. */
   blockedQuestion?: string;
   /** Why this task is blocked. */
-  blockedReason?: "user_input" | "turn_limit" | "timeout" | "error" | "task_failed";
+  blockedReason?:
+    | "user_input"
+    | "turn_limit"
+    | "timeout"
+    | "error"
+    | "task_failed"
+    | "rate_limit"
+    | "out_of_credits"
+    | "auth"
+    | "network"
+    | "other";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;
   /** Structured failure detail from mark_task_failed tool. */
@@ -81,7 +91,8 @@ export type GoalOutcome =
   | { status: "done"; summary: string }
   | { status: "blocked"; question: string; requiredInputKey: string }
   | { status: "needs_clarification"; question: string; requiredInputKey: string }
-  | { status: "rejected" };
+  | { status: "rejected" }
+  | { status: "failed"; error: string; errorKind: string };
 
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
 export type OutputFormat = "md" | "json";

@@ -79,6 +79,7 @@ const mockPrompt = vi.fn();
 const mockAbort = vi.fn();
 const mockDispose = vi.fn();
 const mockSubscribe = vi.fn(() => () => {});
+const mockMessages: Array<Record<string, unknown>> = [];
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
   createAgentSession: vi.fn(async () => ({
@@ -87,6 +88,7 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
       abort: () => mockAbort(),
       dispose: () => mockDispose(),
       subscribe: (...args: unknown[]) => mockSubscribe(...args),
+      messages: mockMessages,
     },
   })),
   createCodingTools: vi.fn(() => []),
@@ -140,6 +142,7 @@ describe("agent-executor", () => {
     vi.clearAllMocks();
     mockBlockedSignal = null;
     mockCompleteSignal = null;
+    mockMessages.length = 0;
   });
 
   describe("executeGoalWithAgent", () => {
@@ -336,8 +339,66 @@ describe("agent-executor", () => {
 
       expect(result.status).toBe("blocked");
       expect(step.status).toBe("blocked");
-      expect(step.blockedReason).toBe("error");
-      expect(step.blockedQuestion).toContain("Rate limit exceeded");
+      expect(step.blockedReason).toBe("rate_limit");
+      expect(step.blockedQuestion).toContain("Rate limited by API");
+    });
+
+    it("returns failed status for out_of_credits error and stops immediately", async () => {
+      const step1 = makeStep({ id: "1" });
+      const step2 = makeStep({ id: "2" });
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+
+      mockPrompt.mockRejectedValue(new Error("Your credit balance is too low"));
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-run-fatal",
+        workingDir: "/tmp/ws",
+      });
+
+      // Should return failed status, not blocked
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.errorKind).toBe("out_of_credits");
+        expect(result.error).toContain("Out of API credits");
+      }
+      // Session should be in failed state
+      expect(session.state).toBe("failed");
+      // First step blocked, second step never executed (still pending)
+      expect(step1.status).toBe("blocked");
+      expect(step2.status).toBe("pending");
+    });
+
+    it("detects assistant error messages when prompt resolves", async () => {
+      const step1 = makeStep({ id: "1" });
+      const step2 = makeStep({ id: "2" });
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+
+      mockPrompt.mockImplementation(async () => {
+        mockMessages.push({
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "Your credit balance is too low",
+        });
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const result = await executeGoalWithAgent({
+        session,
+        runId: "test-run-fatal-assistant",
+        workingDir: "/tmp/ws",
+      });
+
+      expect(result.status).toBe("failed");
+      if (result.status === "failed") {
+        expect(result.errorKind).toBe("out_of_credits");
+      }
+      expect(session.state).toBe("failed");
+      expect(step1.status).toBe("blocked");
+      expect(step2.status).toBe("pending");
     });
 
     it("calls onTaskUpdate for each task", async () => {

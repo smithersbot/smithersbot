@@ -284,6 +284,10 @@ export async function handleGoalApprove(
     const errors = cap.getErrors();
     if (errors) return errors;
 
+    if (outcome?.status === "failed") {
+      return `Run failed: ${outcome.error}`;
+    }
+
     // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
     // return undefined so callers don't send a stray message after the notifications.
     if (onStatusChange) return undefined;
@@ -365,6 +369,35 @@ export async function handleGoalAnswer(
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
+  // "executing" state means process crashed mid-execution - resume directly without needing an answer
+  if (run.state === "executing") {
+    const prefix = resolvedId.slice(0, 8);
+    const cap = createCaptureRuntime();
+    try {
+      const outcome = await goalResumeCommand(
+        resolvedId,
+        { yes: true, quiet: true, onStatusChange },
+        cap.runtime,
+      );
+
+      const errors = cap.getErrors();
+      if (errors) return errors;
+
+      if (onStatusChange) return undefined;
+
+      if (outcome?.status === "failed") {
+        return `Run failed: ${outcome.error}`;
+      }
+
+      return `Resuming interrupted run: ${prefix}...`;
+    } catch (err) {
+      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+        return cap.getErrors() || "Resume command failed.";
+      }
+      return formatGoalError(err, resolvedId);
+    }
+  }
+
   if (run.state !== "blocked" && run.state !== "needs_clarification") {
     return `Run is not awaiting input (state: ${run.state}).`;
   }
@@ -437,6 +470,10 @@ export async function handleGoalAnswer(
 
     const errors = cap.getErrors();
     if (errors) return errors;
+
+    if (outcome?.status === "failed") {
+      return `Run failed: ${outcome.error}`;
+    }
 
     // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
     // return undefined so callers don't send a stray message after the notifications.

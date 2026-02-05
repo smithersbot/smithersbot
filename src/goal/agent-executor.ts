@@ -35,6 +35,94 @@ const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt (fallback when step
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
 
+// --- Executor error classification ---
+type ExecutorErrorKind = "rate_limit" | "out_of_credits" | "auth" | "network" | "timeout" | "other";
+
+const RATE_LIMIT_RE = /rate.?limit|429|too many requests|overloaded/i;
+const CREDITS_RE = /credit|balance|billing|insufficient.*funds|payment|quota.*exceeded/i;
+const AUTH_RE = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
+const NETWORK_RE =
+  /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|EAI_AGAIN/i;
+
+/** Errors that should stop the entire goal, not just the current task. */
+const FATAL_ERRORS: ExecutorErrorKind[] = ["out_of_credits", "auth"];
+
+function classifyExecutorError(errMsg: string): ExecutorErrorKind {
+  if (RATE_LIMIT_RE.test(errMsg)) return "rate_limit";
+  if (CREDITS_RE.test(errMsg)) return "out_of_credits";
+  if (AUTH_RE.test(errMsg)) return "auth";
+  if (NETWORK_RE.test(errMsg)) return "network";
+  if (/abort|timeout/i.test(errMsg)) return "timeout";
+  return "other";
+}
+
+function formatExecutorError(
+  kind: ExecutorErrorKind,
+  rawMsg: string,
+  requestId?: string,
+  providerId?: string,
+  modelId?: string,
+): string {
+  const suffix = requestId ? ` (request_id: ${requestId})` : "";
+  const providerLabel = providerId ? ` for ${providerId}` : "";
+  const modelLabel = modelId ? ` (${modelId})` : "";
+  switch (kind) {
+    case "out_of_credits":
+      return `Out of API credits${providerLabel}${modelLabel}. Add credits to your account and resume with /goal_resume.${suffix}`;
+    case "auth":
+      return `API authentication failed${providerLabel}${modelLabel}. Check your API key configuration.${suffix}`;
+    case "rate_limit":
+      return `Rate limited by API${providerLabel}${modelLabel}. Wait a few minutes and resume with /goal_resume.${suffix}`;
+    case "network":
+      return `Network error reaching API. Check your connection and resume with /goal_resume.${suffix}`;
+    case "timeout":
+      return "Task timed out during execution.";
+    default:
+      return `Agent error: ${rawMsg}${suffix}`;
+  }
+}
+
+/** Extract request_id from error if present (providers often include it). */
+function extractRequestId(err: unknown): string | undefined {
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
+    if (typeof e.request_id === "string") return e.request_id;
+    if (typeof e.requestId === "string") return e.requestId;
+  }
+  // Try to extract from error message: "request_id: abc123" or similar
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = /request[_-]?id[:\s]+([a-zA-Z0-9_-]+)/i.exec(msg);
+  return match?.[1];
+}
+
+type AssistantErrorInfo = {
+  message: string;
+  requestId?: string;
+};
+
+function getLastAssistantError(session: { messages?: unknown[] }): AssistantErrorInfo | null {
+  const messages = session.messages;
+  if (!Array.isArray(messages)) return null;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || typeof msg !== "object") continue;
+    const record = msg as Record<string, unknown>;
+    if (record.role !== "assistant") continue;
+
+    const stopReason = typeof record.stopReason === "string" ? record.stopReason : undefined;
+    if (stopReason !== "error" && stopReason !== "aborted") return null;
+
+    const errorMessage = typeof record.errorMessage === "string" ? record.errorMessage : "";
+    return {
+      message: errorMessage || "Unknown error",
+      requestId: extractRequestId(msg),
+    };
+  }
+
+  return null;
+}
+
 export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
@@ -503,6 +591,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         task.blockedReason = undefined;
         task.blockedQuestion = undefined;
         task.status = "pending";
+        // Consume the answer so we don't retry infinitely if task blocks again
+        const answerKey = `task:${task.id}:input`;
+        if (session.answers[answerKey]) {
+          delete session.answers[answerKey];
+        }
       }
 
       let turnsUsed = task.turnsUsed ?? 0;
@@ -510,6 +603,40 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       task.status = "in_progress";
       onProgress?.(`\n--- Task ${task.id}: ${task.description} ---`);
+
+      const handlePromptError = (errMsg: string, requestId?: string): GoalOutcome | null => {
+        const errorKind = classifyExecutorError(errMsg);
+        const formatted = formatExecutorError(errorKind, errMsg, requestId);
+
+        // Set task blocked with specific errorKind as blockedReason
+        task.status = "blocked";
+        task.blockedReason = errorKind;
+        task.blockedQuestion = formatted;
+
+        // Persist stepResults immediately so progress isn't lost
+        session.stepResults.set(task.id, {
+          stepId: task.id,
+          success: false,
+          output: "",
+          error: task.blockedQuestion,
+          durationMs: Date.now() - taskStartMs,
+        });
+
+        // Fatal errors: stop the entire goal and return early
+        // Note: don't call unsubscribe/dispose here - the finally block handles cleanup
+        if (FATAL_ERRORS.includes(errorKind)) {
+          session.state = "failed";
+          session.lastError = task.blockedQuestion;
+
+          return {
+            status: "failed",
+            error: task.blockedQuestion,
+            errorKind,
+          };
+        }
+
+        return null;
+      };
 
       // Dynamic timeout: min(durationMinutes * 2, 2 hours), fallback to global default
       const MAX_TIMEOUT_MS = 2 * 60 * 60_000; // 2 hours
@@ -547,6 +674,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
         onProgress?.(`  [turn ${turnsUsed + 1}/${maxTurnsPerTask}]`);
 
+        let promptError: AssistantErrorInfo | null = null;
         try {
           // Create a timeout for this prompt
           const timeoutController = new AbortController();
@@ -567,22 +695,22 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          // Check if it was a timeout/abort
-          if (errMsg.includes("abort") || errMsg.includes("timeout")) {
-            task.status = "blocked";
-            task.blockedReason = "timeout";
-            task.blockedQuestion = "Task timed out during execution.";
-            break;
-          }
-          // Other errors: mark blocked with error
-          task.status = "blocked";
-          task.blockedReason = "error";
-          task.blockedQuestion = `Agent error: ${errMsg}`;
-          break;
+          promptError = { message: errMsg, requestId: extractRequestId(err) };
         }
 
         turnsUsed++;
         task.turnsUsed = turnsUsed;
+
+        if (!promptError) {
+          promptError = getLastAssistantError(piSession);
+        }
+
+        if (promptError) {
+          const fatal = handlePromptError(promptError.message, promptError.requestId);
+          if (fatal) return fatal;
+          // Non-fatal: break out of turn loop, continue to next task
+          break;
+        }
 
         // Check goal tool signals — precedence: blocked > failed > complete
         const signal = goalTools.getSignal();
