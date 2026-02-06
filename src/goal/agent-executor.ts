@@ -192,6 +192,17 @@ function loadWorkingNotes(runId: string, stepId: string): string | null {
   }
 }
 
+/** Load the goal-level WORKING.md journal. Returns null if not found or empty. */
+function loadGoalWorkingJournal(runId: string): string | null {
+  try {
+    const filePath = resolveGoalWorkingFile(runId);
+    const content = fs.readFileSync(filePath, "utf8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Append a summary line to the top-level WORKING.md for this goal run. */
 function appendGoalWorkingEntry(
   runId: string,
@@ -272,6 +283,7 @@ function buildGoalSystemPrompt(
   goal: string,
   plan: Plan | null,
   completedSummaries?: Array<{ id: string; summary: string }>,
+  workingJournal?: string | null,
 ): string {
   const lines: string[] = [];
   lines.push("You are executing tasks for a goal. You will receive tasks one at a time.");
@@ -289,6 +301,16 @@ function buildGoalSystemPrompt(
     for (const { id, summary } of completedSummaries) {
       lines.push(`- ${id}: ${summary}`);
     }
+  }
+  if (workingJournal) {
+    const MAX_JOURNAL_CHARS = 4000;
+    const truncated =
+      workingJournal.length > MAX_JOURNAL_CHARS
+        ? workingJournal.slice(-MAX_JOURNAL_CHARS) + "\n...(truncated, showing recent entries)"
+        : workingJournal;
+    lines.push("");
+    lines.push("WORKING JOURNAL (accumulated context from completed and attempted tasks):");
+    lines.push(truncated);
   }
   lines.push("");
   lines.push("TASK MANAGEMENT TOOLS:");
@@ -679,11 +701,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       onProgress?.(`Creating agent session for task ${task.id} (${providerId}/${modelId})...`);
 
+      const workingJournal = loadGoalWorkingJournal(runId);
       const resourceLoader = new DefaultResourceLoader({
         cwd: workingDir,
         agentDir,
         settingsManager,
-        systemPrompt: buildGoalSystemPrompt(session.goal, plan, completedSummaries),
+        systemPrompt: buildGoalSystemPrompt(session.goal, plan, completedSummaries, workingJournal),
         noExtensions: true,
         noSkills: true,
         noPromptTemplates: true,

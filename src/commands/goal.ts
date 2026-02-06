@@ -8,11 +8,18 @@ import { createCliProgress } from "../cli/progress.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
+import { isGitRepo } from "../goal/git-checkpoint.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import { runScoutWithRetry, type ScoutResult } from "../goal/scout.js";
-import type { DiagramMode, GoalOutcome, GoalSession, OutputFormat } from "../goal/types.js";
+import type {
+  DiagramMode,
+  GoalOutcome,
+  GoalSession,
+  OutputFormat,
+  SerializedRun,
+} from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const DEFAULT_WORKSPACE_DIR = ".moltbot-goal-workspace";
@@ -32,6 +39,8 @@ export type GoalCommandOptions = {
   runId?: string;
   /** Skip the scout pre-pass (claude -p codebase analysis). */
   noScout?: boolean;
+  /** Disable git checkpoints during execution. */
+  noGitCheckpoints?: boolean;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -60,15 +69,20 @@ export async function goalCommand(
   const isDryRun = Boolean(opts.dryRun);
 
   // Default to a sandboxed workspace subfolder
+  const cwd = process.cwd();
   const workingDir = opts.workingDir
     ? path.resolve(opts.workingDir)
-    : path.resolve(process.cwd(), DEFAULT_WORKSPACE_DIR);
+    : isGitRepo(cwd)
+      ? cwd
+      : path.resolve(cwd, DEFAULT_WORKSPACE_DIR);
 
   mkdirSync(workingDir, { recursive: true });
 
   // Generate run ID and timestamp for persistence
   const runId = opts.runId ?? crypto.randomUUID();
   const createdAt = new Date().toISOString();
+  let scoutStatus: SerializedRun["scoutStatus"];
+  let scoutSkipReason: string | undefined;
 
   if (!isJson) {
     runtime.log(`Run: ${runId}`);
@@ -95,6 +109,8 @@ export async function goalCommand(
         model: opts.model,
         dryRun: isDryRun,
         createdAt,
+        scoutStatus,
+        scoutSkipReason,
       }),
     );
   }
@@ -126,7 +142,15 @@ export async function goalCommand(
       });
       try {
         scoutData = await runScoutWithRetry({ runId, goalText: goal });
+        if (scoutData.status === "skipped") {
+          scoutStatus = "skipped";
+          scoutSkipReason = scoutData.reason;
+          if (!isJson) {
+            runtime.log(`Scout skipped: ${scoutData.reason}`);
+          }
+        }
         if (scoutData.status === "needs_clarification") {
+          scoutStatus = "needs_clarification";
           session.state = "needs_clarification";
           session.blocked = {
             prompt: scoutData.question,
@@ -146,6 +170,8 @@ export async function goalCommand(
           return outcome;
         }
         if (scoutData.status === "error") {
+          scoutStatus = "error";
+          scoutSkipReason = scoutData.error;
           const hint = "Run with --no-scout to skip scout analysis.";
           const kind = scoutData.errorKind;
           let message: string;
@@ -167,9 +193,15 @@ export async function goalCommand(
           }
           throw new Error(message);
         }
+        if (scoutData.status === "success") {
+          scoutStatus = "success";
+        }
       } finally {
         scoutProgress.done();
       }
+    } else {
+      scoutStatus = "skipped";
+      scoutSkipReason = "--no-scout flag";
     }
 
     // Phase 1: Planning (enriched with scout data when available)
@@ -284,6 +316,8 @@ export async function goalCommand(
 
     // Phase 3: Execution
     if (!isJson) runtime.log("");
+    const disableCheckpoints =
+      Boolean(opts.noGitCheckpoints) || process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
     const outcome = await executeGoalWithAgent({
       session,
       runId,
@@ -291,6 +325,7 @@ export async function goalCommand(
       model: opts.model,
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,
+      gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true, resetOnRetry: true },
       onTaskUpdate: () => persistRun(),
       onProgress: (text) => {
         if (!isJson) runtime.log(text);

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  canRunGit,
   createCheckpoint,
   getHeadSha,
   isGitRepo,
@@ -35,7 +36,10 @@ function tracked(dir: string): string {
   return dir;
 }
 
-describe("git-checkpoint", () => {
+const shouldRunGit = process.env.MOLTBOT_TEST_GIT === "1" && canRunGit();
+const describeGit = shouldRunGit ? describe : describe.skip;
+
+describeGit("git-checkpoint", () => {
   describe("isGitRepo", () => {
     it("returns true for a git repo", () => {
       expect(isGitRepo(tracked(initRepo()))).toBe(true);

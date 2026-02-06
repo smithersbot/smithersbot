@@ -149,6 +149,8 @@ export type SerializedRun = {
   agentSessionId?: string;
   /** Maximum agent prompt cycles per task. */
   agentMaxTurnsPerTask?: number;
+  scoutStatus?: "success" | "skipped" | "error" | "needs_clarification";
+  scoutSkipReason?: string;
 };
 
 /** Result of executing a single task with the agent. */

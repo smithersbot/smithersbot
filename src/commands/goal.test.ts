@@ -52,8 +52,9 @@ vi.mock("../goal/llm-client.js", () => ({
 }));
 
 // Mock scout to skip real claude -p execution in unit tests
+const mockRunScoutWithRetry = vi.fn();
 vi.mock("../goal/scout.js", () => ({
-  runScout: vi.fn().mockResolvedValue({ status: "skipped", reason: "mocked in test" }),
+  runScoutWithRetry: (...args: unknown[]) => mockRunScoutWithRetry(...args),
 }));
 
 // Mock progress
@@ -97,6 +98,7 @@ describe("goal command — early failure persistence", () => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-cmd-test-"));
     vi.clearAllMocks();
     mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key" });
+    mockRunScoutWithRetry.mockResolvedValue({ status: "skipped", reason: "mocked in test" });
     savedExitCode = process.exitCode;
     process.exitCode = undefined;
   });

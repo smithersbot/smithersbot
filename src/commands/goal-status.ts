@@ -55,6 +55,11 @@ export async function goalStatusCommand(
   runtime.log(`State:     ${run.state}`);
   runtime.log(`Model:     ${run.model ?? "default"}`);
   runtime.log(`Workspace: ${run.workingDir}`);
+  if (run.scoutStatus) {
+    runtime.log(
+      `Scout:     ${run.scoutStatus}${run.scoutSkipReason ? ` (${run.scoutSkipReason})` : ""}`,
+    );
+  }
   runtime.log(`Created:   ${run.createdAt}`);
   runtime.log(`Updated:   ${run.updatedAt}`);
   if (run.dryRun) {

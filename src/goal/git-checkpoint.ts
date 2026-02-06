@@ -1,21 +1,42 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 export type GitCheckpoint = { sha: string; branch: string; taskId: string; createdAt: string };
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 
-export function isGitRepo(cwd: string): boolean {
+export function canRunGit(): boolean {
   try {
-    execFileSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], {
-      encoding: "utf8",
-      timeout: 5000,
-    });
+    execFileSync("git", ["--version"], { encoding: "utf8", timeout: 5000 });
     return true;
   } catch {
     return false;
   }
 }
 
+export function findGitRoot(cwd: string): string | null {
+  let current: string;
+  try {
+    current = path.resolve(cwd);
+  } catch {
+    return null;
+  }
+
+  while (true) {
+    const gitPath = path.join(current, ".git");
+    if (fs.existsSync(gitPath)) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+export function isGitRepo(cwd: string): boolean {
+  return Boolean(findGitRoot(cwd));
+}
+
 export function isWorkingTreeClean(cwd: string): boolean {
+  if (!canRunGit()) return true;
   try {
     const status = execFileSync("git", ["-C", cwd, "status", "--porcelain"], {
       encoding: "utf8",
@@ -28,6 +49,7 @@ export function isWorkingTreeClean(cwd: string): boolean {
 }
 
 export function getHeadSha(cwd: string): GitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
   try {
     const sha = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
       encoding: "utf8",
@@ -41,6 +63,7 @@ export function getHeadSha(cwd: string): GitResult {
 
 /** Create a task branch and capture a checkpoint. Returns null on non-git or error. */
 export function createCheckpoint(cwd: string, runId: string, taskId: string): GitCheckpoint | null {
+  if (!canRunGit()) return null;
   if (!isGitRepo(cwd)) return null;
   const headResult = getHeadSha(cwd);
   if (!headResult.success) return null;
@@ -60,6 +83,7 @@ export function createCheckpoint(cwd: string, runId: string, taskId: string): Gi
 }
 
 export function resetToCheckpoint(cwd: string, checkpoint: GitCheckpoint): GitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
   if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
   try {
     execFileSync("git", ["-C", cwd, "reset", "--hard", checkpoint.sha], {

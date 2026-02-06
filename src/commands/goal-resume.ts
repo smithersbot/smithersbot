@@ -229,6 +229,7 @@ export async function goalResumeCommand(
     runtime.log("");
   }
 
+  const disableCheckpoints = process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
   const outcome = await executeGoalWithAgent({
     session,
     runId: savedRunId,
@@ -236,6 +237,7 @@ export async function goalResumeCommand(
     model,
     maxTurnsPerTask: 5,
     timeoutMs: 300_000,
+    gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true, resetOnRetry: true },
     onTaskUpdate: () => persistRun(),
     onProgress: (text) => {
       if (!isJson && !quiet) runtime.log(text);

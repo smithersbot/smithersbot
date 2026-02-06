@@ -15,6 +15,7 @@ export function registerGoalCommand(program: Command) {
       "Working directory for file operations (default: .moltbot-goal-workspace)",
     )
     .option("--yes", "Auto-approve plan without prompting", false)
+    .option("--no-git-checkpoints", "Disable git checkpoints during execution")
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--dry-run", "Generate and display plan without executing", false)
     .option(
@@ -53,6 +54,7 @@ export function registerGoalCommand(program: Command) {
             model: opts.model as string | undefined,
             workingDir: opts.workingDir as string | undefined,
             yes: Boolean(opts.yes),
+            noGitCheckpoints: opts.gitCheckpoints === false,
             json: Boolean(opts.json),
             dryRun: Boolean(opts.dryRun),
             diagram: opts.diagram as DiagramMode | undefined,

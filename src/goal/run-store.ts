@@ -174,6 +174,8 @@ export function sessionToSerialized(params: {
   agentSessionFile?: string;
   agentSessionId?: string;
   agentMaxTurnsPerTask?: number;
+  scoutStatus?: SerializedRun["scoutStatus"];
+  scoutSkipReason?: string;
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -194,6 +196,8 @@ export function sessionToSerialized(params: {
     ...(params.agentSessionFile ? { agentSessionFile: params.agentSessionFile } : {}),
     ...(params.agentSessionId ? { agentSessionId: params.agentSessionId } : {}),
     ...(params.agentMaxTurnsPerTask ? { agentMaxTurnsPerTask: params.agentMaxTurnsPerTask } : {}),
+    ...(params.scoutStatus ? { scoutStatus: params.scoutStatus } : {}),
+    ...(params.scoutSkipReason ? { scoutSkipReason: params.scoutSkipReason } : {}),
   };
   const previous = params.previousRun;
   if (!previous) return serialized;
@@ -214,6 +218,10 @@ export function sessionToSerialized(params: {
   }
   if (!serialized.agentMaxTurnsPerTask && previous.agentMaxTurnsPerTask) {
     serialized.agentMaxTurnsPerTask = previous.agentMaxTurnsPerTask;
+  }
+  if (!serialized.scoutStatus && previous.scoutStatus) {
+    serialized.scoutStatus = previous.scoutStatus;
+    serialized.scoutSkipReason ??= previous.scoutSkipReason;
   }
   return serialized;
 }

@@ -233,6 +233,11 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
 
     // Successful plan — load plan for PNG rendering in sendGoalPlanResult
     const savedRun = loadRun(runId);
+    if (savedRun?.scoutStatus === "skipped") {
+      parts.push(
+        `\n_Scout analysis was skipped (${savedRun.scoutSkipReason ?? "unknown"}). Plan may be less informed._`,
+      );
+    }
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
     return {
       text: parts.join("\n") || "No plan output.",
