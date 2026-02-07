@@ -1,3 +1,6 @@
+import type { CapabilityGrant, CapabilityPolicy } from "./capability-types.js";
+import type { GoalBackendId } from "./backend-types.js";
+
 // State machine for the goal execution loop.
 export type GoalState =
   | "init"
@@ -48,6 +51,7 @@ export type PlanStep = {
     | "out_of_credits"
     | "auth"
     | "network"
+    | "capability_denied"
     | "other";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;
@@ -58,6 +62,12 @@ export type PlanStep = {
     suggestedNext: string;
     needsRevert: boolean;
   };
+  /** Extra capabilities requested by the planner for this step. */
+  requestedCapabilities?: CapabilityGrant[];
+  /** Planner hint for which backend to use. */
+  preferredBackend?: GoalBackendId;
+  /** Sticky: set once a backend is chosen, persisted across retries/resume. */
+  executedBackend?: GoalBackendId;
 };
 
 export type Plan = {
@@ -151,6 +161,10 @@ export type SerializedRun = {
   agentMaxTurnsPerTask?: number;
   scoutStatus?: "success" | "skipped" | "error" | "needs_clarification";
   scoutSkipReason?: string;
+  /** Capability policy snapshot — immutable for the lifetime of the run. */
+  capabilityPolicy?: CapabilityPolicy;
+  /** CLI backend override from --backend flag. */
+  backendOverride?: GoalBackendId;
 };
 
 /** Result of executing a single task with the agent. */

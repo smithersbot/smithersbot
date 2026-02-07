@@ -4,7 +4,6 @@ import { getModel } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
-  createCodingTools,
   DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
@@ -15,6 +14,10 @@ import { resolveMoltbotAgentDir } from "../agents/agent-paths.js";
 import { ensureMoltbotModelsJson } from "../agents/models-config.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import type { MoltbotConfig } from "../config/config.js";
+import { createDefaultPolicy } from "./capability-policy.js";
+import { computeEffectiveCapabilities } from "./capability-broker.js";
+import { createEnforcedCodingTools } from "./capability-enforcement.js";
+import type { DeniedAction } from "./capability-types.js";
 import { createGoalTools, createTurnTracker, type TurnTracker } from "./goal-tools.js";
 import {
   createCheckpoint,
@@ -36,6 +39,8 @@ import {
   type CriticalPathScores,
 } from "./plan-order.js";
 import { aggregateBlockedDetails } from "./blocked.js";
+import { detectBackendAvailability, resolveBackendForStep } from "./backend-router.js";
+import { executeTaskWithCliWorker } from "./cli-worker.js";
 import type {
   GitCheckpointConfig,
   GoalOutcome,
@@ -43,6 +48,7 @@ import type {
   Plan,
   PlanStep,
   RetryConfig,
+  SerializedRun,
   TaskExecutionResult,
 } from "./types.js";
 
@@ -169,6 +175,8 @@ export type ExecuteGoalParams = {
   onProgress?: (text: string) => void;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
   abortSignal?: AbortSignal;
+  /** Serialized run for loading persisted capability policy. */
+  serializedRun?: SerializedRun;
 };
 
 /** Load a scout node spec file for a given step. Returns null if not found. */
@@ -324,6 +332,16 @@ function buildGoalSystemPrompt(
   lines.push(
     "- update_working_notes(notes): Record what you've tried and learned. Persists across retries.",
   );
+  lines.push("");
+  lines.push("CAPABILITY BOUNDS:");
+  lines.push("- File access: workingDir/** (read+write)");
+  lines.push(
+    "- Commands: build, test, lint, git (local) only (no sudo, no deploy, no network tools)",
+  );
+  lines.push("- Git: local operations only (no push unless explicitly granted)");
+  lines.push("- Network: none by default (curl/wget/nc denied)");
+  lines.push("- Secrets: .env, .pem, .key, credentials, .aws, .ssh are always denied");
+  lines.push("- Do NOT retry operations that return DENIED errors.");
   lines.push("");
   lines.push("RULES:");
   lines.push("- Focus exclusively on the current task you are given.");
@@ -616,7 +634,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     retry: { enabled: true, maxRetries: 2 },
   });
 
-  const codingTools = createCodingTools(workingDir);
+  // --- Capability policy (snapshotted for resume) ---
+  const policy = params.serializedRun?.capabilityPolicy ?? createDefaultPolicy(workingDir);
+
+  // --- Backend detection (once per run) ---
+  const backendAvailability = detectBackendAvailability();
+  const backendOverride = params.serializedRun?.backendOverride;
 
   // --- Minimal task loop ---
   // Keep looping while there are runnable tasks
@@ -649,6 +672,25 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const answerKey = `task:${task.id}:input`;
       if (session.answers[answerKey]) {
         delete session.answers[answerKey];
+      }
+      // Consume this task's ID from aggregated multi-task answer keys
+      for (const key of Object.keys(session.answers)) {
+        const match = /^tasks:([^:]+):input$/.exec(key);
+        if (match && match[1]!.split(",").includes(task.id)) {
+          const remaining = match[1]!.split(",").filter((id) => id !== task.id);
+          if (remaining.length === 0) {
+            delete session.answers[key];
+          } else {
+            // Re-key with remaining task IDs so the answer is still available for them
+            const value = session.answers[key]!;
+            delete session.answers[key];
+            const newKey =
+              remaining.length === 1
+                ? `task:${remaining[0]}:input`
+                : `tasks:${remaining.join(",")}:input`;
+            session.answers[newKey] = value;
+          }
+        }
       }
     }
 
@@ -690,10 +732,100 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         onProgress?.(`  [ralph] Attempt ${attempt}/${maxAttempts}`);
       }
 
-      // --- Create fresh PI session for this attempt ---
+      // --- Compute effective capabilities for this task/attempt ---
+      const effective = computeEffectiveCapabilities(policy, task, workingDir, attempt);
+      const deniedActions: DeniedAction[] = [];
+      const onDenied = (d: DeniedAction) => {
+        deniedActions.push(d);
+        onProgress?.(`  [denied] ${d.reason}`);
+      };
+      const codingTools = createEnforcedCodingTools(workingDir, effective, policy, onDenied);
+
+      // --- Resolve backend for this step ---
+      const backend = resolveBackendForStep(task, backendAvailability, backendOverride);
+      if (!task.executedBackend) {
+        task.executedBackend = backend;
+        // Persisted on the next onTaskUpdate call (after task completes/blocks)
+      }
+
       const completedSummaries = orderedSteps
         .filter((s) => s.status === "done" && s.taskSummary)
         .map((s) => ({ id: s.id, summary: s.taskSummary! }));
+
+      // --- CLI worker path (codex / claude_code) ---
+      if (backend !== "pi") {
+        task.status = "in_progress";
+        if (attempt === 1) {
+          onProgress?.(`\n--- Task ${task.id} [${backend}]: ${task.description} ---`);
+        }
+
+        const cliResult = await executeTaskWithCliWorker({
+          backend,
+          step: task,
+          plan,
+          goal: session.goal,
+          workingDir,
+          runId,
+          effective,
+          policy,
+          maxTurnsPerTask,
+          model: params.model,
+          completedSummaries,
+          onProgress,
+        });
+
+        task.turnsUsed = cliResult.turnsUsed;
+
+        if (cliResult.output) {
+          const out = cliResult.output;
+          if (out.status === "complete") {
+            task.status = "done";
+            task.taskSummary = out.summary;
+            onProgress?.(`  [done] ${out.summary}`);
+          } else if (out.status === "blocked") {
+            task.status = "blocked";
+            task.blockedReason = out.missingCapabilities?.length
+              ? "capability_denied"
+              : "user_input";
+            task.blockedQuestion = out.question;
+            onProgress?.(`  [blocked] ${out.question}`);
+          } else if (out.status === "failed") {
+            task.status = "blocked";
+            task.blockedReason = "task_failed";
+            task.blockedQuestion = out.reason;
+            task.failedDetail = {
+              whatTried: out.whatTried,
+              errorType: out.errorType,
+              suggestedNext: out.suggestedNext,
+              needsRevert: out.needsRevert,
+            };
+            onProgress?.(`  [failed] ${out.reason}`);
+          }
+        } else {
+          // No structured output → treat as turn_limit
+          task.status = "blocked";
+          task.blockedReason = "turn_limit";
+          task.blockedQuestion = `CLI worker did not produce structured output within ${maxTurnsPerTask} turns.`;
+          onProgress?.(`  [blocked] No structured output from CLI worker`);
+        }
+
+        // Check retry eligibility (same as PI path)
+        if (task.status === "blocked" && isRetryable(task.blockedReason)) {
+          if (attempt < maxAttempts) {
+            appendRetryContext(
+              runId,
+              task.id,
+              attempt,
+              task.blockedReason!,
+              task.blockedQuestion ?? "Unknown",
+            );
+            continue;
+          }
+        }
+        break;
+      }
+
+      // --- PI session path (existing behavior) ---
 
       const taskSessionFile = resolveAgentTaskSessionFile(runId, task.id);
       const sessionsDir = path.dirname(taskSessionFile);
@@ -891,6 +1023,31 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             }
           }
 
+          // --- Capability denial handling ---
+          // Hard deny → immediate block
+          const hardDenyAction = deniedActions.find((d) => d.hardDeny);
+          if (hardDenyAction) {
+            task.status = "blocked";
+            task.blockedReason = "capability_denied";
+            task.blockedQuestion = `Hard deny: ${hardDenyAction.reason}`;
+            onProgress?.(`  [capability] Hard deny: ${hardDenyAction.reason}`);
+            break;
+          }
+
+          // Missing capabilities → batch and block
+          const missingCaps = deniedActions.filter((d) => !d.hardDeny && d.missingCapabilityId);
+          if (missingCaps.length > 0 && !goalTools.getSignal()) {
+            const capIds = [...new Set(missingCaps.map((d) => d.missingCapabilityId!))];
+            const reasons = [...new Set(missingCaps.map((d) => d.reason))];
+            task.status = "blocked";
+            task.blockedReason = "capability_denied";
+            task.blockedQuestion = `Step needs additional capabilities: ${capIds.join(", ")}. ${reasons.join("; ")}`;
+            onProgress?.(`  [capability] Missing: ${capIds.join(", ")}`);
+            break;
+          }
+
+          deniedActions.length = 0; // reset per turn
+
           // No signal -- agent finished the prompt naturally; continue prompting.
         }
 
@@ -926,8 +1083,18 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     // Clean up tracker ref after task is done
     goalTools.setTurnTracker(null);
 
-    // Record task result
+    // Persist step result for resume (success and failure)
     const durationMs = Date.now() - taskStartMs;
+    session.stepResults.set(task.id, {
+      stepId: task.id,
+      success: task.status === "done",
+      output: task.taskSummary ?? "",
+      error:
+        task.status !== "done" ? (task.blockedQuestion ?? "Task did not complete.") : undefined,
+      durationMs,
+    });
+
+    // Record task result
     const result: TaskExecutionResult = {
       taskId: task.id,
       turnsUsed: task.turnsUsed ?? 0,

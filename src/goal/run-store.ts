@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadJsonFile } from "../infra/json-file.js";
+import { createDefaultPolicy } from "./capability-policy.js";
 import type {
   GoalSession,
   PlanStep,
@@ -98,6 +99,11 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
     }
   }
 
+  // Backfill capabilityPolicy for pre-capability runs that have a workingDir
+  if (!data.capabilityPolicy && typeof data.workingDir === "string") {
+    data.capabilityPolicy = createDefaultPolicy(data.workingDir as string);
+  }
+
   return data;
 }
 
@@ -176,6 +182,7 @@ export function sessionToSerialized(params: {
   agentMaxTurnsPerTask?: number;
   scoutStatus?: SerializedRun["scoutStatus"];
   scoutSkipReason?: string;
+  backendOverride?: SerializedRun["backendOverride"];
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -198,6 +205,7 @@ export function sessionToSerialized(params: {
     ...(params.agentMaxTurnsPerTask ? { agentMaxTurnsPerTask: params.agentMaxTurnsPerTask } : {}),
     ...(params.scoutStatus ? { scoutStatus: params.scoutStatus } : {}),
     ...(params.scoutSkipReason ? { scoutSkipReason: params.scoutSkipReason } : {}),
+    ...(params.backendOverride ? { backendOverride: params.backendOverride } : {}),
   };
   const previous = params.previousRun;
   if (!previous) return serialized;
@@ -223,6 +231,12 @@ export function sessionToSerialized(params: {
     serialized.scoutStatus = previous.scoutStatus;
     serialized.scoutSkipReason ??= previous.scoutSkipReason;
   }
+  if (!serialized.capabilityPolicy && previous.capabilityPolicy) {
+    serialized.capabilityPolicy = previous.capabilityPolicy;
+  }
+  if (!serialized.backendOverride && previous.backendOverride) {
+    serialized.backendOverride = previous.backendOverride;
+  }
   return serialized;
 }
 
@@ -239,6 +253,11 @@ export function resolveWorkingFile(runId: string, stepId: string, goalsDir?: str
 /** Resolve top-level WORKING.md for the goal run. */
 export function resolveGoalWorkingFile(runId: string, goalsDir?: string): string {
   return path.join(resolveRunDir(runId, goalsDir), "WORKING.md");
+}
+
+/** Resolve per-step CLI worker artifact directory. */
+export function resolveWorkerDir(runId: string, stepId: string, goalsDir?: string): string {
+  return path.join(resolveRunDir(runId, goalsDir), "workers", stepId);
 }
 
 /** Resolve a per-task agent session file path. */

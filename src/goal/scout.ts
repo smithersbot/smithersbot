@@ -224,6 +224,13 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   // Extract plan draft content between sentinels
   const beginIdx = draft.indexOf("BEGIN_PLAN_DRAFT");
   const endIdx = draft.indexOf("END_PLAN_DRAFT");
+  if (beginIdx >= endIdx) {
+    return {
+      status: "error",
+      error: "plan_draft.md has BEGIN_PLAN_DRAFT after END_PLAN_DRAFT (sentinels out of order)",
+      errorKind: "validation",
+    };
+  }
   const planDraft = draft.slice(beginIdx, endIdx + "END_PLAN_DRAFT".length);
 
   return { status: "success", report, planDraft };

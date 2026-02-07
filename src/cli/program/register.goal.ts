@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { defaultRuntime } from "../../runtime.js";
+import type { GoalBackendId } from "../../goal/backend-types.js";
 import type { DiagramMode, OutputFormat } from "../../goal/types.js";
 import { theme } from "../../terminal/theme.js";
 import { formatHelpExamples } from "../help-format.js";
@@ -23,6 +24,10 @@ export function registerGoalCommand(program: Command) {
       "Diagram format: none, ascii, mermaid, both (default: both for md, none for json)",
     )
     .option("--output <format>", "Output format: md, json (default: md)")
+    .option(
+      "--backend <backend>",
+      "Execution backend: pi, codex, claude_code (default: auto-select)",
+    )
     .addHelpText(
       "after",
       () =>
@@ -59,6 +64,7 @@ export function registerGoalCommand(program: Command) {
             dryRun: Boolean(opts.dryRun),
             diagram: opts.diagram as DiagramMode | undefined,
             output: opts.output as OutputFormat | undefined,
+            backend: opts.backend as GoalBackendId | undefined,
           },
           defaultRuntime,
         );

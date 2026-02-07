@@ -11,8 +11,10 @@ import { formatPlanOutput } from "../goal/format-output.js";
 import { isGitRepo } from "../goal/git-checkpoint.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import { createDefaultPolicy } from "../goal/capability-policy.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import { runScoutWithRetry, type ScoutResult } from "../goal/scout.js";
+import type { GoalBackendId } from "../goal/backend-types.js";
 import type {
   DiagramMode,
   GoalOutcome,
@@ -41,6 +43,8 @@ export type GoalCommandOptions = {
   noScout?: boolean;
   /** Disable git checkpoints during execution. */
   noGitCheckpoints?: boolean;
+  /** Override execution backend for all steps. */
+  backend?: GoalBackendId;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -83,6 +87,7 @@ export async function goalCommand(
   const createdAt = new Date().toISOString();
   let scoutStatus: SerializedRun["scoutStatus"];
   let scoutSkipReason: string | undefined;
+  let capabilityPolicy: SerializedRun["capabilityPolicy"];
 
   if (!isJson) {
     runtime.log(`Run: ${runId}`);
@@ -101,18 +106,19 @@ export async function goalCommand(
 
   // Persist the current session state to disk
   function persistRun(): void {
-    saveRun(
-      sessionToSerialized({
-        session,
-        runId,
-        workingDir,
-        model: opts.model,
-        dryRun: isDryRun,
-        createdAt,
-        scoutStatus,
-        scoutSkipReason,
-      }),
-    );
+    const serialized = sessionToSerialized({
+      session,
+      runId,
+      workingDir,
+      model: opts.model,
+      dryRun: isDryRun,
+      createdAt,
+      scoutStatus,
+      scoutSkipReason,
+      backendOverride: opts.backend,
+    });
+    if (capabilityPolicy) serialized.capabilityPolicy = capabilityPolicy;
+    saveRun(serialized);
   }
 
   // Persist immediately so the run record exists before anything can fail
@@ -206,6 +212,7 @@ export async function goalCommand(
 
     // Phase 1: Planning (enriched with scout data when available)
     session.state = "planning";
+    persistRun();
     let planResult;
     {
       const progress = createCliProgress({
@@ -316,6 +323,11 @@ export async function goalCommand(
 
     // Phase 3: Execution
     if (!isJson) runtime.log("");
+
+    // Snapshot capability policy before execution (immutable for the lifetime of the run)
+    capabilityPolicy = createDefaultPolicy(workingDir);
+    persistRun();
+
     const disableCheckpoints =
       Boolean(opts.noGitCheckpoints) || process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
     const outcome = await executeGoalWithAgent({
@@ -326,6 +338,7 @@ export async function goalCommand(
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,
       gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true, resetOnRetry: true },
+      serializedRun: { capabilityPolicy, backendOverride: opts.backend } as SerializedRun,
       onTaskUpdate: () => persistRun(),
       onProgress: (text) => {
         if (!isJson) runtime.log(text);
