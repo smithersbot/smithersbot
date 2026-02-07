@@ -17,6 +17,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { classifyTask } from "../goal/backend-router.js";
 import { computeCpm } from "../goal/cpm.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatGoalError } from "../goal/errors.js";
@@ -746,6 +747,31 @@ function persistTelegramQuestionMessage(params: {
 // Exported send helper
 // ---------------------------------------------------------------------------
 
+/** Friendly display names for backend IDs. */
+const BACKEND_DISPLAY_NAMES: Record<string, string> = {
+  codex: "Codex",
+  claude_code: "Claude Code",
+  pi: "Pi",
+};
+
+/** Resolve which backend a step would use based on classification. */
+function resolveStepWorker(step: import("../goal/types.js").PlanStep): string {
+  // Explicit planner hint takes priority
+  if (step.preferredBackend)
+    return BACKEND_DISPLAY_NAMES[step.preferredBackend] ?? step.preferredBackend;
+  // Classification-based default (same logic as backend-router without availability check)
+  const classification = classifyTask(step);
+  switch (classification) {
+    case "code":
+    case "test":
+      return BACKEND_DISPLAY_NAMES.codex!;
+    case "docs":
+    case "analysis":
+    case "general":
+      return BACKEND_DISPLAY_NAMES.claude_code!;
+  }
+}
+
 /** Build a metadata caption header for plan messages. */
 function buildCaptionHeader(result: GoalPlanResult): string {
   const lines: string[] = [];
@@ -758,12 +784,12 @@ function buildCaptionHeader(result: GoalPlanResult): string {
     lines.push(`Working dir: ${shortenHomePath(run.workingDir)}`);
   }
   if (result.plan) {
-    // Deduplicated preferred backends from plan steps
-    const backends = new Set<string>();
+    // Resolve workers from classification + planner hints, deduplicated
+    const workers = new Set<string>();
     for (const step of result.plan.steps) {
-      if (step.preferredBackend) backends.add(step.preferredBackend);
+      workers.add(resolveStepWorker(step));
     }
-    lines.push(`Workers: ${backends.size > 0 ? [...backends].join(", ") : "auto"}`);
+    lines.push(`Workers: ${[...workers].join(", ")}`);
     lines.push(`Plan: ${result.plan.summary}`);
   }
   return lines.join("\n");
