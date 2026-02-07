@@ -11,6 +11,7 @@ import type {
   GatewayConfig,
   TalkConfig,
 } from "./types.gateway.js";
+import type { GoalConfig } from "./types.goal.js";
 import type { HooksConfig } from "./types.hooks.js";
 import type {
   AudioConfig,
@@ -95,6 +96,7 @@ export type MoltbotConfig = {
   canvasHost?: CanvasHostConfig;
   talk?: TalkConfig;
   gateway?: GatewayConfig;
+  goal?: GoalConfig;
 };
 
 export type ConfigValidationIssue = {

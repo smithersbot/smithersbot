@@ -30,6 +30,65 @@ describe("createDefaultPolicy", () => {
     const fsRead = policy.baseline.find((g) => g.id === "fs.read");
     expect(fsRead?.pathGlobs?.[0]).toBe(`${WORKING_DIR}/**`);
   });
+
+  it("adds fs.read grants for readOnlyRoots", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, ["/home/user/other-repo"]);
+    const readGrants = policy.baseline.filter(
+      (g) => g.id === "fs.read" && g.pathGlobs?.some((p) => p.includes("other-repo")),
+    );
+    expect(readGrants).toHaveLength(1);
+    expect(readGrants[0]!.pathGlobs![0]).toBe("/home/user/other-repo/**");
+  });
+
+  it("does not add fs.write grants for readOnlyRoots", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, ["/home/user/other-repo"]);
+    const writeGrants = policy.baseline.filter(
+      (g) => g.id === "fs.write" && g.pathGlobs?.some((p) => p.includes("other-repo")),
+    );
+    expect(writeGrants).toHaveLength(0);
+  });
+
+  it("normalizes relative readOnlyRoots against workingDir", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, ["../shared-lib"]);
+    const readGrants = policy.baseline.filter(
+      (g) => g.id === "fs.read" && g.pathGlobs?.some((p) => p.includes("shared-lib")),
+    );
+    expect(readGrants).toHaveLength(1);
+    expect(readGrants[0]!.pathGlobs![0]).toBe("/home/user/shared-lib/**");
+  });
+
+  it("deduplicates readOnlyRoots", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, ["/home/user/lib", "/home/user/lib"]);
+    const libGrants = policy.baseline.filter(
+      (g) => g.id === "fs.read" && g.pathGlobs?.some((p) => p.includes("/lib/**")),
+    );
+    expect(libGrants).toHaveLength(1);
+  });
+
+  it("drops empty strings in readOnlyRoots", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, ["", "  ", "/valid/path"]);
+    const extraReads = policy.baseline.filter(
+      (g) => g.id === "fs.read" && g.pathGlobs && !g.pathGlobs[0]!.startsWith(WORKING_DIR),
+    );
+    expect(extraReads).toHaveLength(1);
+    expect(extraReads[0]!.pathGlobs![0]).toBe("/valid/path/**");
+  });
+
+  it("caps readOnlyRoots at 20", () => {
+    const roots = Array.from({ length: 30 }, (_, i) => `/root${i}`);
+    const policy = createDefaultPolicy(WORKING_DIR, roots);
+    const extraReads = policy.baseline.filter(
+      (g) => g.id === "fs.read" && g.pathGlobs && !g.pathGlobs[0]!.startsWith(WORKING_DIR),
+    );
+    expect(extraReads).toHaveLength(20);
+  });
+
+  it("handles undefined readOnlyRoots gracefully", () => {
+    const policy = createDefaultPolicy(WORKING_DIR, undefined);
+    const readGrants = policy.baseline.filter((g) => g.id === "fs.read");
+    // Only the workingDir grant
+    expect(readGrants).toHaveLength(1);
+  });
 });
 
 describe("isPathDenied", () => {
@@ -183,6 +242,20 @@ describe("isPathWithinGrants", () => {
     expect(isPathWithinGrants("/etc/passwd", grants, WORKING_DIR)).toBe(false);
     expect(isPathWithinGrants("/home/user/.bashrc", grants, WORKING_DIR)).toBe(false);
     expect(isPathWithinGrants("/tmp/secret.txt", grants, WORKING_DIR)).toBe(false);
+  });
+
+  it("allows paths under readOnlyRoots", () => {
+    const policyWithRoots = createDefaultPolicy(WORKING_DIR, ["/home/user/other-repo"]);
+    const grantsWithRoots = policyWithRoots.baseline;
+    expect(
+      isPathWithinGrants("/home/user/other-repo/src/main.ts", grantsWithRoots, WORKING_DIR),
+    ).toBe(true);
+  });
+
+  it("still rejects paths outside both workingDir and readOnlyRoots", () => {
+    const policyWithRoots = createDefaultPolicy(WORKING_DIR, ["/home/user/other-repo"]);
+    const grantsWithRoots = policyWithRoots.baseline;
+    expect(isPathWithinGrants("/etc/passwd", grantsWithRoots, WORKING_DIR)).toBe(false);
   });
 });
 

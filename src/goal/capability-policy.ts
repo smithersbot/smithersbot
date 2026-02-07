@@ -83,13 +83,44 @@ const BASH_BYPASS_COMMANDS: string[] = [
 /** Network tool commands (denied by default, unlocked via network.* grants). */
 const NETWORK_COMMANDS: string[] = ["curl", "wget", "nc", "ncat"];
 
-export function createDefaultPolicy(workingDir: string): CapabilityPolicy {
+/** Max number of readOnlyRoots entries to prevent abuse. */
+const READ_ONLY_ROOTS_CAP = 20;
+
+/**
+ * Normalize readOnlyRoots: drop empties, resolve relative paths against
+ * workingDir (deterministic, goal-scoped), deduplicate, cap at limit.
+ */
+function normalizeReadOnlyRoots(roots: string[] | undefined, workingDir: string): string[] {
+  if (!roots || roots.length === 0) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of roots) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    const abs = path.resolve(workingDir, trimmed);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    result.push(abs);
+    if (result.length >= READ_ONLY_ROOTS_CAP) break;
+  }
+  return result;
+}
+
+export function createDefaultPolicy(
+  workingDir: string,
+  readOnlyRoots?: string[],
+): CapabilityPolicy {
   const baseline: CapabilityGrant[] = [
     { id: "fs.read", pathGlobs: [`${workingDir}/**`] },
     { id: "fs.write", pathGlobs: [`${workingDir}/**`] },
     { id: "exec.safe", commandPatterns: EXEC_SAFE_PATTERNS },
     { id: "git.checkpoint" },
   ];
+
+  // Add read-only grants for each normalized root
+  for (const root of normalizeReadOnlyRoots(readOnlyRoots, workingDir)) {
+    baseline.push({ id: "fs.read", pathGlobs: [`${root}/**`] });
+  }
 
   const hardDenies: HardDeny[] = [
     {

@@ -57,6 +57,12 @@ vi.mock("../goal/scout.js", () => ({
   runScoutWithRetry: (...args: unknown[]) => mockRunScoutWithRetry(...args),
 }));
 
+// Mock isGitRepo for resolveWorkingDir tests
+const mockIsGitRepo = vi.fn();
+vi.mock("../goal/git-checkpoint.js", () => ({
+  isGitRepo: (...args: unknown[]) => mockIsGitRepo(...args),
+}));
+
 // Mock progress
 vi.mock("../cli/progress.js", () => ({
   createCliProgress: () => ({
@@ -274,5 +280,64 @@ describe("goal command — early failure persistence", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]!.state).toBe("failed");
     expect(runs[0]!.goal).toBe("Dangerous goal");
+  });
+});
+
+describe("resolveWorkingDir — 4-level precedence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("explicit --working-dir wins over everything", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(true);
+    const result = resolveWorkingDir(
+      "/explicit/dir",
+      { goal: { defaultWorkingDir: "/config/dir" } },
+      "/cwd",
+    );
+    expect(result).toBe("/explicit/dir");
+  });
+
+  it("config.goal.defaultWorkingDir wins when no explicit flag", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(true);
+    const result = resolveWorkingDir(
+      undefined,
+      { goal: { defaultWorkingDir: "/config/dir" } },
+      "/cwd",
+    );
+    expect(result).toBe("/config/dir");
+  });
+
+  it("falls back to cwd when it is a git repo", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(true);
+    const result = resolveWorkingDir(undefined, undefined, "/my/repo");
+    expect(result).toBe("/my/repo");
+  });
+
+  it("falls back to .moltbot-goal-workspace when cwd is not a git repo", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(false);
+    const result = resolveWorkingDir(undefined, undefined, "/some/dir");
+    expect(result).toBe(path.resolve("/some/dir", ".moltbot-goal-workspace"));
+  });
+
+  it("resolves relative --working-dir to absolute", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    const result = resolveWorkingDir("relative/path", undefined, "/cwd");
+    expect(path.isAbsolute(result)).toBe(true);
+  });
+
+  it("resolves relative config defaultWorkingDir to absolute", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(false);
+    const result = resolveWorkingDir(
+      undefined,
+      { goal: { defaultWorkingDir: "~/projects/repo" } },
+      "/cwd",
+    );
+    expect(path.isAbsolute(result)).toBe(true);
   });
 });

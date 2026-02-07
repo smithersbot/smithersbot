@@ -445,6 +445,13 @@ export const MoltbotSchema = z
       })
       .strict()
       .optional(),
+    goal: z
+      .object({
+        defaultWorkingDir: z.string().optional(),
+        readOnlyRoots: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
     skills: z
       .object({
         allowBundled: z.array(z.string()).optional(),

@@ -22,6 +22,7 @@ import type {
   OutputFormat,
   SerializedRun,
 } from "../goal/types.js";
+import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const DEFAULT_WORKSPACE_DIR = ".moltbot-goal-workspace";
@@ -45,6 +46,8 @@ export type GoalCommandOptions = {
   noGitCheckpoints?: boolean;
   /** Override execution backend for all steps. */
   backend?: GoalBackendId;
+  /** Config object for goal-specific settings (defaultWorkingDir, readOnlyRoots). */
+  config?: MoltbotConfig;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -60,6 +63,27 @@ function resolveDiagramMode(opts: GoalCommandOptions, outputFormat: OutputFormat
   return outputFormat === "json" ? "none" : "both";
 }
 
+/**
+ * Resolve the effective working directory.
+ *
+ * Precedence (highest to lowest):
+ * 1. Explicit --working-dir flag
+ * 2. config.goal.defaultWorkingDir
+ * 3. cwd is a git repo → use cwd
+ * 4. Fallback to .moltbot-goal-workspace sandbox
+ */
+export function resolveWorkingDir(
+  explicit: string | undefined,
+  config: MoltbotConfig | undefined,
+  cwd: string,
+): string {
+  if (explicit) return path.resolve(explicit);
+  const configDir = config?.goal?.defaultWorkingDir;
+  if (configDir) return path.resolve(configDir);
+  if (isGitRepo(cwd)) return cwd;
+  return path.resolve(cwd, DEFAULT_WORKSPACE_DIR);
+}
+
 export async function goalCommand(
   opts: GoalCommandOptions,
   runtime: RuntimeEnv,
@@ -72,13 +96,8 @@ export async function goalCommand(
   const isJson = outputFormat === "json";
   const isDryRun = Boolean(opts.dryRun);
 
-  // Default to a sandboxed workspace subfolder
   const cwd = process.cwd();
-  const workingDir = opts.workingDir
-    ? path.resolve(opts.workingDir)
-    : isGitRepo(cwd)
-      ? cwd
-      : path.resolve(cwd, DEFAULT_WORKSPACE_DIR);
+  const workingDir = resolveWorkingDir(opts.workingDir, opts.config, cwd);
 
   mkdirSync(workingDir, { recursive: true });
 
@@ -255,7 +274,9 @@ export async function goalCommand(
     // Display plan (human-readable only; JSON mode emits a single combined object later)
     if (!isJson) {
       runtime.log("\n");
-      runtime.log(formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat }));
+      runtime.log(
+        formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat, workingDir }),
+      );
       runtime.log("");
     }
 
@@ -325,7 +346,7 @@ export async function goalCommand(
     if (!isJson) runtime.log("");
 
     // Snapshot capability policy before execution (immutable for the lifetime of the run)
-    capabilityPolicy = createDefaultPolicy(workingDir);
+    capabilityPolicy = createDefaultPolicy(workingDir, opts.config?.goal?.readOnlyRoots);
     persistRun();
 
     const disableCheckpoints =

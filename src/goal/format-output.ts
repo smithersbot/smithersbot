@@ -1,7 +1,16 @@
+import os from "node:os";
 import { computeCpm } from "./cpm.js";
 import type { DiagramMode, OutputFormat, Plan } from "./types.js";
 import { renderAsciiDependencies } from "./dag-render.js";
 import { renderMermaid } from "./mermaid-render.js";
+
+/** Replace leading $HOME with ~ for display only. */
+function tildeShorten(p: string): string {
+  const home = os.homedir();
+  if (p === home) return "~";
+  if (p.startsWith(`${home}/`)) return `~${p.slice(home.length)}`;
+  return p;
+}
 
 /**
  * Format a plan for display, respecting diagram mode and output format.
@@ -11,12 +20,12 @@ import { renderMermaid } from "./mermaid-render.js";
  */
 export function formatPlanOutput(
   plan: Plan,
-  opts: { diagram: DiagramMode; format: OutputFormat },
+  opts: { diagram: DiagramMode; format: OutputFormat; workingDir?: string },
 ): string {
   if (opts.format === "json") {
-    return formatJson(plan, opts.diagram);
+    return formatJson(plan, opts.diagram, opts.workingDir);
   }
-  return formatMarkdown(plan, opts.diagram);
+  return formatMarkdown(plan, opts.diagram, opts.workingDir);
 }
 
 function wantAscii(mode: DiagramMode): boolean {
@@ -27,11 +36,14 @@ function wantMermaid(mode: DiagramMode): boolean {
   return mode === "mermaid" || mode === "both";
 }
 
-function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
+function formatMarkdown(plan: Plan, diagram: DiagramMode, workingDir?: string): string {
   const cpm = computeCpm(plan);
   const lines: string[] = [];
 
   lines.push(`## Plan: ${plan.summary}`);
+  if (workingDir) {
+    lines.push(`**Working dir:** ${tildeShorten(workingDir)}`);
+  }
   lines.push("");
   lines.push("### Steps");
 
@@ -67,15 +79,16 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode): string {
   return lines.join("\n");
 }
 
-function formatJson(plan: Plan, diagram: DiagramMode): string {
+function formatJson(plan: Plan, diagram: DiagramMode, workingDir?: string): string {
   const cpm = computeCpm(plan);
   const diagrams: Record<string, string> = {};
   if (wantAscii(diagram)) diagrams.ascii = renderAsciiDependencies(plan);
   if (wantMermaid(diagram)) diagrams.mermaid = renderMermaid(plan, cpm);
 
-  const output = {
+  const output: Record<string, unknown> = {
     goal: plan.goal,
     summary: plan.summary,
+    ...(workingDir ? { workingDir } : {}),
     steps: plan.steps.map((s) => ({
       id: s.id,
       description: s.description,

@@ -38,6 +38,7 @@ import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks } from "./format.js";
 import { buildInlineKeyboard } from "./send.js";
 import { recordSentMessage } from "./sent-message-cache.js";
+import { shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ export function findRunByPlanMessageId(
 // ---------------------------------------------------------------------------
 
 /** /goal <text> -- generate a plan (planOnly mode). */
-export async function handleGoal(text: string): Promise<GoalPlanResult> {
+export async function handleGoal(text: string, config?: MoltbotConfig): Promise<GoalPlanResult> {
   if (!text.trim()) {
     return { text: "Usage: /new_goal <description of what you want to achieve>" };
   }
@@ -215,6 +216,7 @@ export async function handleGoal(text: string): Promise<GoalPlanResult> {
         planOnly: true,
         runId,
         diagram: "none",
+        config,
       },
       cap.runtime,
     );
@@ -744,6 +746,29 @@ function persistTelegramQuestionMessage(params: {
 // Exported send helper
 // ---------------------------------------------------------------------------
 
+/** Build a metadata caption header for plan messages. */
+function buildCaptionHeader(result: GoalPlanResult): string {
+  const lines: string[] = [];
+  if (result.runId) {
+    lines.push(`Goal ID: ${result.runId.slice(0, 8)}`);
+  }
+  // Load run to get workingDir (already persisted before planning)
+  const run = result.runId ? loadRun(result.runId) : undefined;
+  if (run?.workingDir) {
+    lines.push(`Working dir: ${shortenHomePath(run.workingDir)}`);
+  }
+  if (result.plan) {
+    // Deduplicated preferred backends from plan steps
+    const backends = new Set<string>();
+    for (const step of result.plan.steps) {
+      if (step.preferredBackend) backends.add(step.preferredBackend);
+    }
+    lines.push(`Workers: ${backends.size > 0 ? [...backends].join(", ") : "auto"}`);
+    lines.push(`Plan: ${result.plan.summary}`);
+  }
+  return lines.join("\n");
+}
+
 export async function sendGoalPlanResult(params: {
   bot: Bot;
   chatId: number;
@@ -756,6 +781,9 @@ export async function sendGoalPlanResult(params: {
     const runIdPrefix = result.runId.slice(0, 8);
     const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);
 
+    // Build a rich caption header with metadata
+    const captionHeader = result.plan ? buildCaptionHeader(result) : `Plan: ${runIdPrefix}`;
+
     // Try to send plan DAG as a single PNG photo with inline keyboard
     if (result.plan) {
       const pngId = await sendDagPng({
@@ -765,7 +793,7 @@ export async function sendGoalPlanResult(params: {
         runtime,
         plan: result.plan,
         steps: result.plan.steps,
-        caption: `Plan: ${result.plan.summary}`,
+        caption: captionHeader,
         replyMarkup,
       });
       if (pngId != null) {
@@ -781,7 +809,7 @@ export async function sendGoalPlanResult(params: {
     }
 
     // PNG failed — fall back to text message with Mermaid code block
-    let markdown = result.text;
+    let markdown = captionHeader;
     if (result.plan) {
       let cpm: ReturnType<typeof computeCpm> | undefined;
       try {
@@ -1212,7 +1240,7 @@ export function registerTelegramGoalCommands({
     if (!resolved) return;
     const text = ctx.match?.trim() ?? "";
     if (!text) {
-      const result = await handleGoal("");
+      const result = await handleGoal("", cfg);
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
       return;
     }
@@ -1221,7 +1249,7 @@ export function registerTelegramGoalCommands({
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       label: "goal",
-      fn: () => handleGoal(text),
+      fn: () => handleGoal(text, cfg),
     });
     await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
