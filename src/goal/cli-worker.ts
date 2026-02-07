@@ -32,6 +32,10 @@ export type CliWorkerParams = {
   model?: string;
   completedSummaries?: Array<{ id: string; summary: string }>;
   onProgress?: (text: string) => void;
+  /** User's answer when resuming a previously-blocked step. */
+  resumeAnswer?: string;
+  /** The question the step asked before blocking. */
+  resumeQuestion?: string;
 };
 
 /**
@@ -56,6 +60,8 @@ export async function executeTaskWithCliWorker(
     model,
     completedSummaries,
     onProgress,
+    resumeAnswer,
+    resumeQuestion,
   } = params;
 
   const workerDir = resolveWorkerDir(runId, step.id);
@@ -75,6 +81,8 @@ export async function executeTaskWithCliWorker(
             goal,
             effective,
             completedSummaries,
+            resumeAnswer,
+            resumeQuestion,
           })
         : buildContinueWorkerPrompt(step, turn, maxTurnsPerTask, lastStdout);
 
@@ -168,8 +176,10 @@ export function buildCliWorkerPrompt(params: {
   goal: string;
   effective: EffectiveCapabilities;
   completedSummaries?: Array<{ id: string; summary: string }>;
+  resumeAnswer?: string;
+  resumeQuestion?: string;
 }): string {
-  const { step, plan, goal, effective, completedSummaries } = params;
+  const { step, plan, goal, effective, completedSummaries, resumeAnswer, resumeQuestion } = params;
   const lines: string[] = [];
 
   lines.push(`GOAL: ${goal}`);
@@ -183,6 +193,15 @@ export function buildCliWorkerPrompt(params: {
     for (const { id, summary } of completedSummaries) {
       lines.push(`- ${id}: ${summary}`);
     }
+    lines.push("");
+  }
+
+  // Resume context: include user's answer from previous block
+  if (resumeAnswer) {
+    lines.push("RESUME CONTEXT:");
+    lines.push(`You previously asked: ${resumeQuestion ?? "a question"}`);
+    lines.push(`The user answered: ${resumeAnswer}`);
+    lines.push("Use this information to continue and complete the task.");
     lines.push("");
   }
 
@@ -458,20 +477,25 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
 /**
  * Scan stdout/stderr for evidence that a hard-denied action was attempted.
  * Returns matching hard deny entries.
+ *
+ * Only matches "DENIED: <reason>" markers emitted by the enforcement layer,
+ * not arbitrary mentions of deny patterns in the agent's analytical text.
+ * This prevents false positives when the agent writes about security features
+ * (e.g. documenting that "sudo is not allowed" shouldn't trigger the sudo deny).
  */
 export function postCheckForHardDenyEvidence(
   stdout: string,
   stderr: string,
   policy: CapabilityPolicy,
 ): HardDeny[] {
-  const combined = `${stdout}\n${stderr}`.toLowerCase();
+  const combined = `${stdout}\n${stderr}`;
   const matches: HardDeny[] = [];
 
   for (const deny of policy.hardDenies) {
-    // Strip glob chars and path prefixes to get the meaningful substring
-    const pattern = deny.pattern.toLowerCase().replace(/[*/]/g, "").trim();
-    if (!pattern) continue;
-    if (combined.includes(pattern)) {
+    // Look for enforcement-layer DENIED markers that reference this deny's reason
+    const reasonEscaped = deny.reason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`DENIED:\\s*${reasonEscaped}`, "i");
+    if (re.test(combined)) {
       matches.push(deny);
     }
   }

@@ -772,6 +772,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           model: params.model,
           completedSummaries,
           onProgress,
+          resumeAnswer,
+          resumeQuestion,
         });
 
         task.turnsUsed = cliResult.turnsUsed;

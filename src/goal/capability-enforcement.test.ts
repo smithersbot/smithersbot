@@ -85,14 +85,49 @@ describe("createEnforcedBashOperations", () => {
     expect(denied[0]!.hardDeny).toBe(true);
   });
 
-  it("denies curl (network, missing cap)", async () => {
+  it("denies curl (network, missing cap — soft deny)", async () => {
     const { ops, denied } = createEnforced();
     const result = await ops.exec("curl https://example.com", WORKING_DIR, {
       onData: () => {},
     });
     expect(result.exitCode).toBe(126);
     expect(denied.length).toBe(1);
-    expect(denied[0]!.hardDeny).toBe(true); // curl is in hard deny list
+    expect(denied[0]!.hardDeny).toBe(false); // capability-gated, not hard deny
+    expect(denied[0]!.type).toBe("network");
+    expect(denied[0]!.missingCapabilityId).toBe("network.read_only");
+  });
+
+  it("allows curl when network.read_only is granted", async () => {
+    const stepWithNetwork = makeStep({
+      requestedCapabilities: [{ id: "network.read_only" }],
+    });
+    const effectiveWithNetwork = computeEffectiveCapabilities(policy, stepWithNetwork, WORKING_DIR);
+    const { ops, denied, mockOps } = createEnforced(effectiveWithNetwork);
+    const result = await ops.exec("curl https://example.com", WORKING_DIR, {
+      onData: () => {},
+    });
+    expect(result.exitCode).toBe(0);
+    expect(denied).toEqual([]);
+    expect(mockOps.calls).toEqual(["curl https://example.com"]);
+  });
+
+  it("denies curl when only network.registry_only is granted", async () => {
+    const stepWithRegistry = makeStep({
+      requestedCapabilities: [{ id: "network.registry_only" }],
+    });
+    const effectiveWithRegistry = computeEffectiveCapabilities(
+      policy,
+      stepWithRegistry,
+      WORKING_DIR,
+    );
+    const { ops, denied } = createEnforced(effectiveWithRegistry);
+    const result = await ops.exec("curl https://example.com", WORKING_DIR, {
+      onData: () => {},
+    });
+    expect(result.exitCode).toBe(126);
+    expect(denied.length).toBe(1);
+    expect(denied[0]!.hardDeny).toBe(false);
+    expect(denied[0]!.type).toBe("network");
   });
 
   it("denies cat (bash bypass, not in exec.safe)", async () => {

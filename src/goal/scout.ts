@@ -41,7 +41,7 @@ export type ScoutResult =
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCOUT_TIMEOUT_MS = 180_000;
+const SCOUT_TIMEOUT_MS = 1_200_000;
 const SCOUT_MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_NODE_COUNT_MIN = 1;
 const DEFAULT_NODE_COUNT_MAX = 10;

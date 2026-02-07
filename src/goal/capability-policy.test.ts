@@ -108,9 +108,9 @@ describe("isCommandDenied", () => {
     expect(isCommandDenied("rm -rf /", denies)).not.toBeNull();
   });
 
-  it("catches network tools", () => {
-    expect(isCommandDenied("curl https://example.com", denies)).not.toBeNull();
-    expect(isCommandDenied("wget https://evil.com", denies)).not.toBeNull();
+  it("does not hard-deny network tools (capability-gated instead)", () => {
+    expect(isCommandDenied("curl https://example.com", denies)).toBeNull();
+    expect(isCommandDenied("wget https://evil.com", denies)).toBeNull();
   });
 
   it("allows safe commands", () => {

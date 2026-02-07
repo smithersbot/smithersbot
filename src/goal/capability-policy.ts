@@ -134,10 +134,6 @@ export function createDefaultPolicy(workingDir: string): CapabilityPolicy {
     { id: "dangerous_shell.rm", pattern: "rm -rf /", reason: "Dangerous rm -rf is not allowed" },
     { id: "dangerous_shell.mkfs", pattern: "mkfs", reason: "mkfs is not allowed" },
     { id: "dangerous_shell.dd", pattern: "dd if=", reason: "dd is not allowed" },
-    { id: "network.curl", pattern: "curl ", reason: "curl requires network capability grant" },
-    { id: "network.wget", pattern: "wget ", reason: "wget requires network capability grant" },
-    { id: "network.nc", pattern: "nc ", reason: "nc requires network capability grant" },
-    { id: "network.ncat", pattern: "ncat ", reason: "ncat requires network capability grant" },
   ];
 
   const expandableIds: CapabilityId[] = [

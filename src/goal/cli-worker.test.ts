@@ -251,20 +251,24 @@ describe("cli-worker", () => {
   describe("postCheckForHardDenyEvidence", () => {
     const policy = makePolicy();
 
-    it("detects .env access evidence", () => {
-      const matches = postCheckForHardDenyEvidence("Reading .env file", "", policy);
+    it("detects DENIED marker for .env access", () => {
+      const matches = postCheckForHardDenyEvidence(
+        "DENIED: Reading secrets files (.env) is not allowed",
+        "",
+        policy,
+      );
       expect(matches.length).toBeGreaterThan(0);
       expect(matches[0]!.id).toBe("secrets.read");
     });
 
-    it("detects sudo evidence", () => {
-      const matches = postCheckForHardDenyEvidence("", "running sudo apt-get", policy);
+    it("detects DENIED marker for sudo", () => {
+      const matches = postCheckForHardDenyEvidence("", "DENIED: sudo is not allowed", policy);
       expect(matches.length).toBeGreaterThan(0);
       expect(matches.some((m) => m.id === "exec.sudo")).toBe(true);
     });
 
-    it("detects force push evidence", () => {
-      const matches = postCheckForHardDenyEvidence("git push --force origin main", "", policy);
+    it("detects DENIED marker for force push", () => {
+      const matches = postCheckForHardDenyEvidence("DENIED: Force push not allowed", "", policy);
       expect(matches.some((m) => m.id === "git.force_push")).toBe(true);
     });
 
@@ -274,6 +278,28 @@ describe("cli-worker", () => {
         "",
         policy,
       );
+      expect(matches).toHaveLength(0);
+    });
+
+    it("does not false-positive on English text mentioning deny patterns", () => {
+      // Agent writing documentation about security should not trigger matches
+      const text =
+        "The system blocks sudo commands, reading .env files, and force push. " +
+        "Once the analysis is complete, since the instance was created, " +
+        "we can conclude that deploy commands are also denied.";
+      const matches = postCheckForHardDenyEvidence(text, "", policy);
+      expect(matches).toHaveLength(0);
+    });
+
+    it("does not false-positive on capability bounds listing in prompt", () => {
+      // The CLI worker prompt itself lists deny reasons; agent echoing those isn't evidence
+      const text = [
+        "HARD DENIES (never do these):",
+        "- secrets.read: Reading secrets files (.env) is not allowed",
+        "- exec.sudo: sudo is not allowed",
+        "- deploy.generic: Deploy commands are not allowed",
+      ].join("\n");
+      const matches = postCheckForHardDenyEvidence(text, "", policy);
       expect(matches).toHaveLength(0);
     });
   });

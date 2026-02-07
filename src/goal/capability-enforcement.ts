@@ -35,10 +35,10 @@ function deniedResult(reason: string) {
  * Creates a BashOperations wrapper that enforces capability constraints.
  *
  * Check order:
- * 1. Hard deny check (immediate block)
- * 2. Grant check (exec.* coverage)
- * 3. Git push guard (git.push_private + isRepoPrivate)
- * 4. Network command guard
+ * 1. Hard deny check (truly dangerous: sudo, force push, deploy, rm -rf, etc.)
+ * 2. Network command guard (denies with hardDeny: false if no network.read_only grant)
+ * 3. Grant check (exec.* coverage)
+ * 4. Git push guard (git.push_private + isRepoPrivate)
  * 5. Delegate to default BashOperations
  */
 export function createEnforcedBashOperations(
@@ -49,10 +49,7 @@ export function createEnforcedBashOperations(
   defaultOps: BashOperations,
 ): BashOperations {
   const networkCommands = getNetworkCommands();
-  const hasNetworkGrant = effective.grants.some(
-    (g) => g.id === "network.read_only" || g.id === "network.registry_only",
-  );
-  const hasRegistryOnly = effective.grants.some((g) => g.id === "network.registry_only");
+  const hasReadOnlyGrant = effective.grants.some((g) => g.id === "network.read_only");
   const hasPushGrant = effective.grants.some((g) => g.id === "git.push_private");
 
   return {
@@ -61,7 +58,7 @@ export function createEnforcedBashOperations(
       const lower = trimmed.toLowerCase();
       const firstToken = lower.split(/\s+/)[0] ?? "";
 
-      // 1. Hard deny check
+      // 1. Hard deny check (truly dangerous commands only)
       const hardDeny = isCommandDenied(trimmed, effective.denies);
       if (hardDeny) {
         onDenied({
@@ -74,7 +71,24 @@ export function createEnforcedBashOperations(
         return { exitCode: 126 };
       }
 
-      // 2. Grant check
+      // 2. Network command guard (capability-gated, not hard deny)
+      if (networkCommands.includes(firstToken)) {
+        if (!hasReadOnlyGrant) {
+          onDenied({
+            type: "network",
+            command: trimmed,
+            reason: `${firstToken} requires network capability grant`,
+            hardDeny: false,
+            missingCapabilityId: "network.read_only",
+          });
+          options.onData(Buffer.from(`DENIED: ${firstToken} requires network capability grant\n`));
+          return { exitCode: 126 };
+        }
+        // network.read_only is granted — allow through
+        return defaultOps.exec(command, cwd, options);
+      }
+
+      // 3. Grant check
       if (!isCommandWithinGrants(trimmed, effective.grants)) {
         const missingId = inferMissingCapability({ command: trimmed }, effective, policy);
         onDenied({
@@ -88,7 +102,7 @@ export function createEnforcedBashOperations(
         return { exitCode: 126 };
       }
 
-      // 3. Git push guard
+      // 4. Git push guard
       if (lower.startsWith("git push")) {
         if (!hasPushGrant) {
           onDenied({
@@ -109,35 +123,6 @@ export function createEnforcedBashOperations(
             hardDeny: false,
           });
           options.onData(Buffer.from("DENIED: git push denied: repository is not private\n"));
-          return { exitCode: 126 };
-        }
-      }
-
-      // 4. Network command guard
-      if (networkCommands.includes(firstToken)) {
-        if (!hasNetworkGrant) {
-          onDenied({
-            type: "network",
-            command: trimmed,
-            reason: `${firstToken} requires network capability grant`,
-            hardDeny: false,
-            missingCapabilityId: "network.read_only",
-          });
-          options.onData(Buffer.from(`DENIED: ${firstToken} requires network capability grant\n`));
-          return { exitCode: 126 };
-        }
-        // registry_only: only allow package install commands, not raw network tools
-        if (hasRegistryOnly && !hasNetworkGrant) {
-          onDenied({
-            type: "network",
-            command: trimmed,
-            reason: `${firstToken} not allowed with registry_only grant`,
-            hardDeny: false,
-            missingCapabilityId: "network.read_only",
-          });
-          options.onData(
-            Buffer.from(`DENIED: ${firstToken} not allowed with registry_only grant\n`),
-          );
           return { exitCode: 126 };
         }
       }
