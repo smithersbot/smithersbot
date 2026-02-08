@@ -39,41 +39,43 @@ export type BackendTaskResult = {
   rawStderr?: string;
 };
 
-/** JSON Schema for GoalWorkerOutput, used by Codex --output-schema. */
+/** JSON Schema for GoalWorkerOutput, used by Codex --output-schema.
+ *
+ * Flat (no oneOf/anyOf) — structured output APIs reject those.
+ * All properties are required; unused fields for a given status should be
+ * empty strings / empty arrays / false.
+ */
 export const GOAL_WORKER_OUTPUT_SCHEMA = {
   type: "object",
-  oneOf: [
-    {
-      properties: {
-        status: { type: "string", const: "complete" },
-        summary: { type: "string" },
-      },
-      required: ["status", "summary"],
-      additionalProperties: false,
+  properties: {
+    status: {
+      type: "string",
+      enum: ["complete", "blocked", "failed"],
+      description: "Task outcome",
     },
-    {
-      properties: {
-        status: { type: "string", const: "blocked" },
-        question: { type: "string" },
-        missingCapabilities: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-      required: ["status", "question"],
-      additionalProperties: false,
+    summary: { type: "string", description: "Completion summary (when status=complete)" },
+    question: { type: "string", description: "What is needed (when status=blocked)" },
+    missingCapabilities: {
+      type: "array",
+      items: { type: "string" },
+      description: "Missing capabilities (when status=blocked)",
     },
-    {
-      properties: {
-        status: { type: "string", const: "failed" },
-        reason: { type: "string" },
-        whatTried: { type: "string" },
-        errorType: { type: "string" },
-        suggestedNext: { type: "string" },
-        needsRevert: { type: "boolean" },
-      },
-      required: ["status", "reason", "whatTried", "errorType", "suggestedNext", "needsRevert"],
-      additionalProperties: false,
-    },
+    reason: { type: "string", description: "Failure reason (when status=failed)" },
+    whatTried: { type: "string", description: "What was attempted (when status=failed)" },
+    errorType: { type: "string", description: "Error classification (when status=failed)" },
+    suggestedNext: { type: "string", description: "Suggested next step (when status=failed)" },
+    needsRevert: { type: "boolean", description: "Whether to revert changes (when status=failed)" },
+  },
+  required: [
+    "status",
+    "summary",
+    "question",
+    "missingCapabilities",
+    "reason",
+    "whatTried",
+    "errorType",
+    "suggestedNext",
+    "needsRevert",
   ],
+  additionalProperties: false,
 } as const;

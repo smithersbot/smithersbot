@@ -549,8 +549,9 @@ function buildCliArgs(params: {
   const allowedTools = buildAllowedToolsList(effective);
   const args = [
     "-p",
+    "--verbose",
     "--output-format",
-    "json",
+    "stream-json",
     "--allowedTools",
     allowedTools.join(","),
     "--append-system-prompt-file",
