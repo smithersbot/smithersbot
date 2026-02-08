@@ -121,6 +121,7 @@ export function registerGoalCommand(program: Command) {
     .option("--yes", "Auto-approve without prompting", false)
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--output <format>", "Output format: md, json (default: md)")
+    .option("--replan", "Retry planning phase if the run failed during planning", false)
     .action(async (runId, opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { goalResumeCommand } = await import("../../commands/goal-resume.js");
@@ -130,6 +131,7 @@ export function registerGoalCommand(program: Command) {
             yes: Boolean(opts.yes),
             json: Boolean(opts.json),
             output: opts.output as OutputFormat | undefined,
+            replan: Boolean(opts.replan),
           },
           defaultRuntime,
         );

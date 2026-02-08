@@ -82,6 +82,34 @@ export function createCheckpoint(cwd: string, runId: string, taskId: string): Gi
   return { sha: headResult.sha, branch: branchName, taskId, createdAt: new Date().toISOString() };
 }
 
+/** Auto-commit orphaned changes left by a crashed worker so the tree is clean for the next step. */
+export function commitOrphanedChanges(cwd: string, runId: string): GitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
+  if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
+  if (isWorkingTreeClean(cwd)) return { success: false, error: "Tree already clean" };
+  try {
+    execFileSync("git", ["-C", cwd, "add", "-A"], { encoding: "utf8", timeout: 10000 });
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "commit",
+        "-m",
+        `checkpoint: orphaned changes from crashed run ${runId.slice(0, 8)}`,
+      ],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    const sha = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+    return { success: true, sha };
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 export function resetToCheckpoint(cwd: string, checkpoint: GitCheckpoint): GitResult {
   if (!canRunGit()) return { success: false, error: "git not available" };
   if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };

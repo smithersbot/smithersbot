@@ -297,13 +297,15 @@ export async function handleGoalApprove(
       return `Run failed: ${outcome.error}`;
     }
 
-    // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
+    // Pre-execution blocks (e.g. dirty git tree) fire before onStatusChange
+    // has a chance to notify — always surface these to the user.
+    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
+      return `Run blocked: ${outcome.question ?? "Unknown reason"}`;
+    }
+
+    // When onStatusChange is wired, it already sent DAG PNGs for done/step events —
     // return undefined so callers don't send a stray message after the notifications.
     if (onStatusChange) return undefined;
-
-    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
-      return `Executing: ${prefix} (0/${stepCount}). I'll notify you if input is needed.`;
-    }
 
     return `Executing: ${prefix} (0/${stepCount}). I'll notify you if input is needed.`;
   } catch (err) {
@@ -392,11 +394,15 @@ export async function handleGoalAnswer(
       const errors = cap.getErrors();
       if (errors) return errors;
 
-      if (onStatusChange) return undefined;
-
       if (outcome?.status === "failed") {
         return `Run failed: ${outcome.error}`;
       }
+      if (outcome?.status === "blocked") {
+        return `Run blocked: ${outcome.question}`;
+      }
+
+      // onStatusChange already sent notifications for done/step-level events
+      if (onStatusChange) return undefined;
 
       return `Resuming interrupted run: ${prefix}...`;
     } catch (err) {

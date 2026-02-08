@@ -227,7 +227,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("test-run");
     });
 
-    it("returns short ack when execution is blocked (onStatusChange handles DAG)", async () => {
+    it("surfaces blocked outcome to user instead of swallowing it", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, _runtime: unknown) => {
@@ -237,10 +237,9 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
-      // Returns short ack string, not GoalPlanResult
       expect(typeof result).toBe("string");
-      expect(result).toContain("Executing:");
-      expect(result).toContain("notify you if input is needed");
+      expect(result).toContain("Run blocked:");
+      expect(result).toContain("Need credentials");
     });
 
     it("returns no-op for already done run", async () => {

@@ -22,6 +22,7 @@ import { createGoalTools, createTurnTracker, type TurnTracker } from "./goal-too
 import {
   createCheckpoint,
   isGitRepo,
+  commitOrphanedChanges,
   isWorkingTreeClean,
   resetToCheckpoint,
   type GitCheckpoint,
@@ -578,6 +579,24 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   if (!plan) throw new Error("No plan to execute");
 
   session.state = "executing";
+
+  // --- Auto-commit orphaned changes from a crashed previous execution ---
+  const isResume = session.stepResults.size > 0;
+  if (
+    isResume &&
+    gitCheckpointConfig?.enabled &&
+    isGitRepo(workingDir) &&
+    !isWorkingTreeClean(workingDir)
+  ) {
+    const commitResult = commitOrphanedChanges(workingDir, runId);
+    if (commitResult.success) {
+      onProgress?.(
+        `  [git] Auto-committed orphaned changes from crashed run (${commitResult.sha.slice(0, 7)})`,
+      );
+    } else {
+      onProgress?.(`  [git] Failed to auto-commit orphaned changes: ${commitResult.error}`);
+    }
+  }
 
   // --- Git dirty check: block immediately if working tree is dirty and checkpoints are enabled ---
   if (gitCheckpointConfig?.enabled && isGitRepo(workingDir) && !isWorkingTreeClean(workingDir)) {

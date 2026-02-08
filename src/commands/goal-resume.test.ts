@@ -44,11 +44,22 @@ vi.mock("../agents/model-auth.js", () => ({
 }));
 
 // Mock llm-client (not used in approval-flow tests but required by import)
+const mockLlmComplete = vi.fn();
 vi.mock("../goal/llm-client.js", () => ({
   createGoalLlmClient: () => ({
-    complete: vi.fn(),
+    complete: mockLlmComplete,
   }),
 }));
+
+// Mock planner
+const mockGeneratePlan = vi.fn();
+vi.mock("../goal/planner.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/planner.js")>();
+  return {
+    ...actual,
+    generatePlan: mockGeneratePlan,
+  };
+});
 
 // Mock the agent executor so resume tests don't need a real PI agent session
 vi.mock("../goal/agent-executor.js", () => ({
@@ -124,6 +135,8 @@ describe("goal-resume command", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-resume-test-"));
     vi.clearAllMocks();
+    // Reset generatePlan mock to default (no-op)
+    mockGeneratePlan.mockReset();
   });
 
   afterEach(() => {
@@ -259,7 +272,7 @@ describe("goal-resume command", () => {
     expect(run?.state).toBe("blocked");
   });
 
-  it("failed run without blocked details still errors", async () => {
+  it("failed run without blocked details suggests --replan", async () => {
     saveRun(
       makeRun({
         runId: "failed-json",
@@ -271,26 +284,29 @@ describe("goal-resume command", () => {
     const rt = mockRuntime();
     const result = await goalResumeCommand("failed-json", {}, rt);
     expect(result).toBeUndefined();
-    expect(rt.errors.join("\n")).toContain("Run failed:");
+    expect(rt.errors.join("\n")).toContain("failed during planning");
     expect(rt.errors.join("\n")).toContain("Planning error");
+    expect(rt.errors.join("\n")).toContain("--replan");
   });
 
-  it("refuses stale init state", async () => {
+  it("refuses stale init state without --replan", async () => {
     saveRun(makeRun({ runId: "init-run", state: "init" }));
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("init-run", {}, rt);
     expect(result).toBeUndefined();
-    expect(rt.errors).toContain("Run is in an incomplete state.");
+    expect(rt.errors.join("\n")).toContain("incomplete state");
+    expect(rt.errors.join("\n")).toContain("--replan");
   });
 
-  it("refuses stale planning state", async () => {
+  it("refuses stale planning state without --replan", async () => {
     saveRun(makeRun({ runId: "planning-run", state: "planning" }));
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("planning-run", {}, rt);
     expect(result).toBeUndefined();
-    expect(rt.errors).toContain("Run is in an incomplete state.");
+    expect(rt.errors.join("\n")).toContain("incomplete state");
+    expect(rt.errors.join("\n")).toContain("--replan");
   });
 
   it("done run in JSON mode outputs error JSON", async () => {
@@ -542,5 +558,282 @@ describe("goal-resume command", () => {
     expect(finalRun!.answers.some_key).toBe("the_answer");
     expect(finalRun!.blocked).toBeNull();
     fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  // --- Replan functionality tests ---
+
+  describe("--replan flag", () => {
+    it("retries planning for a run in 'planning' state", async () => {
+      // Mock generatePlan to succeed
+      mockGeneratePlan.mockResolvedValueOnce({
+        summary: "Replanned successfully",
+        steps: [
+          {
+            id: "replanned-step",
+            description: "A replanned task",
+            dependsOn: [],
+            durationMinutes: 30,
+            status: "pending",
+          },
+        ],
+        goal: "Original goal text",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "planning-stuck",
+          state: "planning",
+          goal: "Original goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("planning-stuck", { replan: true }, rt);
+
+      // Should not auto-execute, just transition to awaiting_approval
+      expect(result).toBeUndefined();
+      const persisted = loadRun("planning-stuck", testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.plan).toBeDefined();
+      expect(persisted?.plan?.summary).toBe("Replanned successfully");
+      expect(persisted?.plan?.steps).toHaveLength(1);
+      expect(rt.logs.join("\n")).toContain("Replanned successfully");
+    });
+
+    it("retries planning for a failed run with no plan", async () => {
+      mockGeneratePlan.mockResolvedValueOnce({
+        summary: "Recovery plan",
+        steps: [
+          {
+            id: "recovery-step",
+            description: "Recovered from failure",
+            dependsOn: [],
+            durationMinutes: 20,
+            status: "pending",
+          },
+        ],
+        goal: "Goal that failed during planning",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "failed-planning",
+          state: "failed",
+          goal: "Goal that failed during planning",
+          lastError: "Rate limit hit during planning",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand("failed-planning", { replan: true }, rt);
+
+      const persisted = loadRun("failed-planning", testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.lastError).toBeUndefined();
+      expect(persisted?.plan?.summary).toBe("Recovery plan");
+    });
+
+    it("suggests --replan when planning state encountered without flag", async () => {
+      saveRun(
+        makeRun({
+          runId: "planning-no-replan",
+          state: "planning",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("planning-no-replan", {}, rt);
+
+      expect(result).toBeUndefined();
+      expect(rt.errors.join("\n")).toContain("incomplete state");
+      expect(rt.errors.join("\n")).toContain("--replan");
+    });
+
+    it("suggests --replan when failed run with no plan encountered without flag", async () => {
+      saveRun(
+        makeRun({
+          runId: "failed-no-replan",
+          state: "failed",
+          lastError: "Network error during planning",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("failed-no-replan", {}, rt);
+
+      expect(result).toBeUndefined();
+      expect(rt.errors.join("\n")).toContain("failed during planning");
+      expect(rt.errors.join("\n")).toContain("--replan");
+    });
+
+    it("handles replanning that results in blocked/needs_clarification", async () => {
+      mockGeneratePlan.mockResolvedValueOnce({
+        blocked: true,
+        question: "Need more info about the database",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "replan-blocked",
+          state: "planning",
+          goal: "Complex goal needing clarification",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("replan-blocked", { replan: true }, rt);
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe("needs_clarification");
+      expect(result?.question).toBe("Need more info about the database");
+
+      const persisted = loadRun("replan-blocked", testGoalsDir);
+      expect(persisted?.state).toBe("needs_clarification");
+      expect(persisted?.blocked?.prompt).toBe("Need more info about the database");
+    });
+
+    it("persists error when replanning fails again", async () => {
+      mockGeneratePlan.mockRejectedValueOnce(new Error("Still rate limited"));
+
+      saveRun(
+        makeRun({
+          runId: "replan-fails",
+          state: "planning",
+          goal: "Goal that keeps failing",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("replan-fails", { replan: true }, rt);
+
+      expect(result).toBeUndefined();
+      expect(rt.errors.join("\n")).toContain("Planning failed");
+
+      const persisted = loadRun("replan-fails", testGoalsDir);
+      expect(persisted?.state).toBe("failed");
+      expect(persisted?.lastError).toContain("Still rate limited");
+    });
+
+    it("--replan works in JSON mode", async () => {
+      mockGeneratePlan.mockResolvedValueOnce({
+        summary: "JSON mode replan",
+        steps: [
+          {
+            id: "json-step",
+            description: "A step",
+            dependsOn: [],
+            durationMinutes: 15,
+            status: "pending",
+          },
+        ],
+        goal: "Goal for JSON mode test",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "replan-json",
+          state: "planning",
+          goal: "Goal for JSON mode test",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand("replan-json", { replan: true, json: true }, rt);
+
+      const raw = rt.logs.join("");
+      expect(raw.trimStart()[0]).toBe("{");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      expect(parsed.status).toBe("awaiting_approval");
+      expect(parsed.runId).toBe("replan-json");
+      expect(parsed.stepCount).toBe(1);
+
+      const persisted = loadRun("replan-json", testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.plan?.summary).toBe("JSON mode replan");
+    });
+
+    it("--replan in quiet mode suppresses output", async () => {
+      mockGeneratePlan.mockResolvedValueOnce({
+        summary: "Quiet replan",
+        steps: [
+          {
+            id: "quiet-step",
+            description: "Silently replanned",
+            dependsOn: [],
+            durationMinutes: 10,
+            status: "pending",
+          },
+        ],
+        goal: "Quiet mode goal",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "replan-quiet",
+          state: "failed",
+          goal: "Quiet mode goal",
+          lastError: "Previous planning failure",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand("replan-quiet", { replan: true, quiet: true }, rt);
+
+      // Quiet mode should suppress most output except critical info
+      expect(rt.logs.length).toBeLessThan(3);
+
+      const persisted = loadRun("replan-quiet", testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.plan?.summary).toBe("Quiet replan");
+    });
+
+    it("calls generatePlan when replanning", async () => {
+      const runId = "replan-check-call";
+
+      mockGeneratePlan.mockResolvedValueOnce({
+        summary: "Generated plan",
+        steps: [
+          {
+            id: "generated-step",
+            description: "A generated task",
+            dependsOn: [],
+            durationMinutes: 25,
+            status: "pending",
+          },
+        ],
+        goal: "Goal text",
+      });
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true }, rt);
+
+      // Verify generatePlan was called
+      expect(mockGeneratePlan).toHaveBeenCalled();
+      const callArgs = mockGeneratePlan.mock.calls[0];
+      // First arg is client, second is goal text, third is optional scoutData
+      expect(callArgs?.[0]).toBeDefined(); // Client
+      expect(callArgs?.[1]).toBe("Goal text"); // Goal
+
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.plan?.summary).toBe("Generated plan");
+    });
   });
 });

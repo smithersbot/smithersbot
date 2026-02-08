@@ -1,7 +1,11 @@
 import { confirm, isCancel } from "@clack/prompts";
 import { mkdirSync } from "node:fs";
+import path from "node:path";
+import fs from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
+import { createCliProgress } from "../cli/progress.js";
+import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatPlanOutput } from "../goal/format-output.js";
@@ -11,8 +15,12 @@ import {
   serializedToSession,
   sessionToSerialized,
   resolveRunId,
+  resolveRunDir,
 } from "../goal/run-store.js";
-import type { GoalOutcome, OutputFormat } from "../goal/types.js";
+import { createGoalLlmClient } from "../goal/llm-client.js";
+import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import { type ScoutResult } from "../goal/scout.js";
+import type { GoalOutcome, OutputFormat, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 export type GoalResumeOptions = {
@@ -20,6 +28,7 @@ export type GoalResumeOptions = {
   json?: boolean;
   output?: OutputFormat;
   quiet?: boolean;
+  replan?: boolean;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
 };
 
@@ -27,6 +36,175 @@ export type GoalResumeOptions = {
 function resolveIsJson(opts: GoalResumeOptions): boolean {
   if (opts.output) return opts.output === "json";
   return Boolean(opts.json);
+}
+
+/** Load scout data from a previous run if it exists and was successful. */
+function loadScoutData(runId: string): ScoutResult | undefined {
+  try {
+    const runDir = resolveRunDir(runId);
+    const scoutReportPath = path.join(runDir, "scout", "report.json");
+    const scoutPlanPath = path.join(runDir, "scout", "plan.md");
+
+    if (!fs.existsSync(scoutReportPath) || !fs.existsSync(scoutPlanPath)) {
+      return undefined;
+    }
+
+    const report = JSON.parse(fs.readFileSync(scoutReportPath, "utf8"));
+    const planDraft = fs.readFileSync(scoutPlanPath, "utf8");
+
+    return {
+      status: "success",
+      report,
+      planDraft,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Retry planning phase for a run that failed during planning.
+ * Reuses the original goal text and scout data (if available).
+ */
+async function retryPlanning(
+  run: SerializedRun,
+  opts: GoalResumeOptions,
+  runtime: RuntimeEnv,
+): Promise<GoalOutcome | undefined> {
+  const isJson = resolveIsJson(opts);
+  const quiet = Boolean(opts.quiet);
+
+  // Reconstruct in-memory session
+  const session = serializedToSession(run);
+
+  // Reset state to planning
+  session.state = "planning";
+  session.lastError = undefined;
+  run.state = "planning";
+  run.updatedAt = new Date().toISOString();
+  saveRun(run);
+
+  try {
+    // Resolve API key
+    const authResult = resolveEnvApiKey("anthropic");
+    if (!authResult) {
+      throw new Error(
+        "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
+      );
+    }
+
+    const client = createGoalLlmClient({
+      apiKey: authResult.apiKey,
+      modelOverride: run.model,
+    });
+
+    // Try to load scout data from previous run
+    const scoutData = loadScoutData(run.runId);
+
+    if (!isJson && !quiet) {
+      if (scoutData) {
+        runtime.log("Replanning with cached scout data...");
+      } else {
+        runtime.log("Replanning (no scout data available)...");
+      }
+    }
+
+    // Generate plan
+    let planResult;
+    {
+      const progress = createCliProgress({
+        label: "Generating plan...",
+        indeterminate: true,
+        enabled: !isJson && !quiet,
+      });
+      try {
+        planResult = await generatePlan(client, session.goal, scoutData);
+      } finally {
+        progress.done();
+      }
+    }
+
+    // Handle blocked-at-planning (pre-plan clarification)
+    if ("blocked" in planResult) {
+      session.state = "needs_clarification";
+      session.blocked = {
+        prompt: planResult.question,
+        requiredInputKey: "step:planning:input",
+      };
+      run.state = "needs_clarification";
+      run.blocked = session.blocked;
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+
+      const outcome: GoalOutcome = {
+        status: "needs_clarification",
+        question: planResult.question,
+        requiredInputKey: "step:planning:input",
+      };
+      if (isJson) {
+        runtime.log(JSON.stringify(outcome, null, 2));
+      } else if (!quiet) {
+        runtime.log(`\nCLARIFICATION NEEDED: ${planResult.question}`);
+      }
+      return outcome;
+    }
+
+    // Success! Update session with plan
+    session.plan = planResult;
+    session.state = "awaiting_approval";
+    run.plan = planResult;
+    run.state = "awaiting_approval";
+    run.lastError = undefined;
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+
+    // Display plan
+    if (!isJson && !quiet) {
+      runtime.log("\n");
+      runtime.log(formatPlanOutput(planResult, { diagram: "both", format: "md" }));
+      runtime.log("");
+      runtime.log(
+        `Plan generated successfully. Use 'moltbot goal resume ${run.runId}' to approve and execute.`,
+      );
+    }
+
+    if (isJson) {
+      runtime.log(
+        JSON.stringify(
+          {
+            status: "awaiting_approval",
+            runId: run.runId,
+            stepCount: planResult.steps.length,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    return undefined; // Don't proceed to execution, let user approve with another resume call
+  } catch (err) {
+    // Planning failed again - persist error
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    session.lastError = errorMsg;
+    session.state = "failed";
+    run.lastError = errorMsg;
+    run.state = "failed";
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+
+    // Persist raw LLM response for post-mortem when JSON parsing fails
+    if (err instanceof PlanParseError) {
+      persistRawPlanResponse(run.runId, err.rawResponse);
+    }
+
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: errorMsg, runId: run.runId }));
+      throw new JsonExitError(1);
+    }
+    runtime.error(`Planning failed: ${errorMsg}`);
+    return undefined;
+  }
 }
 
 export async function goalResumeCommand(
@@ -76,12 +254,26 @@ export async function goalResumeCommand(
       run.updatedAt = new Date().toISOString();
       saveRun(run);
     } else {
-      if (isJson) {
-        runtime.log(JSON.stringify({ error: "Run failed.", lastError: run.lastError ?? null }));
-        throw new JsonExitError(1);
+      // Failed with no plan means planning failed - can be retried with --replan
+      if (!opts.replan) {
+        if (isJson) {
+          runtime.log(
+            JSON.stringify({
+              error:
+                "Run failed during planning. Use --replan to retry planning from the original goal.",
+              lastError: run.lastError ?? null,
+            }),
+          );
+          throw new JsonExitError(1);
+        }
+        runtime.error(
+          `Run failed during planning: ${run.lastError ?? "Unknown error"}. Use --replan to retry.`,
+        );
+        return undefined;
       }
-      runtime.error(`Run failed: ${run.lastError ?? "Unknown error"}`);
-      return undefined;
+
+      // --replan flag: retry the planning phase
+      return await retryPlanning(run, opts, runtime);
     }
   }
 
@@ -110,14 +302,26 @@ export async function goalResumeCommand(
     } as GoalOutcome;
   }
 
-  // Stale/incomplete states
+  // Stale/incomplete states - but can be recovered with --replan
   if (run.state === "init" || run.state === "planning") {
-    if (isJson) {
-      runtime.log(JSON.stringify({ error: "Run is in an incomplete state." }));
-      throw new JsonExitError(1);
+    if (!opts.replan) {
+      if (isJson) {
+        runtime.log(
+          JSON.stringify({
+            error:
+              "Run is in an incomplete state. Use --replan to retry planning from the original goal.",
+          }),
+        );
+        throw new JsonExitError(1);
+      }
+      runtime.error(
+        "Run is in an incomplete state. Use --replan to retry planning from the original goal.",
+      );
+      return undefined;
     }
-    runtime.error("Run is in an incomplete state.");
-    return undefined;
+
+    // --replan flag: retry the planning phase
+    return await retryPlanning(run, opts, runtime);
   }
 
   // Resumable: awaiting_approval, rejected, cancelled, executing

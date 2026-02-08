@@ -23,6 +23,7 @@ vi.mock("../agents/model-auth.js", () => ({
 
 // Mock run-store
 vi.mock("./run-store.js", () => ({
+  resolveRunDir: vi.fn((_runId: string) => "/tmp/mock-run"),
   resolveAgentSessionFile: vi.fn(() => "/tmp/mock-session.jsonl"),
   resolveAgentTaskSessionFile: vi.fn(
     (_runId: string, taskId: string) => `/tmp/mock-sessions/${taskId}.jsonl`,
@@ -45,6 +46,7 @@ vi.mock("node:fs", async () => {
       ...actual,
       existsSync: vi.fn(() => true),
       mkdirSync: vi.fn(),
+      writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => {
         throw new Error("ENOENT");
       }),
@@ -88,6 +90,7 @@ vi.mock("./git-checkpoint.js", () => ({
   isWorkingTreeClean: vi.fn(() => true),
   createCheckpoint: vi.fn(() => null),
   resetToCheckpoint: vi.fn(() => ({ success: true, sha: "abc1234" })),
+  commitOrphanedChanges: vi.fn(() => ({ success: false, error: "Tree already clean" })),
 }));
 
 // Mock the PI coding agent SDK
