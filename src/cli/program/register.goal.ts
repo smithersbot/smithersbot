@@ -19,6 +19,7 @@ export function registerGoalCommand(program: Command) {
     .option("--no-git-checkpoints", "Disable git checkpoints during execution")
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--dry-run", "Generate and display plan without executing", false)
+    .option("--scout-timeout <minutes>", "Scout timeout in minutes (default: 20)")
     .option(
       "--diagram <mode>",
       "Diagram format: none, ascii, mermaid, both (default: both for md, none for json)",
@@ -53,6 +54,14 @@ export function registerGoalCommand(program: Command) {
       }
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { goalCommand } = await import("../../commands/goal.js");
+        const scoutTimeoutMinutes = opts.scoutTimeout
+          ? Number.parseFloat(String(opts.scoutTimeout))
+          : undefined;
+        const scoutTimeoutMs =
+          scoutTimeoutMinutes && Number.isFinite(scoutTimeoutMinutes)
+            ? scoutTimeoutMinutes * 60_000
+            : undefined;
+
         await goalCommand(
           {
             goal: String(goalText),
@@ -62,6 +71,7 @@ export function registerGoalCommand(program: Command) {
             noGitCheckpoints: opts.gitCheckpoints === false,
             json: Boolean(opts.json),
             dryRun: Boolean(opts.dryRun),
+            scoutTimeoutMs,
             diagram: opts.diagram as DiagramMode | undefined,
             output: opts.output as OutputFormat | undefined,
             backend: opts.backend as GoalBackendId | undefined,

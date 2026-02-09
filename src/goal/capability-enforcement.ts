@@ -20,9 +20,13 @@ import { isRepoPrivate } from "./git-privacy.js";
 // Denial result builder
 // ---------------------------------------------------------------------------
 
+function formatDeniedMessage(reason: string): string {
+  return `Denied: ${reason}. This action is not permitted. Try a different approach.`;
+}
+
 function deniedResult(reason: string) {
   return {
-    content: [{ type: "text" as const, text: `DENIED: ${reason}` }],
+    content: [{ type: "text" as const, text: formatDeniedMessage(reason) }],
     details: {},
   };
 }
@@ -67,7 +71,7 @@ export function createEnforcedBashOperations(
           reason: hardDeny.reason,
           hardDeny: true,
         });
-        options.onData(Buffer.from(`DENIED: ${hardDeny.reason}\n`));
+        options.onData(Buffer.from(`${formatDeniedMessage(hardDeny.reason)}\n`));
         return { exitCode: 126 };
       }
 
@@ -81,7 +85,11 @@ export function createEnforcedBashOperations(
             hardDeny: false,
             missingCapabilityId: "network.read_only",
           });
-          options.onData(Buffer.from(`DENIED: ${firstToken} requires network capability grant\n`));
+          options.onData(
+            Buffer.from(
+              `${formatDeniedMessage(`${firstToken} requires network capability grant`)}\n`,
+            ),
+          );
           return { exitCode: 126 };
         }
         // network.read_only is granted — allow through
@@ -98,7 +106,9 @@ export function createEnforcedBashOperations(
           hardDeny: false,
           missingCapabilityId: missingId,
         });
-        options.onData(Buffer.from(`DENIED: Command not allowed: ${firstToken}\n`));
+        options.onData(
+          Buffer.from(`${formatDeniedMessage(`Command not allowed: ${firstToken}`)}\n`),
+        );
         return { exitCode: 126 };
       }
 
@@ -112,7 +122,11 @@ export function createEnforcedBashOperations(
             hardDeny: false,
             missingCapabilityId: "git.push_private",
           });
-          options.onData(Buffer.from("DENIED: git push requires git.push_private capability\n"));
+          options.onData(
+            Buffer.from(
+              `${formatDeniedMessage("git push requires git.push_private capability")}\n`,
+            ),
+          );
           return { exitCode: 126 };
         }
         if (!isRepoPrivate(workingDir)) {
@@ -122,7 +136,9 @@ export function createEnforcedBashOperations(
             reason: "git push denied: repository is not private",
             hardDeny: false,
           });
-          options.onData(Buffer.from("DENIED: git push denied: repository is not private\n"));
+          options.onData(
+            Buffer.from(`${formatDeniedMessage("git push denied: repository is not private")}\n`),
+          );
           return { exitCode: 126 };
         }
       }

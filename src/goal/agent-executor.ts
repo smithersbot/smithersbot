@@ -42,6 +42,13 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, resolveBackendForStep } from "./backend-router.js";
 import { executeTaskWithCliWorker } from "./cli-worker.js";
+import {
+  collectGitDiffSummary,
+  loadAttemptBundleText,
+  resolveWorkerDir,
+  writeAttemptBundle,
+  type AttemptOutcome,
+} from "./attempt-bundle.js";
 import type {
   GitCheckpointConfig,
   GoalOutcome,
@@ -260,33 +267,6 @@ function autoGenerateWorkingNotes(
   }
 }
 
-/** Append retry context to working notes when an attempt fails with a retryable error. */
-function appendRetryContext(
-  runId: string,
-  stepId: string,
-  attempt: number,
-  reason: string,
-  detail: string,
-): void {
-  try {
-    const filePath = resolveWorkingFile(runId, stepId);
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    const content = [
-      `\n## Attempt #${attempt} FAILED (${new Date().toISOString()})\n`,
-      `**Reason:** ${reason}`,
-      `**Detail:** ${detail}`,
-      ``,
-      `DO NOT repeat the same approach. Try a different strategy.`,
-      `StrategyChange: <describe what will be different>`,
-    ].join("\n");
-    fs.appendFileSync(filePath, content + "\n", "utf8");
-  } catch {
-    // Best-effort
-  }
-}
-
 /** Build the goal-level system prompt, optionally including completed task summaries. */
 function buildGoalSystemPrompt(
   goal: string,
@@ -364,7 +344,7 @@ function buildGoalSystemPrompt(
 function buildFirstTaskPrompt(
   task: PlanStep,
   totalTasks: number,
-  opts?: { nodeSpec?: string | null; workingNotes?: string | null },
+  opts?: { nodeSpec?: string | null; workingNotes?: string | null; priorAttempt?: string | null },
 ): string {
   const lines: string[] = [];
   lines.push(`Work on this task: ${task.description}`);
@@ -384,6 +364,13 @@ function buildFirstTaskPrompt(
     lines.push(opts.workingNotes);
     lines.push("");
     lines.push("Do NOT repeat approaches that already failed.");
+  }
+  if (opts?.priorAttempt) {
+    lines.push("");
+    lines.push("PREVIOUS ATTEMPT FAILED:");
+    lines.push(opts.priorAttempt);
+    lines.push("");
+    lines.push("Try a different approach. Do not repeat what failed.");
   }
   lines.push("");
   lines.push(
@@ -414,7 +401,7 @@ function buildResumeTaskPrompt(
   totalTasks: number,
   answer: string,
   question?: string,
-  opts?: { nodeSpec?: string | null; workingNotes?: string | null },
+  opts?: { nodeSpec?: string | null; workingNotes?: string | null; priorAttempt?: string | null },
 ): string {
   const lines: string[] = [];
   lines.push(`Continue working on this task: ${task.description}`);
@@ -432,6 +419,13 @@ function buildResumeTaskPrompt(
     lines.push("");
     lines.push("Do NOT repeat approaches that already failed.");
   }
+  if (opts?.priorAttempt) {
+    lines.push("");
+    lines.push("PREVIOUS ATTEMPT FAILED:");
+    lines.push(opts.priorAttempt);
+    lines.push("");
+    lines.push("Try a different approach. Do not repeat what failed.");
+  }
   lines.push("");
   lines.push(`You previously asked the user: ${question ?? "a question"}`);
   lines.push(`The user answered: ${answer}`);
@@ -445,6 +439,38 @@ function buildResumeTaskPrompt(
     "If you are stuck and need information from the user, call request_user_input with your question.",
   );
   return lines.join("\n");
+}
+
+function classifyAttemptOutcome(task: PlanStep): AttemptOutcome {
+  if (task.status === "done") return "complete";
+  if (task.status === "blocked") {
+    if (task.blockedReason === "timeout") return "timeout";
+    if (task.blockedReason === "task_failed") return "failed";
+    return "blocked";
+  }
+  return "failed";
+}
+
+function classifyAttemptError(task: PlanStep): string | undefined {
+  if (task.status !== "blocked") return undefined;
+  if (task.blockedReason === "task_failed") {
+    return task.failedDetail?.errorType ?? "task_failed";
+  }
+  return task.blockedReason ?? "other";
+}
+
+function mapWorkerErrorTypeToBlockedReason(errorType: string): PlanStep["blockedReason"] {
+  const normalized = errorType.toLowerCase();
+  if (normalized === "timeout") return "timeout";
+  if (normalized === "rate_limit") return "rate_limit";
+  if (normalized === "out_of_credits") return "out_of_credits";
+  if (normalized === "auth") return "auth";
+  if (normalized === "network") return "network";
+  if (normalized === "missing_result") return "error";
+  if (normalized === "invalid_result") return "error";
+  if (normalized === "process_error") return "error";
+  if (normalized === "unknown") return "error";
+  return "task_failed";
 }
 
 /** Check if a blocked task has a matching answer in the session. */
@@ -730,6 +756,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const turnTracker = createTurnTracker();
       goalTools.reset();
       goalTools.setTurnTracker(turnTracker);
+      const attemptStartMs = Date.now();
+      const workerDir = resolveWorkerDir(runId, task.id);
+      const priorAttempt = attempt > 1 ? loadAttemptBundleText(workerDir, attempt - 1) : null;
+      const attemptToolCalls = new Set<string>();
 
       if (attempt > 1) {
         task.turnsUsed = 0;
@@ -786,13 +816,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           workingDir,
           runId,
           effective,
-          policy,
-          maxTurnsPerTask,
           model: params.model,
           completedSummaries,
           onProgress,
           resumeAnswer,
           resumeQuestion,
+          attemptNumber: attempt,
+          previousAttempt: priorAttempt,
         });
 
         task.turnsUsed = cliResult.turnsUsed;
@@ -812,7 +842,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             onProgress?.(`  [blocked] ${out.question}`);
           } else if (out.status === "failed") {
             task.status = "blocked";
-            task.blockedReason = "task_failed";
+            task.blockedReason = mapWorkerErrorTypeToBlockedReason(out.errorType);
             task.blockedQuestion = out.reason;
             task.failedDetail = {
               whatTried: out.whatTried,
@@ -823,23 +853,16 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             onProgress?.(`  [failed] ${out.reason}`);
           }
         } else {
-          // No structured output → treat as turn_limit
+          // No valid output (should be rare with artifact protocol)
           task.status = "blocked";
-          task.blockedReason = "turn_limit";
-          task.blockedQuestion = `CLI worker did not produce structured output within ${maxTurnsPerTask} turns.`;
-          onProgress?.(`  [blocked] No structured output from CLI worker`);
+          task.blockedReason = "error";
+          task.blockedQuestion = "CLI worker did not produce a valid result artifact.";
+          onProgress?.(`  [blocked] No valid result artifact from CLI worker`);
         }
 
         // Check retry eligibility (same as PI path)
         if (task.status === "blocked" && isRetryable(task.blockedReason)) {
           if (attempt < maxAttempts) {
-            appendRetryContext(
-              runId,
-              task.id,
-              attempt,
-              task.blockedReason!,
-              task.blockedQuestion ?? "Unknown",
-            );
             continue;
           }
         }
@@ -945,6 +968,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               ? {
                   nodeSpec: loadNodeSpec(runId, task.id),
                   workingNotes: loadWorkingNotes(runId, task.id),
+                  priorAttempt,
                 }
               : undefined;
           const prompt =
@@ -986,6 +1010,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
           turnsUsed++;
           task.turnsUsed = turnsUsed;
+          for (const tool of turnTracker.toolCalls) {
+            attemptToolCalls.add(tool);
+          }
 
           // Auto-generate working notes if agent didn't write any and task isn't completing
           const taskCompleting = turnTracker.toolCalls.includes("mark_task_complete");
@@ -1045,16 +1072,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           }
 
           // --- Capability denial handling ---
-          // Hard deny → immediate block
-          const hardDenyAction = deniedActions.find((d) => d.hardDeny);
-          if (hardDenyAction) {
-            task.status = "blocked";
-            task.blockedReason = "capability_denied";
-            task.blockedQuestion = `Hard deny: ${hardDenyAction.reason}`;
-            onProgress?.(`  [capability] Hard deny: ${hardDenyAction.reason}`);
-            break;
-          }
-
           // Missing capabilities → batch and block
           const missingCaps = deniedActions.filter((d) => !d.hardDeny && d.missingCapabilityId);
           if (missingCaps.length > 0 && !goalTools.getSignal()) {
@@ -1084,16 +1101,22 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         piSession.dispose();
       }
 
+      const attemptDurationMs = Date.now() - attemptStartMs;
+      const { diffstat, changedFiles } = collectGitDiffSummary(workingDir);
+      writeAttemptBundle(workerDir, {
+        attemptNumber: attempt,
+        backend: "pi",
+        outcome: classifyAttemptOutcome(task),
+        errorClassification: classifyAttemptError(task),
+        diffstat,
+        changedFiles,
+        durationMs: attemptDurationMs,
+        toolCalls: [...attemptToolCalls],
+      });
+
       // Check if should retry
       if (task.status === "blocked" && isRetryable(task.blockedReason)) {
         if (attempt < maxAttempts) {
-          appendRetryContext(
-            runId,
-            task.id,
-            attempt,
-            task.blockedReason!,
-            task.blockedQuestion ?? "Unknown",
-          );
           continue;
         }
       }

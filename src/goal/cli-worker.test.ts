@@ -1,34 +1,18 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { CapabilityPolicy, EffectiveCapabilities } from "./capability-types.js";
+import type { EffectiveCapabilities } from "./capability-types.js";
 import type { PlanStep, Plan } from "./types.js";
 import {
   buildAllowedToolsList,
   buildCliWorkerPrompt,
-  parseStructuredOutput,
-  postCheckForHardDenyEvidence,
+  parseCodexSchemaOutput,
+  readWorkerResultFile,
   validateWorkerOutput,
   writeWorkerSchema,
   writeCapsFile,
 } from "./cli-worker.js";
-
-// Mock fs + run-store for artifacts
-vi.mock("node:fs", async () => {
-  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-  return {
-    ...actual,
-    default: {
-      ...actual,
-      existsSync: vi.fn(() => true),
-      mkdirSync: vi.fn(),
-      writeFileSync: vi.fn(),
-      appendFileSync: vi.fn(),
-    },
-  };
-});
-
-vi.mock("./run-store.js", () => ({
-  resolveRunDir: vi.fn(() => "/tmp/mock-run"),
-}));
 
 vi.mock("./planner.js", () => ({
   formatPlanAsContext: vi.fn(() => "- Task step-1: Do something"),
@@ -65,70 +49,64 @@ function makeEffective(
   };
 }
 
-function makePolicy(): CapabilityPolicy {
-  return {
-    baseline: [],
-    hardDenies: [
-      {
-        id: "secrets.read",
-        pattern: "**/.env*",
-        reason: "Reading secrets files (.env) is not allowed",
-      },
-      { id: "exec.sudo", pattern: "sudo *", reason: "sudo is not allowed" },
-      { id: "git.force_push", pattern: "git push --force", reason: "Force push not allowed" },
-    ],
-    expandableIds: [],
-  };
-}
-
 describe("cli-worker", () => {
-  describe("parseStructuredOutput", () => {
-    it("parses valid complete JSON from codex output", () => {
-      const stdout = 'Some log output\n{"status":"complete","summary":"Done implementing"}';
-      const result = parseStructuredOutput(stdout, "codex");
-      expect(result).toEqual({ status: "complete", summary: "Done implementing" });
-    });
-
-    it("parses valid blocked JSON", () => {
-      const stdout = '{"status":"blocked","question":"What API endpoint?"}';
-      const result = parseStructuredOutput(stdout, "codex");
-      expect(result).toEqual({ status: "blocked", question: "What API endpoint?" });
-    });
-
-    it("parses valid failed JSON", () => {
-      const stdout = JSON.stringify({
-        status: "failed",
-        reason: "Tests failing",
-        whatTried: "Fixed imports",
-        errorType: "test_failure",
-        suggestedNext: "Check deps",
-        needsRevert: false,
-      });
-      const result = parseStructuredOutput(stdout, "codex");
-      expect(result?.status).toBe("failed");
+  describe("parseCodexSchemaOutput", () => {
+    it("parses a valid JSON object", () => {
+      const stdout = '{"status":"complete","summary":"Done"}';
+      const result = parseCodexSchemaOutput(stdout);
+      expect(result).toEqual({ status: "complete", summary: "Done" });
     });
 
     it("returns null for empty output", () => {
-      expect(parseStructuredOutput("", "codex")).toBeNull();
-      expect(parseStructuredOutput("   ", "codex")).toBeNull();
+      expect(parseCodexSchemaOutput("")).toBeNull();
+      expect(parseCodexSchemaOutput("   ")).toBeNull();
     });
 
-    it("returns null for non-JSON output", () => {
-      expect(parseStructuredOutput("Just some text output", "codex")).toBeNull();
+    it("returns null for invalid JSON", () => {
+      expect(parseCodexSchemaOutput("not json")).toBeNull();
+    });
+  });
+
+  describe("readWorkerResultFile", () => {
+    it("reads valid result file", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(
+        resultPath,
+        JSON.stringify({ status: "complete", summary: "All set" }),
+        "utf8",
+      );
+
+      const result = readWorkerResultFile(dir);
+      expect(result.output).toEqual({ status: "complete", summary: "All set" });
+      expect(result.error).toBeUndefined();
     });
 
-    it("extracts JSON from Claude Code wrapper", () => {
-      const wrapper = JSON.stringify({
-        result: 'Here is the result:\n{"status":"complete","summary":"All done"}',
-      });
-      const result = parseStructuredOutput(wrapper, "claude_code");
-      expect(result).toEqual({ status: "complete", summary: "All done" });
+    it("reports invalid JSON", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(resultPath, "{not json", "utf8");
+
+      const result = readWorkerResultFile(dir);
+      expect(result.output).toBeNull();
+      expect(result.error?.kind).toBe("invalid_json");
     });
 
-    it("handles Claude Code direct status object", () => {
-      const stdout = JSON.stringify({ status: "complete", summary: "Done" });
-      const result = parseStructuredOutput(stdout, "claude_code");
-      expect(result).toEqual({ status: "complete", summary: "Done" });
+    it("reports schema mismatch", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(resultPath, JSON.stringify({ status: "complete" }), "utf8");
+
+      const result = readWorkerResultFile(dir);
+      expect(result.output).toBeNull();
+      expect(result.error?.kind).toBe("invalid_schema");
+    });
+
+    it("reports missing file", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
+      const result = readWorkerResultFile(dir);
+      expect(result.output).toBeNull();
+      expect(result.error?.kind).toBe("missing");
     });
   });
 
@@ -248,62 +226,6 @@ describe("cli-worker", () => {
     });
   });
 
-  describe("postCheckForHardDenyEvidence", () => {
-    const policy = makePolicy();
-
-    it("detects DENIED marker for .env access", () => {
-      const matches = postCheckForHardDenyEvidence(
-        "DENIED: Reading secrets files (.env) is not allowed",
-        "",
-        policy,
-      );
-      expect(matches.length).toBeGreaterThan(0);
-      expect(matches[0]!.id).toBe("secrets.read");
-    });
-
-    it("detects DENIED marker for sudo", () => {
-      const matches = postCheckForHardDenyEvidence("", "DENIED: sudo is not allowed", policy);
-      expect(matches.length).toBeGreaterThan(0);
-      expect(matches.some((m) => m.id === "exec.sudo")).toBe(true);
-    });
-
-    it("detects DENIED marker for force push", () => {
-      const matches = postCheckForHardDenyEvidence("DENIED: Force push not allowed", "", policy);
-      expect(matches.some((m) => m.id === "git.force_push")).toBe(true);
-    });
-
-    it("returns empty for clean output", () => {
-      const matches = postCheckForHardDenyEvidence(
-        "pnpm test passed\nAll 42 tests pass",
-        "",
-        policy,
-      );
-      expect(matches).toHaveLength(0);
-    });
-
-    it("does not false-positive on English text mentioning deny patterns", () => {
-      // Agent writing documentation about security should not trigger matches
-      const text =
-        "The system blocks sudo commands, reading .env files, and force push. " +
-        "Once the analysis is complete, since the instance was created, " +
-        "we can conclude that deploy commands are also denied.";
-      const matches = postCheckForHardDenyEvidence(text, "", policy);
-      expect(matches).toHaveLength(0);
-    });
-
-    it("does not false-positive on capability bounds listing in prompt", () => {
-      // The CLI worker prompt itself lists deny reasons; agent echoing those isn't evidence
-      const text = [
-        "HARD DENIES (never do these):",
-        "- secrets.read: Reading secrets files (.env) is not allowed",
-        "- exec.sudo: sudo is not allowed",
-        "- deploy.generic: Deploy commands are not allowed",
-      ].join("\n");
-      const matches = postCheckForHardDenyEvidence(text, "", policy);
-      expect(matches).toHaveLength(0);
-    });
-  });
-
   describe("buildCliWorkerPrompt", () => {
     it("includes goal and task description", () => {
       const prompt = buildCliWorkerPrompt({
@@ -311,6 +233,7 @@ describe("cli-worker", () => {
         plan: makePlan(),
         goal: "Build auth system",
         effective: makeEffective(),
+        resultPath: "/tmp/worker/worker_result.json",
       });
       expect(prompt).toContain("Build auth system");
       expect(prompt).toContain("Implement auth module");
@@ -323,6 +246,7 @@ describe("cli-worker", () => {
         goal: "Build auth",
         effective: makeEffective(),
         completedSummaries: [{ id: "step-0", summary: "Set up project" }],
+        resultPath: "/tmp/worker/worker_result.json",
       });
       expect(prompt).toContain("step-0: Set up project");
     });
@@ -333,38 +257,41 @@ describe("cli-worker", () => {
         plan: makePlan(),
         goal: "Build auth",
         effective: makeEffective(),
+        resultPath: "/tmp/worker/worker_result.json",
       });
       expect(prompt).toContain("CAPABILITY BOUNDS");
       expect(prompt).toContain("HARD DENIES");
     });
 
-    it("includes output format instructions", () => {
+    it("includes result protocol instructions", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep(),
         plan: makePlan(),
         goal: "Build auth",
         effective: makeEffective(),
+        resultPath: "/tmp/worker/worker_result.json",
       });
-      expect(prompt).toContain("OUTPUT FORMAT");
+      expect(prompt).toContain("RESULT PROTOCOL");
+      expect(prompt).toContain("/tmp/worker/worker_result.json");
       expect(prompt).toContain('"status": "complete"');
     });
   });
 
   describe("writeWorkerSchema", () => {
-    it("writes schema file and returns path", async () => {
-      const fs = vi.mocked(await import("node:fs")).default;
-      const result = writeWorkerSchema("/tmp/worker");
-      expect(result).toBe("/tmp/worker/output-schema.json");
-      expect(fs.writeFileSync).toHaveBeenCalled();
+    it("writes schema file and returns path", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-schema-"));
+      const result = writeWorkerSchema(dir);
+      expect(result).toBe(path.join(dir, "output-schema.json"));
+      expect(fs.existsSync(result)).toBe(true);
     });
   });
 
   describe("writeCapsFile", () => {
-    it("writes caps file and returns path", async () => {
-      const fs = vi.mocked(await import("node:fs")).default;
-      const result = writeCapsFile(makeEffective(), "/tmp/worker");
-      expect(result).toBe("/tmp/worker/capability-bounds.txt");
-      expect(fs.writeFileSync).toHaveBeenCalled();
+    it("writes caps file and returns path", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-caps-"));
+      const result = writeCapsFile(makeEffective(), dir);
+      expect(result).toBe(path.join(dir, "capability-bounds.txt"));
+      expect(fs.existsSync(result)).toBe(true);
     });
   });
 });

@@ -2,20 +2,26 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import { GOAL_WORKER_OUTPUT_SCHEMA as SCHEMA } from "./backend-types.js";
-import type { CapabilityPolicy, EffectiveCapabilities, HardDeny } from "./capability-types.js";
+import type { EffectiveCapabilities } from "./capability-types.js";
 import type { PlanStep, Plan } from "./types.js";
-import { resolveRunDir } from "./run-store.js";
 import { formatPlanAsContext } from "./planner.js";
+import {
+  collectGitDiffSummary,
+  resolveWorkerDir,
+  tailText,
+  writeAttemptBundle,
+  type AttemptOutcome,
+} from "./attempt-bundle.js";
+import { runCliProcess } from "./cli-process.js";
 
 // --- Constants ---
 
-const HANG_TIMEOUT_MS = 120_000; // 120s no-output → kill
-const SIGTERM_GRACE_MS = 5_000;
-const MAX_TURNS_DEFAULT = 3;
-const CLI_TIMEOUT_MS = 600_000; // 10 min per invocation
+const WORKER_RESULT_FILENAME = "worker_result.json";
+const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
+const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
+const LOG_EXCERPT_CHARS = 2048;
 
 // --- Public API ---
 
@@ -27,8 +33,6 @@ export type CliWorkerParams = {
   workingDir: string;
   runId: string;
   effective: EffectiveCapabilities;
-  policy: CapabilityPolicy;
-  maxTurnsPerTask?: number;
   model?: string;
   completedSummaries?: Array<{ id: string; summary: string }>;
   onProgress?: (text: string) => void;
@@ -36,13 +40,17 @@ export type CliWorkerParams = {
   resumeAnswer?: string;
   /** The question the step asked before blocking. */
   resumeQuestion?: string;
+  /** Attempt number for retries. */
+  attemptNumber?: number;
+  /** Prior attempt bundle for retry context. */
+  previousAttempt?: string | null;
 };
 
 /**
  * Execute a goal step using a CLI worker (Codex or Claude Code).
  *
- * Runs up to maxTurnsPerTask invocations. Each invocation = 1 turn.
- * Returns structured output or null if the worker didn't produce conforming JSON.
+ * Single invocation per attempt. Returns structured output, or a synthetic
+ * failure when no valid result artifact exists.
  */
 export async function executeTaskWithCliWorker(
   params: CliWorkerParams,
@@ -55,116 +63,159 @@ export async function executeTaskWithCliWorker(
     workingDir,
     runId,
     effective,
-    policy,
-    maxTurnsPerTask = MAX_TURNS_DEFAULT,
     model,
     completedSummaries,
     onProgress,
     resumeAnswer,
     resumeQuestion,
+    attemptNumber = 1,
+    previousAttempt,
   } = params;
 
   const workerDir = resolveWorkerDir(runId, step.id);
   fs.mkdirSync(workerDir, { recursive: true });
 
-  let lastStdout = "";
-  let lastStderr = "";
+  const resultPath = path.join(workerDir, WORKER_RESULT_FILENAME);
 
-  for (let turn = 1; turn <= maxTurnsPerTask; turn++) {
-    onProgress?.(`  [cli-worker:${backend}] turn ${turn}/${maxTurnsPerTask}`);
+  const prompt = buildCliWorkerPrompt({
+    step,
+    plan,
+    goal,
+    effective,
+    completedSummaries,
+    resumeAnswer,
+    resumeQuestion,
+    resultPath,
+    previousAttempt,
+  });
 
-    const prompt =
-      turn === 1
-        ? buildCliWorkerPrompt({
-            step,
-            plan,
-            goal,
-            effective,
-            completedSummaries,
-            resumeAnswer,
-            resumeQuestion,
-          })
-        : buildContinueWorkerPrompt(step, turn, maxTurnsPerTask, lastStdout);
+  // Write artifacts
+  const schemaPath = writeWorkerSchema(workerDir);
+  const capsFilePath = writeCapsFile(effective, workerDir);
 
-    // Write artifacts
-    const schemaPath = writeWorkerSchema(workerDir);
-    const capsFilePath = writeCapsFile(effective, workerDir);
+  const args = buildCliArgs({
+    backend,
+    prompt,
+    workingDir,
+    schemaPath,
+    capsFilePath,
+    effective,
+    model,
+  });
 
-    const args = buildCliArgs({
-      backend,
-      prompt,
-      workingDir,
-      schemaPath,
-      capsFilePath,
-      effective,
-      model,
-    });
+  const command = backend === "codex" ? "codex" : "claude";
 
-    const command = backend === "codex" ? "codex" : "claude";
-    const { stdout, stderr, timedOut } = await runCliProcess(command, args, workingDir);
+  const timeoutMs = resolveTaskTimeoutMs(step.durationMinutes);
+  onProgress?.(
+    `  [cli-worker:${backend}] attempt ${attemptNumber} (timeout ${(timeoutMs / 60_000).toFixed(0)}m)`,
+  );
 
-    lastStdout = stdout;
-    lastStderr = stderr;
+  const stdoutPath = path.join(workerDir, `attempt-${attemptNumber}.stdout.txt`);
+  const stderrPath = path.join(workerDir, `attempt-${attemptNumber}.stderr.txt`);
 
-    // Write turn artifacts
-    writeArtifact(workerDir, turn, "stdout", stdout);
-    writeArtifact(workerDir, turn, "stderr", stderr);
+  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
+    command,
+    args,
+    cwd: workingDir,
+    timeoutMs,
+    stdoutPath,
+    stderrPath,
+  });
 
+  const codexParsed = backend === "codex" ? parseCodexSchemaOutput(stdout) : null;
+  const codexValidated = codexParsed ? validateWorkerOutput(codexParsed) : null;
+
+  const resultRead = readWorkerResultFile(workerDir);
+  const fileValidated = resultRead.output;
+
+  let output = codexValidated ?? fileValidated;
+  let errorType: string | undefined;
+  let blockedClassification: string | undefined;
+
+  if (!output) {
     if (timedOut) {
-      onProgress?.(`  [cli-worker] Hang detected (no output for ${HANG_TIMEOUT_MS / 1000}s)`);
-      return {
-        output: {
-          status: "blocked",
-          question: `CLI worker appeared to hang (no output for ${HANG_TIMEOUT_MS / 1000}s). Possible interactive prompt or deadlock.`,
-        },
-        turnsUsed: turn,
-        rawStdout: stdout,
-        rawStderr: stderr,
-      };
+      output = makeFailureOutput(
+        `CLI worker timed out after ${(timeoutMs / 60_000).toFixed(0)} minutes.`,
+        "timeout",
+        "Retry with more time or split the task into smaller steps.",
+        "Ran worker until hard timeout.",
+      );
+    } else if (resultRead.error?.kind === "missing") {
+      output = makeFailureOutput(
+        "Worker did not produce result artifact.",
+        "missing_result",
+        "Retry the task and ensure the worker writes worker_result.json.",
+        "Looked for worker_result.json after process exit.",
+      );
+    } else if (resultRead.error?.kind === "invalid_json") {
+      output = makeFailureOutput(
+        "Worker produced invalid result file.",
+        "invalid_result",
+        "Retry the task and ensure the result file contains valid JSON.",
+        "Read worker_result.json and failed to parse JSON.",
+      );
+    } else if (resultRead.error?.kind === "invalid_schema") {
+      output = makeFailureOutput(
+        "Worker produced result file that does not match the expected schema.",
+        "invalid_result",
+        "Retry the task and ensure the result file matches the documented schema.",
+        "Parsed worker_result.json but schema validation failed.",
+      );
+    } else if (signal) {
+      output = makeFailureOutput(
+        `CLI worker exited due to signal ${signal}.`,
+        "process_error",
+        "Check CLI logs and retry the task.",
+        "Process was terminated by signal before producing a valid result.",
+      );
+    } else if (exitCode && exitCode !== 0) {
+      output = makeFailureOutput(
+        `CLI worker exited with code ${exitCode}.`,
+        "process_error",
+        "Check CLI logs and retry the task.",
+        "Process exited non-zero before producing a valid result.",
+      );
+    } else {
+      output = makeFailureOutput(
+        "CLI worker failed without producing a valid result.",
+        "unknown",
+        "Check CLI logs and retry the task.",
+        "Process exited without a valid worker_result.json.",
+      );
     }
-
-    // Post-check for hard deny evidence
-    const denyEvidence = postCheckForHardDenyEvidence(stdout, stderr, policy);
-    if (denyEvidence.length > 0) {
-      const ids = denyEvidence.map((d) => d.id).join(", ");
-      onProgress?.(`  [cli-worker] Hard deny evidence: ${ids}`);
-      return {
-        output: {
-          status: "blocked",
-          question: `Output indicates a hard-denied action was attempted: ${ids}`,
-          missingCapabilities: denyEvidence.map((d) => d.id),
-        },
-        turnsUsed: turn,
-        rawStdout: stdout,
-        rawStderr: stderr,
-      };
-    }
-
-    // Parse structured output
-    const parsed = parseStructuredOutput(stdout, backend);
-    if (parsed) {
-      const validated = validateWorkerOutput(parsed);
-      if (validated) {
-        writeArtifact(workerDir, turn, "result", JSON.stringify(validated, null, 2));
-        return {
-          output: validated,
-          turnsUsed: turn,
-          rawStdout: stdout,
-          rawStderr: stderr,
-        };
-      }
-    }
-
-    // No valid output — continue to next turn
-    onProgress?.(`  [cli-worker] No structured output, continuing...`);
   }
 
-  // Turn limit exhausted
+  if (output.status === "failed") {
+    errorType = output.errorType;
+  }
+  if (output.status === "blocked") {
+    blockedClassification = output.missingCapabilities?.length ? "capability_denied" : "user_input";
+  }
+
+  const outcome = classifyAttemptOutcome(output, timedOut, exitCode, signal);
+  const { diffstat, changedFiles } = collectGitDiffSummary(workingDir);
+  const resultFile = fs.existsSync(resultPath) ? WORKER_RESULT_FILENAME : null;
+
+  writeAttemptBundle(workerDir, {
+    attemptNumber,
+    backend,
+    outcome,
+    errorClassification:
+      output.status === "complete"
+        ? undefined
+        : (errorType ?? blockedClassification ?? resultRead.error?.kind),
+    resultFile,
+    logExcerpt: tailText(stdout, LOG_EXCERPT_CHARS),
+    diffstat,
+    changedFiles,
+    durationMs,
+  });
+
   return {
-    output: null,
-    turnsUsed: maxTurnsPerTask,
-    rawStdout: lastStdout,
-    rawStderr: lastStderr,
+    output,
+    turnsUsed: 1,
+    rawStdout: stdout,
+    rawStderr: stderr,
   };
 }
 
@@ -178,8 +229,20 @@ export function buildCliWorkerPrompt(params: {
   completedSummaries?: Array<{ id: string; summary: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
+  resultPath: string;
+  previousAttempt?: string | null;
 }): string {
-  const { step, plan, goal, effective, completedSummaries, resumeAnswer, resumeQuestion } = params;
+  const {
+    step,
+    plan,
+    goal,
+    effective,
+    completedSummaries,
+    resumeAnswer,
+    resumeQuestion,
+    resultPath,
+    previousAttempt,
+  } = params;
   const lines: string[] = [];
 
   lines.push(`GOAL: ${goal}`);
@@ -227,35 +290,29 @@ export function buildCliWorkerPrompt(params: {
   }
   lines.push("");
 
-  lines.push("OUTPUT FORMAT:");
-  lines.push("When you are done, output a JSON object with one of these shapes:");
-  lines.push('  Complete: { "status": "complete", "summary": "<brief summary>" }');
-  lines.push('  Blocked:  { "status": "blocked", "question": "<what you need>" }');
+  if (previousAttempt) {
+    lines.push("PREVIOUS ATTEMPT FAILED:");
+    lines.push(previousAttempt);
+    lines.push("");
+    lines.push("Try a different approach. Do not repeat what failed.");
+    lines.push("");
+  }
+
+  lines.push("RESULT PROTOCOL:");
+  lines.push("When you are done, write your result to this exact file path:");
+  lines.push(resultPath);
+  lines.push("");
+  lines.push("The file must contain valid JSON with one of these shapes:");
+  lines.push('  Complete: { "status": "complete", "summary": "<brief summary of what was done>" }');
+  lines.push('  Blocked:  { "status": "blocked", "question": "<what you need from the user>" }');
   lines.push(
     '  Failed:   { "status": "failed", "reason": "...", "whatTried": "...", "errorType": "...", "suggestedNext": "...", "needsRevert": false }',
   );
+  lines.push(
+    "Write the file using your file-writing tool. This is how the orchestrator knows you are done.",
+  );
+  lines.push("Do NOT rely on printing JSON to stdout as your result mechanism.");
 
-  return lines.join("\n");
-}
-
-function buildContinueWorkerPrompt(
-  step: PlanStep,
-  turn: number,
-  maxTurns: number,
-  priorOutput: string,
-): string {
-  const lines: string[] = [];
-  lines.push(`Continue working on task ${step.id}: ${step.description}`);
-  lines.push(`Turn ${turn}/${maxTurns}. Focus on completing the task.`);
-  lines.push("");
-  if (priorOutput) {
-    const truncated =
-      priorOutput.length > 2000 ? priorOutput.slice(-2000) + "\n...(truncated)" : priorOutput;
-    lines.push("PRIOR OUTPUT (last turn):");
-    lines.push(truncated);
-    lines.push("");
-  }
-  lines.push("Remember to output the JSON result object when done.");
   return lines.join("\n");
 }
 
@@ -346,84 +403,20 @@ export function writeCapsFile(effective: EffectiveCapabilities, dir: string): st
 // --- Output parsing + validation ---
 
 /**
- * Parse structured JSON output from CLI stdout.
+ * Parse structured JSON output from Codex CLI stdout.
  *
- * Codex: output is the last JSON object in stdout.
- * Claude Code: --output-format json wraps in a response object; extract result from content.
+ * Codex --json with --output-schema is expected to emit a single JSON object.
  */
-export function parseStructuredOutput(
-  stdout: string,
-  backend: GoalBackendId,
-): Record<string, unknown> | null {
+export function parseCodexSchemaOutput(stdout: string): Record<string, unknown> | null {
   const trimmed = stdout.trim();
   if (!trimmed) return null;
-
-  if (backend === "claude_code") {
-    return parseClaudeCodeOutput(trimmed);
-  }
-  // Codex: try to parse the last JSON object from output
-  return parseLastJsonObject(trimmed);
-}
-
-function parseClaudeCodeOutput(text: string): Record<string, unknown> | null {
-  // Claude Code --output-format json returns a JSON object with a "result" field
-  // containing the assistant's text response. We need to find our GoalWorkerOutput
-  // JSON within that text.
   try {
-    const outer = JSON.parse(text);
-    if (typeof outer === "object" && outer !== null) {
-      // Try to extract from result text (Claude Code wraps the response)
-      const resultText =
-        typeof outer.result === "string"
-          ? outer.result
-          : typeof outer.content === "string"
-            ? outer.content
-            : null;
-      if (resultText) {
-        const inner = parseLastJsonObject(resultText);
-        if (inner) return inner;
-      }
-      // Maybe the outer object itself is our output
-      if ("status" in outer) return outer as Record<string, unknown>;
-    }
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    return parsed as Record<string, unknown>;
   } catch {
-    // Not valid JSON at top level; try to find embedded JSON
+    return null;
   }
-  return parseLastJsonObject(text);
-}
-
-function parseLastJsonObject(text: string): Record<string, unknown> | null {
-  // Find the last JSON object in the text (scan backwards for })
-  let depth = 0;
-  let end = -1;
-  let start = -1;
-
-  for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i];
-    if (ch === "}" && end === -1) {
-      end = i;
-      depth = 1;
-    } else if (end !== -1) {
-      if (ch === "}") depth++;
-      if (ch === "{") depth--;
-      if (depth === 0) {
-        start = i;
-        break;
-      }
-    }
-  }
-
-  if (start === -1 || end === -1) return null;
-
-  try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
-    if (typeof parsed === "object" && parsed !== null) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Not valid JSON
-  }
-  return null;
 }
 
 /**
@@ -470,37 +463,6 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
   }
 
   return null;
-}
-
-// --- Post-check for hard deny evidence ---
-
-/**
- * Scan stdout/stderr for evidence that a hard-denied action was attempted.
- * Returns matching hard deny entries.
- *
- * Only matches "DENIED: <reason>" markers emitted by the enforcement layer,
- * not arbitrary mentions of deny patterns in the agent's analytical text.
- * This prevents false positives when the agent writes about security features
- * (e.g. documenting that "sudo is not allowed" shouldn't trigger the sudo deny).
- */
-export function postCheckForHardDenyEvidence(
-  stdout: string,
-  stderr: string,
-  policy: CapabilityPolicy,
-): HardDeny[] {
-  const combined = `${stdout}\n${stderr}`;
-  const matches: HardDeny[] = [];
-
-  for (const deny of policy.hardDenies) {
-    // Look for enforcement-layer DENIED markers that reference this deny's reason
-    const reasonEscaped = deny.reason.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`DENIED:\\s*${reasonEscaped}`, "i");
-    if (re.test(combined)) {
-      matches.push(deny);
-    }
-  }
-
-  return matches;
 }
 
 // --- CLI process execution ---
@@ -562,88 +524,79 @@ function buildCliArgs(params: {
   return args;
 }
 
-/**
- * Spawn a CLI process with hang detection.
- * stdin is set to "ignore" (no TTY, no interactive input).
- */
-async function runCliProcess(
-  command: string,
-  args: string[],
-  cwd: string,
-): Promise<{ stdout: string; stderr: string; timedOut: boolean }> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let lastActivity = Date.now();
-    let killed = false;
-
-    const proc: ChildProcess = spawn(command, args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-      lastActivity = Date.now();
-    });
-
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-      lastActivity = Date.now();
-    });
-
-    // Hang detection: check for inactivity
-    const hangCheck = setInterval(() => {
-      if (Date.now() - lastActivity > HANG_TIMEOUT_MS && !killed) {
-        killed = true;
-        timedOut = true;
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          if (!proc.killed) proc.kill("SIGKILL");
-        }, SIGTERM_GRACE_MS);
-      }
-    }, 10_000);
-
-    // Hard timeout
-    const hardTimeout = setTimeout(() => {
-      if (!killed) {
-        killed = true;
-        timedOut = true;
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          if (!proc.killed) proc.kill("SIGKILL");
-        }, SIGTERM_GRACE_MS);
-      }
-    }, CLI_TIMEOUT_MS);
-
-    proc.on("close", () => {
-      clearInterval(hangCheck);
-      clearTimeout(hardTimeout);
-      resolve({ stdout, stderr, timedOut });
-    });
-
-    proc.on("error", (err) => {
-      clearInterval(hangCheck);
-      clearTimeout(hardTimeout);
-      stderr += `\nProcess error: ${err.message}`;
-      resolve({ stdout, stderr, timedOut });
-    });
-  });
-}
-
-// --- Artifact helpers ---
-
-function resolveWorkerDir(runId: string, stepId: string): string {
-  return path.join(resolveRunDir(runId), "workers", stepId);
-}
-
-function writeArtifact(workerDir: string, turn: number, suffix: string, content: string): void {
-  try {
-    const filePath = path.join(workerDir, `turn-${turn}.${suffix}.txt`);
-    fs.writeFileSync(filePath, content, "utf8");
-  } catch {
-    // Best-effort
+export function readWorkerResultFile(workerDir: string): {
+  output: GoalWorkerOutput | null;
+  error?: { kind: "missing" | "invalid_json" | "invalid_schema"; message: string };
+} {
+  const filePath = path.join(workerDir, WORKER_RESULT_FILENAME);
+  if (!fs.existsSync(filePath)) {
+    return { output: null, error: { kind: "missing", message: "worker_result.json not found" } };
   }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return { output: null, error: { kind: "invalid_json", message: "Unable to read result file" } };
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return {
+      output: null,
+      error: { kind: "invalid_json", message: "Result file is invalid JSON" },
+    };
+  }
+  const validated = validateWorkerOutput(parsed);
+  if (!validated) {
+    return {
+      output: null,
+      error: { kind: "invalid_schema", message: "Result file does not match schema" },
+    };
+  }
+  return { output: validated };
+}
+
+function resolveTaskTimeoutMs(durationMinutes?: number): number {
+  if (!durationMinutes || durationMinutes <= 0) return MIN_TASK_TIMEOUT_MS;
+  const estimateMs = durationMinutes * 2 * 60_000;
+  return Math.max(MIN_TASK_TIMEOUT_MS, Math.min(estimateMs, MAX_TASK_TIMEOUT_MS));
+}
+
+function makeFailureOutput(
+  reason: string,
+  errorType: string,
+  suggestedNext: string,
+  whatTried: string,
+): GoalWorkerOutput {
+  return {
+    status: "failed",
+    reason,
+    whatTried,
+    errorType,
+    suggestedNext,
+    needsRevert: false,
+  };
+}
+
+function classifyAttemptOutcome(
+  output: GoalWorkerOutput,
+  timedOut: boolean,
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+): AttemptOutcome {
+  if (output.status === "complete") return "complete";
+  if (output.status === "blocked") return "blocked";
+  if (output.status === "failed" && output.errorType === "timeout") {
+    return "timeout";
+  }
+  if (timedOut) return "timeout";
+  if (
+    output.status === "failed" &&
+    output.errorType === "process_error" &&
+    (exitCode != null || signal)
+  ) {
+    return "crash";
+  }
+  return "failed";
 }

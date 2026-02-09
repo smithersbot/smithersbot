@@ -42,6 +42,8 @@ export type GoalCommandOptions = {
   runId?: string;
   /** Skip the scout pre-pass (claude -p codebase analysis). */
   noScout?: boolean;
+  /** Scout timeout in milliseconds. */
+  scoutTimeoutMs?: number;
   /** Disable git checkpoints during execution. */
   noGitCheckpoints?: boolean;
   /** Override execution backend for all steps. */
@@ -166,7 +168,11 @@ export async function goalCommand(
         enabled: !isJson,
       });
       try {
-        scoutData = await runScoutWithRetry({ runId, goalText: goal });
+        scoutData = await runScoutWithRetry({
+          runId,
+          goalText: goal,
+          timeoutMs: opts.scoutTimeoutMs,
+        });
         if (scoutData.status === "skipped") {
           scoutStatus = "skipped";
           scoutSkipReason = scoutData.reason;

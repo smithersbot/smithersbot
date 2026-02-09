@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { resolveRunDir } from "./run-store.js";
+import { runCliProcess } from "./cli-process.js";
+import { tailText, writeAttemptBundle } from "./attempt-bundle.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,9 +44,9 @@ export type ScoutResult =
 // ---------------------------------------------------------------------------
 
 const SCOUT_TIMEOUT_MS = 1_200_000;
-const SCOUT_MAX_BUFFER = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_NODE_COUNT_MIN = 1;
 const DEFAULT_NODE_COUNT_MAX = 10;
+const LOG_EXCERPT_CHARS = 2048;
 
 // ---------------------------------------------------------------------------
 // Error classification
@@ -292,32 +294,102 @@ export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
 
   // Execute claude -p with stdin piping
   const stdoutPath = path.join(scoutDir, "scout_stdout.txt");
+  const stderrPath = path.join(scoutDir, "scout_stderr.txt");
   const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
 
-  try {
-    const stdout = execFileSync(claudeBin, ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"], {
-      input: brief,
-      encoding: "utf8",
-      timeout,
-      maxBuffer: SCOUT_MAX_BUFFER,
-      cwd: process.cwd(),
+  const procResult = await runCliProcess({
+    command: claudeBin,
+    args: ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"],
+    cwd: process.cwd(),
+    timeoutMs: timeout,
+    stdin: brief,
+    stdoutPath,
+    stderrPath,
+  });
+
+  if (procResult.timedOut) {
+    const message = `Scout timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
+    writeScoutError(scoutDir, message);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 1,
+      backend: "claude_code",
+      outcome: "timeout",
+      errorClassification: "timeout",
+      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+      durationMs: procResult.durationMs,
     });
-    fs.writeFileSync(stdoutPath, stdout, "utf8");
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+    return { status: "error", error: message, errorKind: "timeout" };
+  }
+
+  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+    const errMsg =
+      procResult.stderr ||
+      procResult.stdout ||
+      (procResult.signal
+        ? `Scout process terminated by ${procResult.signal}.`
+        : "Scout process failed.");
+    const errorKind = classifyScoutError(errMsg);
     writeScoutError(scoutDir, errMsg);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 1,
+      backend: "claude_code",
+      outcome: "crash",
+      errorClassification: errorKind,
+      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+      durationMs: procResult.durationMs,
+    });
     return {
       status: "error",
       error: `Scout execution failed: ${errMsg}`,
-      errorKind: classifyScoutError(errMsg),
+      errorKind,
     };
   }
 
   // Validate output artifacts
   const result = validateScoutOutput(scoutDir);
+  const resultFile = fs.existsSync(path.join(scoutDir, "scout_report.json"))
+    ? "scout_report.json"
+    : null;
+
   if (result.status === "error") {
     writeScoutError(scoutDir, result.error);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 1,
+      backend: "claude_code",
+      outcome: "failed",
+      errorClassification: result.errorKind,
+      resultFile,
+      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+      durationMs: procResult.durationMs,
+    });
+    return result;
   }
+
+  if (result.status === "needs_clarification") {
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 1,
+      backend: "claude_code",
+      outcome: "blocked",
+      errorClassification: "needs_clarification",
+      resultFile,
+      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+      durationMs: procResult.durationMs,
+    });
+    return result;
+  }
+
+  if (result.status === "skipped") {
+    return result;
+  }
+
+  writeAttemptBundle(scoutDir, {
+    attemptNumber: 1,
+    backend: "claude_code",
+    outcome: "complete",
+    resultFile,
+    logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+    durationMs: procResult.durationMs,
+  });
 
   return result;
 }
@@ -382,30 +454,75 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
   fs.writeFileSync(path.join(scoutDir, "PLANNING_BRIEF_RETRY.md"), retryBrief, "utf8");
 
   const stdoutPath = path.join(scoutDir, "scout_stdout_retry.txt");
+  const stderrPath = path.join(scoutDir, "scout_stderr_retry.txt");
   const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
 
-  try {
-    const stdout = execFileSync(claudeBin, ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"], {
-      input: retryBrief,
-      encoding: "utf8",
-      timeout,
-      maxBuffer: SCOUT_MAX_BUFFER,
-      cwd: process.cwd(),
+  const retryProc = await runCliProcess({
+    command: claudeBin,
+    args: ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"],
+    cwd: process.cwd(),
+    timeoutMs: timeout,
+    stdin: retryBrief,
+    stdoutPath,
+    stderrPath,
+  });
+
+  if (retryProc.timedOut) {
+    const message = `Scout retry timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
+    writeScoutError(scoutDir, `Retry failed: ${message}`);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 2,
+      backend: "claude_code",
+      outcome: "timeout",
+      errorClassification: "timeout",
+      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
+      durationMs: retryProc.durationMs,
     });
-    fs.writeFileSync(stdoutPath, stdout, "utf8");
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
+    return {
+      status: "error",
+      error: `Scout retry failed: ${message} (original error: ${firstResult.error})`,
+      errorKind: "timeout",
+    };
+  }
+
+  if ((retryProc.exitCode && retryProc.exitCode !== 0) || retryProc.signal) {
+    const errMsg =
+      retryProc.stderr ||
+      retryProc.stdout ||
+      (retryProc.signal ? `Scout retry terminated by ${retryProc.signal}.` : "Scout retry failed.");
+    const errorKind = classifyScoutError(errMsg);
     writeScoutError(scoutDir, `Retry failed: ${errMsg}`);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 2,
+      backend: "claude_code",
+      outcome: "crash",
+      errorClassification: errorKind,
+      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
+      durationMs: retryProc.durationMs,
+    });
     return {
       status: "error",
       error: `Scout retry failed: ${errMsg} (original error: ${firstResult.error})`,
-      errorKind: classifyScoutError(errMsg),
+      errorKind,
     };
   }
 
   const retryResult = validateScoutOutput(scoutDir);
+  const resultFile = fs.existsSync(path.join(scoutDir, "scout_report.json"))
+    ? "scout_report.json"
+    : null;
+
   if (retryResult.status === "error") {
     writeScoutError(scoutDir, `Retry validation failed: ${retryResult.error}`);
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 2,
+      backend: "claude_code",
+      outcome: "failed",
+      errorClassification: retryResult.errorKind,
+      resultFile,
+      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
+      durationMs: retryProc.durationMs,
+    });
     // Include both errors so the user sees the full picture
     return {
       status: "error",
@@ -413,6 +530,28 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
       errorKind: "validation",
     };
   }
+
+  if (retryResult.status === "needs_clarification") {
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: 2,
+      backend: "claude_code",
+      outcome: "blocked",
+      errorClassification: "needs_clarification",
+      resultFile,
+      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
+      durationMs: retryProc.durationMs,
+    });
+    return retryResult;
+  }
+
+  writeAttemptBundle(scoutDir, {
+    attemptNumber: 2,
+    backend: "claude_code",
+    outcome: "complete",
+    resultFile,
+    logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
+    durationMs: retryProc.durationMs,
+  });
 
   return retryResult;
 }
