@@ -11,16 +11,10 @@ export type BackendAvailability = {
   reason?: string;
 };
 
-/**
- * Structured output from any CLI worker, validated against a JSON schema.
- *
- * No separate "capability_denied" status — reuse "blocked" with optional
- * missingCapabilities array. The executor maps to blockedReason: "capability_denied"
- * when that field is present.
- */
+/** Structured output from any CLI worker, validated against a JSON schema. */
 export type GoalWorkerOutput =
   | { status: "complete"; summary: string }
-  | { status: "blocked"; question: string; missingCapabilities?: string[] }
+  | { status: "blocked"; question: string }
   | {
       status: "failed";
       reason: string;
@@ -55,11 +49,6 @@ export const GOAL_WORKER_OUTPUT_SCHEMA = {
     },
     summary: { type: "string", description: "Completion summary (when status=complete)" },
     question: { type: "string", description: "What is needed (when status=blocked)" },
-    missingCapabilities: {
-      type: "array",
-      items: { type: "string" },
-      description: "Missing capabilities (when status=blocked)",
-    },
     reason: { type: "string", description: "Failure reason (when status=failed)" },
     whatTried: { type: "string", description: "What was attempted (when status=failed)" },
     errorType: { type: "string", description: "Error classification (when status=failed)" },
@@ -70,7 +59,6 @@ export const GOAL_WORKER_OUTPUT_SCHEMA = {
     "status",
     "summary",
     "question",
-    "missingCapabilities",
     "reason",
     "whatTried",
     "errorType",

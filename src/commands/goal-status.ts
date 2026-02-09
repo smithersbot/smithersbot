@@ -72,6 +72,7 @@ export async function goalStatusCommand(
 
   if (run.blocked) {
     runtime.log(`\nBlocked:   ${run.blocked.prompt}`);
+    runtime.log(`BlockedAt: ${run.blocked.blockedAt}`);
     runtime.log(`Input key: ${run.blocked.requiredInputKey}`);
     runtime.log(
       `Answer:    moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked.requiredInputKey} --value <VALUE>`,

@@ -112,7 +112,11 @@ describe("routeTelegramText", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 10 },
       }),
     ];
@@ -128,12 +132,16 @@ describe("routeTelegramText", () => {
     expect(route.replyText).toContain("r1".slice(0, 8));
   });
 
-  it("routes plain text with single needs_clarification run to CHAT with hint", () => {
+  it("routes plain text with single planning-blocked run to CHAT with hint", () => {
     const runs = [
       makeRun({
         runId: "r1",
-        state: "needs_clarification",
-        blocked: { prompt: "What file?", requiredInputKey: "step:planning:input" },
+        state: "blocked",
+        blocked: {
+          blockedAt: "planning",
+          prompt: "What file?",
+          requiredInputKey: "step:planning:input",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 10 },
       }),
     ];
@@ -153,13 +161,21 @@ describe("routeTelegramText", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 10 },
       }),
       makeRun({
         runId: "r2",
         state: "blocked",
-        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 11 },
       }),
     ];
@@ -304,7 +320,11 @@ describe("routeTelegramText", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "What file?", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "What file?",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 10 },
         telegramQuestionMessages: [{ chatId: 1, messageId: 15, requiredInputKey: "input_key" }],
       }),
@@ -324,8 +344,12 @@ describe("routeTelegramText", () => {
     const runs = [
       makeRun({
         runId: "r1",
-        state: "needs_clarification",
-        blocked: { prompt: "Which DB?", requiredInputKey: "step:planning:input" },
+        state: "blocked",
+        blocked: {
+          blockedAt: "planning",
+          prompt: "Which DB?",
+          requiredInputKey: "step:planning:input",
+        },
         telegramPlanMessage: { chatId: 1, messageId: 10 },
         telegramQuestionMessages: [
           { chatId: 1, messageId: 20, requiredInputKey: "step:planning:input" },
@@ -368,7 +392,11 @@ describe("routeTelegramText", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "What file?", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "What file?",
+          requiredInputKey: "input_key",
+        },
         telegramQuestionMessages: [{ chatId: 999, messageId: 15, requiredInputKey: "input_key" }],
       }),
     ];

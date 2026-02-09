@@ -7,7 +7,6 @@ import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { resolveEnvApiKey } from "../agents/model-auth.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
-import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import {
   loadRun,
@@ -63,7 +62,7 @@ function loadScoutData(runId: string): ScoutResult | undefined {
 }
 
 /**
- * Retry planning phase for a run that failed during planning.
+ * Retry planning phase for a run that stalled during planning.
  * Reuses the original goal text and scout data (if available).
  */
 async function retryPlanning(
@@ -80,7 +79,9 @@ async function retryPlanning(
   // Reset state to planning
   session.state = "planning";
   session.lastError = undefined;
+  session.blocked = null;
   run.state = "planning";
+  run.blocked = null;
   run.updatedAt = new Date().toISOString();
   saveRun(run);
 
@@ -109,6 +110,11 @@ async function retryPlanning(
       }
     }
 
+    const planningAnswer = session.answers["step:planning:input"];
+    const goalText = planningAnswer
+      ? `${session.goal}\n\nUser clarification: ${planningAnswer}`
+      : session.goal;
+
     // Generate plan
     let planResult;
     {
@@ -118,7 +124,7 @@ async function retryPlanning(
         enabled: !isJson && !quiet,
       });
       try {
-        planResult = await generatePlan(client, session.goal, scoutData);
+        planResult = await generatePlan(client, goalText, scoutData);
       } finally {
         progress.done();
       }
@@ -126,20 +132,22 @@ async function retryPlanning(
 
     // Handle blocked-at-planning (pre-plan clarification)
     if ("blocked" in planResult) {
-      session.state = "needs_clarification";
+      session.state = "blocked";
       session.blocked = {
+        blockedAt: "planning",
         prompt: planResult.question,
         requiredInputKey: "step:planning:input",
       };
-      run.state = "needs_clarification";
+      run.state = "blocked";
       run.blocked = session.blocked;
       run.updatedAt = new Date().toISOString();
       saveRun(run);
 
       const outcome: GoalOutcome = {
-        status: "needs_clarification",
+        status: "blocked",
         question: planResult.question,
         requiredInputKey: "step:planning:input",
+        blockedAt: "planning",
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
@@ -152,6 +160,7 @@ async function retryPlanning(
     // Success! Update session with plan
     session.plan = planResult;
     session.state = "awaiting_approval";
+    if (planningAnswer) delete session.answers["step:planning:input"];
     run.plan = planResult;
     run.state = "awaiting_approval";
     run.lastError = undefined;
@@ -187,9 +196,9 @@ async function retryPlanning(
     // Planning failed again - persist error
     const errorMsg = err instanceof Error ? err.message : String(err);
     session.lastError = errorMsg;
-    session.state = "failed";
+    session.state = "planning";
     run.lastError = errorMsg;
-    run.state = "failed";
+    run.state = "planning";
     run.updatedAt = new Date().toISOString();
     saveRun(run);
 
@@ -245,65 +254,69 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  // Failed can be recoverable if we can synthesize blocked details from the plan.
-  if (run.state === "failed") {
-    const synthesized = run.blocked ?? (run.plan ? aggregateBlockedDetails(run.plan.steps) : null);
-    if (synthesized) {
-      run.blocked = synthesized;
-      run.state = "blocked";
-      run.updatedAt = new Date().toISOString();
-      saveRun(run);
-    } else {
-      // Failed with no plan means planning failed - can be retried with --replan
-      if (!opts.replan) {
-        if (isJson) {
-          runtime.log(
-            JSON.stringify({
-              error:
-                "Run failed during planning. Use --replan to retry planning from the original goal.",
-              lastError: run.lastError ?? null,
-            }),
-          );
-          throw new JsonExitError(1);
-        }
-        runtime.error(
-          `Run failed during planning: ${run.lastError ?? "Unknown error"}. Use --replan to retry.`,
-        );
-        return undefined;
+  if (run.state === "blocked") {
+    const blockedAt = run.blocked?.blockedAt ?? "execution";
+    const requiredKey = run.blocked?.requiredInputKey;
+    const answer = requiredKey ? run.answers?.[requiredKey] : undefined;
+
+    if (blockedAt === "planning") {
+      if (answer) {
+        return await retryPlanning(run, opts, runtime);
       }
 
-      // --replan flag: retry the planning phase
-      return await retryPlanning(run, opts, runtime);
+      if (isJson) {
+        runtime.log(
+          JSON.stringify({
+            status: "blocked",
+            question: run.blocked?.prompt ?? null,
+            requiredInputKey: requiredKey ?? null,
+            blockedAt,
+          }),
+        );
+      } else {
+        runtime.log(`Blocked (planning): ${run.blocked?.prompt ?? "Unknown reason"}`);
+        runtime.log(`Required input: ${requiredKey ?? "unknown"}`);
+        runtime.log(
+          `Answer:  moltbot goal answer ${run.runId.slice(0, 8)} --key ${requiredKey ?? "KEY"} --value <VALUE>`,
+        );
+      }
+      return {
+        status: "blocked",
+        question: run.blocked?.prompt ?? "",
+        requiredInputKey: requiredKey ?? "unknown",
+        blockedAt,
+      };
     }
-  }
 
-  // Blocked (execution-time) or needs_clarification (pre-plan): print details and exit
-  if (run.state === "blocked" || run.state === "needs_clarification") {
-    if (isJson) {
-      runtime.log(
-        JSON.stringify({
-          status: run.state === "needs_clarification" ? "needs_clarification" : "blocked",
-          question: run.blocked?.prompt ?? null,
-          requiredInputKey: run.blocked?.requiredInputKey ?? null,
-        }),
-      );
-    } else {
-      const label = run.state === "needs_clarification" ? "Needs clarification" : "Blocked";
-      runtime.log(`${label}: ${run.blocked?.prompt ?? "Unknown reason"}`);
-      runtime.log(`Required input: ${run.blocked?.requiredInputKey ?? "unknown"}`);
-      runtime.log(
-        `Answer:  moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked?.requiredInputKey ?? "KEY"} --value <VALUE>`,
-      );
+    // blockedAt === "execution"
+    if (!answer) {
+      if (isJson) {
+        runtime.log(
+          JSON.stringify({
+            status: "blocked",
+            question: run.blocked?.prompt ?? null,
+            requiredInputKey: requiredKey ?? null,
+            blockedAt,
+          }),
+        );
+      } else {
+        runtime.log(`Blocked: ${run.blocked?.prompt ?? "Unknown reason"}`);
+        runtime.log(`Required input: ${requiredKey ?? "unknown"}`);
+        runtime.log(
+          `Answer:  moltbot goal answer ${run.runId.slice(0, 8)} --key ${requiredKey ?? "KEY"} --value <VALUE>`,
+        );
+      }
+      return {
+        status: "blocked",
+        question: run.blocked?.prompt ?? "",
+        requiredInputKey: requiredKey ?? "unknown",
+        blockedAt,
+      };
     }
-    return {
-      status: run.state === "needs_clarification" ? "needs_clarification" : "blocked",
-      question: run.blocked?.prompt ?? "",
-      requiredInputKey: run.blocked?.requiredInputKey ?? "unknown",
-    } as GoalOutcome;
   }
 
   // Stale/incomplete states - but can be recovered with --replan
-  if (run.state === "init" || run.state === "planning") {
+  if (run.state === "planning") {
     if (!opts.replan) {
       if (isJson) {
         runtime.log(
@@ -324,8 +337,20 @@ export async function goalResumeCommand(
     return await retryPlanning(run, opts, runtime);
   }
 
-  // Resumable: awaiting_approval, rejected, cancelled, executing
-  // (rejected and cancelled both return to the approval flow)
+  if (run.state === "cancelled" && !run.plan) {
+    if (!opts.replan) {
+      const msg = "Run has no plan. Use --replan to retry planning from the original goal.";
+      if (isJson) {
+        runtime.log(JSON.stringify({ error: msg }));
+        throw new JsonExitError(1);
+      }
+      runtime.error(msg);
+      return undefined;
+    }
+    return await retryPlanning(run, opts, runtime);
+  }
+
+  // Resumable: awaiting_approval, cancelled, executing
 
   // Capture run fields for closure (TypeScript can't narrow across closures)
   const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
@@ -352,9 +377,8 @@ export async function goalResumeCommand(
     );
   }
 
-  // --- Approval flow: awaiting_approval, rejected, cancelled ---
-  const needsApproval =
-    run.state === "awaiting_approval" || run.state === "rejected" || run.state === "cancelled";
+  // --- Approval flow: awaiting_approval, cancelled ---
+  const needsApproval = run.state === "awaiting_approval" || run.state === "cancelled";
 
   if (needsApproval) {
     if (session.plan) {
@@ -380,19 +404,19 @@ export async function goalResumeCommand(
         session.state = "cancelled";
         persistRun();
         runtime.log("Cancelled.");
-        return { status: "rejected" };
+        return { status: "cancelled" };
       }
       if (isCancel(approved)) {
         session.state = "cancelled";
         persistRun();
         runtime.log("Cancelled.");
-        return { status: "rejected" };
+        return { status: "cancelled" };
       }
       if (!approved) {
-        session.state = "rejected";
+        session.state = "cancelled";
         persistRun();
         runtime.log("Plan rejected.");
-        return { status: "rejected" };
+        return { status: "cancelled" };
       }
     }
   }
@@ -441,7 +465,8 @@ export async function goalResumeCommand(
     model,
     maxTurnsPerTask: 5,
     timeoutMs: 300_000,
-    gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true, resetOnRetry: true },
+    gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
+    serializedRun: run,
     onTaskUpdate: () => persistRun(),
     onProgress: (text) => {
       if (!isJson && !quiet) runtime.log(text);
@@ -459,8 +484,8 @@ export async function goalResumeCommand(
       runtime.log(`DONE: ${outcome.summary}`);
     } else if (outcome.status === "blocked") {
       runtime.log(`BLOCKED: ${outcome.question}`);
-    } else if (outcome.status === "failed") {
-      runtime.log(`FAILED: ${outcome.error}`);
+    } else if (outcome.status === "cancelled") {
+      runtime.log("CANCELLED.");
     }
   }
 

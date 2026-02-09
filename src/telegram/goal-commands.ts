@@ -17,21 +17,14 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
-import { classifyTask } from "../goal/backend-router.js";
 import { computeCpm } from "../goal/cpm.js";
-import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
-import {
-  generatePlan,
-  generatePlanRevision,
-  PlanParseError,
-  persistRawPlanResponse,
-} from "../goal/planner.js";
+import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -229,7 +222,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     if (logs) parts.push(logs);
     if (errors) parts.push(errors);
 
-    if (outcome?.status === "needs_clarification" || outcome?.status === "blocked") {
+    if (outcome?.status === "blocked") {
       parts.push(`\nAnswer: /goal_answer ${runId.slice(0, 8)} <your answer>`);
       return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
     }
@@ -276,9 +269,6 @@ export async function handleGoalApprove(
   if (run.state === "done" || run.state === "executing") {
     return "Run is already executing or complete.";
   }
-  if (run.state === "rejected") {
-    return "Run was rejected. Start a new /goal.";
-  }
 
   const prefix = resolvedId.slice(0, 8);
   const stepCount = run.plan?.steps?.length ?? 0;
@@ -293,13 +283,9 @@ export async function handleGoalApprove(
     const errors = cap.getErrors();
     if (errors) return errors;
 
-    if (outcome?.status === "failed") {
-      return `Run failed: ${outcome.error}`;
-    }
-
-    // Pre-execution blocks (e.g. dirty git tree) fire before onStatusChange
+    // Pre-execution blocks (e.g. git errors) fire before onStatusChange
     // has a chance to notify — always surface these to the user.
-    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
+    if (outcome?.status === "blocked") {
       return `Run blocked: ${outcome.question ?? "Unknown reason"}`;
     }
 
@@ -329,15 +315,15 @@ export async function handleGoalReject(rawId: string): Promise<string> {
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
-  // Idempotent: already rejected is a no-op
-  if (run.state === "rejected") {
-    return "Run is already rejected.";
+  // Idempotent: already cancelled is a no-op
+  if (run.state === "cancelled") {
+    return "Run is already cancelled.";
   }
   if (run.state !== "awaiting_approval") {
     return `Cannot reject: run is in "${run.state}" state.`;
   }
 
-  run.state = "rejected";
+  run.state = "cancelled";
   run.updatedAt = new Date().toISOString();
   saveRun(run);
 
@@ -364,7 +350,7 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
   }
 }
 
-/** /goal_answer <runId> <value> -- answer a blocked/needs_clarification goal's question. */
+/** /goal_answer <runId> <value> -- answer a blocked goal's question. */
 export async function handleGoalAnswer(
   rawId: string,
   value: string,
@@ -394,9 +380,6 @@ export async function handleGoalAnswer(
       const errors = cap.getErrors();
       if (errors) return errors;
 
-      if (outcome?.status === "failed") {
-        return `Run failed: ${outcome.error}`;
-      }
       if (outcome?.status === "blocked") {
         return `Run blocked: ${outcome.question}`;
       }
@@ -413,17 +396,7 @@ export async function handleGoalAnswer(
     }
   }
 
-  if (run.state === "failed" && !run.blocked) {
-    const synthesized = run.plan ? aggregateBlockedDetails(run.plan.steps) : null;
-    if (synthesized) {
-      run.blocked = synthesized;
-      run.state = "blocked";
-      run.updatedAt = new Date().toISOString();
-      saveRun(run);
-    }
-  }
-
-  if (run.state !== "blocked" && run.state !== "needs_clarification") {
+  if (run.state !== "blocked") {
     const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
     return `Run is not awaiting input (state: ${run.state}).${suffix}`;
   }
@@ -431,53 +404,47 @@ export async function handleGoalAnswer(
     return `Run is in "${run.state}" but has no blocked details.`;
   }
 
-  // needs_clarification: re-run planning with the answer as additional context
-  if (run.state === "needs_clarification") {
-    const keyResult = resolveEnvApiKey("anthropic");
-    if (!keyResult) return "No Anthropic API key found. Set ANTHROPIC_API_KEY.";
+  const blockedAt = run.blocked.blockedAt ?? "execution";
 
-    const client = createGoalLlmClient({ apiKey: keyResult.apiKey, modelOverride: run.model });
-    const enrichedGoal = `${run.goal}\n\nAdditional context: ${value}`;
-
-    // Save the answer
-    run.answers[run.blocked.requiredInputKey] = value;
-    run.updatedAt = new Date().toISOString();
-    saveRun(run);
-
+  if (blockedAt === "planning") {
+    const key = run.blocked.requiredInputKey;
+    const prefix = resolvedId.slice(0, 8);
+    const cap = createCaptureRuntime();
     try {
-      const planResult = await generatePlan(client, enrichedGoal);
+      await goalAnswerCommand(resolvedId, { key, value, quiet: true }, cap.runtime);
 
-      if ("blocked" in planResult) {
-        // Still needs clarification — update question
-        run.blocked = { prompt: planResult.question, requiredInputKey: "step:planning:input" };
-        run.updatedAt = new Date().toISOString();
-        saveRun(run);
+      const answerErrors = cap.getErrors();
+      if (answerErrors) return answerErrors;
+
+      const outcome = await goalResumeCommand(resolvedId, { quiet: true }, cap.runtime);
+      const errors = cap.getErrors();
+      if (errors) return errors;
+
+      if (outcome?.status === "blocked") {
         return {
-          text: `Still need more info:\n\n${planResult.question}\n\nAnswer: /goal_answer ${resolvedId.slice(0, 8)} <your answer>`,
+          text: `Still need more info:\n\n${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`,
           runId: resolvedId,
           blocked: true,
         };
       }
 
-      // Plan succeeded — transition to awaiting_approval
-      run.plan = planResult;
-      run.state = "awaiting_approval";
-      run.blocked = null;
-      run.planRevision = (run.planRevision ?? 0) + 1;
-      run.updatedAt = new Date().toISOString();
-      saveRun(run);
+      const updated = loadRun(resolvedId);
+      const plan = updated?.plan;
+      if (plan) {
+        const planText = formatPlanOutput(plan, { diagram: "none", format: "md" });
+        const parts: string[] = [planText, `\nRun ID: \`${prefix}\``];
+        return {
+          text: parts.join("\n"),
+          runId: resolvedId,
+          revision: updated?.planRevision ?? 1,
+          plan,
+        };
+      }
 
-      const planText = formatPlanOutput(planResult, { diagram: "none", format: "md" });
-      const parts: string[] = [planText, `\nRun ID: \`${resolvedId.slice(0, 8)}\``];
-      return {
-        text: parts.join("\n"),
-        runId: resolvedId,
-        revision: run.planRevision,
-        plan: planResult,
-      };
+      return `Replanned: ${prefix}. Use /goal_approve ${prefix} to execute.`;
     } catch (err) {
-      if (err instanceof PlanParseError) {
-        persistRawPlanResponse(resolvedId, err.rawResponse);
+      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+        return cap.getErrors() || "Answer command failed.";
       }
       return formatGoalError(err, resolvedId);
     }
@@ -497,15 +464,11 @@ export async function handleGoalAnswer(
     const errors = cap.getErrors();
     if (errors) return errors;
 
-    if (outcome?.status === "failed") {
-      return `Run failed: ${outcome.error}`;
-    }
-
     // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
     // return undefined so callers don't send a stray message after the notifications.
     if (onStatusChange) return undefined;
 
-    if (outcome?.status === "blocked" || outcome?.status === "needs_clarification") {
+    if (outcome?.status === "blocked") {
       return `Resuming: ${prefix}...`;
     }
 
@@ -760,22 +723,12 @@ const BACKEND_DISPLAY_NAMES: Record<string, string> = {
   pi: "Pi",
 };
 
-/** Resolve which backend a step would use based on classification. */
+const DEFAULT_BACKEND_DISPLAY = BACKEND_DISPLAY_NAMES.claude_code!;
+
+/** Resolve which backend a step would use based on planner hints/default. */
 function resolveStepWorker(step: import("../goal/types.js").PlanStep): string {
-  // Explicit planner hint takes priority
-  if (step.preferredBackend)
-    return BACKEND_DISPLAY_NAMES[step.preferredBackend] ?? step.preferredBackend;
-  // Classification-based default (same logic as backend-router without availability check)
-  const classification = classifyTask(step);
-  switch (classification) {
-    case "code":
-    case "test":
-      return BACKEND_DISPLAY_NAMES.codex!;
-    case "docs":
-    case "analysis":
-    case "general":
-      return BACKEND_DISPLAY_NAMES.claude_code!;
-  }
+  const backend = step.backend ?? "claude_code";
+  return BACKEND_DISPLAY_NAMES[backend] ?? DEFAULT_BACKEND_DISPLAY;
 }
 
 /** Build a metadata caption header for plan messages. */

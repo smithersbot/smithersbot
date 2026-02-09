@@ -27,7 +27,7 @@ function statusChar(status: PlanStep["status"]): string {
  *    |
  *   [ ] 3. Stage files (git_add)
  *
- *   Legend: [ ] pending  [x] done  [!] failed  [-] skipped  [>] running
+ *   Legend: [ ] pending  [x] done  [!] blocked  [>] in_progress
  */
 export function renderDag(plan: Plan): string {
   const lines: string[] = [];

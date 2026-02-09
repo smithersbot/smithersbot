@@ -97,7 +97,14 @@ function isApprovalLikeText(text: string): boolean {
 }
 
 // Recent runs formatter: sorted by updatedAt, prefers active states, capped at 10
-const ACTIVE_RUN_STATES = new Set(["executing", "done", "blocked", "failed", "cancelled"]);
+const ACTIVE_RUN_STATES = new Set([
+  "planning",
+  "awaiting_approval",
+  "executing",
+  "blocked",
+  "done",
+  "cancelled",
+]);
 
 function formatRecentRuns(): string {
   const all = listRuns(); // already sorted by updatedAt desc

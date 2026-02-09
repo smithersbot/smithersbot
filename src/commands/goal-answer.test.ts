@@ -71,7 +71,11 @@ function makeBlockedRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
       ],
     },
     stepResults: {},
-    blocked: { prompt: "What is the database password?", requiredInputKey: "db_password" },
+    blocked: {
+      blockedAt: "execution",
+      prompt: "What is the database password?",
+      requiredInputKey: "db_password",
+    },
     answers: {},
     workingDir: "/tmp/ws",
     model: undefined,
@@ -112,7 +116,11 @@ describe("goal-answer command", () => {
   it("fans out multi-task blocked answers", async () => {
     saveRun(
       makeBlockedRun({
-        blocked: { prompt: "Need creds for multiple steps", requiredInputKey: "tasks:1,2:input" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need creds for multiple steps",
+          requiredInputKey: "tasks:1,2:input",
+        },
         plan: {
           goal: "Test goal",
           summary: "A test plan",
@@ -156,45 +164,21 @@ describe("goal-answer command", () => {
     expect(rt.errors.join("\n")).toContain("Run is not awaiting input");
   });
 
-  it("recovers failed run by synthesizing blocked details", async () => {
+  it("JSON mode outputs strict JSON with answered status", async () => {
     saveRun(
       makeBlockedRun({
-        state: "failed",
-        blocked: null,
-        plan: {
-          goal: "Test goal",
-          summary: "A test plan",
-          steps: [
-            {
-              id: "1",
-              description: "Create dir",
-              dependsOn: [],
-              status: "blocked",
-              blockedQuestion: "Need creds",
-            },
-          ],
+        blocked: {
+          blockedAt: "planning",
+          prompt: "Need more detail",
+          requiredInputKey: "step:planning:input",
         },
       }),
     );
-
-    const { goalAnswerCommand } = await import("./goal-answer.js");
-    const rt = mockRuntime();
-    await goalAnswerCommand("answer-test-run", { key: "task:1:input", value: "ok" }, rt);
-
-    const run = loadRun("answer-test-run", testGoalsDir);
-    expect(run).toBeDefined();
-    expect(run!.answers["task:1:input"]).toBe("ok");
-    expect(run!.blocked).toBeNull();
-    expect(run!.state).toBe("executing");
-  });
-
-  it("JSON mode outputs strict JSON with answered status", async () => {
-    saveRun(makeBlockedRun({ state: "needs_clarification" }));
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const rt = mockRuntime();
     await goalAnswerCommand(
       "answer-test-run",
-      { key: "db_password", value: "s3cret", json: true },
+      { key: "step:planning:input", value: "s3cret", json: true },
       rt,
     );
 
@@ -202,7 +186,7 @@ describe("goal-answer command", () => {
     expect(raw.trimStart()[0]).toBe("{");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     expect(parsed.status).toBe("answered");
-    expect(parsed.key).toBe("db_password");
+    expect(parsed.key).toBe("step:planning:input");
     expect(parsed.warning).toBeDefined();
   });
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import { GOAL_WORKER_OUTPUT_SCHEMA as SCHEMA } from "./backend-types.js";
-import type { EffectiveCapabilities } from "./capability-types.js";
+import type { HardDeny } from "./capability-types.js";
 import type { PlanStep, Plan } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
 import {
@@ -19,8 +19,6 @@ import { runCliProcess } from "./cli-process.js";
 // --- Constants ---
 
 const WORKER_RESULT_FILENAME = "worker_result.json";
-const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
-const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
 const LOG_EXCERPT_CHARS = 2048;
 
 // --- Public API ---
@@ -32,7 +30,9 @@ export type CliWorkerParams = {
   goal: string;
   workingDir: string;
   runId: string;
-  effective: EffectiveCapabilities;
+  hardDenies: HardDeny[];
+  timeoutMs: number;
+  abortSignal?: AbortSignal;
   model?: string;
   completedSummaries?: Array<{ id: string; summary: string }>;
   onProgress?: (text: string) => void;
@@ -62,7 +62,9 @@ export async function executeTaskWithCliWorker(
     goal,
     workingDir,
     runId,
-    effective,
+    hardDenies,
+    timeoutMs,
+    abortSignal,
     model,
     completedSummaries,
     onProgress,
@@ -81,7 +83,7 @@ export async function executeTaskWithCliWorker(
     step,
     plan,
     goal,
-    effective,
+    hardDenies,
     completedSummaries,
     resumeAnswer,
     resumeQuestion,
@@ -91,21 +93,19 @@ export async function executeTaskWithCliWorker(
 
   // Write artifacts
   const schemaPath = writeWorkerSchema(workerDir);
-  const capsFilePath = writeCapsFile(effective, workerDir);
+  const denyFilePath = writeDenyFile(hardDenies, workerDir);
 
   const args = buildCliArgs({
     backend,
     prompt,
     workingDir,
     schemaPath,
-    capsFilePath,
-    effective,
+    denyFilePath,
     model,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
 
-  const timeoutMs = resolveTaskTimeoutMs(step.durationMinutes);
   onProgress?.(
     `  [cli-worker:${backend}] attempt ${attemptNumber} (timeout ${(timeoutMs / 60_000).toFixed(0)}m)`,
   );
@@ -118,6 +118,7 @@ export async function executeTaskWithCliWorker(
     args,
     cwd: workingDir,
     timeoutMs,
+    abortSignal,
     stdoutPath,
     stderrPath,
   });
@@ -189,7 +190,7 @@ export async function executeTaskWithCliWorker(
     errorType = output.errorType;
   }
   if (output.status === "blocked") {
-    blockedClassification = output.missingCapabilities?.length ? "capability_denied" : "user_input";
+    blockedClassification = "user_input";
   }
 
   const outcome = classifyAttemptOutcome(output, timedOut, exitCode, signal);
@@ -225,7 +226,7 @@ export function buildCliWorkerPrompt(params: {
   step: PlanStep;
   plan: Plan;
   goal: string;
-  effective: EffectiveCapabilities;
+  hardDenies: HardDeny[];
   completedSummaries?: Array<{ id: string; summary: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
@@ -236,7 +237,7 @@ export function buildCliWorkerPrompt(params: {
     step,
     plan,
     goal,
-    effective,
+    hardDenies,
     completedSummaries,
     resumeAnswer,
     resumeQuestion,
@@ -275,18 +276,9 @@ export function buildCliWorkerPrompt(params: {
   }
   lines.push("");
 
-  lines.push("CAPABILITY BOUNDS:");
-  for (const grant of effective.grants) {
-    const details: string[] = [];
-    if (grant.pathGlobs) details.push(`paths: ${grant.pathGlobs.join(", ")}`);
-    if (grant.commandPatterns)
-      details.push(`commands: ${grant.commandPatterns.slice(0, 5).join(", ")}...`);
-    if (grant.domainAllowlist) details.push(`domains: ${grant.domainAllowlist.join(", ")}`);
-    lines.push(`- ${grant.id}${details.length ? ` (${details.join("; ")})` : ""}`);
-  }
   lines.push("HARD DENIES (never do these):");
-  for (const deny of effective.denies) {
-    lines.push(`- ${deny.id}: ${deny.reason}`);
+  for (const deny of hardDenies) {
+    lines.push(`- ${deny.pattern}: ${deny.reason}`);
   }
   lines.push("");
 
@@ -318,63 +310,9 @@ export function buildCliWorkerPrompt(params: {
 
 // --- Allowed tools list generation (for Claude Code --allowedTools) ---
 
-/** Convert EffectiveCapabilities into Claude Code --allowedTools patterns. */
-export function buildAllowedToolsList(effective: EffectiveCapabilities): string[] {
-  // Baseline tools always available
-  const tools: string[] = ["Read", "Edit", "Write", "Glob", "Grep"];
-
-  const grantIds = new Set(effective.grants.map((g) => g.id));
-
-  // exec.safe → standard build/test/lint commands
-  if (grantIds.has("exec.safe")) {
-    tools.push(
-      "Bash(pnpm test*)",
-      "Bash(pnpm lint*)",
-      "Bash(pnpm build*)",
-      "Bash(pnpm format*)",
-      "Bash(npm test*)",
-      "Bash(npm run *)",
-      "Bash(bun test*)",
-      "Bash(bun run *)",
-      "Bash(node *)",
-      "Bash(tsc *)",
-      "Bash(vitest *)",
-      "Bash(git status*)",
-      "Bash(git diff*)",
-      "Bash(git log*)",
-      "Bash(git add*)",
-      "Bash(git commit*)",
-      "Bash(git branch*)",
-      "Bash(git show*)",
-      "Bash(ls *)",
-      "Bash(find *)",
-      "Bash(grep *)",
-      "Bash(mkdir *)",
-    );
-  }
-
-  // exec.install_deps → package install commands
-  if (grantIds.has("exec.install_deps")) {
-    tools.push(
-      "Bash(npm install*)",
-      "Bash(pnpm install*)",
-      "Bash(bun install*)",
-      "Bash(pip install*)",
-      "Bash(yarn add*)",
-    );
-  }
-
-  // git.push_private → git push
-  if (grantIds.has("git.push_private")) {
-    tools.push("Bash(git push*)");
-  }
-
-  // network.read_only or network.registry_only → curl/wget
-  if (grantIds.has("network.read_only") || grantIds.has("network.registry_only")) {
-    tools.push("Bash(curl *)", "Bash(wget *)");
-  }
-
-  return tools;
+/** Convert default tools into Claude Code --allowedTools patterns. */
+export function buildAllowedToolsList(): string[] {
+  return ["Read", "Edit", "Write", "Glob", "Grep", "Bash(*)"];
 }
 
 // --- Schema / caps file writing ---
@@ -387,14 +325,11 @@ export function writeWorkerSchema(dir: string): string {
 }
 
 /** Write capability bounds text to a file for --append-system-prompt-file. Returns the path. */
-export function writeCapsFile(effective: EffectiveCapabilities, dir: string): string {
+export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
   const filePath = path.join(dir, "capability-bounds.txt");
-  const lines: string[] = ["CAPABILITY BOUNDS (enforced):"];
-  for (const grant of effective.grants) {
-    lines.push(`- ALLOWED: ${grant.id}`);
-  }
-  for (const deny of effective.denies) {
-    lines.push(`- DENIED: ${deny.id} — ${deny.reason}`);
+  const lines: string[] = ["HARD DENIES (enforced):"];
+  for (const deny of hardDenies) {
+    lines.push(`- DENIED: ${deny.pattern} — ${deny.reason}`);
   }
   fs.writeFileSync(filePath, lines.join("\n"), "utf8");
   return filePath;
@@ -434,16 +369,7 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
 
   if (status === "blocked") {
     if (typeof parsed.question !== "string") return null;
-    const result: GoalWorkerOutput = { status: "blocked", question: parsed.question };
-    if (Array.isArray(parsed.missingCapabilities)) {
-      const caps = parsed.missingCapabilities.filter((c): c is string => typeof c === "string");
-      if (caps.length > 0) {
-        (
-          result as { status: "blocked"; question: string; missingCapabilities: string[] }
-        ).missingCapabilities = caps;
-      }
-    }
-    return result;
+    return { status: "blocked", question: parsed.question };
   }
 
   if (status === "failed") {
@@ -472,12 +398,10 @@ function buildCliArgs(params: {
   prompt: string;
   workingDir: string;
   schemaPath: string;
-  capsFilePath: string;
-  effective: EffectiveCapabilities;
+  denyFilePath: string;
   model?: string;
 }): string[] {
-  const { backend, prompt, workingDir, schemaPath, capsFilePath, effective, model } = params;
-  const grantIds = new Set(effective.grants.map((g) => g.id));
+  const { backend, prompt, workingDir, schemaPath, denyFilePath, model } = params;
 
   if (backend === "codex") {
     const args = [
@@ -493,14 +417,7 @@ function buildCliArgs(params: {
       workingDir,
     ];
 
-    // Network gating: only enable when capability is granted
-    if (
-      grantIds.has("exec.install_deps") ||
-      grantIds.has("network.registry_only") ||
-      grantIds.has("network.read_only")
-    ) {
-      args.push("-c", "net.allowed=true");
-    }
+    args.push("-c", "net.allowed=true");
 
     if (model) args.push("--model", model);
     args.push(prompt);
@@ -508,7 +425,7 @@ function buildCliArgs(params: {
   }
 
   // Claude Code
-  const allowedTools = buildAllowedToolsList(effective);
+  const allowedTools = buildAllowedToolsList();
   const args = [
     "-p",
     "--verbose",
@@ -517,7 +434,7 @@ function buildCliArgs(params: {
     "--allowedTools",
     allowedTools.join(","),
     "--append-system-prompt-file",
-    capsFilePath,
+    denyFilePath,
   ];
   if (model) args.push("--model", model);
   args.push(prompt);
@@ -555,12 +472,6 @@ export function readWorkerResultFile(workerDir: string): {
     };
   }
   return { output: validated };
-}
-
-function resolveTaskTimeoutMs(durationMinutes?: number): number {
-  if (!durationMinutes || durationMinutes <= 0) return MIN_TASK_TIMEOUT_MS;
-  const estimateMs = durationMinutes * 2 * 60_000;
-  return Math.max(MIN_TASK_TIMEOUT_MS, Math.min(estimateMs, MAX_TASK_TIMEOUT_MS));
 }
 
 function makeFailureOutput(

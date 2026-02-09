@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadJsonFile } from "../infra/json-file.js";
-import { createDefaultPolicy } from "./capability-policy.js";
+import { aggregateBlockedDetails } from "./blocked.js";
 import type {
   GoalSession,
   PlanStep,
@@ -60,6 +60,7 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
   // Backward compat: migrate blockReason → structured blocked
   if (!data.blocked && typeof data.blockReason === "string") {
     data.blocked = {
+      blockedAt: "execution",
       prompt: data.blockReason,
       requiredInputKey: "step:unknown:input",
     } satisfies BlockedDetail;
@@ -99,9 +100,35 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
     }
   }
 
-  // Backfill capabilityPolicy for pre-capability runs that have a workingDir
-  if (!data.capabilityPolicy && typeof data.workingDir === "string") {
-    data.capabilityPolicy = createDefaultPolicy(data.workingDir as string);
+  // Migrate state machine to simplified set
+  if (data.state === "init") data.state = "planning";
+  if (data.state === "needs_clarification") data.state = "blocked";
+  if (data.state === "rejected") data.state = "cancelled";
+  if (data.state === "failed") {
+    if (data.plan) {
+      data.state = "blocked";
+      if (!data.blocked && plan?.steps) {
+        const synthesized = aggregateBlockedDetails(plan.steps as PlanStep[]);
+        if (synthesized) data.blocked = synthesized;
+      }
+    } else {
+      data.state = "cancelled";
+    }
+  }
+
+  // Ensure blocked details include blockedAt
+  if (data.blocked && typeof data.blocked === "object") {
+    const blocked = data.blocked as Record<string, unknown>;
+    if (!blocked.blockedAt) {
+      const key = String(blocked.requiredInputKey ?? "");
+      const blockedAt =
+        key.startsWith("step:planning") || data.state === "planning" ? "planning" : "execution";
+      blocked.blockedAt = blockedAt;
+    }
+  }
+
+  if (!data.taskCheckpoints) {
+    data.taskCheckpoints = {};
   }
 
   return data;
@@ -206,6 +233,7 @@ export function sessionToSerialized(params: {
     ...(params.scoutStatus ? { scoutStatus: params.scoutStatus } : {}),
     ...(params.scoutSkipReason ? { scoutSkipReason: params.scoutSkipReason } : {}),
     ...(params.backendOverride ? { backendOverride: params.backendOverride } : {}),
+    ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
   };
   const previous = params.previousRun;
   if (!previous) return serialized;
@@ -231,11 +259,11 @@ export function sessionToSerialized(params: {
     serialized.scoutStatus = previous.scoutStatus;
     serialized.scoutSkipReason ??= previous.scoutSkipReason;
   }
-  if (!serialized.capabilityPolicy && previous.capabilityPolicy) {
-    serialized.capabilityPolicy = previous.capabilityPolicy;
-  }
   if (!serialized.backendOverride && previous.backendOverride) {
     serialized.backendOverride = previous.backendOverride;
+  }
+  if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
+    serialized.taskCheckpoints = previous.taskCheckpoints;
   }
   return serialized;
 }
@@ -285,5 +313,6 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     blocked: run.blocked ?? null,
     answers: run.answers ?? {},
     lastError: run.lastError,
+    taskCheckpoints: run.taskCheckpoints ?? {},
   };
 }

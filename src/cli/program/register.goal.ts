@@ -27,7 +27,7 @@ export function registerGoalCommand(program: Command) {
     .option("--output <format>", "Output format: md, json (default: md)")
     .option(
       "--backend <backend>",
-      "Execution backend: pi, codex, claude_code (default: auto-select)",
+      "Execution backend: pi, codex, claude_code (default: claude_code)",
     )
     .addHelpText(
       "after",
@@ -131,7 +131,7 @@ export function registerGoalCommand(program: Command) {
     .option("--yes", "Auto-approve without prompting", false)
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--output <format>", "Output format: md, json (default: md)")
-    .option("--replan", "Retry planning phase if the run failed during planning", false)
+    .option("--replan", "Retry planning phase for incomplete runs", false)
     .action(async (runId, opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { goalResumeCommand } = await import("../../commands/goal-resume.js");

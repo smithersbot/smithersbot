@@ -8,6 +8,7 @@ export type RunCliProcessParams = {
   args: string[];
   cwd: string;
   timeoutMs: number;
+  abortSignal?: AbortSignal;
   stdin?: string;
   stdoutPath?: string;
   stderrPath?: string;
@@ -43,8 +44,19 @@ function terminateProcess(proc: ChildProcess): void {
 }
 
 export async function runCliProcess(params: RunCliProcessParams): Promise<RunCliProcessResult> {
-  const { command, args, cwd, timeoutMs, stdin, stdoutPath, stderrPath } = params;
+  const { command, args, cwd, timeoutMs, abortSignal, stdin, stdoutPath, stderrPath } = params;
   const start = Date.now();
+
+  if (abortSignal?.aborted) {
+    return {
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      exitCode: null,
+      signal: null,
+      durationMs: 0,
+    };
+  }
 
   return new Promise((resolve) => {
     let stdout = "";
@@ -99,10 +111,22 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
       terminateProcess(proc);
     }, timeoutMs);
 
+    const abortHandler = () => {
+      if (timedOut) return;
+      timedOut = true;
+      terminateProcess(proc);
+    };
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", abortHandler, { once: true });
+    }
+
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(hardTimeout);
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", abortHandler);
+      }
       stdoutStream?.end();
       stderrStream?.end();
       if (timedOut && proc.pid && isProcessAlive(proc.pid)) {

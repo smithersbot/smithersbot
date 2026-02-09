@@ -153,26 +153,26 @@ describe("goal-status command", () => {
     expect(output).toContain("status-test-aaaa");
   });
 
-  it("text mode shows lastError for failed runs", async () => {
+  it("text mode shows lastError for incomplete runs", async () => {
     saveRun({
       ...sampleRun,
       runId: "failed-status-run",
-      state: "failed",
+      state: "planning",
       lastError: "shell_exec command not in read-only allowlist",
     });
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("failed-status-run", {}, rt);
     const output = rt.logs.join("\n");
-    expect(output).toContain("failed");
+    expect(output).toContain("planning");
     expect(output).toContain("shell_exec command not in read-only allowlist");
   });
 
-  it("JSON mode includes lastError for failed runs", async () => {
+  it("JSON mode includes lastError for incomplete runs", async () => {
     saveRun({
       ...sampleRun,
       runId: "failed-json-status",
-      state: "failed",
+      state: "planning",
       lastError: "Planning error",
     });
     const { goalStatusCommand } = await import("./goal-status.js");
@@ -180,7 +180,7 @@ describe("goal-status command", () => {
     await goalStatusCommand("failed-json-status", { json: true }, rt);
     const raw = rt.logs.join("");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    expect(parsed.state).toBe("failed");
+    expect(parsed.state).toBe("planning");
     expect(parsed.lastError).toBe("Planning error");
   });
 
@@ -189,7 +189,7 @@ describe("goal-status command", () => {
       ...sampleRun,
       runId: "blocked-detail-run",
       state: "blocked",
-      blocked: { prompt: "Need creds", requiredInputKey: "db_password" },
+      blocked: { blockedAt: "execution", prompt: "Need creds", requiredInputKey: "db_password" },
     });
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
@@ -205,7 +205,7 @@ describe("goal-status command", () => {
       ...sampleRun,
       runId: "blocked-json-detail",
       state: "blocked",
-      blocked: { prompt: "Need creds", requiredInputKey: "db_password" },
+      blocked: { blockedAt: "execution", prompt: "Need creds", requiredInputKey: "db_password" },
     });
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();

@@ -260,15 +260,6 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalResumeCommand).not.toHaveBeenCalled();
     });
 
-    it("returns error for rejected run", async () => {
-      saveRun(makeRun({ state: "rejected" }));
-
-      const { handleGoalApprove } = await import("./goal-commands.js");
-      const result = await handleGoalApprove("test-run");
-      expect(result).toContain("rejected");
-      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
-    });
-
     it("returns undefined when onStatusChange is provided (no stray message)", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
@@ -283,19 +274,20 @@ describe("goal-commands telegram adapter", () => {
       expect(opts.onStatusChange).toBe(statusCb);
     });
 
-    it("returns failure message even when onStatusChange is provided", async () => {
+    it("returns blocked message even when onStatusChange is provided", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockResolvedValue({
-        status: "failed",
-        error: "Out of credits",
-        errorKind: "out_of_credits",
+        status: "blocked",
+        question: "Out of credits",
+        requiredInputKey: "billing",
+        blockedAt: "execution",
       });
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const statusCb = vi.fn();
       const result = await handleGoalApprove("test-run", statusCb);
 
-      expect(result).toContain("Run failed:");
+      expect(result).toContain("Run blocked:");
       expect(result).toContain("Out of credits");
     });
 
@@ -314,7 +306,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Usage:");
     });
 
-    it("rejects an awaiting_approval run", async () => {
+    it("cancels an awaiting_approval run", async () => {
       saveRun(makeRun({ state: "awaiting_approval" }));
 
       const { handleGoalReject } = await import("./goal-commands.js");
@@ -323,7 +315,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("rejected");
       const run = loadRun("test-run-id-1234", testGoalsDir);
       expect(run).toBeDefined();
-      expect(run!.state).toBe("rejected");
+      expect(run!.state).toBe("cancelled");
     });
 
     it("refuses to reject a non-awaiting_approval run", async () => {
@@ -335,12 +327,12 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("done");
     });
 
-    it("returns no-op for already rejected run", async () => {
-      saveRun(makeRun({ state: "rejected" }));
+    it("returns no-op for already cancelled run", async () => {
+      saveRun(makeRun({ state: "cancelled" }));
 
       const { handleGoalReject } = await import("./goal-commands.js");
       const result = await handleGoalReject("test-run");
-      expect(result).toContain("already rejected");
+      expect(result).toContain("already cancelled");
     });
 
     it("returns error for unknown run", async () => {
@@ -383,7 +375,11 @@ describe("goal-commands telegram adapter", () => {
       saveRun(
         makeRun({
           state: "blocked",
-          blocked: { prompt: "What password?", requiredInputKey: "db_password" },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "What password?",
+            requiredInputKey: "db_password",
+          },
         }),
       );
 
@@ -425,7 +421,11 @@ describe("goal-commands telegram adapter", () => {
       saveRun(
         makeRun({
           state: "blocked",
-          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "What password?",
+            requiredInputKey: "task:1:input",
+          },
         }),
       );
 
@@ -448,7 +448,11 @@ describe("goal-commands telegram adapter", () => {
       saveRun(
         makeRun({
           state: "blocked",
-          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "What password?",
+            requiredInputKey: "task:1:input",
+          },
         }),
       );
 
@@ -470,66 +474,34 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Resuming:");
     });
 
-    it("recovers failed run by synthesizing blocked details", async () => {
+    it("returns GoalPlanResult with runId and blocked when replanning still needs info", async () => {
       saveRun(
         makeRun({
-          state: "failed",
-          blocked: null,
-          plan: {
-            goal: "Test goal",
-            summary: "A test plan",
-            steps: [
-              {
-                id: "1",
-                description: "Step one",
-                dependsOn: [],
-                status: "blocked",
-                blockedQuestion: "Need input",
-              },
-            ],
+          state: "blocked",
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Which DB?",
+            requiredInputKey: "step:planning:input",
           },
         }),
       );
 
-      mockGoalAnswerCommand.mockImplementation(
-        async (_id: unknown, _opts: unknown, _runtime: unknown) => {
-          return { status: "done", summary: "All steps completed." };
-        },
-      );
-
-      const { handleGoalAnswer } = await import("./goal-commands.js");
-      const result = await handleGoalAnswer("test-run", "ok");
-
-      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      const [, opts] = mockGoalAnswerCommand.mock.calls[0];
-      expect((opts as Record<string, unknown>).key).toBe("task:1:input");
-      const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
-    });
-
-    it("returns GoalPlanResult with runId and blocked when still needs clarification", async () => {
-      saveRun(
-        makeRun({
-          state: "needs_clarification",
-          blocked: { prompt: "Which DB?", requiredInputKey: "step:planning:input" },
-        }),
-      );
-
-      mockResolveEnvApiKey.mockReturnValue({ apiKey: "sk-test" });
-      mockCreateGoalLlmClient.mockReturnValue({});
-      // generatePlan returns a blocked result (has "question" + "blocked" key)
-      mockGeneratePlan.mockResolvedValue({
-        blocked: true,
+      mockGoalAnswerCommand.mockResolvedValue(undefined);
+      mockGoalResumeCommand.mockResolvedValue({
+        status: "blocked",
         question: "PostgreSQL or MySQL?",
+        requiredInputKey: "step:planning:input",
+        blockedAt: "planning",
       });
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "postgres");
 
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
       expect(typeof result).not.toBe("string");
       expect(result).toHaveProperty("runId", "test-run-id-1234");
       expect(result).toHaveProperty("blocked", true);
-      expect(result).toHaveProperty("text");
       expect((result as { text: string }).text).toContain("Still need more info");
       expect((result as { text: string }).text).toContain("PostgreSQL or MySQL?");
     });
@@ -538,7 +510,11 @@ describe("goal-commands telegram adapter", () => {
       saveRun(
         makeRun({
           state: "blocked",
-          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "What password?",
+            requiredInputKey: "task:1:input",
+          },
         }),
       );
       mockGoalAnswerCommand.mockResolvedValue({ status: "done", summary: "All done." });
@@ -551,27 +527,6 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
       expect(opts.onStatusChange).toBe(statusCb);
-    });
-
-    it("returns failure message even when onStatusChange is provided (answer path)", async () => {
-      saveRun(
-        makeRun({
-          state: "blocked",
-          blocked: { prompt: "What password?", requiredInputKey: "task:1:input" },
-        }),
-      );
-      mockGoalAnswerCommand.mockResolvedValue({
-        status: "failed",
-        error: "Out of credits",
-        errorKind: "out_of_credits",
-      });
-
-      const { handleGoalAnswer } = await import("./goal-commands.js");
-      const statusCb = vi.fn();
-      const result = await handleGoalAnswer("test-run", "s3cret", statusCb);
-
-      expect(result).toContain("Run failed:");
-      expect(result).toContain("Out of credits");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {

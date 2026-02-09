@@ -11,7 +11,6 @@ import { formatPlanOutput } from "../goal/format-output.js";
 import { isGitRepo } from "../goal/git-checkpoint.js";
 import { createGoalLlmClient } from "../goal/llm-client.js";
 import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import { createDefaultPolicy } from "../goal/capability-policy.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import { runScoutWithRetry, type ScoutResult } from "../goal/scout.js";
 import type { GoalBackendId } from "../goal/backend-types.js";
@@ -108,7 +107,6 @@ export async function goalCommand(
   const createdAt = new Date().toISOString();
   let scoutStatus: SerializedRun["scoutStatus"];
   let scoutSkipReason: string | undefined;
-  let capabilityPolicy: SerializedRun["capabilityPolicy"];
 
   if (!isJson) {
     runtime.log(`Run: ${runId}`);
@@ -118,7 +116,7 @@ export async function goalCommand(
   // In-memory session state
   const session: GoalSession = {
     goal,
-    state: "init",
+    state: "planning",
     plan: null,
     stepResults: new Map(),
     blocked: null,
@@ -138,7 +136,6 @@ export async function goalCommand(
       scoutSkipReason,
       backendOverride: opts.backend,
     });
-    if (capabilityPolicy) serialized.capabilityPolicy = capabilityPolicy;
     saveRun(serialized);
   }
 
@@ -182,16 +179,18 @@ export async function goalCommand(
         }
         if (scoutData.status === "needs_clarification") {
           scoutStatus = "needs_clarification";
-          session.state = "needs_clarification";
+          session.state = "blocked";
           session.blocked = {
+            blockedAt: "planning",
             prompt: scoutData.question,
             requiredInputKey: "step:planning:input",
           };
           persistRun();
           const outcome: GoalOutcome = {
-            status: "needs_clarification",
+            status: "blocked",
             question: scoutData.question,
             requiredInputKey: "step:planning:input",
+            blockedAt: "planning",
           };
           if (isJson) {
             runtime.log(JSON.stringify(outcome, null, 2));
@@ -215,7 +214,7 @@ export async function goalCommand(
           } else {
             message = `Scout failed: ${scoutData.error}. ${hint}`;
           }
-          session.state = "failed";
+          session.state = "cancelled";
           session.lastError = message;
           persistRun();
           if (isJson) {
@@ -254,16 +253,18 @@ export async function goalCommand(
 
     // Handle blocked-at-planning (pre-plan clarification, not execution-time block)
     if ("blocked" in planResult) {
-      session.state = "needs_clarification";
+      session.state = "blocked";
       session.blocked = {
+        blockedAt: "planning",
         prompt: planResult.question,
         requiredInputKey: "step:planning:input",
       };
       persistRun();
       const outcome: GoalOutcome = {
-        status: "needs_clarification",
+        status: "blocked",
         question: planResult.question,
         requiredInputKey: "step:planning:input",
+        blockedAt: "planning",
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
@@ -340,20 +341,16 @@ export async function goalCommand(
         runtime.exit(130);
       }
       if (!approved) {
-        // Explicit "No" — persist as rejected
-        session.state = "rejected";
+        // Explicit "No" — persist as cancelled
+        session.state = "cancelled";
         persistRun();
         runtime.log("Plan rejected.");
-        return { status: "rejected" };
+        return { status: "cancelled" };
       }
     }
 
     // Phase 3: Execution
     if (!isJson) runtime.log("");
-
-    // Snapshot capability policy before execution (immutable for the lifetime of the run)
-    capabilityPolicy = createDefaultPolicy(workingDir, opts.config?.goal?.readOnlyRoots);
-    persistRun();
 
     const disableCheckpoints =
       Boolean(opts.noGitCheckpoints) || process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
@@ -364,8 +361,8 @@ export async function goalCommand(
       model: opts.model,
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,
-      gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true, resetOnRetry: true },
-      serializedRun: { capabilityPolicy, backendOverride: opts.backend } as SerializedRun,
+      gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
+      serializedRun: { backendOverride: opts.backend } as SerializedRun,
       onTaskUpdate: () => persistRun(),
       onProgress: (text) => {
         if (!isJson) runtime.log(text);
@@ -386,9 +383,8 @@ export async function goalCommand(
         runtime.log(`DONE: ${outcome.summary}`);
       } else if (outcome.status === "blocked") {
         runtime.log(`BLOCKED: ${outcome.question}`);
-      } else if (outcome.status === "failed") {
-        runtime.log(`FAILED: ${outcome.error}`);
-        // No /goal_answer prompt - this error requires user action outside the bot
+      } else if (outcome.status === "cancelled") {
+        runtime.log("CANCELLED.");
       }
     }
 
@@ -397,7 +393,7 @@ export async function goalCommand(
     // Persist the failure so the run record is always available
     const errorMsg = err instanceof Error ? err.message : String(err);
     session.lastError = errorMsg;
-    session.state = "failed";
+    session.state = session.plan ? "cancelled" : "planning";
     persistRun();
 
     // Persist raw LLM response for post-mortem when JSON parsing fails

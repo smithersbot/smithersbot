@@ -53,6 +53,56 @@ export function loadAttemptBundleText(
   }
 }
 
+export function loadAttemptBundles(dir: string): AttemptBundle[] {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    const entries = fs.readdirSync(dir);
+    const bundles: AttemptBundle[] = [];
+    for (const entry of entries) {
+      const match = /^attempt-(\d+)\.json$/.exec(entry);
+      if (!match) continue;
+      const raw = fs.readFileSync(path.join(dir, entry), "utf8");
+      const parsed = JSON.parse(raw) as AttemptBundle;
+      bundles.push(parsed);
+    }
+    bundles.sort((a, b) => a.attemptNumber - b.attemptNumber);
+    return bundles;
+  } catch {
+    return [];
+  }
+}
+
+export function formatAttemptBundleSummary(bundle: AttemptBundle): string {
+  const lines: string[] = [];
+  lines.push(`Outcome: ${bundle.outcome}`);
+  lines.push(`Duration: ${formatDuration(bundle.durationMs)}`);
+  if (bundle.changedFiles && bundle.changedFiles.length > 0) {
+    lines.push(`Changed files: ${bundle.changedFiles.join(", ")}`);
+  }
+  if (bundle.diffstat) {
+    lines.push(`Diffstat: ${bundle.diffstat.replace(/\n/g, "; ")}`);
+  }
+  if (bundle.errorClassification) {
+    lines.push(`Error classification: ${bundle.errorClassification}`);
+  }
+  if (bundle.logExcerpt) {
+    lines.push("Log excerpt:");
+    lines.push(bundle.logExcerpt);
+  }
+  if (bundle.toolCalls && bundle.toolCalls.length > 0) {
+    lines.push(`Tool calls: ${bundle.toolCalls.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function formatDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return "0s";
+  const seconds = Math.round(durationMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+
 export function tailText(text: string, maxChars: number): string {
   if (!text) return "";
   return text.length > maxChars ? text.slice(-maxChars) : text;

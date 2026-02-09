@@ -182,7 +182,11 @@ describe("handleTelegramGoalRouting", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "What DB?", requiredInputKey: "db_type" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "What DB?",
+          requiredInputKey: "db_type",
+        },
         telegramPlanMessage: { chatId: 9, messageId: 10 },
         telegramQuestionMessages: [{ chatId: 9, messageId: 20, requiredInputKey: "db_type" }],
       }),
@@ -345,7 +349,11 @@ describe("handleTelegramGoalRouting", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 9, messageId: 10 },
       }),
     ];
@@ -403,7 +411,11 @@ describe("handleTelegramGoalRouting", () => {
       makeRun({
         runId: "r1",
         state: "blocked",
-        blocked: { prompt: "Need input", requiredInputKey: "input_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "input_key",
+        },
         telegramPlanMessage: { chatId: 9, messageId: 10 },
       }),
     ];

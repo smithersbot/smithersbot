@@ -1,23 +1,20 @@
-import type { CapabilityGrant, CapabilityPolicy } from "./capability-types.js";
 import type { GoalBackendId } from "./backend-types.js";
 
 // State machine for the goal execution loop.
 export type GoalState =
-  | "init"
   | "planning"
-  | "needs_clarification"
   | "awaiting_approval"
-  | "rejected"
-  | "cancelled"
   | "executing"
-  | "done"
   | "blocked"
-  | "failed";
+  | "done"
+  | "cancelled";
 
 /** Structured blocked state with a machine-readable key. */
 export type BlockedDetail = {
+  blockedAt: "planning" | "execution";
   prompt: string;
   requiredInputKey: string;
+  stepId?: string;
 };
 
 export type GoalSession = {
@@ -28,6 +25,14 @@ export type GoalSession = {
   blocked: BlockedDetail | null;
   answers: Record<string, string>;
   lastError?: string;
+  taskCheckpoints?: Record<string, TaskCheckpoint>;
+};
+
+export type FailedDetail = {
+  whatTried: string;
+  errorType: string;
+  suggestedNext: string;
+  needsRevert: boolean;
 };
 
 export type PlanStep = {
@@ -51,21 +56,13 @@ export type PlanStep = {
     | "out_of_credits"
     | "auth"
     | "network"
-    | "capability_denied"
     | "other";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;
   /** Structured failure detail from mark_task_failed tool. */
-  failedDetail?: {
-    whatTried: string;
-    errorType: string;
-    suggestedNext: string;
-    needsRevert: boolean;
-  };
-  /** Extra capabilities requested by the planner for this step. */
-  requestedCapabilities?: CapabilityGrant[];
-  /** Planner hint for which backend to use. */
-  preferredBackend?: GoalBackendId;
+  failedDetail?: FailedDetail;
+  /** Planner-selected backend for this step. */
+  backend?: GoalBackendId;
   /** Sticky: set once a backend is chosen, persisted across retries/resume. */
   executedBackend?: GoalBackendId;
 };
@@ -99,9 +96,13 @@ export type GoalLlmClient = {
 
 export type GoalOutcome =
   | { status: "done"; summary: string }
-  | { status: "blocked"; question: string; requiredInputKey: string }
-  | { status: "needs_clarification"; question: string; requiredInputKey: string }
-  | { status: "rejected" }
+  | {
+      status: "blocked";
+      question: string;
+      requiredInputKey: string;
+      blockedAt: BlockedDetail["blockedAt"];
+    }
+  | { status: "cancelled" }
   | { status: "failed"; error: string; errorKind: string };
 
 export type RetryConfig = {
@@ -111,7 +112,12 @@ export type RetryConfig = {
 
 export type GitCheckpointConfig = {
   enabled: boolean; // default false
-  resetOnRetry: boolean; // default true
+};
+
+export type TaskCheckpoint = {
+  baseSha: string;
+  beforeCommit?: string;
+  afterCommit?: string;
 };
 
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
@@ -161,10 +167,10 @@ export type SerializedRun = {
   agentMaxTurnsPerTask?: number;
   scoutStatus?: "success" | "skipped" | "error" | "needs_clarification";
   scoutSkipReason?: string;
-  /** Capability policy snapshot — immutable for the lifetime of the run. */
-  capabilityPolicy?: CapabilityPolicy;
   /** CLI backend override from --backend flag. */
   backendOverride?: GoalBackendId;
+  /** Per-task git checkpoint bookkeeping. */
+  taskCheckpoints?: Record<string, TaskCheckpoint>;
 };
 
 /** Result of executing a single task with the agent. */

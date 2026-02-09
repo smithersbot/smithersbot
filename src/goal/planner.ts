@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { GoalLlmError, classifyGoalError } from "./errors.js";
 import type { ScoutResult } from "./scout.js";
-import type { CapabilityGrant, CapabilityId } from "./capability-types.js";
 import type { GoalBackendId } from "./backend-types.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
@@ -25,7 +24,7 @@ Step schema:
 - description: clear, actionable description of what the agent should do, including what "done" looks like
 - dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
 - durationMinutes: estimated duration in minutes (integer, 30–120 typical)
-- preferredBackend (optional): "codex" | "claude_code" | "pi" — hint for which execution backend to use
+- backend (optional): "codex" | "claude_code" | "pi" — execution backend (default: "claude_code")
 
 Respond ONLY with a JSON object (no markdown fences) matching this schema:
 {
@@ -36,20 +35,10 @@ Respond ONLY with a JSON object (no markdown fences) matching this schema:
       "description": "What this step does and how to verify it is done",
       "dependsOn": ["step-ids-that-must-complete-first"],
       "durationMinutes": 45,
-      "capabilities": [{"id": "exec.install_deps"}],
-      "preferredBackend": "codex"
+      "backend": "codex"
     }
   ]
 }
-
-The "capabilities" field is optional. Only include it when a step genuinely needs capabilities beyond the default file/exec/git access. Valid capability ids:
-- "exec.install_deps": install packages (npm install, pnpm install, etc.) — requires network
-- "network.registry_only": allow network access to package registries only
-- "network.read_only": allow read-only network access (curl, wget)
-- "exec.long_running": allow long-running processes (dev servers, watchers)
-- "fs.write_config": write config files outside the working directory
-- "git.push_private": push to a private GitHub repository
-Each entry: { "id": "<id>", "pathGlobs": [...], "commandPatterns": [...], "domainAllowlist": [...] }
 
 If you cannot create a plan because you need more information, respond with:
 { "blocked": true, "question": "The specific question you need answered" }`;
@@ -168,57 +157,10 @@ export function extractJson(text: string): Record<string, unknown> {
   );
 }
 
-const VALID_EXPANDABLE_IDS: CapabilityId[] = [
-  "exec.install_deps",
-  "network.registry_only",
-  "network.read_only",
-  "exec.long_running",
-  "fs.write_config",
-  "git.push_private",
-];
-
-const MAX_CAP_GLOBS = 20;
-const MAX_CAP_COMMANDS = 20;
-const MAX_CAP_DOMAINS = 10;
-
-/** Parse and validate step capabilities from raw LLM output. */
-function parseStepCapabilities(raw: unknown): CapabilityGrant[] {
-  if (!Array.isArray(raw)) return [];
-
-  const grants: CapabilityGrant[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") continue;
-    const obj = entry as Record<string, unknown>;
-    const id = typeof obj.id === "string" ? obj.id : "";
-    if (!VALID_EXPANDABLE_IDS.includes(id as CapabilityId)) {
-      // Unknown capability ID — skip with implicit warning (logged at debug level)
-      continue;
-    }
-
-    const grant: CapabilityGrant = { id: id as CapabilityId };
-
-    if (Array.isArray(obj.pathGlobs)) {
-      const globs = obj.pathGlobs.filter((g): g is string => typeof g === "string");
-      if (globs.length > 0) grant.pathGlobs = globs.slice(0, MAX_CAP_GLOBS);
-    }
-    if (Array.isArray(obj.commandPatterns)) {
-      const patterns = obj.commandPatterns.filter((p): p is string => typeof p === "string");
-      if (patterns.length > 0) grant.commandPatterns = patterns.slice(0, MAX_CAP_COMMANDS);
-    }
-    if (Array.isArray(obj.domainAllowlist)) {
-      const domains = obj.domainAllowlist.filter((d): d is string => typeof d === "string");
-      if (domains.length > 0) grant.domainAllowlist = domains.slice(0, MAX_CAP_DOMAINS);
-    }
-
-    grants.push(grant);
-  }
-  return grants;
-}
-
 const VALID_BACKEND_IDS: GoalBackendId[] = ["pi", "codex", "claude_code"];
 
-/** Parse and validate optional preferredBackend from raw LLM output. */
-function parsePreferredBackend(raw: unknown): GoalBackendId | undefined {
+/** Parse and validate optional backend from raw LLM output. */
+function parseBackend(raw: unknown): GoalBackendId | undefined {
   if (typeof raw !== "string") return undefined;
   const normalized = raw.trim().toLowerCase();
   if (VALID_BACKEND_IDS.includes(normalized as GoalBackendId)) {
@@ -254,11 +196,8 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
     const durationMinutes =
       typeof rawDuration === "number" && rawDuration > 0 ? Math.round(rawDuration) : undefined;
 
-    // Parse optional capabilities
-    const requestedCapabilities = parseStepCapabilities(step.capabilities);
-
-    // Parse optional preferredBackend
-    const preferredBackend = parsePreferredBackend(step.preferredBackend);
+    // Parse optional backend
+    const backend = parseBackend(step.backend);
 
     steps.push({
       id,
@@ -266,8 +205,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       dependsOn,
       status: "pending",
       durationMinutes,
-      ...(requestedCapabilities.length > 0 ? { requestedCapabilities } : {}),
-      ...(preferredBackend ? { preferredBackend } : {}),
+      ...(backend ? { backend } : {}),
     });
   }
 
@@ -304,6 +242,7 @@ export async function generatePlanRevision(
         description: s.description,
         dependsOn: s.dependsOn,
         durationMinutes: s.durationMinutes,
+        backend: s.backend,
       })),
     },
     null,

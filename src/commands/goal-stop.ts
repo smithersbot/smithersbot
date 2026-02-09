@@ -14,8 +14,8 @@ export type GoalStopOptions = {
  * as blocked so they can be resumed later if needed.
  *
  * Only works on goals in 'executing' state. For goals in other states:
- * - awaiting_approval/needs_clarification: use goal_reject instead
- * - done/failed/rejected/cancelled: already terminal
+ * - awaiting_approval: use goal_reject instead
+ * - done/cancelled: already terminal
  */
 export async function goalStopCommand(
   runId: string,
@@ -69,15 +69,12 @@ export async function goalStopCommand(
   // For non-executing states, provide guidance
   if (run.state !== "executing" && !force) {
     const stateGuidance: Record<string, string> = {
-      init: "Goal has not started execution yet.",
-      planning: "Goal is still planning. It will complete or fail soon.",
-      needs_clarification:
-        "Goal is waiting for clarification. Answer with /goal_answer or reject with /goal_reject.",
+      planning: "Goal is still planning. It will complete or block soon.",
       awaiting_approval:
         "Goal is waiting for approval. Use /goal_reject to decline or /goal_approve to continue.",
-      rejected: "Goal was already rejected.",
-      failed: "Goal has already failed.",
       blocked: "Goal is blocked waiting for input. Use /goal_answer to continue or /goal_reject.",
+      done: "Goal is already completed.",
+      cancelled: "Goal is already cancelled.",
     };
 
     const guidance = stateGuidance[run.state] ?? "Unknown state.";

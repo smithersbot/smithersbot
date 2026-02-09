@@ -130,7 +130,7 @@ function filterRunsForChatThread(params: {
 
 function isBlockedRun(run: SerializedRun): boolean {
   return (
-    (run.state === "blocked" || run.state === "needs_clarification") &&
+    run.state === "blocked" &&
     Boolean(run.blocked?.prompt?.trim()) &&
     Boolean(run.blocked?.requiredInputKey?.trim())
   );

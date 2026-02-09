@@ -137,7 +137,7 @@ describe("goal command — early failure persistence", () => {
 
     const run = loadRun(runs[0]!.runId, testGoalsDir);
     expect(run).toBeDefined();
-    expect(run!.state).toBe("failed");
+    expect(run!.state).toBe("planning");
     expect(run!.lastError).toContain("Plan must contain at least one step");
   });
 
@@ -163,7 +163,7 @@ describe("goal command — early failure persistence", () => {
 
     const run = loadRun(runs[0]!.runId, testGoalsDir);
     expect(run).toBeDefined();
-    expect(run!.state).toBe("failed");
+    expect(run!.state).toBe("planning");
     expect(run!.lastError).toContain("No Anthropic API key found");
   });
 
@@ -196,7 +196,7 @@ describe("goal command — early failure persistence", () => {
     // The run should also be persisted
     const runs = listRuns(testGoalsDir);
     expect(runs).toHaveLength(1);
-    expect(runs[0]!.state).toBe("failed");
+    expect(runs[0]!.state).toBe("planning");
   });
 
   it("runCommandWithRuntime sets process.exitCode on JsonExitError", async () => {
@@ -258,7 +258,7 @@ describe("goal command — early failure persistence", () => {
     expect(parsed.runId).toBeDefined();
   });
 
-  it("goal list finds failed runs", async () => {
+  it("goal list finds incomplete runs", async () => {
     mockGeneratePlan.mockRejectedValue(new Error("Allowlist rejection"));
 
     const { goalCommand } = await import("./goal.js");
@@ -278,7 +278,7 @@ describe("goal command — early failure persistence", () => {
     // Verify goal list shows the failed run
     const runs = listRuns(testGoalsDir);
     expect(runs).toHaveLength(1);
-    expect(runs[0]!.state).toBe("failed");
+    expect(runs[0]!.state).toBe("planning");
     expect(runs[0]!.goal).toBe("Dangerous goal");
   });
 });

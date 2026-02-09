@@ -9,8 +9,10 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
     const prompt =
       task.blockedQuestion ?? `Task ${task.id} is blocked (${task.blockedReason ?? "unknown"}).`;
     return {
+      blockedAt: "execution",
       prompt,
       requiredInputKey: `task:${task.id}:input`,
+      stepId: task.id,
     };
   }
 
@@ -19,6 +21,7 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
     return `- Task ${task.id} (${task.description}): ${reason}`;
   });
   return {
+    blockedAt: "execution",
     prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
     requiredInputKey: `tasks:${blocked.map((t) => t.id).join(",")}:input`,
   };

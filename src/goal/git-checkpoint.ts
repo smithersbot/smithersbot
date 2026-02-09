@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { TaskCheckpoint } from "./types.js";
 
-export type GitCheckpoint = { sha: string; branch: string; taskId: string; createdAt: string };
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
+export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
 
 export function canRunGit(): boolean {
   try {
@@ -61,68 +62,74 @@ export function getHeadSha(cwd: string): GitResult {
   }
 }
 
-/** Create a task branch and capture a checkpoint. Returns null on non-git or error. */
-export function createCheckpoint(cwd: string, runId: string, taskId: string): GitCheckpoint | null {
-  if (!canRunGit()) return null;
-  if (!isGitRepo(cwd)) return null;
-  const headResult = getHeadSha(cwd);
-  if (!headResult.success) return null;
-
-  const branchName = `claw/${runId}/${taskId}`;
+export function ensureRunBranch(cwd: string, runId: string): GitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
+  if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
   try {
+    const branchName = `claw/run/${runId}`;
     execFileSync("git", ["-C", cwd, "checkout", "-B", branchName], {
       encoding: "utf8",
       timeout: 10000,
     });
-  } catch {
-    // Branch creation failed; proceed without branch isolation
-    return { sha: headResult.sha, branch: "", taskId, createdAt: new Date().toISOString() };
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
-
-  return { sha: headResult.sha, branch: branchName, taskId, createdAt: new Date().toISOString() };
+  return getHeadSha(cwd);
 }
 
-/** Auto-commit orphaned changes left by a crashed worker so the tree is clean for the next step. */
-export function commitOrphanedChanges(cwd: string, runId: string): GitResult {
+export function autosaveIfDirty(cwd: string, message: string): GitCommitResult {
   if (!canRunGit()) return { success: false, error: "git not available" };
   if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
-  if (isWorkingTreeClean(cwd)) return { success: false, error: "Tree already clean" };
+  if (isWorkingTreeClean(cwd)) return { success: true };
+  return commitAll(cwd, message);
+}
+
+export function startTaskCheckpoint(
+  cwd: string,
+  taskId: string,
+): { success: true; checkpoint: TaskCheckpoint } | { success: false; error: string } {
+  const before = autosaveIfDirty(cwd, `claw: autosave before ${taskId}`);
+  if (!before.success) return before;
+
+  const head = getHeadSha(cwd);
+  if (!head.success) return head;
+
+  const checkpoint: TaskCheckpoint = { baseSha: head.sha };
+  if (before.sha) checkpoint.beforeCommit = before.sha;
+  return { success: true, checkpoint };
+}
+
+export function finalizeTaskCheckpoint(
+  cwd: string,
+  taskId: string,
+  summary?: string,
+): GitCommitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
+  if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
+  if (isWorkingTreeClean(cwd)) return { success: true };
+
+  const message = buildTaskCommitMessage(taskId, summary);
+  return commitAll(cwd, message);
+}
+
+function buildTaskCommitMessage(taskId: string, summary?: string): string {
+  const trimmed = summary?.split("\n")[0]?.trim();
+  const suffix = trimmed ? ` - ${trimmed.slice(0, 72)}` : "";
+  return `claw: ${taskId}${suffix}`;
+}
+
+function commitAll(cwd: string, message: string): GitResult {
   try {
     execFileSync("git", ["-C", cwd, "add", "-A"], { encoding: "utf8", timeout: 10000 });
-    execFileSync(
-      "git",
-      [
-        "-C",
-        cwd,
-        "commit",
-        "-m",
-        `checkpoint: orphaned changes from crashed run ${runId.slice(0, 8)}`,
-      ],
-      { encoding: "utf8", timeout: 10000 },
-    );
+    execFileSync("git", ["-C", cwd, "commit", "-m", message], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
     const sha = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
       encoding: "utf8",
       timeout: 5000,
     }).trim();
     return { success: true, sha };
-  } catch (e) {
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-export function resetToCheckpoint(cwd: string, checkpoint: GitCheckpoint): GitResult {
-  if (!canRunGit()) return { success: false, error: "git not available" };
-  if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
-  try {
-    execFileSync("git", ["-C", cwd, "reset", "--hard", checkpoint.sha], {
-      encoding: "utf8",
-      timeout: 30000,
-    });
-    execFileSync("git", ["-C", cwd, "clean", "-fd"], {
-      encoding: "utf8",
-      timeout: 30000,
-    });
-    return { success: true, sha: checkpoint.sha };
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }

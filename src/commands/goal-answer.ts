@@ -1,7 +1,6 @@
 import { JsonExitError } from "../cli/cli-utils.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
-import { aggregateBlockedDetails } from "../goal/blocked.js";
 import type { GoalOutcome, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { goalResumeCommand } from "./goal-resume.js";
@@ -61,7 +60,7 @@ export async function goalAnswerCommand(
     return;
   }
 
-  if (run.state !== "blocked" && run.state !== "needs_clarification" && run.state !== "failed") {
+  if (run.state !== "blocked") {
     const msg = `Run is not awaiting input (state: ${run.state}).`;
     if (isJson) {
       runtime.log(JSON.stringify({ error: msg }));
@@ -69,16 +68,6 @@ export async function goalAnswerCommand(
     }
     runtime.error(msg);
     return;
-  }
-
-  if (!run.blocked && run.state === "failed") {
-    const synthesized = run.plan ? aggregateBlockedDetails(run.plan.steps) : null;
-    if (synthesized) {
-      run.blocked = synthesized;
-      run.state = "blocked";
-      run.updatedAt = new Date().toISOString();
-      saveRun(run);
-    }
   }
 
   if (!run.blocked) {
@@ -102,7 +91,7 @@ export async function goalAnswerCommand(
   }
 
   // Persist the answer and transition state
-  const wasBlocked = run.state === "blocked";
+  const blockedAt = run.blocked.blockedAt ?? "execution";
   const taskIds = parseTasksKey(opts.key);
   if (taskIds) {
     for (const id of taskIds) {
@@ -111,8 +100,10 @@ export async function goalAnswerCommand(
   } else {
     run.answers[opts.key] = opts.value;
   }
-  run.blocked = null;
-  run.state = "executing";
+  if (blockedAt === "execution") {
+    run.blocked = null;
+    run.state = "executing";
+  }
   run.updatedAt = new Date().toISOString();
   saveRun(run);
 
@@ -122,7 +113,7 @@ export async function goalAnswerCommand(
   }
 
   // Auto-resume execution for blocked (execution-time) runs
-  if (wasBlocked) {
+  if (blockedAt === "execution") {
     if (!isJson) runtime.log("");
     const outcome = await goalResumeCommand(
       resolvedId,
@@ -138,7 +129,7 @@ export async function goalAnswerCommand(
     return outcome;
   }
 
-  // needs_clarification: just confirm the answer was saved (planning resumes separately)
+  // planning block: confirm the answer was saved (planning resumes separately)
   if (isJson) {
     runtime.log(
       JSON.stringify({ status: "answered", key: opts.key, warning: PLAINTEXT_WARNING }, null, 2),

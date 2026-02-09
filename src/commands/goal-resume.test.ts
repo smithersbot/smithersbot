@@ -157,7 +157,11 @@ describe("goal-resume command", () => {
       makeRun({
         runId: "blocked-run",
         state: "blocked",
-        blocked: { prompt: "Need database credentials", requiredInputKey: "db_password" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need database credentials",
+          requiredInputKey: "db_password",
+        },
       }),
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
@@ -167,6 +171,7 @@ describe("goal-resume command", () => {
       status: "blocked",
       question: "Need database credentials",
       requiredInputKey: "db_password",
+      blockedAt: "execution",
     });
     expect(rt.logs.join("\n")).toContain("Need database credentials");
     expect(rt.logs.join("\n")).toContain("moltbot goal answer");
@@ -177,7 +182,11 @@ describe("goal-resume command", () => {
       makeRun({
         runId: "blocked-json",
         state: "blocked",
-        blocked: { prompt: "Missing config", requiredInputKey: "config_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Missing config",
+          requiredInputKey: "config_key",
+        },
       }),
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
@@ -196,7 +205,11 @@ describe("goal-resume command", () => {
       makeRun({
         runId: "blocked-output-json",
         state: "blocked",
-        blocked: { prompt: "Need creds", requiredInputKey: "creds_key" },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need creds",
+          requiredInputKey: "creds_key",
+        },
       }),
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
@@ -242,60 +255,20 @@ describe("goal-resume command", () => {
     expect(rt.errors).toContain("Run already completed.");
   });
 
-  it("treats failed run with blocked steps as recoverable (blocked)", async () => {
+  it("cancelled run without a plan suggests --replan", async () => {
     saveRun(
       makeRun({
-        runId: "failed-run",
-        state: "failed",
-        lastError: "shell_exec command not in read-only allowlist",
-        plan: {
-          goal: "Test goal",
-          summary: "A test plan",
-          steps: [
-            {
-              id: "1",
-              description: "Step one",
-              dependsOn: [],
-              status: "blocked",
-              blockedQuestion: "Need creds",
-            },
-          ],
-        },
-      }),
-    );
-    const { goalResumeCommand } = await import("./goal-resume.js");
-    const rt = mockRuntime();
-    const result = await goalResumeCommand("failed-run", {}, rt);
-    expect(result?.status).toBe("blocked");
-    expect(rt.logs.join("\n")).toContain("Blocked:");
-    const run = loadRun("failed-run", testGoalsDir);
-    expect(run?.state).toBe("blocked");
-  });
-
-  it("failed run without blocked details suggests --replan", async () => {
-    saveRun(
-      makeRun({
-        runId: "failed-json",
-        state: "failed",
+        runId: "cancelled-no-plan",
+        state: "cancelled",
+        plan: null,
         lastError: "Planning error",
       }),
     );
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
-    const result = await goalResumeCommand("failed-json", {}, rt);
+    const result = await goalResumeCommand("cancelled-no-plan", {}, rt);
     expect(result).toBeUndefined();
-    expect(rt.errors.join("\n")).toContain("failed during planning");
-    expect(rt.errors.join("\n")).toContain("Planning error");
-    expect(rt.errors.join("\n")).toContain("--replan");
-  });
-
-  it("refuses stale init state without --replan", async () => {
-    saveRun(makeRun({ runId: "init-run", state: "init" }));
-    const { goalResumeCommand } = await import("./goal-resume.js");
-    const rt = mockRuntime();
-    const result = await goalResumeCommand("init-run", {}, rt);
-    expect(result).toBeUndefined();
-    expect(rt.errors.join("\n")).toContain("incomplete state");
+    expect(rt.errors.join("\n")).toContain("Run has no plan");
     expect(rt.errors.join("\n")).toContain("--replan");
   });
 
@@ -320,30 +293,6 @@ describe("goal-resume command", () => {
 
   // --- Cancel vs reject ---
 
-  it("resumes a rejected run with --yes (re-approval, no re-plan)", async () => {
-    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-rejected-ws-"));
-    saveRun(
-      makeRun({
-        runId: "rejected-run",
-        state: "rejected",
-        plan: samplePlan,
-        workingDir: workDir,
-      }),
-    );
-    const { goalResumeCommand } = await import("./goal-resume.js");
-    const rt = mockRuntime();
-    // --yes skips the prompt entirely and proceeds to execution
-    // executePlan will run the mkdir step; we just verify it reaches execution
-    const result = await goalResumeCommand("rejected-run", { yes: true }, rt);
-    // The run should execute (mkdir step) and return done
-    expect(result).toBeDefined();
-    expect(result!.status).toBe("done");
-    // The persisted state should now be "done"
-    const persisted = loadRun("rejected-run", testGoalsDir);
-    expect(persisted?.state).toBe("done");
-    fs.rmSync(workDir, { recursive: true, force: true });
-  });
-
   it("resumes a cancelled run with --yes (re-approval, no re-plan)", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-cancelled-ws-"));
     saveRun(
@@ -364,22 +313,22 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("resumes a rejected run interactively — explicit No re-rejects", async () => {
+  it("resumes a cancelled run interactively — explicit No keeps cancelled", async () => {
     saveRun(
       makeRun({
-        runId: "rejected-reprompt",
-        state: "rejected",
+        runId: "cancelled-reprompt",
+        state: "cancelled",
         plan: samplePlan,
       }),
     );
     mockConfirm.mockResolvedValueOnce(false);
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
-    const result = await goalResumeCommand("rejected-reprompt", {}, rt);
-    expect(result).toEqual({ status: "rejected" });
+    const result = await goalResumeCommand("cancelled-reprompt", {}, rt);
+    expect(result).toEqual({ status: "cancelled" });
     expect(rt.logs.join("\n")).toContain("Plan rejected.");
-    const persisted = loadRun("rejected-reprompt", testGoalsDir);
-    expect(persisted?.state).toBe("rejected");
+    const persisted = loadRun("cancelled-reprompt", testGoalsDir);
+    expect(persisted?.state).toBe("cancelled");
   });
 
   it("confirm throw during resume persists cancelled state", async () => {
@@ -394,7 +343,7 @@ describe("goal-resume command", () => {
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("cancel-throw", {}, rt);
-    expect(result).toEqual({ status: "rejected" });
+    expect(result).toEqual({ status: "cancelled" });
     expect(rt.logs.join("\n")).toContain("Cancelled.");
     const persisted = loadRun("cancel-throw", testGoalsDir);
     expect(persisted?.state).toBe("cancelled");
@@ -412,7 +361,7 @@ describe("goal-resume command", () => {
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("cancel-symbol", {}, rt);
-    expect(result).toEqual({ status: "rejected" });
+    expect(result).toEqual({ status: "cancelled" });
     expect(rt.logs.join("\n")).toContain("Cancelled.");
     const persisted = loadRun("cancel-symbol", testGoalsDir);
     expect(persisted?.state).toBe("cancelled");
@@ -535,7 +484,7 @@ describe("goal-resume command", () => {
         runId: "answered-run",
         state: "blocked",
         plan: samplePlan,
-        blocked: { prompt: "Need input", requiredInputKey: "some_key" },
+        blocked: { blockedAt: "execution", prompt: "Need input", requiredInputKey: "some_key" },
         workingDir: workDir,
       }),
     );
@@ -601,7 +550,7 @@ describe("goal-resume command", () => {
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
     });
 
-    it("retries planning for a failed run with no plan", async () => {
+    it("retries planning for a cancelled run with no plan", async () => {
       mockGeneratePlan.mockResolvedValueOnce({
         summary: "Recovery plan",
         steps: [
@@ -619,7 +568,7 @@ describe("goal-resume command", () => {
       saveRun(
         makeRun({
           runId: "failed-planning",
-          state: "failed",
+          state: "cancelled",
           goal: "Goal that failed during planning",
           lastError: "Rate limit hit during planning",
         }),
@@ -652,11 +601,11 @@ describe("goal-resume command", () => {
       expect(rt.errors.join("\n")).toContain("--replan");
     });
 
-    it("suggests --replan when failed run with no plan encountered without flag", async () => {
+    it("suggests --replan when cancelled run with no plan encountered without flag", async () => {
       saveRun(
         makeRun({
           runId: "failed-no-replan",
-          state: "failed",
+          state: "cancelled",
           lastError: "Network error during planning",
         }),
       );
@@ -666,11 +615,11 @@ describe("goal-resume command", () => {
       const result = await goalResumeCommand("failed-no-replan", {}, rt);
 
       expect(result).toBeUndefined();
-      expect(rt.errors.join("\n")).toContain("failed during planning");
+      expect(rt.errors.join("\n")).toContain("Run has no plan");
       expect(rt.errors.join("\n")).toContain("--replan");
     });
 
-    it("handles replanning that results in blocked/needs_clarification", async () => {
+    it("handles replanning that results in blocked", async () => {
       mockGeneratePlan.mockResolvedValueOnce({
         blocked: true,
         question: "Need more info about the database",
@@ -689,11 +638,11 @@ describe("goal-resume command", () => {
       const result = await goalResumeCommand("replan-blocked", { replan: true }, rt);
 
       expect(result).toBeDefined();
-      expect(result?.status).toBe("needs_clarification");
+      expect(result?.status).toBe("blocked");
       expect(result?.question).toBe("Need more info about the database");
 
       const persisted = loadRun("replan-blocked", testGoalsDir);
-      expect(persisted?.state).toBe("needs_clarification");
+      expect(persisted?.state).toBe("blocked");
       expect(persisted?.blocked?.prompt).toBe("Need more info about the database");
     });
 
@@ -716,7 +665,7 @@ describe("goal-resume command", () => {
       expect(rt.errors.join("\n")).toContain("Planning failed");
 
       const persisted = loadRun("replan-fails", testGoalsDir);
-      expect(persisted?.state).toBe("failed");
+      expect(persisted?.state).toBe("planning");
       expect(persisted?.lastError).toContain("Still rate limited");
     });
 
@@ -777,7 +726,7 @@ describe("goal-resume command", () => {
       saveRun(
         makeRun({
           runId: "replan-quiet",
-          state: "failed",
+          state: "planning",
           goal: "Quiet mode goal",
           lastError: "Previous planning failure",
         }),
