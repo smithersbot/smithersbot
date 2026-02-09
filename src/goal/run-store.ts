@@ -120,7 +120,8 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
   if (data.blocked && typeof data.blocked === "object") {
     const blocked = data.blocked as Record<string, unknown>;
     if (!blocked.blockedAt) {
-      const key = String(blocked.requiredInputKey ?? "");
+      const rawKey = blocked.requiredInputKey;
+      const key = typeof rawKey === "string" ? rawKey : "";
       const blockedAt =
         key.startsWith("step:planning") || data.state === "planning" ? "planning" : "execution";
       blocked.blockedAt = blockedAt;
