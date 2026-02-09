@@ -47,7 +47,7 @@ export function detectBackendAvailability(): BackendAvailability[] {
   const codexProbe = probeBackend("codex", ["--sandbox", "--output-schema"]);
   results.push({ id: "codex", ...codexProbe });
 
-  const claudeProbe = probeBackend("claude", ["--allowedTools", "--append-system-prompt-file"]);
+  const claudeProbe = probeBackend("claude", ["--allowedTools", "--append-system-prompt"]);
   results.push({ id: "claude_code", ...claudeProbe });
 
   cachedAvailability = results;

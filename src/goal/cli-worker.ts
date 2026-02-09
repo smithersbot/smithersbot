@@ -324,14 +324,16 @@ export function writeWorkerSchema(dir: string): string {
   return filePath;
 }
 
-/** Write capability bounds text to a file for --append-system-prompt-file. Returns the path. */
+/** Build capability bounds text for --append-system-prompt, and write to disk for auditing. */
 export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
-  const filePath = path.join(dir, "capability-bounds.txt");
   const lines: string[] = ["HARD DENIES (enforced):"];
   for (const deny of hardDenies) {
     lines.push(`- DENIED: ${deny.pattern} — ${deny.reason}`);
   }
-  fs.writeFileSync(filePath, lines.join("\n"), "utf8");
+  const content = lines.join("\n");
+  // Write to disk for debugging/audit; the CLI gets the content inline.
+  const filePath = path.join(dir, "capability-bounds.txt");
+  fs.writeFileSync(filePath, content, "utf8");
   return filePath;
 }
 
@@ -426,6 +428,7 @@ function buildCliArgs(params: {
 
   // Claude Code
   const allowedTools = buildAllowedToolsList();
+  const denyContent = fs.readFileSync(denyFilePath, "utf8");
   const args = [
     "-p",
     "--verbose",
@@ -433,8 +436,8 @@ function buildCliArgs(params: {
     "stream-json",
     "--allowedTools",
     allowedTools.join(","),
-    "--append-system-prompt-file",
-    denyFilePath,
+    "--append-system-prompt",
+    denyContent,
   ];
   if (model) args.push("--model", model);
   args.push(prompt);
