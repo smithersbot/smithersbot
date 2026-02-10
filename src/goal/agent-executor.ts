@@ -27,7 +27,7 @@ import {
   type CriticalPathScores,
 } from "./plan-order.js";
 import { PiTaskRunner } from "./pi-runner.js";
-import { resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
+import { loadRun, resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
 import type {
   GitCheckpointConfig,
   GoalOutcome,
@@ -214,6 +214,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (effectiveAbort.aborted) break;
+
+    // Check if the goal was stopped externally (e.g., via goal-stop command)
+    const currentRun = loadRun(runId);
+    if (currentRun?.state === "cancelled") {
+      session.state = "cancelled";
+      return { status: "cancelled" };
+    }
 
     const runnable = findRunnableTasks(orderedSteps, session.answers);
     if (runnable.length === 0) break;

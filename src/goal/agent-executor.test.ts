@@ -49,9 +49,13 @@ vi.mock("./attempt-bundle.js", () => ({
   formatAttemptBundleSummary: () => "previous attempt",
 }));
 
+let mockRunStore: Map<string, any> = new Map();
+
 vi.mock("./run-store.js", () => ({
   resolveGoalWorkingFile: () => "/tmp/moltbot-goal-test/WORKING.md",
   resolveWorkingFile: () => "/tmp/moltbot-goal-test/step.md",
+  loadRun: (runId: string) => mockRunStore.get(runId),
+  saveRun: (run: any) => mockRunStore.set(run.runId, run),
 }));
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
@@ -82,6 +86,7 @@ function makeSession(plan: Plan): GoalSession {
 describe("agent-executor (TaskRunner orchestration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRunStore.clear();
     availability = [
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -190,5 +195,70 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(outcome.status).toBe("blocked");
     expect(step.status).toBe("blocked");
     expect(step.blockedQuestion).toContain("Backend 'codex' is not available");
+  });
+
+  it("detects external cancellation via goal-stop and exits gracefully", async () => {
+    const { saveRun } = await import("./run-store.js");
+
+    // Create two tasks
+    const step1 = makeStep({ id: "1", backend: "codex" });
+    const step2 = makeStep({ id: "2", backend: "codex", dependsOn: ["1"] });
+    const plan = makePlan([step1, step2]);
+    const session = makeSession(plan);
+    const runId = "run-external-cancel";
+
+    // Store the initial run state
+    saveRun({
+      runId,
+      goal: plan.goal,
+      state: "executing",
+      plan,
+      stepResults: {},
+      blocked: null,
+      answers: {},
+      workingDir: "/tmp/moltbot-goal-test",
+      model: undefined,
+      dryRun: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Mock the first task to complete and immediately trigger cancellation
+    mockCliExecute.mockImplementation(async () => {
+      // Simulate external cancellation immediately during first task
+      mockRunStore.set(runId, {
+        ...mockRunStore.get(runId),
+        state: "cancelled",
+        updatedAt: new Date().toISOString(),
+      });
+
+      return {
+        status: "complete",
+        summary: "Task 1 done",
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+
+    // Start execution
+    const outcomePromise = executeGoalWithAgent({
+      session,
+      runId,
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    // Wait for execution to detect cancellation
+    const outcome = await outcomePromise;
+
+    // Should detect cancellation and return cancelled status
+    expect(outcome.status).toBe("cancelled");
+    expect(session.state).toBe("cancelled");
+    // First task should be done
+    expect(step1.status).toBe("done");
+    // Second task should not have been executed (still pending)
+    expect(step2.status).toBe("pending");
+    // Only one task should have been executed
+    expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 });
