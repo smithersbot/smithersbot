@@ -135,6 +135,41 @@ export async function withChatAction<T>(params: {
 }
 
 // ---------------------------------------------------------------------------
+// In-flight guards: prevent overlapping long-running ops per run / per chat
+// ---------------------------------------------------------------------------
+
+/** Per-runId guard — prevents overlapping approve/answer/edit for the same goal. */
+const inFlightGoals = new Map<string, string>(); // runId → label
+
+export function acquireGoalLock(runId: string, label: string): boolean {
+  if (inFlightGoals.has(runId)) return false;
+  inFlightGoals.set(runId, label);
+  return true;
+}
+function releaseGoalLock(runId: string): void {
+  inFlightGoals.delete(runId);
+}
+export function getGoalLockLabel(runId: string): string | undefined {
+  return inFlightGoals.get(runId);
+}
+
+/** Per-chat planning guard — prevents concurrent /new_goal planning in the same chat/thread. */
+const inFlightPlanning = new Set<string>(); // "chatId" or "chatId:threadId"
+
+function planningKey(chatId: number, threadId?: number): string {
+  return threadId != null ? `${chatId}:${threadId}` : String(chatId);
+}
+function acquirePlanningLock(chatId: number, threadId?: number): boolean {
+  const key = planningKey(chatId, threadId);
+  if (inFlightPlanning.has(key)) return false;
+  inFlightPlanning.add(key);
+  return true;
+}
+function releasePlanningLock(chatId: number, threadId?: number): void {
+  inFlightPlanning.delete(planningKey(chatId, threadId));
+}
+
+// ---------------------------------------------------------------------------
 // Planning feedback: preface message + delayed typing
 // ---------------------------------------------------------------------------
 
@@ -173,6 +208,69 @@ export async function withPlanningFeedback<T>(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Fire-and-forget helper for long-running goal ops
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a long-running goal operation (approve, plan, answer, edit) in the
+ * background without blocking the Grammy middleware slot.
+ * Sends an immediate ack, manages typing loop, and delivers results.
+ */
+export function runGoalInBackground(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  runtime: RuntimeEnv;
+  label?: string;
+  /** When set, releases the per-runId lock in `finally`. */
+  runId?: string;
+  /** When set, called in `finally` to release planning lock. */
+  releasePlanningLock?: () => void;
+  fn: () => Promise<GoalPlanResult | string | undefined>;
+  onResult: (result: GoalPlanResult | string | undefined) => Promise<void>;
+}): void {
+  const { bot, chatId, threadId, runtime, label, runId, fn, onResult } = params;
+  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+  const tag = label ? `${label} ` : "";
+
+  // Immediate ack
+  void bot.api.sendMessage(chatId, PLANNING_PREFACE, threadParams).catch((err: unknown) => {
+    logTyping(
+      `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
+  const loop = startTypingLoop({ bot, chatId, threadId, label });
+  void (async () => {
+    try {
+      const result = await fn();
+      try {
+        await onResult(result);
+      } catch {
+        const fallback =
+          typeof result === "string" ? result : (result?.text ?? "Goal operation completed.");
+        await bot.api.sendMessage(chatId, fallback, threadParams).catch(() => {});
+      }
+    } catch (err) {
+      const msg = formatGoalError(err);
+      await sendGoalReply(bot, chatId, msg, runtime, threadId).catch(() => {
+        void bot.api
+          .sendMessage(
+            chatId,
+            `Error: ${err instanceof Error ? err.message : String(err)}`,
+            threadParams,
+          )
+          .catch(() => {});
+      });
+    } finally {
+      loop.stop();
+      if (runId) releaseGoalLock(runId);
+      params.releasePlanningLock?.();
+    }
+  })();
+}
+
+// ---------------------------------------------------------------------------
 // Lookup helper: find a run by its Telegram plan message ID
 // ---------------------------------------------------------------------------
 
@@ -195,7 +293,11 @@ export function findRunByPlanMessageId(
 // ---------------------------------------------------------------------------
 
 /** /goal <text> -- generate a plan (planOnly mode). */
-export async function handleGoal(text: string, config?: MoltbotConfig): Promise<GoalPlanResult> {
+export async function handleGoal(
+  text: string,
+  config?: MoltbotConfig,
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+): Promise<GoalPlanResult> {
   if (!text.trim()) {
     return { text: "Usage: /new_goal <description of what you want to achieve>" };
   }
@@ -236,12 +338,29 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       );
     }
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
-    return {
+
+    const planResult: GoalPlanResult = {
       text: parts.join("\n") || "No plan output.",
       runId,
       revision: 1,
       plan: savedRun?.plan ?? undefined,
     };
+
+    // Fire plan_ready event so other channels (Discord) can send plan approval buttons
+    if (onStatusChange && savedRun?.plan) {
+      try {
+        await onStatusChange({
+          type: "plan_ready",
+          runId,
+          plan: savedRun.plan,
+          summary: savedRun.plan.summary,
+        });
+      } catch {
+        // Non-critical: status notification failure shouldn't block plan result
+      }
+    }
+
+    return planResult;
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       const logs = cap.getLogs();
@@ -1152,20 +1271,36 @@ export function registerTelegramGoalCommands({
     }
 
     if (action === "ga" || action === "gA") {
+      const existingLabel = getGoalLockLabel(resolvedId);
+      if (existingLabel) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+          runtime,
+          threadId,
+        );
+        return;
+      }
+      acquireGoalLock(resolvedId, "approve");
       const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
-      const reply = await withPlanningFeedback({
+      runGoalInBackground({
         bot,
         chatId,
         threadId,
+        runtime,
         label: "callback:approve",
+        runId: resolvedId,
         fn: () => handleGoalApprove(resolvedId, statusCb),
+        onResult: async (reply) => {
+          if (reply == null) return;
+          if (typeof reply === "string") {
+            await sendGoalReply(bot, chatId, reply, runtime, threadId);
+          } else {
+            await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+          }
+        },
       });
-      if (reply == null) return;
-      if (typeof reply === "string") {
-        await sendGoalReply(bot, chatId, reply, runtime, threadId);
-      } else {
-        await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
-      }
     } else if (action === "gr") {
       const reply = await handleGoalReject(resolvedId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -1220,20 +1355,36 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
+      const existingLabel = getGoalLockLabel(run.runId);
+      if (existingLabel) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Goal \`${run.runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+          runtime,
+          threadId,
+        );
+        return;
+      }
+      acquireGoalLock(run.runId, "approve");
       const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: run.runId });
-      const reply = await withPlanningFeedback({
+      runGoalInBackground({
         bot,
         chatId,
         threadId,
+        runtime,
         label: "reaction:approve",
+        runId: run.runId,
         fn: () => handleGoalApprove(run.runId, statusCb),
+        onResult: async (reply) => {
+          if (reply == null) return;
+          if (typeof reply === "string") {
+            await sendGoalReply(bot, chatId, reply, runtime, threadId);
+          } else {
+            await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+          }
+        },
       });
-      if (reply == null) return;
-      if (typeof reply === "string") {
-        await sendGoalReply(bot, chatId, reply, runtime, threadId);
-      } else {
-        await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
-      }
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
       await sendGoalReply(bot, chatId, reply, runtime, threadId);
@@ -1256,14 +1407,33 @@ export function registerTelegramGoalCommands({
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
       return;
     }
-    const result = await withPlanningFeedback({
+    if (!acquirePlanningLock(resolved.chatId, resolved.threadIdForSend)) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Already planning a goal in this chat. Please wait for it to finish.",
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    runGoalInBackground({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
+      runtime,
       label: "goal",
+      releasePlanningLock: () => releasePlanningLock(resolved.chatId, resolved.threadIdForSend),
       fn: () => handleGoal(text, cfg),
+      onResult: async (result) => {
+        if (result == null) return;
+        if (typeof result === "string") {
+          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+        } else {
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+        }
+      },
     });
-    await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
 
   // /goal_approve <runId>
@@ -1271,35 +1441,69 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const rawId = ctx.match?.trim() ?? "";
+    if (!rawId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Usage: /goal_approve <runId>",
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
     const approveRunId = resolveRunId(rawId);
-    const statusCb = approveRunId
-      ? buildOnStatusChange({
-          bot,
-          chatId: resolved.chatId,
-          threadId: resolved.threadIdForSend,
-          runtime,
-          runId: approveRunId,
-        })
-      : undefined;
-    const reply = await withPlanningFeedback({
+    if (!approveRunId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Run not found: ${rawId}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const existingLabel = getGoalLockLabel(approveRunId);
+    if (existingLabel) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal \`${approveRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    acquireGoalLock(approveRunId, "approve");
+    const statusCb = buildOnStatusChange({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
-      label: "goal_approve",
-      fn: () => handleGoalApprove(rawId, statusCb),
+      runtime,
+      runId: approveRunId,
     });
-    if (reply == null) return;
-    if (typeof reply === "string") {
-      await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
-    } else {
-      await sendGoalPlanResult({
-        bot,
-        chatId: resolved.chatId,
-        runtime,
-        result: reply,
-        threadId: resolved.threadIdForSend,
-      });
-    }
+    runGoalInBackground({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      label: "goal_approve",
+      runId: approveRunId,
+      fn: () => handleGoalApprove(rawId, statusCb),
+      onResult: async (reply) => {
+        if (reply == null) return;
+        if (typeof reply === "string") {
+          await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+        } else {
+          await sendGoalPlanResult({
+            bot,
+            chatId: resolved.chatId,
+            runtime,
+            result: reply,
+            threadId: resolved.threadIdForSend,
+          });
+        }
+      },
+    });
   });
 
   // /goal_reject <runId>
@@ -1326,16 +1530,48 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const runId = raw.slice(0, spaceIdx);
+    const editRunIdRaw = raw.slice(0, spaceIdx);
     const instructions = raw.slice(spaceIdx + 1).trim();
-    const result = await withPlanningFeedback({
+    const editRunId = resolveRunId(editRunIdRaw);
+    if (!editRunId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Run not found: ${editRunIdRaw}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const existingLabel = getGoalLockLabel(editRunId);
+    if (existingLabel) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal \`${editRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    acquireGoalLock(editRunId, "edit");
+    runGoalInBackground({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
+      runtime,
       label: "goal_edit",
-      fn: () => handleGoalEdit(runId, instructions),
+      runId: editRunId,
+      fn: () => handleGoalEdit(editRunIdRaw, instructions),
+      onResult: async (result) => {
+        if (result == null) return;
+        if (typeof result === "string") {
+          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+        } else {
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+        }
+      },
     });
-    await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
   });
 
   // /goal_status <runId>
@@ -1362,31 +1598,55 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const runId = raw.slice(0, spaceIdx);
+    const answerRunIdRaw = raw.slice(0, spaceIdx);
     const value = raw.slice(spaceIdx + 1).trim();
-    const answerRunId = resolveRunId(runId);
-    const statusCb = answerRunId
-      ? buildOnStatusChange({
-          bot,
-          chatId: resolved.chatId,
-          threadId: resolved.threadIdForSend,
-          runtime,
-          runId: answerRunId,
-        })
-      : undefined;
-    const result = await withPlanningFeedback({
+    const answerRunId = resolveRunId(answerRunIdRaw);
+    if (!answerRunId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Run not found: ${answerRunIdRaw}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const existingLabel = getGoalLockLabel(answerRunId);
+    if (existingLabel) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal \`${answerRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    acquireGoalLock(answerRunId, "answer");
+    const statusCb = buildOnStatusChange({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
-      label: "goal_answer",
-      fn: () => handleGoalAnswer(runId, value, statusCb),
+      runtime,
+      runId: answerRunId,
     });
-    if (result == null) return;
-    if (typeof result === "string") {
-      await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
-    } else {
-      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
-    }
+    runGoalInBackground({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      label: "goal_answer",
+      runId: answerRunId,
+      fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb),
+      onResult: async (result) => {
+        if (result == null) return;
+        if (typeof result === "string") {
+          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+        } else {
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+        }
+      },
+    });
   });
 
   // /goal_list

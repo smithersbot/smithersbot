@@ -25,14 +25,16 @@ import {
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import {
+  acquireGoalLock,
   buildOnStatusChange,
+  getGoalLockLabel,
   handleGoalAnswer,
   handleGoalEdit,
   handleGoalList,
   handleGoalStatus,
+  runGoalInBackground,
   sendGoalPlanResult,
   sendGoalReply,
-  withPlanningFeedback,
 } from "./goal-commands.js";
 import type { GoalPlanResult } from "./goal-commands.js";
 import { routeTelegramText } from "./goal-router.js";
@@ -187,8 +189,8 @@ export async function handleTelegramGoalRouting(params: {
   sendReply: (text: string) => Promise<void>;
   sendPlanResult: (result: GoalPlanResult) => Promise<void>;
   runHandlers: {
-    edit: (runId: string, text: string) => ReturnType<typeof handleGoalEdit>;
-    answer: (runId: string, text: string) => Promise<Awaited<ReturnType<typeof handleGoalAnswer>>>;
+    edit: (runId: string, text: string) => void;
+    answer: (runId: string, text: string) => void;
   };
 }): Promise<boolean> {
   const route = routeTelegramText({
@@ -233,19 +235,12 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   if (route.kind === "GOAL_EDIT" && route.runId) {
-    const result = await params.runHandlers.edit(route.runId, params.messageText);
-    await params.sendPlanResult(result);
+    params.runHandlers.edit(route.runId, params.messageText);
     return true;
   }
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
-    const result = await params.runHandlers.answer(route.runId, params.messageText);
-    if (result == null) return true;
-    if (typeof result === "string") {
-      await params.sendReply(result);
-    } else {
-      await params.sendPlanResult(result);
-    }
+    params.runHandlers.answer(route.runId, params.messageText);
     return true;
   }
 
@@ -478,15 +473,56 @@ export const registerTelegramHandlers = ({
         });
       },
       runHandlers: {
-        edit: (runId, text) =>
-          withPlanningFeedback({
+        edit: (runId, text) => {
+          const existingLabel = getGoalLockLabel(runId);
+          if (existingLabel) {
+            void sendGoalReply(
+              bot,
+              chatId,
+              `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+              runtime,
+              params.threadId,
+            );
+            return;
+          }
+          acquireGoalLock(runId, "edit");
+          runGoalInBackground({
             bot,
             chatId,
             threadId: params.threadId,
+            runtime,
             label: "goal-router:edit",
+            runId,
             fn: () => handleGoalEdit(runId, text),
-          }),
+            onResult: async (result) => {
+              if (result == null) return;
+              if (typeof result === "string") {
+                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+              } else {
+                await sendGoalPlanResult({
+                  bot,
+                  chatId,
+                  runtime,
+                  result,
+                  threadId: params.threadId,
+                });
+              }
+            },
+          });
+        },
         answer: (runId, text) => {
+          const existingLabel = getGoalLockLabel(runId);
+          if (existingLabel) {
+            void sendGoalReply(
+              bot,
+              chatId,
+              `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+              runtime,
+              params.threadId,
+            );
+            return;
+          }
+          acquireGoalLock(runId, "answer");
           const statusCb = buildOnStatusChange({
             bot,
             chatId,
@@ -494,12 +530,28 @@ export const registerTelegramHandlers = ({
             runtime,
             runId,
           });
-          return withPlanningFeedback({
+          runGoalInBackground({
             bot,
             chatId,
             threadId: params.threadId,
+            runtime,
             label: "goal-router:answer",
+            runId,
             fn: () => handleGoalAnswer(runId, text, statusCb),
+            onResult: async (result) => {
+              if (result == null) return;
+              if (typeof result === "string") {
+                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+              } else {
+                await sendGoalPlanResult({
+                  bot,
+                  chatId,
+                  runtime,
+                  result,
+                  threadId: params.threadId,
+                });
+              }
+            },
           });
         },
       },

@@ -6,6 +6,7 @@ import {
   handleGoalApprove,
   handleGoalReject,
   handleGoalStop,
+  type GoalPlanResult,
 } from "../../telegram/goal-commands.js";
 import type { GoalStatusChangeEvent } from "../../goal/agent-executor.js";
 import { loadRun, resolveRunId } from "../../goal/run-store.js";
@@ -253,12 +254,8 @@ export class GoalActionButton extends Button {
 
     try {
       const result = await handleGoalAnswer(prefix, "resume", statusCb);
-      if (result != null && typeof result === "string") {
-        try {
-          await interaction.followUp({ content: result });
-        } catch {
-          // Interaction may have expired
-        }
+      if (result != null) {
+        await this.sendResultFollowUp(interaction, result, prefix, channelId);
       }
     } catch (err) {
       logError(`discord goal buttons: resume failed: ${String(err)}`);
@@ -332,12 +329,7 @@ export class GoalActionButton extends Button {
     try {
       const result = await handleGoalApprove(prefix, statusCb);
       if (result != null) {
-        const text = typeof result === "string" ? result : result.text;
-        try {
-          await interaction.followUp({ content: text });
-        } catch {
-          // Interaction may have expired
-        }
+        await this.sendResultFollowUp(interaction, result, prefix, channelId);
       }
     } catch (err) {
       logError(`discord goal buttons: approve failed: ${String(err)}`);
@@ -394,10 +386,81 @@ export class GoalActionButton extends Button {
       // Interaction may have expired
     }
   }
+
+  /**
+   * Send a goal result as a follow-up. Uses REST API when components (buttons)
+   * are needed (since Carbon's followUp doesn't accept raw component structures),
+   * falls back to interaction.followUp for plain text.
+   */
+  private async sendResultFollowUp(
+    interaction: ButtonInteraction,
+    result: string | GoalPlanResult,
+    runIdPrefix: string,
+    channelId?: string,
+  ): Promise<void> {
+    const { text, components } = resolveResultPayload(result, runIdPrefix);
+    if (components && channelId) {
+      // Send via REST API to include raw component structures
+      try {
+        const { rest, request } = createDiscordClient(
+          { token: this.ctx.token, accountId: this.ctx.accountId },
+          this.ctx.cfg,
+        );
+        await request(
+          () =>
+            rest.post(Routes.channelMessages(channelId), {
+              body: { content: text.slice(0, 2000), components },
+            }),
+          "goal-result-with-buttons",
+        );
+      } catch (err) {
+        logError(`discord goal buttons: REST follow-up failed: ${String(err)}`);
+        // Fall back to plain text follow-up
+        try {
+          await interaction.followUp({ content: text });
+        } catch {
+          // Interaction may have expired
+        }
+      }
+    } else {
+      try {
+        await interaction.followUp({ content: text });
+      } catch {
+        // Interaction may have expired
+      }
+    }
+  }
 }
 
 export function createGoalActionButton(ctx: GoalButtonContext): Button {
   return new GoalActionButton(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// Follow-up payload builder for goal results
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract text and determine which button components (if any) to attach to a goal result.
+ * Returns raw Discord API component structures suitable for REST API calls.
+ */
+function resolveResultPayload(
+  result: string | GoalPlanResult,
+  runIdPrefix: string,
+): { text: string; components?: ReturnType<typeof buildGoalPlanComponents> } {
+  if (typeof result === "string") {
+    return { text: result };
+  }
+  const text = result.text;
+  // Plan result with revision → show approve/reject/edit buttons
+  if (result.runId && result.revision) {
+    return { text, components: buildGoalPlanComponents(runIdPrefix) };
+  }
+  // Blocked result → show resume/stop buttons
+  if (result.runId && result.blocked) {
+    return { text, components: buildGoalActionComponents(runIdPrefix) };
+  }
+  return { text };
 }
 
 // ---------------------------------------------------------------------------
@@ -419,10 +482,34 @@ export function buildDiscordOnStatusChange(params: {
   const prefix = runId.slice(0, 8);
 
   return async (event: GoalStatusChangeEvent) => {
+    const { rest, request } = createDiscordClient({ token, accountId }, cfg);
+
+    if (event.type === "plan_ready") {
+      const stepCount = event.plan.steps.length;
+      const text = [
+        `**PLAN READY (${prefix}):** ${event.summary}`,
+        "",
+        `${stepCount} step${stepCount === 1 ? "" : "s"} planned. Approve, reject, or request edits below.`,
+      ].join("\n");
+
+      const components = buildGoalPlanComponents(prefix);
+
+      try {
+        await request(
+          () =>
+            rest.post(Routes.channelMessages(channelId), {
+              body: { content: text.slice(0, 2000), components },
+            }),
+          "goal-plan-ready",
+        );
+      } catch (err) {
+        logError(`discord goal status: failed to send plan_ready: ${String(err)}`);
+      }
+      return;
+    }
+
     const run = loadRun(runId);
     if (!run?.plan) return;
-
-    const { rest, request } = createDiscordClient({ token, accountId }, cfg);
 
     if (event.type === "step_blocked") {
       const text = [

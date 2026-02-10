@@ -49,6 +49,8 @@ export function startTypingLoop(params: {
   action?: ChatAction;
   threadId?: number;
   label?: string;
+  /** Auto-stop after this many ms (default: 10 min). Prevents zombie loops. */
+  maxDurationMs?: number;
 }): { stop: () => void } {
   const { bot, chatId, action = "typing", threadId, label } = params;
   const tag = label ? `${label} ` : "";
@@ -89,12 +91,14 @@ export function startTypingLoop(params: {
   logTyping(`${tag}start chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
   sendAction();
   const interval = setInterval(sendAction, TYPING_INTERVAL_MS);
+  const maxTimer = setTimeout(() => handle.stop(), params.maxDurationMs ?? 10 * 60 * 1000);
 
   const handle = {
     stop: () => {
       if (stopped) return;
       stopped = true;
       clearInterval(interval);
+      clearTimeout(maxTimer);
       activeTypingLoops.delete(key);
       logTyping(`${tag}stop chatId=${chatId}`);
     },
