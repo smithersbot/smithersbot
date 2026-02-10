@@ -371,6 +371,37 @@ describe("createTelegramBot", () => {
     ).toBe("telegram:555");
   });
 
+  it("routes goal management commands to control lane", () => {
+    // Goal management commands bypass the regular per-chat queue so they work
+    // while a long-running /goal_approve blocks the main lane.
+    for (const cmd of ["/goal_list", "/goal_stop", "/goal_status", "/goal_reject"]) {
+      expect(getTelegramSequentialKey({ message: { chat: { id: 42 }, text: cmd } })).toBe(
+        "telegram:42:control",
+      );
+    }
+    // With @botname suffix
+    expect(
+      getTelegramSequentialKey({
+        message: { chat: { id: 42 }, text: "/goal_list@MyBot" },
+      }),
+    ).toBe("telegram:42:control");
+    // With args
+    expect(
+      getTelegramSequentialKey({
+        message: { chat: { id: 42 }, text: "/goal_stop abc123" },
+      }),
+    ).toBe("telegram:42:control");
+  });
+
+  it("keeps goal execution commands on the regular lane", () => {
+    // These can be long-running; other goal management commands need to bypass them.
+    for (const cmd of ["/goal_approve abc", "/goal_answer abc val", "/new_goal do stuff"]) {
+      expect(getTelegramSequentialKey({ message: { chat: { id: 42 }, text: cmd } })).toBe(
+        "telegram:42",
+      );
+    }
+  });
+
   it("routes callback_query payloads as messages and answers callbacks", async () => {
     onSpy.mockReset();
     const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;

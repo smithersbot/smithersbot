@@ -64,6 +64,22 @@ export type TelegramBotOptions = {
   };
 };
 
+// Goal commands that are quick read-only / state-change operations and must not
+// be blocked behind a long-running /goal_approve execution on the main lane.
+const GOAL_MANAGEMENT_COMMANDS = new Set(["goal_list", "goal_stop", "goal_status", "goal_reject"]);
+
+/**
+ * Detect goal management commands that should bypass the per-chat sequentialization
+ * queue. Strips bot @mention suffix and leading slash before matching.
+ */
+function isGoalManagementCommand(text: string, _botUsername?: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("/")) return false;
+  // Extract command name: "/goal_list" → "goal_list", "/goal_list@BotName" → "goal_list"
+  const afterSlash = trimmed.slice(1).split(/[\s@]/)[0].toLowerCase();
+  return GOAL_MANAGEMENT_COMMANDS.has(afterSlash);
+}
+
 export function getTelegramSequentialKey(ctx: {
   chat?: { id?: number };
   message?: TelegramMessage;
@@ -91,6 +107,13 @@ export function getTelegramSequentialKey(ctx: {
     rawText &&
     isControlCommandMessage(rawText, undefined, botUsername ? { botUsername } : undefined)
   ) {
+    if (typeof chatId === "number") return `telegram:${chatId}:control`;
+    return "telegram:control";
+  }
+  // Goal management commands (list, stop, status, reject) must bypass the regular
+  // per-chat queue so they can be processed while a long-running /goal_approve is
+  // executing on the main lane.
+  if (rawText && isGoalManagementCommand(rawText, botUsername)) {
     if (typeof chatId === "number") return `telegram:${chatId}:control`;
     return "telegram:control";
   }
