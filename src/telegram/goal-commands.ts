@@ -46,6 +46,7 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_edit", description: "Edit a goal plan" },
   { command: "goal_status", description: "Show goal run details" },
   { command: "goal_answer", description: "Answer a goal's clarification question" },
+  { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
 ];
 
@@ -501,6 +502,27 @@ export async function handleGoalList(): Promise<string> {
   }
   lines.push("```");
   return lines.join("\n");
+}
+
+/** /goal_stop <runId> -- stop a running goal execution. */
+export async function handleGoalStop(rawId: string, force?: boolean): Promise<string> {
+  if (!rawId.trim()) {
+    return "Usage: /goal_stop <runId>";
+  }
+
+  const cap = createCaptureRuntime();
+  try {
+    const { goalStopCommand } = await import("../commands/goal-stop.js");
+    await goalStopCommand(rawId.trim(), { force: Boolean(force) }, cap.runtime);
+    const logs = cap.getLogs();
+    const errors = cap.getErrors();
+    return errors || logs || "Goal stopped.";
+  } catch (err) {
+    if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+      return cap.getErrors() || cap.getLogs() || "Stop command failed.";
+    }
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 /** /goal_edit <runId> <instructions> -- revise a plan via LLM re-planning. */
@@ -1367,6 +1389,14 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const reply = await handleGoalList();
+    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+  });
+
+  // /goal_stop <runId>
+  bot.command("goal_stop", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const reply = await handleGoalStop(ctx.match?.trim() ?? "");
     await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
   });
 }

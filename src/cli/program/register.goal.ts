@@ -41,6 +41,7 @@ export function registerGoalCommand(program: Command) {
           ["moltbot goal list", "List all goal runs"],
           ["moltbot goal status <runId>", "Show run details"],
           ["moltbot goal resume <runId>", "Resume a blocked/interrupted run"],
+          ["moltbot goal stop <runId>", "Stop a running goal"],
           [
             "moltbot goal answer <runId> --key <KEY> --value <VALUE>",
             "Answer a blocked run's question",
@@ -166,6 +167,26 @@ export function registerGoalCommand(program: Command) {
             value: String(opts.value),
             json: Boolean(opts.json),
             output: opts.output as OutputFormat | undefined,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  // Subcommand: stop
+  goal
+    .command("stop <runId>")
+    .description("Stop a running goal execution")
+    .option("--json", "Output as JSON (shorthand for --output json)", false)
+    .option("--force", "Force stop even if not in executing state", false)
+    .action(async (runId, opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { goalStopCommand } = await import("../../commands/goal-stop.js");
+        await goalStopCommand(
+          String(runId),
+          {
+            json: Boolean(opts.json),
+            force: Boolean(opts.force),
           },
           defaultRuntime,
         );
