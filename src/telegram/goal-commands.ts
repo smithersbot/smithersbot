@@ -1,5 +1,5 @@
 import { InputFile, type Bot, type Context } from "grammy";
-import type { InlineKeyboardMarkup } from "grammy/types";
+import type { InlineKeyboardMarkup, ReactionTypeEmoji } from "grammy/types";
 
 import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { warn } from "../globals.js";
@@ -108,6 +108,16 @@ function buildGoalInlineKeyboard(runIdPrefix: string, revision: number) {
     [
       { text: "\u270F\uFE0F Request changes", callback_data: `ge:${runIdPrefix}:${revision}` },
       { text: "\uD83D\uDC4E Reject", callback_data: `gr:${runIdPrefix}:${revision}` },
+    ],
+  ]);
+}
+
+/** Inline keyboard for blocked/failed goal messages: Resume + Stop. */
+function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
+  return buildInlineKeyboard([
+    [
+      { text: "\u25B6\uFE0F Resume Goal", callback_data: `gResume:${runIdPrefix}` },
+      { text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` },
     ],
   ]);
 }
@@ -1077,6 +1087,7 @@ export function buildOnStatusChange(params: {
         plan,
         steps: event.steps,
         caption,
+        replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
       });
       // Persist the photo message ID so reply-to routing works
       if (sentId != null) {
@@ -1110,6 +1121,7 @@ export function buildOnStatusChange(params: {
         plan,
         steps: event.steps,
         caption: lines.join("\n"),
+        replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
       });
       if (sentId != null) {
         const blockedSteps =
@@ -1216,75 +1228,143 @@ export function registerTelegramGoalCommands({
   }
 
   // -----------------------------------------------------------------------
-  // Callback query handler for inline buttons
+  // Callback query handler for inline buttons (plan approve/reject/edit)
   // -----------------------------------------------------------------------
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
-    const match = /^(ga|gA|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
-    if (!match) {
-      await next?.();
-      return;
-    }
 
-    await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
-    const [, action, runIdPrefix] = match;
-    const chatId = ctx.callbackQuery.message?.chat.id;
-    if (!chatId) return;
-    const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
-      ?.message_thread_id;
+    // --- Plan buttons: ga/gA/gr/ge:<runIdPrefix>:<revision> ---
+    const planMatch = /^(ga|gA|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
+    if (planMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      const [, action, runIdPrefix] = planMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
 
-    if (action === "ge") {
-      await sendGoalReply(
-        bot,
-        chatId,
-        "Reply to the plan message above with your change request.",
-        runtime,
-        threadId,
-      );
-      return;
-    }
-
-    const resolvedId = resolveRunId(runIdPrefix!);
-    if (!resolvedId) {
-      await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
-      return;
-    }
-
-    if (action === "ga" || action === "gA") {
-      const existingLabel = getGoalLockLabel(resolvedId);
-      if (existingLabel) {
+      if (action === "ge") {
         await sendGoalReply(
           bot,
           chatId,
-          `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+          "Reply to the plan message above with your change request.",
           runtime,
           threadId,
         );
         return;
       }
-      acquireGoalLock(resolvedId, "approve");
-      const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
-      runGoalInBackground({
-        bot,
-        chatId,
-        threadId,
-        runtime,
-        label: "callback:approve",
-        runId: resolvedId,
-        fn: () => handleGoalApprove(resolvedId, statusCb),
-        onResult: async (reply) => {
-          if (reply == null) return;
-          if (typeof reply === "string") {
-            await sendGoalReply(bot, chatId, reply, runtime, threadId);
-          } else {
-            await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
-          }
-        },
-      });
-    } else if (action === "gr") {
-      const reply = await handleGoalReject(resolvedId);
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        return;
+      }
+
+      if (action === "ga" || action === "gA") {
+        const existingLabel = getGoalLockLabel(resolvedId);
+        if (existingLabel) {
+          await sendGoalReply(
+            bot,
+            chatId,
+            `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+            runtime,
+            threadId,
+          );
+          return;
+        }
+        acquireGoalLock(resolvedId, "approve");
+        const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
+        runGoalInBackground({
+          bot,
+          chatId,
+          threadId,
+          runtime,
+          label: "callback:approve",
+          runId: resolvedId,
+          fn: () => handleGoalApprove(resolvedId, statusCb),
+          onResult: async (reply) => {
+            if (reply == null) return;
+            if (typeof reply === "string") {
+              await sendGoalReply(bot, chatId, reply, runtime, threadId);
+            } else {
+              await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+            }
+          },
+        });
+      } else if (action === "gr") {
+        const reply = await handleGoalReject(resolvedId);
+        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      }
+      return;
     }
+
+    // --- Blocked buttons: gResume/gStop:<runIdPrefix> ---
+    const blockedMatch = /^(gResume|gStop):([a-f0-9-]+)$/.exec(data);
+    if (blockedMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      const [, action, runIdPrefix] = blockedMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        return;
+      }
+
+      // React with the corresponding emoji on the blocked message
+      // (Telegram restricts reactions to a fixed set; use closest match)
+      if (messageId) {
+        const emoji: ReactionTypeEmoji["emoji"] =
+          action === "gResume" ? "\uD83D\uDC4D" : "\uD83D\uDC4E";
+        await bot.api
+          .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+          .catch(() => {});
+      }
+
+      if (action === "gStop") {
+        const reply = await handleGoalStop(resolvedId);
+        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      } else {
+        // Resume: run /goal_answer <id> resume
+        const existingLabel = getGoalLockLabel(resolvedId);
+        if (existingLabel) {
+          await sendGoalReply(
+            bot,
+            chatId,
+            `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+            runtime,
+            threadId,
+          );
+          return;
+        }
+        acquireGoalLock(resolvedId, "resume");
+        const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
+        runGoalInBackground({
+          bot,
+          chatId,
+          threadId,
+          runtime,
+          label: "callback:resume",
+          runId: resolvedId,
+          fn: () => handleGoalAnswer(resolvedId, "resume", statusCb),
+          onResult: async (reply) => {
+            if (reply == null) return;
+            if (typeof reply === "string") {
+              await sendGoalReply(bot, chatId, reply, runtime, threadId);
+            } else {
+              await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
+            }
+          },
+        });
+      }
+      return;
+    }
+
+    await next?.();
   });
 
   // -----------------------------------------------------------------------
