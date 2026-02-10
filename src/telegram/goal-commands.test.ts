@@ -44,9 +44,9 @@ vi.mock("../commands/goal-answer.js", () => ({
 // goal-list.js no longer imported by goal-commands (Telegram uses listRuns directly)
 
 // Mocks for plan revision (handleGoalEdit)
-const mockResolveEnvApiKey = vi.fn();
+const mockResolveApiKeyForProvider = vi.fn();
 vi.mock("../agents/model-auth.js", () => ({
-  resolveEnvApiKey: (...args: unknown[]) => mockResolveEnvApiKey(...args),
+  resolveApiKeyForProvider: (...args: unknown[]) => mockResolveApiKeyForProvider(...args),
 }));
 
 const mockCreateGoalLlmClient = vi.fn();
@@ -572,7 +572,11 @@ describe("goal-commands telegram adapter", () => {
     it("creates a revision", async () => {
       saveRun(makeRun());
 
-      mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key", source: "env" });
+      mockResolveApiKeyForProvider.mockResolvedValue({
+        apiKey: "test-key",
+        source: "env",
+        mode: "api-key",
+      });
       mockCreateGoalLlmClient.mockReturnValue({});
 
       const revisedPlan = {
@@ -639,7 +643,9 @@ describe("goal-commands telegram adapter", () => {
 
     it("returns error when no API key available", async () => {
       saveRun(makeRun());
-      mockResolveEnvApiKey.mockReturnValue(null);
+      mockResolveApiKeyForProvider.mockRejectedValue(
+        new Error('No API key found for provider "anthropic".'),
+      );
 
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "change it");
@@ -654,7 +660,11 @@ describe("goal-commands telegram adapter", () => {
 
     it("handles blocked revision", async () => {
       saveRun(makeRun());
-      mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key", source: "env" });
+      mockResolveApiKeyForProvider.mockResolvedValue({
+        apiKey: "test-key",
+        source: "env",
+        mode: "api-key",
+      });
       mockCreateGoalLlmClient.mockReturnValue({});
       mockGeneratePlanRevision.mockResolvedValue({
         blocked: true,

@@ -1,7 +1,7 @@
 import { InputFile, type Bot, type Context } from "grammy";
 import type { InlineKeyboardMarkup } from "grammy/types";
 
-import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { warn } from "../globals.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
@@ -544,9 +544,14 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
     return { text: "Run has no plan to edit." };
   }
 
-  const keyResult = resolveEnvApiKey("anthropic");
-  if (!keyResult) {
+  let keyResult;
+  try {
+    keyResult = await resolveApiKeyForProvider({ provider: "anthropic" });
+  } catch {
     return { text: "No Anthropic API key found. Set ANTHROPIC_API_KEY." };
+  }
+  if (!keyResult.apiKey) {
+    return { text: "Anthropic auth resolved but no API key available." };
   }
 
   const client = createGoalLlmClient({ apiKey: keyResult.apiKey, modelOverride: run.model });

@@ -40,7 +40,8 @@ vi.mock("@clack/prompts", () => ({
 
 // Mock model-auth so resume doesn't need a real API key
 vi.mock("../agents/model-auth.js", () => ({
-  resolveEnvApiKey: () => ({ apiKey: "test-key" }),
+  resolveApiKeyForProvider: () =>
+    Promise.resolve({ apiKey: "test-key", source: "test", mode: "api-key" }),
 }));
 
 // Mock llm-client (not used in approval-flow tests but required by import)

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
-import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { isGitRepo } from "../goal/git-checkpoint.js";
@@ -21,6 +21,7 @@ import type {
   OutputFormat,
   SerializedRun,
 } from "../goal/types.js";
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -49,6 +50,8 @@ export type GoalCommandOptions = {
   backend?: GoalBackendId;
   /** Config object for goal-specific settings (defaultWorkingDir, readOnlyRoots). */
   config?: MoltbotConfig;
+  /** How Claude Code workers authenticate: subscription (default) or api_key. */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 };
 
 /** Resolve effective output format: --output wins over --json. */
@@ -144,10 +147,10 @@ export async function goalCommand(
 
   try {
     // Resolve API key
-    const authResult = resolveEnvApiKey("anthropic");
-    if (!authResult) {
+    const authResult = await resolveApiKeyForProvider({ provider: "anthropic" });
+    if (!authResult.apiKey) {
       throw new Error(
-        "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
+        "Anthropic auth resolved but no API key available (mode: " + authResult.mode + ").",
       );
     }
 
@@ -155,6 +158,9 @@ export async function goalCommand(
       apiKey: authResult.apiKey,
       modelOverride: opts.model,
     });
+
+    // Resolve auth mode early so both scout and executor can use it
+    const resolvedAuthMode = opts.claudeCodeAuth ?? opts.config?.goal?.claudeCodeAuth;
 
     // Phase 0: Scout pre-pass (optional, best-effort)
     let scoutData: ScoutResult | undefined;
@@ -169,6 +175,7 @@ export async function goalCommand(
           runId,
           goalText: goal,
           timeoutMs: opts.scoutTimeoutMs,
+          claudeCodeAuth: resolvedAuthMode,
         });
         if (scoutData.status === "skipped") {
           scoutStatus = "skipped";
@@ -363,6 +370,7 @@ export async function goalCommand(
       timeoutMs: 300_000,
       gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
       serializedRun: { backendOverride: opts.backend } as SerializedRun,
+      claudeCodeAuth: resolvedAuthMode,
       onTaskUpdate: () => persistRun(),
       onProgress: (text) => {
         if (!isJson) runtime.log(text);

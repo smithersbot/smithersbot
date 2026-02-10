@@ -39,9 +39,9 @@ vi.mock("../goal/planner.js", () => ({
 }));
 
 // Mock model-auth to provide a test API key
-const mockResolveEnvApiKey = vi.fn();
+const mockResolveApiKeyForProvider = vi.fn();
 vi.mock("../agents/model-auth.js", () => ({
-  resolveEnvApiKey: (...args: unknown[]) => mockResolveEnvApiKey(...args),
+  resolveApiKeyForProvider: (...args: unknown[]) => mockResolveApiKeyForProvider(...args),
 }));
 
 // Mock llm-client
@@ -103,7 +103,11 @@ describe("goal command — early failure persistence", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-cmd-test-"));
     vi.clearAllMocks();
-    mockResolveEnvApiKey.mockReturnValue({ apiKey: "test-key" });
+    mockResolveApiKeyForProvider.mockResolvedValue({
+      apiKey: "test-key",
+      source: "test",
+      mode: "api-key",
+    });
     mockRunScoutWithRetry.mockResolvedValue({ status: "skipped", reason: "mocked in test" });
     savedExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -142,7 +146,9 @@ describe("goal command — early failure persistence", () => {
   });
 
   it("persists run.json with lastError when API key is missing", async () => {
-    mockResolveEnvApiKey.mockReturnValue(null);
+    mockResolveApiKeyForProvider.mockRejectedValue(
+      new Error('No API key found for provider "anthropic".'),
+    );
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -156,7 +162,7 @@ describe("goal command — early failure persistence", () => {
         },
         rt,
       ),
-    ).rejects.toThrow("No Anthropic API key found");
+    ).rejects.toThrow("No API key found");
 
     const runs = listRuns(testGoalsDir);
     expect(runs).toHaveLength(1);
@@ -164,7 +170,7 @@ describe("goal command — early failure persistence", () => {
     const run = loadRun(runs[0]!.runId, testGoalsDir);
     expect(run).toBeDefined();
     expect(run!.state).toBe("planning");
-    expect(run!.lastError).toContain("No Anthropic API key found");
+    expect(run!.lastError).toContain("No API key found");
   });
 
   it("JSON mode throws JsonExitError after emitting error JSON", async () => {
@@ -232,7 +238,9 @@ describe("goal command — early failure persistence", () => {
   });
 
   it("JSON mode sets non-zero exit code on API key failure", async () => {
-    mockResolveEnvApiKey.mockReturnValue(null);
+    mockResolveApiKeyForProvider.mockRejectedValue(
+      new Error('No API key found for provider "anthropic".'),
+    );
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -254,7 +262,7 @@ describe("goal command — early failure persistence", () => {
     const jsonOutput = rt.logs.find((l) => l.startsWith("{"));
     expect(jsonOutput).toBeDefined();
     const parsed = JSON.parse(jsonOutput!) as Record<string, unknown>;
-    expect(parsed.error).toContain("No Anthropic API key found");
+    expect(parsed.error).toContain("No API key found");
     expect(parsed.runId).toBeDefined();
   });
 

@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { defaultRuntime } from "../../runtime.js";
 import type { GoalBackendId } from "../../goal/backend-types.js";
+import type { ClaudeCodeAuthMode } from "../../config/types.goal.js";
 import type { DiagramMode, OutputFormat } from "../../goal/types.js";
 import { theme } from "../../terminal/theme.js";
 import { formatHelpExamples } from "../help-format.js";
@@ -28,6 +29,10 @@ export function registerGoalCommand(program: Command) {
     .option(
       "--backend <backend>",
       "Execution backend: pi, codex, claude_code (default: claude_code)",
+    )
+    .option(
+      "--claude-code-auth <mode>",
+      "Claude Code auth: subscription, api_key (default: subscription)",
     )
     .addHelpText(
       "after",
@@ -76,6 +81,7 @@ export function registerGoalCommand(program: Command) {
             diagram: opts.diagram as DiagramMode | undefined,
             output: opts.output as OutputFormat | undefined,
             backend: opts.backend as GoalBackendId | undefined,
+            claudeCodeAuth: opts.claudeCodeAuth as ClaudeCodeAuthMode | undefined,
           },
           defaultRuntime,
         );

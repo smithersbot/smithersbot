@@ -12,7 +12,7 @@ import {
 
 import { resolveMoltbotAgentDir } from "../agents/agent-paths.js";
 import { ensureMoltbotModelsJson } from "../agents/models-config.js";
-import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import type { MoltbotConfig } from "../config/config.js";
 import {
   collectGitDiffSummary,
@@ -32,15 +32,10 @@ import { resolveScoutDir } from "./scout.js";
 import type { HardDenyList } from "./hard-deny.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { Plan, PlanStep } from "./types.js";
+import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
-
-const RATE_LIMIT_RE = /rate.?limit|429|too many requests|overloaded/i;
-const CREDITS_RE = /credit|balance|billing|insufficient.*funds|payment|quota.*exceeded/i;
-const AUTH_RE = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
-const NETWORK_RE =
-  /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|EAI_AGAIN/i;
 
 type ExecutorErrorKind = "rate_limit" | "out_of_credits" | "auth" | "network" | "timeout" | "other";
 
@@ -334,9 +329,13 @@ export class PiTaskRunner implements TaskRunner {
     if (this.modelReady) return;
     await ensureMoltbotModelsJson(this.config);
 
-    const envAuth = resolveEnvApiKey(this.providerId);
-    if (envAuth) {
-      this.authStorage.setRuntimeApiKey(this.providerId, envAuth.apiKey);
+    try {
+      const envAuth = await resolveApiKeyForProvider({ provider: this.providerId });
+      if (envAuth.apiKey) {
+        this.authStorage.setRuntimeApiKey(this.providerId, envAuth.apiKey);
+      }
+    } catch {
+      // No API key found via profiles/env; PI session may have its own auth
     }
 
     this.modelReady = true;

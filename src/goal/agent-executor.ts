@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { MoltbotConfig } from "../config/config.js";
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import {
   loadAttemptBundles,
   resolveWorkerDir,
@@ -72,6 +73,8 @@ export type ExecuteGoalParams = {
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
   abortSignal?: AbortSignal;
   serializedRun?: SerializedRun;
+  /** How Claude Code workers authenticate: subscription (default) or api_key. */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 };
 
 /** Append a summary line to the top-level WORKING.md for this goal run. */
@@ -208,7 +211,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   });
   const cliRunners: Record<Exclude<GoalBackendId, "pi">, TaskRunner> = {
     codex: new CliTaskRunner({ backend: "codex", model: params.model }),
-    claude_code: new CliTaskRunner({ backend: "claude_code", model: params.model }),
+    claude_code: new CliTaskRunner({
+      backend: "claude_code",
+      model: params.model,
+      claudeCodeAuth: params.claudeCodeAuth,
+    }),
   };
 
   // eslint-disable-next-line no-constant-condition

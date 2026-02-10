@@ -6,6 +6,7 @@ import type { PlanStep, Plan } from "./types.js";
 import {
   buildAllowedToolsList,
   buildCliWorkerPrompt,
+  parseClaudeCodeStreamError,
   parseCodexSchemaOutput,
   readWorkerResultFile,
   validateWorkerOutput,
@@ -176,6 +177,79 @@ describe("cli-worker", () => {
       expect(schemaPath).toBe(path.join(dir, "output-schema.json"));
       const content = fs.readFileSync(schemaPath, "utf8");
       expect(content).toContain('"status"');
+    });
+  });
+
+  describe("parseClaudeCodeStreamError", () => {
+    it("detects billing error from JSONL result", () => {
+      const stdout = [
+        '{"type":"assistant","message":"working on it"}',
+        '{"type":"assistant","error":"billing_error"}',
+        '{"type":"result","is_error":true,"result":"Credit balance is too low"}',
+      ].join("\n");
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("out_of_credits");
+      expect(result!.message).toBe("Credit balance is too low");
+    });
+
+    it("detects auth error from result text", () => {
+      const stdout = '{"type":"result","is_error":true,"result":"401 unauthorized"}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("auth");
+    });
+
+    it("detects rate limit from result text", () => {
+      const stdout = '{"type":"result","is_error":true,"result":"429 too many requests"}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("rate_limit");
+    });
+
+    it("detects network error from result text", () => {
+      const stdout = '{"type":"result","is_error":true,"result":"fetch failed ECONNREFUSED"}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("network");
+    });
+
+    it("returns null for clean stdout with no errors", () => {
+      const stdout = [
+        '{"type":"assistant","message":"working"}',
+        '{"type":"result","is_error":false,"result":"all done"}',
+      ].join("\n");
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).toBeNull();
+    });
+
+    it("returns null for empty stdout", () => {
+      expect(parseClaudeCodeStreamError("", "")).toBeNull();
+    });
+
+    it("handles mixed non-JSON lines", () => {
+      const stdout = [
+        "some random text",
+        "another line",
+        '{"type":"result","is_error":true,"result":"billing quota exceeded"}',
+      ].join("\n");
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("out_of_credits");
+    });
+
+    it("falls back to stderr when stdout has no error", () => {
+      const stderr = '{"type":"result","is_error":true,"result":"forbidden invalid key"}\n';
+      const result = parseClaudeCodeStreamError("", stderr);
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("auth");
+    });
+
+    it("classifies unknown errors as process_error", () => {
+      const stdout = '{"type":"result","is_error":true,"result":"something unexpected happened"}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("process_error");
     });
   });
 });

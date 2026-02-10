@@ -12,6 +12,8 @@ export type RunCliProcessParams = {
   stdin?: string;
   stdoutPath?: string;
   stderrPath?: string;
+  /** Custom environment variables for the spawned process. Defaults to process.env. */
+  env?: Record<string, string | undefined>;
 };
 
 export type RunCliProcessResult = {
@@ -85,7 +87,7 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
     const proc: ChildProcess = spawn(command, args, {
       cwd,
       stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: params.env ?? { ...process.env },
     });
 
     if (stdin && proc.stdin) {

@@ -4,6 +4,8 @@ import { execFileSync } from "node:child_process";
 import { resolveRunDir } from "./run-store.js";
 import { runCliProcess } from "./cli-process.js";
 import { tailText, writeAttemptBundle } from "./attempt-bundle.js";
+import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -249,6 +251,8 @@ export type RunScoutParams = {
   nodeCountMin?: number;
   nodeCountMax?: number;
   timeoutMs?: number;
+  /** How the scout's Claude Code process authenticates (default: "subscription"). */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 };
 
 export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
@@ -292,6 +296,11 @@ export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
   const briefPath = path.join(scoutDir, "PLANNING_BRIEF.md");
   fs.writeFileSync(briefPath, brief, "utf8");
 
+  // Build env based on auth mode (default: subscription — strips API keys)
+  const authMode = params.claudeCodeAuth ?? "subscription";
+  const scoutEnv = buildClaudeCodeEnv(authMode);
+  writeAuthModeArtifact(scoutDir, authMode);
+
   // Execute claude -p with stdin piping
   const stdoutPath = path.join(scoutDir, "scout_stdout.txt");
   const stderrPath = path.join(scoutDir, "scout_stderr.txt");
@@ -305,6 +314,7 @@ export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
     stdin: brief,
     stdoutPath,
     stderrPath,
+    env: scoutEnv,
   });
 
   if (procResult.timedOut) {
@@ -457,6 +467,10 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
   const stderrPath = path.join(scoutDir, "scout_stderr_retry.txt");
   const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
 
+  // Reuse the same auth-mode env as the first attempt
+  const retryAuthMode = params.claudeCodeAuth ?? "subscription";
+  const retryEnv = buildClaudeCodeEnv(retryAuthMode);
+
   const retryProc = await runCliProcess({
     command: claudeBin,
     args: ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"],
@@ -465,6 +479,7 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
     stdin: retryBrief,
     stdoutPath,
     stderrPath,
+    env: retryEnv,
   });
 
   if (retryProc.timedOut) {

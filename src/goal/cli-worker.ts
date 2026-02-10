@@ -14,7 +14,10 @@ import {
   writeAttemptBundle,
   type AttemptOutcome,
 } from "./attempt-bundle.js";
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
+import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 
 // --- Constants ---
 
@@ -44,6 +47,8 @@ export type CliWorkerParams = {
   attemptNumber?: number;
   /** Prior attempt bundle for retry context. */
   previousAttempt?: string | null;
+  /** How Claude Code workers authenticate: subscription (default) or api_key. */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 };
 
 /**
@@ -72,10 +77,16 @@ export async function executeTaskWithCliWorker(
     resumeQuestion,
     attemptNumber = 1,
     previousAttempt,
+    claudeCodeAuth = "subscription",
   } = params;
 
   const workerDir = resolveWorkerDir(runId, step.id);
   fs.mkdirSync(workerDir, { recursive: true });
+
+  // Build worker env based on auth mode
+  const workerEnv =
+    backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
+  if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
 
   const resultPath = path.join(workerDir, WORKER_RESULT_FILENAME);
 
@@ -121,6 +132,7 @@ export async function executeTaskWithCliWorker(
     abortSignal,
     stdoutPath,
     stderrPath,
+    env: workerEnv,
   });
 
   const codexParsed = backend === "codex" ? parseCodexSchemaOutput(stdout) : null;
@@ -133,6 +145,9 @@ export async function executeTaskWithCliWorker(
   let errorType: string | undefined;
   let blockedClassification: string | undefined;
 
+  // Check stdout JSONL stream for structured error info (billing, auth, rate limit)
+  const streamError = parseClaudeCodeStreamError(stdout, stderr);
+
   if (!output) {
     if (timedOut) {
       output = makeFailureOutput(
@@ -141,9 +156,16 @@ export async function executeTaskWithCliWorker(
         "Retry with more time or split the task into smaller steps.",
         "Ran worker until hard timeout.",
       );
+    } else if (streamError) {
+      output = makeFailureOutput(
+        streamError.message,
+        streamError.errorType,
+        streamError.suggestedNext,
+        "Parsed Claude Code JSONL stream output.",
+      );
     } else if (resultRead.error?.kind === "missing") {
       output = makeFailureOutput(
-        "Worker did not produce result artifact.",
+        `Worker did not produce result artifact (process exited code ${exitCode ?? "unknown"}).`,
         "missing_result",
         "Retry the task and ensure the worker writes worker_result.json.",
         "Looked for worker_result.json after process exit.",
@@ -490,6 +512,103 @@ function makeFailureOutput(
     errorType,
     suggestedNext,
     needsRevert: false,
+  };
+}
+
+// --- JSONL stream error parsing ---
+
+export type StreamError = {
+  message: string;
+  errorType: string;
+  suggestedNext: string;
+};
+
+/**
+ * Scan Claude Code JSONL stdout/stderr for structured error info.
+ * Looks for `{"type":"result", "is_error":true}` and preceding
+ * `{"type":"assistant", ... "error": {...}}` messages.
+ */
+export function parseClaudeCodeStreamError(stdout: string, stderr: string): StreamError | null {
+  return parseStreamLines(stdout) ?? parseStreamLines(stderr);
+}
+
+function parseStreamLines(text: string): StreamError | null {
+  if (!text) return null;
+  const lines = text.split("\n");
+
+  // Scan from end for result message
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith("{")) continue;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (parsed.type === "result" && parsed.is_error === true && typeof parsed.result === "string") {
+      const resultText = parsed.result;
+
+      // Look backward for a preceding assistant error with billing_error etc.
+      const assistantError = findPrecedingAssistantError(lines, i);
+
+      return classifyStreamError(resultText, assistantError);
+    }
+  }
+  return null;
+}
+
+function findPrecedingAssistantError(lines: string[], fromIndex: number): string | null {
+  for (let i = fromIndex - 1; i >= Math.max(0, fromIndex - 20); i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed.type === "assistant" && typeof parsed.error === "string") {
+        return parsed.error;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function classifyStreamError(resultText: string, assistantError: string | null): StreamError {
+  // Check assistant error field first (e.g. "billing_error")
+  if (assistantError === "billing_error" || CREDITS_RE.test(resultText)) {
+    return {
+      message: resultText,
+      errorType: "out_of_credits",
+      suggestedNext: "Add credits to your account or switch to subscription auth mode.",
+    };
+  }
+  if (AUTH_RE.test(resultText)) {
+    return {
+      message: resultText,
+      errorType: "auth",
+      suggestedNext: "Check API key or auth configuration.",
+    };
+  }
+  if (RATE_LIMIT_RE.test(resultText)) {
+    return {
+      message: resultText,
+      errorType: "rate_limit",
+      suggestedNext: "Wait and retry, or reduce concurrency.",
+    };
+  }
+  if (NETWORK_RE.test(resultText)) {
+    return {
+      message: resultText,
+      errorType: "network",
+      suggestedNext: "Check network connectivity and retry.",
+    };
+  }
+  return {
+    message: resultText,
+    errorType: "process_error",
+    suggestedNext: "Check CLI logs and retry the task.",
   };
 }
 

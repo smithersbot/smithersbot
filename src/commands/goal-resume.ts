@@ -5,7 +5,7 @@ import fs from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
-import { resolveEnvApiKey } from "../agents/model-auth.js";
+import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import {
@@ -87,10 +87,10 @@ async function retryPlanning(
 
   try {
     // Resolve API key
-    const authResult = resolveEnvApiKey("anthropic");
-    if (!authResult) {
+    const authResult = await resolveApiKeyForProvider({ provider: "anthropic" });
+    if (!authResult.apiKey) {
       throw new Error(
-        "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment or .env file.",
+        "Anthropic auth resolved but no API key available (mode: " + authResult.mode + ").",
       );
     }
 
