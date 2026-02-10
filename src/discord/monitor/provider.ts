@@ -39,6 +39,7 @@ import {
   createDiscordNativeCommand,
 } from "./native-command.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
+import { createGoalActionButton } from "./goal-buttons.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
@@ -451,6 +452,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   if (execApprovalsHandler) {
     components.push(createExecApprovalButton({ handler: execApprovalsHandler }));
   }
+
+  // Goal action buttons (Resume/Stop + Approve/Reject/Edit)
+  components.push(createGoalActionButton({ token, accountId: account.accountId, cfg }));
 
   const client = new Client(
     {
