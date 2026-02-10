@@ -293,11 +293,7 @@ export function findRunByPlanMessageId(
 // ---------------------------------------------------------------------------
 
 /** /goal <text> -- generate a plan (planOnly mode). */
-export async function handleGoal(
-  text: string,
-  config?: MoltbotConfig,
-  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
-): Promise<GoalPlanResult> {
+export async function handleGoal(text: string, config?: MoltbotConfig): Promise<GoalPlanResult> {
   if (!text.trim()) {
     return { text: "Usage: /new_goal <description of what you want to achieve>" };
   }
@@ -339,28 +335,12 @@ export async function handleGoal(
     }
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
 
-    const planResult: GoalPlanResult = {
+    return {
       text: parts.join("\n") || "No plan output.",
       runId,
       revision: 1,
       plan: savedRun?.plan ?? undefined,
     };
-
-    // Fire plan_ready event so other channels (Discord) can send plan approval buttons
-    if (onStatusChange && savedRun?.plan) {
-      try {
-        await onStatusChange({
-          type: "plan_ready",
-          runId,
-          plan: savedRun.plan,
-          summary: savedRun.plan.summary,
-        });
-      } catch {
-        // Non-critical: status notification failure shouldn't block plan result
-      }
-    }
-
-    return planResult;
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       const logs = cap.getLogs();

@@ -33,7 +33,6 @@ import type {
   GitCheckpointConfig,
   GoalOutcome,
   GoalSession,
-  Plan,
   PlanStep,
   RetryConfig,
   SerializedRun,
@@ -54,7 +53,6 @@ const PI_RETRYABLE: PlanStep["blockedReason"][] = ["timeout", "network", "rate_l
 const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
 
 export type GoalStatusChangeEvent =
-  | { type: "plan_ready"; runId: string; plan: Plan; summary: string }
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
   | { type: "all_done"; steps: PlanStep[]; summary: string };

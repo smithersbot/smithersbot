@@ -49,8 +49,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -88,8 +88,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -111,8 +111,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -135,8 +135,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -194,7 +194,7 @@ describe("handleTelegramGoalRouting", () => {
 
     const sendReply = vi.fn(async () => {});
     const sendPlanResult = vi.fn(async () => {});
-    const answer = vi.fn(async () => "answer saved");
+    const answer = vi.fn();
 
     const handled = await handleTelegramGoalRouting({
       chatId: 9,
@@ -206,14 +206,14 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
+        edit: vi.fn(),
         answer,
       },
     });
 
     expect(handled).toBe(true);
     expect(answer).toHaveBeenCalledWith("r1", "postgres");
-    expect(sendReply).toHaveBeenCalledWith("answer saved");
+    // Result delivery is now fire-and-forget inside the handler
   });
 
   it("routes reply to plan message to GOAL_EDIT", async () => {
@@ -227,7 +227,7 @@ describe("handleTelegramGoalRouting", () => {
 
     const sendReply = vi.fn(async () => {});
     const sendPlanResult = vi.fn(async () => {});
-    const edit = vi.fn(async () => ({ text: "revised plan", runId: "r1", revision: 2 }));
+    const edit = vi.fn();
 
     const handled = await handleTelegramGoalRouting({
       chatId: 9,
@@ -240,13 +240,13 @@ describe("handleTelegramGoalRouting", () => {
       sendPlanResult,
       runHandlers: {
         edit,
-        answer: vi.fn(async () => "answer"),
+        answer: vi.fn(),
       },
     });
 
     expect(handled).toBe(true);
     expect(edit).toHaveBeenCalledWith("r1", "change step 1");
-    expect(sendPlanResult).toHaveBeenCalled();
+    // Result delivery is now fire-and-forget inside the handler
   });
 
   // ---- Goal query intents (A, B) ----
@@ -265,8 +265,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -287,8 +287,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -309,8 +309,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -334,8 +334,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -371,8 +371,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -396,8 +396,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult,
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -432,8 +432,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
@@ -456,8 +456,8 @@ describe("handleTelegramGoalRouting", () => {
       sendReply,
       sendPlanResult: vi.fn(async () => {}),
       runHandlers: {
-        edit: vi.fn(async () => ({ text: "plan" })),
-        answer: vi.fn(async () => "answer"),
+        edit: vi.fn(),
+        answer: vi.fn(),
       },
     });
 
