@@ -159,6 +159,12 @@ export type SerializedRun = {
     threadId?: number;
     requiredInputKey?: string;
   }>;
+  /** Telegram edit-prompt messages sent via the "Request changes" button. Replies to these route to GOAL_EDIT. */
+  telegramEditPromptMessages?: Array<{
+    chatId: number;
+    messageId: number;
+    threadId?: number;
+  }>;
   /** PI agent session file path (JSONL transcript). */
   agentSessionFile?: string;
   /** Stable session ID for the PI agent. */

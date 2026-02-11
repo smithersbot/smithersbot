@@ -21,6 +21,7 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     updatedAt: now,
     telegramPlanMessage: partial.telegramPlanMessage,
     telegramQuestionMessages: partial.telegramQuestionMessages,
+    telegramEditPromptMessages: partial.telegramEditPromptMessages,
   };
 }
 
@@ -86,6 +87,43 @@ describe("routeTelegramText", () => {
     });
     expect(route.kind).toBe("GOAL_EDIT");
     expect(route.runId).toBe("r1");
+  });
+
+  it("routes reply to edit-prompt message to GOAL_EDIT", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        telegramPlanMessage: { chatId: 1, messageId: 42 },
+        telegramEditPromptMessages: [{ chatId: 1, messageId: 50 }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "add a README step",
+      replyToMessageId: 50,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_EDIT");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("does not match edit-prompt message from wrong chatId", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        telegramPlanMessage: { chatId: 1, messageId: 42 },
+        telegramEditPromptMessages: [{ chatId: 999, messageId: 50 }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "change it",
+      replyToMessageId: 50,
+      runs,
+    });
+    expect(route.kind).toBe("CHAT");
   });
 
   it("routes reply to older plan revision to DISAMBIGUATE", () => {

@@ -124,6 +124,9 @@ function filterRunsForChatThread(params: {
     if (run.telegramQuestionMessages?.some((qm) => matchesChatThread(qm, chatId, threadId))) {
       return true;
     }
+    if (run.telegramEditPromptMessages?.some((ep) => matchesChatThread(ep, chatId, threadId))) {
+      return true;
+    }
     return false;
   });
 }
@@ -166,10 +169,11 @@ function findRunByQuestionMessageId(
  *   1. Empty text → CHAT_HELP
  *   2. Non-reply greeting → CHAT
  *   3. Reply to latest plan message → GOAL_EDIT
- *   4. Reply to question message (blocked run) → GOAL_ANSWER
- *   5. Reply to older plan revision → DISAMBIGUATE
- *   6. Help intent → CHAT_HELP
- *   7. Default → CHAT (with replyText hint if blocked runs exist)
+ *   4. Reply to edit-prompt message (ForceReply from "Request changes" button) → GOAL_EDIT
+ *   5. Reply to question message (blocked run) → GOAL_ANSWER
+ *   6. Reply to older plan revision → DISAMBIGUATE
+ *   7. Help intent → CHAT_HELP
+ *   8. Default → CHAT (with replyText hint if blocked runs exist)
  */
 export function routeTelegramText(input: RouteInput): RouteResult {
   const { chatId, threadId, messageText, replyToMessageId } = input;
@@ -196,6 +200,16 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     );
     if (latestMatch) {
       return { kind: "GOAL_EDIT", runId: latestMatch.runId };
+    }
+
+    // GOAL_EDIT: reply to an edit-prompt message (sent via the "Request changes" button).
+    const editPromptMatch = scopedRuns.find((run) =>
+      run.telegramEditPromptMessages?.some(
+        (ep) => ep.messageId === replyToMessageId && matchesChatThread(ep, chatId, threadId),
+      ),
+    );
+    if (editPromptMatch) {
+      return { kind: "GOAL_EDIT", runId: editPromptMatch.runId };
     }
 
     // GOAL_ANSWER: reply to a question/clarification message from a blocked run.

@@ -848,6 +848,27 @@ function persistTelegramQuestionMessage(params: {
   saveRun(run);
 }
 
+const TELEGRAM_EDIT_PROMPT_MESSAGE_CAP = 5;
+
+/** Persist Telegram edit-prompt message tracking on a run (for ForceReply routing). */
+function persistEditPromptMessage(params: {
+  runId: string;
+  chatId: number;
+  messageId: number;
+  threadId?: number;
+}): void {
+  const run = loadRun(params.runId);
+  if (!run) return;
+  const entry = {
+    chatId: params.chatId,
+    messageId: params.messageId,
+    threadId: params.threadId,
+  };
+  const existing = run.telegramEditPromptMessages ?? [];
+  run.telegramEditPromptMessages = [entry, ...existing].slice(0, TELEGRAM_EDIT_PROMPT_MESSAGE_CAP);
+  saveRun(run);
+}
+
 // ---------------------------------------------------------------------------
 // Exported send helper
 // ---------------------------------------------------------------------------
@@ -1258,13 +1279,32 @@ export function registerTelegramGoalCommands({
       }
 
       if (action === "ge") {
-        await sendGoalReply(
-          bot,
-          chatId,
-          "Reply to the plan message above with your change request.",
-          runtime,
-          threadId,
-        );
+        const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+        // Reply to the plan message so users see which plan to edit;
+        // also use ForceReply to open the reply UI pre-filled.
+        const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
+        const sent = await bot.api
+          .sendMessage(chatId, "Reply to the plan message with your change request.", {
+            ...threadParams,
+            ...replyParams,
+            reply_markup: {
+              force_reply: true,
+              input_field_placeholder: "Describe your changes...",
+            },
+          })
+          .catch(() => undefined);
+        // Track the prompt message so the router can map replies back to GOAL_EDIT
+        if (sent?.message_id && runIdPrefix) {
+          const resolvedId = resolveRunId(runIdPrefix);
+          if (resolvedId) {
+            persistEditPromptMessage({
+              runId: resolvedId,
+              chatId,
+              messageId: sent.message_id,
+              threadId,
+            });
+          }
+        }
         return;
       }
 
