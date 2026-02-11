@@ -37,6 +37,21 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
   return Boolean(opts.json);
 }
 
+/**
+ * For execution-time blocked runs, only user_input blocks must require
+ * an explicit answer before resume. Error-class blocks should be retriable
+ * via /goal_resume so backend/env fixes can take effect without fake input.
+ */
+function requiresExecutionAnswer(run: SerializedRun, requiredKey?: string): boolean {
+  if (requiredKey && run.answers?.[requiredKey]) return false;
+
+  const steps = run.plan?.steps ?? [];
+  const blockedSteps = steps.filter((step) => step.status === "blocked");
+  if (blockedSteps.length === 0) return true;
+
+  return blockedSteps.some((step) => (step.blockedReason ?? "user_input") === "user_input");
+}
+
 /** Load scout data from a previous run if it exists and was successful. */
 function loadScoutData(runId: string): ScoutResult | undefined {
   try {
@@ -289,7 +304,7 @@ export async function goalResumeCommand(
     }
 
     // blockedAt === "execution"
-    if (!answer) {
+    if (!answer && requiresExecutionAnswer(run, requiredKey)) {
       if (isJson) {
         runtime.log(
           JSON.stringify({

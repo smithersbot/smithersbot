@@ -180,6 +180,49 @@ describe("goal-resume command", () => {
     expect(rt.logs.join("\n")).toContain("moltbot goal answer");
   });
 
+  it("retries execution-time blocked runs without answer when blocked reason is error", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-error-blocked-ws-"));
+    saveRun(
+      makeRun({
+        runId: "blocked-error-run",
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Error block",
+          steps: [
+            {
+              id: "error-step",
+              description: "Retry after env fix",
+              dependsOn: [],
+              status: "blocked",
+              durationMinutes: 1,
+              blockedReason: "error",
+              blockedQuestion: "Backend unavailable",
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Backend unavailable",
+          requiredInputKey: "task:error-step:input",
+          stepId: "error-step",
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand("blocked-error-run", { yes: true, quiet: true }, rt);
+
+    expect(result?.status).toBe("done");
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    const persisted = loadRun("blocked-error-run", testGoalsDir);
+    expect(persisted?.state).toBe("done");
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("blocked run in JSON mode outputs strict JSON", async () => {
     saveRun(
       makeRun({
