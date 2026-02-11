@@ -24,18 +24,21 @@ describe("planner", () => {
               description: "Run pnpm test and capture errors",
               dependsOn: [],
               durationMinutes: 3,
+              backend: "claude_code",
             },
             {
               id: "fix-errors",
               description: "Fix all test errors found",
               dependsOn: ["run-tests"],
               durationMinutes: 10,
+              backend: "codex",
             },
             {
               id: "write-report",
               description: "Write a file saying all tests cleared",
               dependsOn: ["fix-errors"],
               durationMinutes: 1,
+              backend: "codex",
             },
           ],
         }),
@@ -65,6 +68,7 @@ describe("planner", () => {
               description: "Run 'pnpm test' in the moltbot directory",
               dependsOn: [],
               durationMinutes: 5,
+              backend: "claude_code",
             },
           ],
         }),
@@ -97,8 +101,20 @@ describe("planner", () => {
         JSON.stringify({
           summary: "Circular",
           steps: [
-            { id: "1", description: "Step A", dependsOn: ["2"], durationMinutes: 1 },
-            { id: "2", description: "Step B", dependsOn: ["1"], durationMinutes: 1 },
+            {
+              id: "1",
+              description: "Step A",
+              dependsOn: ["2"],
+              durationMinutes: 1,
+              backend: "claude_code",
+            },
+            {
+              id: "2",
+              description: "Step B",
+              dependsOn: ["1"],
+              durationMinutes: 1,
+              backend: "claude_code",
+            },
           ],
         }),
       );
@@ -111,8 +127,14 @@ describe("planner", () => {
         JSON.stringify({
           summary: "Dupes",
           steps: [
-            { id: "1", description: "Step A", dependsOn: [], durationMinutes: 1 },
-            { id: "1", description: "Step B", dependsOn: [], durationMinutes: 1 },
+            { id: "1", description: "Step A", dependsOn: [], durationMinutes: 1, backend: "codex" },
+            {
+              id: "1",
+              description: "Step B",
+              dependsOn: [],
+              durationMinutes: 1,
+              backend: "claude_code",
+            },
           ],
         }),
       );
@@ -124,11 +146,30 @@ describe("planner", () => {
       const client = mockClient(
         JSON.stringify({
           summary: "Bad dep",
-          steps: [{ id: "1", description: "Step A", dependsOn: ["99"], durationMinutes: 1 }],
+          steps: [
+            {
+              id: "1",
+              description: "Step A",
+              dependsOn: ["99"],
+              durationMinutes: 1,
+              backend: "codex",
+            },
+          ],
         }),
       );
 
       await expect(generatePlan(client, "Bad dep")).rejects.toThrow(/unknown step/i);
+    });
+
+    it("rejects missing backend selection", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Missing backend",
+          steps: [{ id: "1", description: "Step A", dependsOn: [] }],
+        }),
+      );
+
+      await expect(generatePlan(client, "Missing backend")).rejects.toThrow(/backend is required/i);
     });
 
     it("rejects empty steps array", async () => {
@@ -141,7 +182,14 @@ describe("planner", () => {
       const client = mockClient(
         JSON.stringify({
           summary: "No duration",
-          steps: [{ id: "1", description: "Do something", dependsOn: [] }],
+          steps: [
+            {
+              id: "1",
+              description: "Do something",
+              dependsOn: [],
+              backend: "codex",
+            },
+          ],
         }),
       );
 
@@ -156,7 +204,15 @@ describe("planner", () => {
       const client = mockClient(
         JSON.stringify({
           summary: "Fractional duration",
-          steps: [{ id: "1", description: "Do something", dependsOn: [], durationMinutes: 2.7 }],
+          steps: [
+            {
+              id: "1",
+              description: "Do something",
+              dependsOn: [],
+              durationMinutes: 2.7,
+              backend: "codex",
+            },
+          ],
         }),
       );
 
@@ -172,8 +228,20 @@ describe("planner", () => {
         JSON.stringify({
           summary: "Numeric IDs",
           steps: [
-            { id: 1, description: "Step one", dependsOn: [], durationMinutes: 1 },
-            { id: 2, description: "Step two", dependsOn: ["1"], durationMinutes: 1 },
+            {
+              id: 1,
+              description: "Step one",
+              dependsOn: [],
+              durationMinutes: 1,
+              backend: "codex",
+            },
+            {
+              id: 2,
+              description: "Step two",
+              dependsOn: ["1"],
+              durationMinutes: 1,
+              backend: "claude_code",
+            },
           ],
         }),
       );

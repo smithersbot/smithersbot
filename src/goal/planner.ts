@@ -19,12 +19,19 @@ GRANULARITY RULES (strict):
 - DO NOT create a standalone "run tests" or "verify" step at the end. Each step must verify its own work before completing.
 - When in doubt, merge steps. Fewer, meatier steps are always better than many tiny ones.
 
+BACKEND SELECTION RULES (strict):
+- Every step MUST include a backend: "codex" | "claude_code" | "pi".
+- Use "codex" for coding tasks (creating/modifying code or files).
+- Use "claude_code" for testing tasks and every other type of task.
+- If a step both creates/modifies code AND runs tests, use "codex".
+- Only use "pi" if the user explicitly requests it.
+
 Step schema:
 - id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
 - description: clear, actionable description of what the agent should do, including what "done" looks like
 - dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
 - durationMinutes: estimated duration in minutes (integer, 30–120 typical)
-- backend (optional): "codex" | "claude_code" | "pi" — execution backend (default: "claude_code")
+- backend (required): "codex" | "claude_code" | "pi" — execution backend
 
 Respond ONLY with a JSON object (no markdown fences) matching this schema:
 {
@@ -159,7 +166,7 @@ export function extractJson(text: string): Record<string, unknown> {
 
 const VALID_BACKEND_IDS: GoalBackendId[] = ["pi", "codex", "claude_code"];
 
-/** Parse and validate optional backend from raw LLM output. */
+/** Parse and validate backend from raw LLM output. */
 function parseBackend(raw: unknown): GoalBackendId | undefined {
   if (typeof raw !== "string") return undefined;
   const normalized = raw.trim().toLowerCase();
@@ -196,8 +203,13 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
     const durationMinutes =
       typeof rawDuration === "number" && rawDuration > 0 ? Math.round(rawDuration) : undefined;
 
-    // Parse optional backend
+    // Parse required backend
     const backend = parseBackend(step.backend);
+    if (!backend) {
+      throw new Error(
+        `Step ${id}: backend is required (codex | claude_code | pi) and must be valid`,
+      );
+    }
 
     steps.push({
       id,
@@ -205,7 +217,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       dependsOn,
       status: "pending",
       durationMinutes,
-      ...(backend ? { backend } : {}),
+      backend,
     });
   }
 

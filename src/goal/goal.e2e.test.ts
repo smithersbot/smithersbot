@@ -18,6 +18,7 @@ describe.skipIf(!process.env.CLAWDBOT_LIVE_TEST)("goal e2e (live LLM)", () => {
       for (const step of result.steps) {
         expect(step.id).toBeTruthy();
         expect(step.description).toBeTruthy();
+        expect(step.backend).toBeTruthy();
       }
     }
   }, 30_000);
