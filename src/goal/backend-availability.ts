@@ -5,7 +5,9 @@ import path from "node:path";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 
 let cachedAvailability: BackendAvailability[] | null = null;
-let cachedCodexAskForApproval: boolean | null = null;
+type CodexAskForApprovalPlacement = "before_exec" | "after_exec" | "unsupported";
+
+let cachedCodexAskForApproval: CodexAskForApprovalPlacement | null = null;
 
 export function resetBackendAvailabilityCache(): void {
   cachedAvailability = null;
@@ -108,10 +110,19 @@ function probeBackend(spec: ProbeSpec): { available: boolean; reason?: string } 
   return { available: true };
 }
 
-export function supportsCodexAskForApproval(): boolean {
+export function getCodexAskForApprovalPlacement(): CodexAskForApprovalPlacement {
   if (cachedCodexAskForApproval != null) return cachedCodexAskForApproval;
-  const result = runProbe("codex", ["exec", "--ask-for-approval", "never", "--help"]);
-  cachedCodexAskForApproval = result.ok;
+  const beforeExec = runProbe("codex", ["--ask-for-approval", "never", "exec", "--help"]);
+  if (beforeExec.ok) {
+    cachedCodexAskForApproval = "before_exec";
+    return cachedCodexAskForApproval;
+  }
+  const afterExec = runProbe("codex", ["exec", "--ask-for-approval", "never", "--help"]);
+  if (afterExec.ok) {
+    cachedCodexAskForApproval = "after_exec";
+    return cachedCodexAskForApproval;
+  }
+  cachedCodexAskForApproval = "unsupported";
   return cachedCodexAskForApproval;
 }
 
@@ -120,25 +131,29 @@ export function detectBackendAvailability(): BackendAvailability[] {
 
   const results: BackendAvailability[] = [{ id: "pi", available: true }];
 
-  const codexSupportsAskForApproval = supportsCodexAskForApproval();
+  const codexAskForApproval = getCodexAskForApprovalPlacement();
   const codexProbe = probeBackend({
     binary: "codex",
     helpArgs: ["exec", "--help"],
     // Safe no-op probe: include the actual flags plus --help to avoid invoking the model.
-    flagProbeArgs: ({ workingDir, schemaPath }) => [
-      "exec",
-      "--json",
-      ...(codexSupportsAskForApproval ? ["--ask-for-approval", "never"] : []),
-      "--sandbox",
-      "workspace-write",
-      "--output-schema",
-      schemaPath,
-      "--cd",
-      workingDir,
-      "-c",
-      "net.allowed=true",
-      "--help",
-    ],
+    flagProbeArgs: ({ workingDir, schemaPath }) => {
+      const args = [
+        ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+        "exec",
+        "--json",
+        ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
+        "--sandbox",
+        "workspace-write",
+        "--output-schema",
+        schemaPath,
+        "--cd",
+        workingDir,
+        "-c",
+        "net.allowed=true",
+        "--help",
+      ];
+      return args;
+    },
   });
   results.push({ id: "codex", ...codexProbe });
 

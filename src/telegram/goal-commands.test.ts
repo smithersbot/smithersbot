@@ -411,6 +411,18 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("not awaiting input");
     });
 
+    it("treats non-blocked 'resume' answers as an explicit resume request", async () => {
+      saveRun(makeRun({ state: "cancelled", blocked: null }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "All steps completed." });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "resume");
+
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      expect(typeof result).toBe("string");
+      expect(result).toContain("Executing:");
+    });
+
     it("returns error for unknown run", async () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("nonexistent", "val");

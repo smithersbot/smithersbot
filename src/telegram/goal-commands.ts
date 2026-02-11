@@ -42,6 +42,7 @@ import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }> = [
   { command: "new_goal", description: "Plan a new goal (shows plan for approval)" },
   { command: "goal_approve", description: "Approve and execute a goal plan" },
+  { command: "goal_resume", description: "Resume a goal run (alias of /goal_approve)" },
   { command: "goal_reject", description: "Reject a goal plan" },
   { command: "goal_edit", description: "Edit a goal plan" },
   { command: "goal_status", description: "Show goal run details" },
@@ -507,6 +508,15 @@ export async function handleGoalAnswer(
   }
 
   if (run.state !== "blocked") {
+    const normalizedValue = value.trim().toLowerCase();
+    // Defensive fallback: some Telegram resume flows can end up on /goal_answer.
+    // If the user sent "resume", treat it as an explicit resume request.
+    if (
+      normalizedValue === "resume" &&
+      (run.state === "awaiting_approval" || run.state === "cancelled")
+    ) {
+      return handleGoalApprove(resolvedId, onStatusChange);
+    }
     const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
     return `Run is not awaiting input (state: ${run.state}).${suffix}`;
   }
@@ -1383,7 +1393,6 @@ export function registerTelegramGoalCommands({
         const reply = await handleGoalStop(resolvedId);
         await sendGoalReply(bot, chatId, reply, runtime, threadId);
       } else {
-        // Resume: run /goal_answer <id> resume
         const existingLabel = getGoalLockLabel(resolvedId);
         if (existingLabel) {
           await sendGoalReply(
@@ -1404,7 +1413,7 @@ export function registerTelegramGoalCommands({
           runtime,
           label: "callback:resume",
           runId: resolvedId,
-          fn: () => handleGoalAnswer(resolvedId, "resume", statusCb),
+          fn: () => handleGoalApprove(resolvedId, statusCb),
           onResult: async (reply) => {
             if (reply == null) return;
             if (typeof reply === "string") {
@@ -1620,6 +1629,76 @@ export function registerTelegramGoalCommands({
     });
   });
 
+  // /goal_resume <runId> (alias of /goal_approve)
+  bot.command("goal_resume", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const rawId = ctx.match?.trim() ?? "";
+    if (!rawId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Usage: /goal_resume <runId>",
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const resumeRunId = resolveRunId(rawId);
+    if (!resumeRunId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Run not found: ${rawId}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const existingLabel = getGoalLockLabel(resumeRunId);
+    if (existingLabel) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal \`${resumeRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    acquireGoalLock(resumeRunId, "resume");
+    const statusCb = buildOnStatusChange({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      runId: resumeRunId,
+    });
+    runGoalInBackground({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      label: "goal_resume",
+      runId: resumeRunId,
+      fn: () => handleGoalApprove(rawId, statusCb),
+      onResult: async (reply) => {
+        if (reply == null) return;
+        if (typeof reply === "string") {
+          await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+        } else {
+          await sendGoalPlanResult({
+            bot,
+            chatId: resolved.chatId,
+            runtime,
+            result: reply,
+            threadId: resolved.threadIdForSend,
+          });
+        }
+      },
+    });
+  });
+
   // /goal_reject <runId>
   bot.command("goal_reject", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
@@ -1692,7 +1771,22 @@ export function registerTelegramGoalCommands({
   bot.command("goal_status", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const reply = await handleGoalStatus(ctx.match?.trim() ?? "");
+    const raw = ctx.match?.trim() ?? "";
+    const reply = await handleGoalStatus(raw);
+    const resolvedId = raw ? resolveRunId(raw) : undefined;
+    const run = resolvedId ? loadRun(resolvedId) : undefined;
+    if (run?.plan) {
+      await sendDagPng({
+        bot,
+        chatId: resolved.chatId,
+        threadId: resolved.threadIdForSend,
+        runtime,
+        plan: run.plan,
+        steps: run.plan.steps,
+        caption: reply,
+      });
+      return;
+    }
     await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
   });
 
