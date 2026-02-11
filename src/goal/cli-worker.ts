@@ -18,6 +18,7 @@ import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
+import { supportsCodexAskForApproval } from "./backend-availability.js";
 
 // --- Constants ---
 
@@ -428,11 +429,11 @@ function buildCliArgs(params: {
   const { backend, prompt, workingDir, schemaPath, denyFilePath, model } = params;
 
   if (backend === "codex") {
+    const codexSupportsAskForApproval = supportsCodexAskForApproval();
     const args = [
       "exec",
       "--json",
-      "--ask-for-approval",
-      "never",
+      ...(codexSupportsAskForApproval ? ["--ask-for-approval", "never"] : []),
       "--sandbox",
       "workspace-write",
       "--output-schema",

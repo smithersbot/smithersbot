@@ -5,9 +5,11 @@ import path from "node:path";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 
 let cachedAvailability: BackendAvailability[] | null = null;
+let cachedCodexAskForApproval: boolean | null = null;
 
 export function resetBackendAvailabilityCache(): void {
   cachedAvailability = null;
+  cachedCodexAskForApproval = null;
 }
 
 const PROBE_TIMEOUT_MS = 5_000;
@@ -106,11 +108,19 @@ function probeBackend(spec: ProbeSpec): { available: boolean; reason?: string } 
   return { available: true };
 }
 
+export function supportsCodexAskForApproval(): boolean {
+  if (cachedCodexAskForApproval != null) return cachedCodexAskForApproval;
+  const result = runProbe("codex", ["exec", "--ask-for-approval", "never", "--help"]);
+  cachedCodexAskForApproval = result.ok;
+  return cachedCodexAskForApproval;
+}
+
 export function detectBackendAvailability(): BackendAvailability[] {
   if (cachedAvailability) return cachedAvailability;
 
   const results: BackendAvailability[] = [{ id: "pi", available: true }];
 
+  const codexSupportsAskForApproval = supportsCodexAskForApproval();
   const codexProbe = probeBackend({
     binary: "codex",
     helpArgs: ["exec", "--help"],
@@ -118,8 +128,7 @@ export function detectBackendAvailability(): BackendAvailability[] {
     flagProbeArgs: ({ workingDir, schemaPath }) => [
       "exec",
       "--json",
-      "--ask-for-approval",
-      "never",
+      ...(codexSupportsAskForApproval ? ["--ask-for-approval", "never"] : []),
       "--sandbox",
       "workspace-write",
       "--output-schema",
