@@ -469,9 +469,10 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "s3cret");
 
-      // Returns short ack string (onStatusChange handles DAG PNGs)
+      // Surfaces the blocked question so the user can answer
       expect(typeof result).toBe("string");
-      expect(result).toContain("Resuming:");
+      expect(result).toContain("Still blocked: Need more info");
+      expect(result).toContain("/goal_answer");
     });
 
     it("returns GoalPlanResult with runId and blocked when replanning still needs info", async () => {

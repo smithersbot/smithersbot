@@ -579,7 +579,7 @@ export async function handleGoalAnswer(
     if (onStatusChange) return undefined;
 
     if (outcome?.status === "blocked") {
-      return `Resuming: ${prefix}...`;
+      return `Still blocked: ${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`;
     }
 
     return `Resuming: ${prefix}...`;
