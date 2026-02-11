@@ -457,6 +457,12 @@ export async function goalResumeCommand(
     runtime.log("");
   }
 
+  // Critical invariant: persist resume transition before starting executor.
+  // The executor checks the persisted run state for external cancellation.
+  session.state = "executing";
+  session.blocked = null;
+  persistRun();
+
   const disableCheckpoints = process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
   const outcome = await executeGoalWithAgent({
     session,

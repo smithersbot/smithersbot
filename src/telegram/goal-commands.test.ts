@@ -291,6 +291,17 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Out of credits");
     });
 
+    it("returns cancelled message when onStatusChange is provided", async () => {
+      saveRun(makeRun());
+      mockGoalResumeCommand.mockResolvedValue({ status: "cancelled" });
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalApprove("test-run", statusCb);
+
+      expect(result).toContain("Run cancelled.");
+    });
+
     it("still returns error strings even when onStatusChange is provided", async () => {
       const { handleGoalApprove } = await import("./goal-commands.js");
       const statusCb = vi.fn();
@@ -882,6 +893,46 @@ describe("goal-commands telegram adapter", () => {
       ).rejects.toThrow("boom");
 
       expect(sendMessage).toHaveBeenCalled();
+    });
+  });
+
+  describe("runGoalInBackground", () => {
+    it("sends resume preface before background work starts", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const fn = vi.fn(async () => "ok");
+      let resolveDone: (() => void) | undefined;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      const onResult = vi.fn(async () => {
+        resolveDone?.();
+      });
+
+      const { runGoalInBackground, RESUME_PREFACE } = await import("./goal-commands.js");
+      runGoalInBackground({
+        bot: mockBot,
+        chatId: 42,
+        runtime: {
+          log: vi.fn(),
+          error: vi.fn(),
+          exit: ((_: number) => {
+            throw new Error("exit called");
+          }) as never,
+        },
+        label: "resume-test",
+        preface: RESUME_PREFACE,
+        fn,
+        onResult,
+      });
+
+      await done;
+      expect(sendMessage).toHaveBeenCalledWith(42, RESUME_PREFACE, {});
+      expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(fn.mock.invocationCallOrder[0]);
     });
   });
 

@@ -122,6 +122,14 @@ function makeSerializedRun(overrides: Partial<SerializedRun> = {}): SerializedRu
   };
 }
 
+function makeRuntime() {
+  return {
+    log: vi.fn(),
+    error: vi.fn(),
+    exit: vi.fn() as unknown as (code: number) => never,
+  };
+}
+
 describe("goal workflow integration tests", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-integration-test-"));
@@ -1346,6 +1354,62 @@ describe("goal workflow integration tests", () => {
       expect(runs2).toHaveLength(3);
       const updated = runs2.find((r) => r.runId === "exec-a");
       expect(updated?.state).toBe("cancelled");
+    });
+  });
+
+  // =========================================================================
+  // 16. Resume from cancelled run
+  // =========================================================================
+  describe("resume from cancelled run", () => {
+    it("resumes a cancelled run and executes at least one task", async () => {
+      const { goalResumeCommand } = await import("../commands/goal-resume.js");
+      const { saveRun, loadRun } = await import("./run-store.js");
+
+      const step = makeStep({ id: "resume-1", backend: "codex" });
+      const plan = makePlan([step]);
+      const runId = "resume-from-cancelled";
+      saveRun(
+        makeSerializedRun({
+          runId,
+          state: "cancelled",
+          plan,
+          stepResults: {},
+          workingDir: "/tmp/moltbot-goal-integration-test",
+        }),
+      );
+
+      mockCliExecute.mockResolvedValueOnce({
+        status: "complete",
+        summary: "Resumed task completed",
+        turnsUsed: 1,
+      });
+
+      const statusEvents: string[] = [];
+      const runtime = makeRuntime();
+      const prevNoGitCheckpoints = process.env.MOLTBOT_NO_GIT_CHECKPOINTS;
+      process.env.MOLTBOT_NO_GIT_CHECKPOINTS = "1";
+      let outcome;
+      try {
+        outcome = await goalResumeCommand(
+          runId,
+          {
+            yes: true,
+            quiet: true,
+            onStatusChange: async (event) => {
+              statusEvents.push(event.type);
+            },
+          },
+          runtime,
+        );
+      } finally {
+        if (prevNoGitCheckpoints == null) delete process.env.MOLTBOT_NO_GIT_CHECKPOINTS;
+        else process.env.MOLTBOT_NO_GIT_CHECKPOINTS = prevNoGitCheckpoints;
+      }
+
+      expect(outcome?.status).toBe("done");
+      expect(mockCliExecute).toHaveBeenCalled();
+      expect(statusEvents).toContain("all_done");
+      expect(loadRun(runId)?.state).toBe("done");
     });
   });
 });

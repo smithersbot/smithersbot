@@ -63,23 +63,25 @@ vi.mock("../goal/planner.js", async (importOriginal) => {
 });
 
 // Mock the agent executor so resume tests don't need a real PI agent session
-vi.mock("../goal/agent-executor.js", () => ({
-  executeGoalWithAgent: vi.fn(
-    async (params: {
-      session: { plan: { steps: Array<{ status: string }> } | null; state: string };
-    }) => {
-      // Mark all pending/blocked steps as done
-      if (params.session.plan) {
-        for (const step of params.session.plan.steps) {
-          if (step.status === "pending" || step.status === "blocked") {
-            step.status = "done";
-          }
+const mockExecuteGoalWithAgent = vi.fn(
+  async (params: {
+    session: { plan: { steps: Array<{ status: string }> } | null; state: string };
+  }) => {
+    // Mark all pending/blocked steps as done
+    if (params.session.plan) {
+      for (const step of params.session.plan.steps) {
+        if (step.status === "pending" || step.status === "blocked") {
+          step.status = "done";
         }
       }
-      params.session.state = "done";
-      return { status: "done", summary: "All tasks completed." };
-    },
-  ),
+    }
+    params.session.state = "done";
+    return { status: "done", summary: "All tasks completed." };
+  },
+);
+
+vi.mock("../goal/agent-executor.js", () => ({
+  executeGoalWithAgent: (...args: unknown[]) => mockExecuteGoalWithAgent(...args),
 }));
 
 function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
@@ -311,6 +313,43 @@ describe("goal-resume command", () => {
     expect(result!.status).toBe("done");
     const persisted = loadRun("cancelled-run", testGoalsDir);
     expect(persisted?.state).toBe("done");
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("persists executing before invoking executor for cancelled resume", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-ordering-ws-"));
+    const runId = "resume-ordering";
+    saveRun(
+      makeRun({
+        runId,
+        state: "cancelled",
+        plan: samplePlan,
+        workingDir: workDir,
+      }),
+    );
+
+    mockExecuteGoalWithAgent.mockImplementationOnce(
+      async (params: {
+        session: { plan: { steps: Array<{ status: string }> } | null; state: string };
+      }) => {
+        const persisted = loadRun(runId, testGoalsDir);
+        expect(persisted?.state).toBe("executing");
+        expect(params.session.state).toBe("executing");
+        if (params.session.plan) {
+          for (const step of params.session.plan.steps) {
+            if (step.status === "pending" || step.status === "blocked") step.status = "done";
+          }
+        }
+        params.session.state = "done";
+        return { status: "done", summary: "All tasks completed." };
+      },
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+    expect(result?.status).toBe("done");
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
