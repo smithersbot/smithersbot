@@ -253,7 +253,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const backend = resolveBackendForStep(task, backendOverride, defaultBackend);
     const availabilityResult = isBackendAvailable(backend, availability);
     if (!availabilityResult.available) {
-      const msg = `Backend '${backend}' is not available. Install it or use --backend pi to override.`;
+      const reason = availabilityResult.reason ? `: ${availabilityResult.reason}` : "";
+      const msg = `Backend '${backend}' is not available${reason}. Install it or use --backend pi to override.`;
       task.status = "blocked";
       task.blockedReason = "error";
       task.blockedQuestion = msg;
