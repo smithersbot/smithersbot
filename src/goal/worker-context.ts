@@ -16,28 +16,34 @@ const WORKER_CLAUDE_MD = `# Moltbot — Project Reference
 - Framework: Vitest. Colocated test files: \`*.test.ts\`.
 - The full test suite (\`pnpm test\`) is very large and slow. Do NOT run it. Instead, run only the tests relevant to your changes: \`pnpm vitest run src/goal/\` for goal-system changes, or \`pnpm vitest run <path-to-specific-test>\` for anything else.
 - Coverage target: 70% lines/branches/functions/statements.
+- Do not set test workers above 16.
 
 ## Verifying /goal Changes
 
-If your task modifies any command in the \`/goal\` family, you must verify by running the relevant command(s) via the local CLI and observing actual runtime behavior.
+If your task modifies code in the \`/goal\` family, you must verify your changes:
 
-- Run from the repository root: \`node scripts/run-node.mjs <args>\` (or \`npm run moltbot -- <args>\`).
-- Do not assume a global \`moltbot\` binary is on PATH.
-- If your change affects the gateway, restart: \`systemctl --user restart moltbot-gateway-dev.service\`.
-- Run artifacts persist to \`~/.moltbot/goals/<run_id>/\` — use these to diagnose failures.
-- Do not mark the task complete unless modified \`/goal\` behavior has been confirmed through real execution.
+1. \`pnpm build\` — confirm TypeScript compiles.
+2. \`pnpm vitest run src/goal/\` — run goal-system tests (or the specific test file for your changes).
+3. \`pnpm lint\` — no lint errors.
+4. Run the affected CLI commands from the repository root: \`node scripts/run-node.mjs <args>\`. Do not assume a global \`moltbot\` binary is on PATH.
+
+- If behavior is incorrect: inspect the output, fix the implementation, re-run, and repeat until the behavior matches intent.
+- Do not mark the task complete unless the modified behavior has been exercised and confirmed.
+- **Do NOT restart the gateway service.** You are running inside the gateway process — restarting it will kill your own session. If your change requires a gateway restart to verify, mark the task as blocked and note that the operator must restart and confirm after your task completes.
 
 ## Build and Lint
 
 - Type-check: \`pnpm build\` (tsc).
-- Lint: \`pnpm lint\` (oxlint). Fix lint errors before completing.
+- Lint: \`pnpm lint\` (oxlint). Fix lint errors before completing. Run after making changes to catch issues early.
 - Format: \`pnpm format\` (oxfmt).
 
 ## Git
 
 - Concise, action-oriented commit messages (e.g., \`CLI: add verbose flag to send\`).
 - Group related changes; avoid bundling unrelated refactors.
-- Commit only files you changed. Use \`scripts/committer "<msg>" <file...>\` if available.
+- Never force-push, reset --hard, or run destructive git commands.
+- Commit only the files you changed. Do not stage unrelated files.
+- Use \`scripts/committer "<msg>" <file...>\` if available; otherwise \`git add <specific-files> && git commit -m "<msg>"\`.
 
 ## Security
 
@@ -45,10 +51,17 @@ If your task modifies any command in the \`/goal\` family, you must verify by ru
 - Use fake placeholders in tests and examples.
 - Do not edit: \`.env*\`, \`*.pem\`, \`*.key\`, \`credentials*\`, \`.aws/**\`, \`.ssh/**\`.
 
+## File Operations
+
+- Prefer editing existing files over creating new ones.
+- Do not edit anything under \`node_modules/\`.
+- Do not create documentation files (README, *.md) unless the task explicitly requires it.
+
 ## Dependencies
 
 - Do not add, remove, or update dependencies unless the task explicitly requires it.
 - Patched dependencies (\`pnpm.patchedDependencies\`) must use exact versions (no \`^\`/\`~\`).
+- Patching dependencies requires explicit approval.
 
 ## Project Structure
 
@@ -88,11 +101,8 @@ You are a goal worker: an autonomous agent executing a single task within a mult
 ## Working with the Codebase
 
 - Read existing code before modifying it. Understand patterns before changing them.
-- Prefer editing existing files over creating new ones.
 - Follow the conventions you see in surrounding code (naming, structure, error handling).
-- Keep changes minimal and focused on the task. Do not refactor unrelated code.
-- Never edit anything under \`node_modules/\`.
-- Never run destructive commands (rm -rf, force-push, drop tables) without explicit task instructions.`;
+- Keep changes minimal and focused on the task. Do not refactor unrelated code.`;
 
 /** Combined worker context for injection into system prompts. */
 export const WORKER_CONTEXT = `${WORKER_CLAUDE_MD}\n\n${WORKER_AGENTS_MD}`;

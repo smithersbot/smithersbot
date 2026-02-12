@@ -15,13 +15,16 @@
 
 ## Verifying /goal Changes
 
-If your task modifies any command in the `/goal` family, you must verify by running the relevant command(s) via the local CLI and observing actual runtime behavior.
+If your task modifies code in the `/goal` family, you must verify your changes:
 
-- Run from the repository root: `node scripts/run-node.mjs <args>` (or `npm run moltbot -- <args>`).
-- Do not assume a global `moltbot` binary is on PATH.
-- If your change affects the gateway, restart: `systemctl --user restart moltbot-gateway-dev.service`.
-- Run artifacts persist to `~/.moltbot/goals/<run_id>/` — use these to diagnose failures.
-- Do not mark the task complete unless modified `/goal` behavior has been confirmed through real execution.
+1. `pnpm build` — confirm TypeScript compiles.
+2. `pnpm vitest run src/goal/` — run goal-system tests (or the specific test file for your changes).
+3. `pnpm lint` — no lint errors.
+4. Run the affected CLI commands from the repository root: `node scripts/run-node.mjs <args>`. Do not assume a global `moltbot` binary is on PATH.
+
+- If behavior is incorrect: inspect the output, fix the implementation, re-run, and repeat until the behavior matches intent.
+- Do not mark the task complete unless the modified behavior has been exercised and confirmed.
+- **Do NOT restart the gateway service.** You are running inside the gateway process — restarting it will kill your own session. If your change requires a gateway restart to verify, mark the task as blocked and note that the operator must restart and confirm after your task completes.
 
 ## Build and Lint
 

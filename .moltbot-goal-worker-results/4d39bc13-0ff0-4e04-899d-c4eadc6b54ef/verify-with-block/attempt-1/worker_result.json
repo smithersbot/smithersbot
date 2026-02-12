@@ -1,0 +1,1 @@
+{ "status": "blocked", "question": "I've restarted the gateway service with the duplicate-blocked-message fix. This task is now blocking so you can verify: did you see only ONE message (the DAG image with the blocked status), or did you see a duplicate 'Run blocked: ...' text message too? Please reply with what you see so I can confirm the fix works." }
