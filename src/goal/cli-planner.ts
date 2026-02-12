@@ -64,6 +64,8 @@ export type CliPlanningParams = {
   goalText: string;
   goalsDir?: string;
   timeoutMs?: number;
+  /** Working directory for planner/scout CLI execution (defaults to process.cwd()). */
+  cwd?: string;
   /** How the planner's Claude Code process authenticates (default: "subscription"). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Preserve legacy --no-scout semantics by skipping scout artifact generation. */
@@ -95,6 +97,8 @@ export type CliPlanRevisionParams = {
   editInstructions: string;
   goalsDir?: string;
   timeoutMs?: number;
+  /** Working directory for revision CLI execution (defaults to process.cwd()). */
+  cwd?: string;
   model?: string;
   /** How Claude Code revision process authenticates (default: "subscription"). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
@@ -221,6 +225,7 @@ export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise
   const { runId, goalText, currentPlan, editInstructions, goalsDir, model, claudeCodeAuth } =
     params;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
+  const plannerCwd = params.cwd ?? process.cwd();
 
   const claudeBin = resolveClaudeBinary();
   if (!claudeBin) {
@@ -247,7 +252,7 @@ export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise
   const procResult = await runCliProcess({
     command: claudeBin,
     args,
-    cwd: process.cwd(),
+    cwd: plannerCwd,
     timeoutMs: timeout,
     stdin: prompt,
     stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
@@ -286,6 +291,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const { runId, goalText, goalsDir } = params;
   const includeScoutArtifacts = params.includeScoutArtifacts !== false;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
+  const plannerCwd = params.cwd ?? process.cwd();
 
   const claudeBin = resolveClaudeBinary();
   if (!claudeBin) {
@@ -313,7 +319,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const procResult = await runCliProcess({
     command: claudeBin,
     args: ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS],
-    cwd: process.cwd(),
+    cwd: plannerCwd,
     timeoutMs: timeout,
     stdin: prompt,
     stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),

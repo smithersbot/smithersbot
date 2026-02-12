@@ -41,12 +41,17 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
   return Boolean(opts.json);
 }
 
+const AUTO_RETRY_EXECUTION_KEYS = new Set(["git"]);
+
 /**
  * For execution-time blocked runs, only user_input blocks must require
  * an explicit answer before resume. Error-class blocks should be retriable
  * via /goal_resume so backend/env fixes can take effect without fake input.
  */
 function requiresExecutionAnswer(run: SerializedRun, requiredKey?: string): boolean {
+  if (requiredKey && AUTO_RETRY_EXECUTION_KEYS.has(requiredKey)) {
+    return false;
+  }
   if (requiredKey && run.answers?.[requiredKey]) return false;
 
   const steps = run.plan?.steps ?? [];
@@ -159,6 +164,7 @@ async function retryPlanning(
         planningResult = await runCliPlanning({
           runId: run.runId,
           goalText,
+          cwd: run.workingDir,
           includeScoutArtifacts,
         });
       } finally {

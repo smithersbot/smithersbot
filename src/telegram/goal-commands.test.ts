@@ -244,17 +244,22 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
-      expect(result).toContain("already executing or complete");
+      expect(result).toContain("already complete");
       expect(mockGoalResumeCommand).not.toHaveBeenCalled();
     });
 
-    it("returns no-op for already executing run", async () => {
+    it("attempts resume for executing runs", async () => {
       saveRun(makeRun({ state: "executing" }));
+      mockGoalResumeCommand.mockResolvedValue({
+        status: "blocked",
+        question: "Need credentials",
+        requiredInputKey: "task:1:input",
+      });
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
-      expect(result).toContain("already executing or complete");
-      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      expect(result).toContain("Run blocked:");
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
     });
 
     it("returns undefined when onStatusChange is provided (no stray message)", async () => {
@@ -764,7 +769,134 @@ describe("goal-commands telegram adapter", () => {
       expect(mockRunCliPlanRevision.mock.calls[0]?.[0]).toMatchObject({
         runId: "test-run-id-1234",
         goalText: "Test goal",
+        cwd: "/tmp/ws",
       });
+    });
+
+    it("updates run working dir from explicit edit instructions", async () => {
+      const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-old-"));
+      const newDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-new-"));
+      saveRun(makeRun({ workingDir: originalDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        goal: "Test goal",
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+          },
+        ],
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", `working dir should be ${newDir}`);
+
+      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain(newDir.replace(os.homedir(), "~"));
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: newDir,
+        }),
+      );
+
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(newDir);
+    });
+
+    it("updates run working dir from conversational correction phrasing", async () => {
+      const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-root-"));
+      const originalDir = path.join(workspaceRoot, "moltbot");
+      const newDir = path.join(workspaceRoot, "earnlayer-marketing");
+      fs.mkdirSync(originalDir, { recursive: true });
+      fs.mkdirSync(newDir, { recursive: true });
+      saveRun(makeRun({ workingDir: originalDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        goal: "Test goal",
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+          },
+        ],
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit(
+        "test-run",
+        `you still have the Working Dir as ${originalDir} when it should be ${newDir}`,
+      );
+
+      expect(result.text).toContain("Working dir:");
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: newDir,
+        }),
+      );
+
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(newDir);
+
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    });
+
+    it("resolves hyphenless working dir hints to an existing sibling directory", async () => {
+      const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-fuzzy-"));
+      const originalDir = path.join(workspaceRoot, "moltbot");
+      const newDir = path.join(workspaceRoot, "earnlayer-marketing");
+      fs.mkdirSync(originalDir, { recursive: true });
+      fs.mkdirSync(newDir, { recursive: true });
+      saveRun(makeRun({ workingDir: originalDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        goal: "Test goal",
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+          },
+        ],
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      await handleGoalEdit("test-run", "working dir should be earnlayermarketing");
+
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: newDir,
+        }),
+      );
+
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(newDir);
+
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    });
+
+    it("returns an error when working dir instruction cannot be resolved", async () => {
+      const existingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-existing-"));
+      saveRun(makeRun({ workingDir: existingDir }));
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "working directory should be /missing/path");
+
+      expect(result.text).toContain("Could not resolve working directory");
+      expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
     });
 
     it("refuses non-awaiting_approval run", async () => {

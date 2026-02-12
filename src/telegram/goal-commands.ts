@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { InputFile, type Bot, type Context } from "grammy";
 import type { InlineKeyboardMarkup, ReactionTypeEmoji } from "grammy/types";
 
@@ -38,7 +41,7 @@ import { markdownToTelegramChunks } from "./format.js";
 import { buildInlineKeyboard } from "./send.js";
 import { recordSentMessage } from "./sent-message-cache.js";
 import { findRunByPlanMessageIdIndexed, indexPlanMessage } from "./goal-message-index.js";
-import { shortenHomePath } from "../utils.js";
+import { resolveUserPath, shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -210,6 +213,118 @@ export function getGoalExecutionPreface(state: SerializedRun["state"] | undefine
     return START_PREFACE;
   }
   return RESUME_PREFACE;
+}
+
+type WorkingDirInstructionHint = {
+  requestedPath: string;
+  resolvedPath?: string;
+};
+
+const WORKING_DIR_INSTRUCTION_PATTERNS = [
+  /(?:working\s*dir|working\s*directory|workdir)[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
+  /set\s+(?:the\s+)?(?:working\s*dir|working\s*directory|workdir)\s+to\s+([^\n]+)/i,
+  /(?:working\s*dir|working\s*directory|workdir)\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
+];
+
+function cleanWorkingDirInstructionPath(rawPath: string): string {
+  let value = rawPath.trim();
+  value = value.replace(/\s*\(.*$/, "").trim();
+  value = value.replace(/\s+\b(?:when|where|which)\b.*$/i, "").trim();
+  value = value.replace(/\s+\b(?:and|but)\b\s+(?:it\s+)?should\s+be\b.*$/i, "").trim();
+  value = value
+    .replace(/^[`'"]+/, "")
+    .replace(/[`'"]+$/, "")
+    .trim();
+  value = value.replace(/[.,;:!?]+$/, "").trim();
+  return value;
+}
+
+function normalizeDirectoryToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function resolveByNormalizedDirectoryName(value: string, roots: string[]): string | undefined {
+  const target = normalizeDirectoryToken(value);
+  if (!target) return undefined;
+
+  for (const root of [...new Set(roots)]) {
+    try {
+      const entries = fs.readdirSync(root, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (normalizeDirectoryToken(entry.name) !== target) continue;
+        return path.join(root, entry.name);
+      }
+    } catch {
+      // Ignore missing/inaccessible roots.
+    }
+  }
+
+  return undefined;
+}
+
+function resolveWorkingDirInstructionPath(
+  value: string,
+  currentWorkingDir: string,
+): string | undefined {
+  if (!value) return undefined;
+
+  const candidates = new Set<string>();
+  if (value.startsWith("~") || path.isAbsolute(value)) {
+    candidates.add(resolveUserPath(value));
+  } else {
+    candidates.add(path.resolve(currentWorkingDir, value));
+    candidates.add(path.resolve(process.cwd(), value));
+    candidates.add(path.resolve(path.dirname(currentWorkingDir), value));
+    candidates.add(path.resolve(path.dirname(process.cwd()), value));
+    candidates.add(path.resolve(os.homedir(), value));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // Keep trying candidates.
+    }
+  }
+
+  // Fuzzy fallback for conversational directory names, e.g. "earnlayermarketing"
+  // matching sibling folder "earnlayer-marketing".
+  if (
+    !value.startsWith("~") &&
+    !path.isAbsolute(value) &&
+    !value.includes("/") &&
+    !value.includes("\\")
+  ) {
+    return resolveByNormalizedDirectoryName(value, [
+      currentWorkingDir,
+      process.cwd(),
+      path.dirname(currentWorkingDir),
+      path.dirname(process.cwd()),
+      os.homedir(),
+    ]);
+  }
+
+  return undefined;
+}
+
+function parseWorkingDirInstruction(
+  instructions: string,
+  currentWorkingDir: string,
+): WorkingDirInstructionHint | undefined {
+  for (const pattern of WORKING_DIR_INSTRUCTION_PATTERNS) {
+    const match = pattern.exec(instructions);
+    if (!match?.[1]) continue;
+    const requestedPath = cleanWorkingDirInstructionPath(match[1]);
+    if (!requestedPath) continue;
+    return {
+      requestedPath,
+      resolvedPath: resolveWorkingDirInstructionPath(requestedPath, currentWorkingDir),
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -735,6 +850,22 @@ export async function handleGoalEdit(
   if (!run.plan) {
     return { text: "Run has no plan to edit." };
   }
+  const trimmedInstructions = instructions.trim();
+  const workingDirHint = parseWorkingDirInstruction(trimmedInstructions, run.workingDir);
+  if (workingDirHint && !workingDirHint.resolvedPath) {
+    return {
+      text:
+        `Could not resolve working directory: "${workingDirHint.requestedPath}". ` +
+        "Please provide an existing directory path.",
+    };
+  }
+  const nextWorkingDir = workingDirHint?.resolvedPath;
+  const workingDirChanged = Boolean(nextWorkingDir && nextWorkingDir !== run.workingDir);
+  if (nextWorkingDir && nextWorkingDir !== run.workingDir) {
+    run.workingDir = nextWorkingDir;
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+  }
   const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
 
   try {
@@ -742,13 +873,17 @@ export async function handleGoalEdit(
       runId: resolvedId,
       goalText: run.goal,
       currentPlan: run.plan,
-      editInstructions: instructions.trim(),
+      editInstructions: trimmedInstructions,
+      cwd: run.workingDir,
       model: run.model,
       claudeCodeAuth: authMode,
     });
 
     if ("blocked" in result) {
-      return { text: `Revision blocked: ${result.question}`, blocked: true };
+      const prefix = workingDirChanged
+        ? `Working dir updated: ${shortenHomePath(run.workingDir)}\n`
+        : "";
+      return { text: `${prefix}Revision blocked: ${result.question}`, blocked: true };
     }
 
     // Update run with new plan revision
@@ -758,7 +893,7 @@ export async function handleGoalEdit(
     history.push({
       revision: oldRevision,
       plan: run.plan,
-      editInstructions: instructions.trim(),
+      editInstructions: trimmedInstructions,
     });
 
     run.plan = result;
@@ -776,6 +911,9 @@ export async function handleGoalEdit(
     });
     const parts: string[] = [];
     parts.push(`**Revision ${newRevision}**\n`);
+    if (workingDirChanged) {
+      parts.push(`Working dir: \`${shortenHomePath(run.workingDir)}\`\n`);
+    }
     parts.push(planText);
     parts.push(`\nRun ID: \`${resolvedId.slice(0, 8)}\``);
 
@@ -1130,7 +1268,6 @@ async function sendDagPng(params: {
 }): Promise<number | undefined> {
   const { bot, chatId, threadId, runtime, plan, steps, stepResults, caption, replyMarkup } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  const split = splitTelegramCaption(caption);
 
   const displayStatuses = computeDisplayStatuses(steps);
   let cpm: ReturnType<typeof computeCpm> | undefined;
@@ -1143,6 +1280,8 @@ async function sendDagPng(params: {
   const pngBuffer = renderMermaidToPng(mermaidText);
 
   if (pngBuffer) {
+    // Keep PNG rendering ahead of any text chunking/fallback logic.
+    const split = splitTelegramCaption(caption);
     try {
       const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
         caption: split.caption,

@@ -165,9 +165,11 @@ describe("runCliPlanning", () => {
 
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       env: Record<string, string | undefined>;
+      cwd: string;
     };
     expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(procCall.cwd).toBe(process.cwd());
   });
 
   it("returns blocked-at-planning when clarification artifact is produced", async () => {
@@ -348,10 +350,69 @@ describe("runCliPlanning", () => {
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       env: Record<string, string | undefined>;
       args: string[];
+      cwd: string;
     };
     expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
+    expect(procCall.cwd).toBe(process.cwd());
+  });
+
+  it("uses caller-provided cwd for planning and revision", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-cwd-"));
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Custom cwd",
+        steps: [
+          {
+            id: "step-1",
+            description: "Do thing",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 50,
+    });
+
+    await runCliPlanning({
+      runId: "run-custom-cwd",
+      goalText: "Test cwd",
+      goalsDir,
+      cwd: workDir,
+      includeScoutArtifacts: false,
+    });
+    const planningCall = mockRunCliProcess.mock.calls.at(-1)?.[0] as { cwd: string };
+    expect(planningCall.cwd).toBe(workDir);
+
+    await runCliPlanRevision({
+      runId: "run-custom-cwd-revision",
+      goalText: "Test cwd",
+      currentPlan: {
+        goal: "Test cwd",
+        summary: "Initial",
+        steps: [
+          {
+            id: "step-1",
+            description: "Do thing",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Keep it simple",
+      goalsDir,
+      cwd: workDir,
+    });
+    const revisionCall = mockRunCliProcess.mock.calls.at(-1)?.[0] as { cwd: string };
+    expect(revisionCall.cwd).toBe(workDir);
   });
 });

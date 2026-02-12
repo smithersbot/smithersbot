@@ -10,6 +10,8 @@ import { warn } from "../globals.js";
 const PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR ?? path.join(userInfo().homedir, ".cache", "puppeteer");
 
+const DEFAULT_MERMAID_RENDER_TIMEOUT_MS = 180_000;
+
 /** Transparent background so the PNG blends with any chat theme. */
 export const MERMAID_PNG_BACKGROUND = "transparent";
 
@@ -34,6 +36,15 @@ export function renderMermaidToPng(mermaidText: string): Buffer | null {
 
   let tempDir: string | undefined;
   try {
+    const configuredTimeout = Number.parseInt(
+      process.env.MOLTBOT_MERMAID_RENDER_TIMEOUT_MS ?? "",
+      10,
+    );
+    const timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : DEFAULT_MERMAID_RENDER_TIMEOUT_MS;
+
     tempDir = mkdtempSync(path.join(tmpdir(), "mermaid-png-"));
     const inputPath = path.join(tempDir, "input.mmd");
     const outputPath = path.join(tempDir, "output.png");
@@ -60,7 +71,7 @@ export function renderMermaidToPng(mermaidText: string): Buffer | null {
         configPath,
       ],
       {
-        timeout: 30_000,
+        timeout: timeoutMs,
         stdio: "pipe",
         env: { ...process.env, PUPPETEER_CACHE_DIR },
       },

@@ -160,6 +160,7 @@ export async function goalCommand(
         return await runCliPlanning({
           runId,
           goalText: goal,
+          cwd: workingDir,
           timeoutMs: opts.scoutTimeoutMs,
           claudeCodeAuth: resolvedAuthMode,
           includeScoutArtifacts: !opts.noScout,

@@ -3,6 +3,8 @@ import type { ExecutionDisplayStatus } from "./execution-status.js";
 import type { Plan, StepResult } from "./types.js";
 import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
 
+const MAX_NODE_LABEL_CHARS = 140;
+
 /** Init directive — must precede the graph declaration. */
 const INIT_DIRECTIVE = [
   `%%{init: {`,
@@ -82,6 +84,12 @@ function nodeDurationLabel(
   return "";
 }
 
+function truncateLabel(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const keep = Math.max(0, maxChars - 3);
+  return `${text.slice(0, keep).trimEnd()}...`;
+}
+
 /**
  * Strip LLM-generated noise from step descriptions to produce short labels.
  *
@@ -91,6 +99,7 @@ function nodeDurationLabel(
  */
 export function normalizeLabel(raw: string): string {
   let s = raw.trim();
+  s = s.replace(/\s+/g, " ");
 
   // Strip leading prefixes like "A.", "B)", "1.", "1)", "A-", "write-a-txt."
   s = s.replace(/^[A-Za-z0-9][\w-]*[.)]\s*/, "");
@@ -162,7 +171,7 @@ export function renderMermaid(
     const emoji = displayStatuses ? STATUS_EMOJI[status] : "";
     const prefix = emoji ? `${emoji} ` : "";
     const num = orderNum.get(step.id) ?? 0;
-    const shortDesc = normalizeLabel(step.description);
+    const shortDesc = truncateLabel(normalizeLabel(step.description), MAX_NODE_LABEL_CHARS);
     const dur = nodeDurationLabel(step.id, status, cpm, stepResults);
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;
     lines.push(`  ${step.id}["${label}"]`);

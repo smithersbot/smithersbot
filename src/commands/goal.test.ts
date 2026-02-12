@@ -257,11 +257,12 @@ describe("goal command — early failure persistence", () => {
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-"));
 
     const outcome = await goalCommand(
       {
         goal: "Deploy this service",
-        workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
+        workingDir: workDir,
         yes: true,
       },
       rt,
@@ -280,6 +281,11 @@ describe("goal command — early failure persistence", () => {
     expect(run!.state).toBe("blocked");
     expect(run!.scoutStatus).toBe("needs_clarification");
     expect(run!.blocked?.blockedAt).toBe("planning");
+    expect(mockRunCliPlanning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: workDir,
+      }),
+    );
   });
 
   it("records skipped scout metadata from unified planning result", async () => {

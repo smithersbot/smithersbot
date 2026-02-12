@@ -24,6 +24,16 @@ function initRepo(): string {
   return dir;
 }
 
+function initSubmoduleRepo(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "git-checkpoint-submodule-"));
+  execSync("git init", { cwd: dir });
+  execSync("git config user.email test@test.com", { cwd: dir });
+  execSync("git config user.name Test", { cwd: dir });
+  fs.writeFileSync(path.join(dir, "SUBMODULE.md"), "submodule\n");
+  execSync("git add . && git commit -m init", { cwd: dir });
+  return dir;
+}
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const dir of dirs) {
@@ -85,5 +95,21 @@ describeGit("git-checkpoint", () => {
 
   it("isGitRepo returns true for a git repo", () => {
     expect(isGitRepo(tracked(initRepo()))).toBe(true);
+  });
+
+  it("autosaveIfDirty does not fail when only submodule content is dirty", () => {
+    const dir = tracked(initRepo());
+    const submoduleDir = tracked(initSubmoduleRepo());
+
+    execSync(`git -c protocol.file.allow=always submodule add ${submoduleDir} marketingskills`, {
+      cwd: dir,
+    });
+    execSync("git commit -m add-submodule", { cwd: dir });
+
+    fs.writeFileSync(path.join(dir, "marketingskills", "SUBMODULE.md"), "dirty-submodule\n");
+
+    expect(isWorkingTreeClean(dir)).toBe(false);
+    const result = autosaveIfDirty(dir, "claw: autosave before goal run-submodule");
+    expect(result.success).toBe(true);
   });
 });

@@ -6,6 +6,34 @@ import type { TaskCheckpoint } from "./types.js";
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
 
+function describeGitError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const stderr = (error as { stderr?: Buffer | string }).stderr;
+  const stdout = (error as { stdout?: Buffer | string }).stdout;
+  const stdoutText =
+    typeof stdout === "string" ? stdout : stdout instanceof Buffer ? stdout.toString("utf8") : "";
+  const stderrText =
+    typeof stderr === "string" ? stderr : stderr instanceof Buffer ? stderr.toString("utf8") : "";
+  if (stderrText || stdoutText) {
+    return [error.message, stdoutText, stderrText]
+      .filter((part) => part != null && part.trim() !== "")
+      .join("\n");
+  }
+  return error.message;
+}
+
+/**
+ * Dirty git state can come solely from modified submodule working trees.
+ * In that case `git add -A` stages nothing in the parent repo and commit exits 1
+ * with "no changes added to commit"/"nothing to commit". Treat this as non-fatal.
+ */
+function isNoStagedChangesCommitError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("no changes added to commit") || normalized.includes("nothing to commit")
+  );
+}
+
 export function canRunGit(): boolean {
   try {
     execFileSync("git", ["--version"], { encoding: "utf8", timeout: 5000 });
@@ -118,7 +146,7 @@ function buildTaskCommitMessage(taskId: string, summary?: string): string {
   return `claw: ${taskId}${suffix}`;
 }
 
-function commitAll(cwd: string, message: string): GitResult {
+function commitAll(cwd: string, message: string): GitCommitResult {
   try {
     execFileSync("git", ["-C", cwd, "add", "-A"], { encoding: "utf8", timeout: 10000 });
     execFileSync("git", ["-C", cwd, "commit", "-m", message], {
@@ -131,6 +159,10 @@ function commitAll(cwd: string, message: string): GitResult {
     }).trim();
     return { success: true, sha };
   } catch (e) {
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
+    const errorText = describeGitError(e);
+    if (isNoStagedChangesCommitError(errorText)) {
+      return { success: true };
+    }
+    return { success: false, error: errorText };
   }
 }

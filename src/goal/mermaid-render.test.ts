@@ -72,6 +72,12 @@ describe("normalizeLabel", () => {
     expect(normalizeLabel("")).toBe("");
   });
 
+  it("collapses internal whitespace and newlines", () => {
+    expect(normalizeLabel("Write file\n\n  with   extra   spacing")).toBe(
+      "Write file with extra spacing",
+    );
+  });
+
   it("converts 'Write file X containing Y' to 'Write X'", () => {
     expect(normalizeLabel("write-a-txt. Write file a.txt containing 'A'")).toBe("Write a.txt");
   });
@@ -187,6 +193,23 @@ describe("renderMermaid", () => {
     expect(out).not.toContain("(file_write)");
     expect(out).toContain("1 --> 2");
     expect(out).toContain("2 --> 3");
+  });
+
+  it("truncates very long node labels to keep Mermaid output compact", () => {
+    const longDescription = "A".repeat(300);
+    const plan = makePlan([
+      {
+        id: "1",
+        description: longDescription,
+        dependsOn: [],
+        status: "pending",
+      },
+    ]);
+
+    const out = renderMermaid(plan);
+    expect(out).toContain('1["1. ');
+    expect(out).toContain("...");
+    expect(out).not.toContain(longDescription);
   });
 
   it("renders independent roots with no edges", () => {

@@ -220,6 +220,56 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("retries execution-time git blocks without requiring /goal_answer", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-git-blocked-ws-"));
+    const runId = "blocked-git-run";
+    saveRun(
+      makeRun({
+        runId,
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Git preflight block",
+          steps: [
+            {
+              id: "done-step",
+              description: "Already done",
+              dependsOn: [],
+              status: "done",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Git checkpoints are enabled but this working directory is not a valid git repo.",
+          requiredInputKey: "git",
+        },
+        stepResults: {
+          "done-step": {
+            stepId: "done-step",
+            success: true,
+            output: "Done",
+            durationMs: 1,
+          },
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+    expect(result).toEqual({ status: "done", summary: "All steps already completed." });
+    expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+
+    const persisted = loadRun(runId, testGoalsDir);
+    expect(persisted?.state).toBe("done");
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("blocked run in JSON mode outputs strict JSON", async () => {
     saveRun(
       makeRun({
@@ -878,6 +928,7 @@ describe("goal-resume command", () => {
       expect(mockRunCliPlanning).toHaveBeenCalledWith({
         runId,
         goalText: "Goal text",
+        cwd: "/tmp/ws",
         includeScoutArtifacts: true,
       });
 
@@ -1011,6 +1062,7 @@ describe("goal-resume command", () => {
       expect(mockRunCliPlanning).toHaveBeenCalledWith({
         runId,
         goalText: "Goal text",
+        cwd: "/tmp/ws",
         includeScoutArtifacts: false,
       });
       expect(rt.logs.join("\n")).toContain("Replanning (--no-scout mode)...");
