@@ -6,7 +6,7 @@ import type {
   GoalOutputChannel,
   GoalOutputMode,
 } from "../goal/compact-output.js";
-import { formatCompactGoalOutput } from "../goal/compact-output.js";
+import { buildGoalRetrySummary, formatCompactGoalOutput } from "../goal/compact-output.js";
 import { computeCpm } from "../goal/cpm.js";
 import { renderAsciiDependencies } from "../goal/dag-render.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
@@ -51,13 +51,6 @@ function resolveDiagramMode(opts: GoalStatusOptions, channel: GoalOutputChannel)
   return resolveMode(opts) === "full" ? "both" : "none";
 }
 
-function normalizePositiveInteger(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const integer = Math.floor(value);
-  if (integer <= 0) return undefined;
-  return integer;
-}
-
 function formatStepState(step: PlanStep, displayStatus: string | undefined): string {
   const status = displayStatus ?? step.status;
   if (status === "done") return "done";
@@ -79,35 +72,14 @@ function loadWorkerAttemptCount(runId: string, stepId: string): number {
 
 function buildRetrySummary(run: SerializedRun): RetrySummary {
   const steps = run.plan?.steps ?? [];
-  const attemptsByStepId = new Map<string, AttemptBadgeInput>();
-  let retriesUsed = 0;
-  let retriedStepCount = 0;
-
-  for (const step of steps) {
-    const workerAttempts = loadWorkerAttemptCount(run.runId, step.id);
-    const turnsUsed = normalizePositiveInteger(step.turnsUsed);
-    const turnsTotal = normalizePositiveInteger(run.agentMaxTurnsPerTask);
-    const usesTurnCount = Boolean(turnsUsed && turnsUsed > 1);
-    const attemptsUsed = usesTurnCount ? (turnsUsed ?? 0) : workerAttempts > 1 ? workerAttempts : 0;
-    if (attemptsUsed <= 1) continue;
-
-    const attempt: AttemptBadgeInput =
-      usesTurnCount && turnsTotal ? { attemptsUsed, attemptsTotal: turnsTotal } : { attemptsUsed };
-    attemptsByStepId.set(step.id, attempt);
-
-    retriesUsed += attemptsUsed - 1;
-    retriedStepCount += 1;
-  }
-
-  if (retriesUsed <= 0) {
-    return { text: "0 retries", attemptsByStepId };
-  }
-
+  const summary = buildGoalRetrySummary({
+    steps: steps.map((step) => ({ id: step.id, turnsUsed: step.turnsUsed })),
+    attemptsTotal: run.agentMaxTurnsPerTask,
+    resolveStepAttemptsUsed: (stepId) => loadWorkerAttemptCount(run.runId, stepId),
+  });
   return {
-    text: `${retriesUsed} ${retriesUsed === 1 ? "retry" : "retries"} across ${retriedStepCount} ${
-      retriedStepCount === 1 ? "step" : "steps"
-    }`,
-    attemptsByStepId,
+    text: summary.text,
+    attemptsByStepId: summary.attemptsByStepId,
   };
 }
 

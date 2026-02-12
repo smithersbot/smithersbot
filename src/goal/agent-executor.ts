@@ -11,6 +11,7 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import type { GoalBackendId } from "./backend-types.js";
+import { formatCompactGoalCompletionSummary } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
@@ -468,7 +469,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const allDone = orderedSteps.every((s) => s.status === "done");
   if (allDone) {
     session.state = "done";
-    const summary = buildGoalSummary(orderedSteps);
+    const summary = buildGoalSummary({
+      goal: session.goal,
+      runId,
+      steps: orderedSteps,
+      maxTurnsPerTask,
+    });
     if (onStatusChange) {
       await onStatusChange({ type: "all_done", steps: [...orderedSteps], summary });
     }
@@ -643,16 +649,26 @@ function findRunnableTasks(
   });
 }
 
-function buildGoalSummary(steps: PlanStep[]): string {
-  const done = steps.filter((s) => s.status === "done");
-  const blocked = steps.filter((s) => s.status === "blocked");
-  const parts = [`${done.length}/${steps.length} tasks completed`];
-  if (blocked.length > 0) parts.push(`${blocked.length} blocked`);
-  const summaries = done.filter((s) => s.taskSummary).map((s) => `- ${s.id}: ${s.taskSummary}`);
-  if (summaries.length > 0) {
-    return `${parts.join(", ")}.\n\n${summaries.join("\n")}`;
-  }
-  return `${parts.join(", ")}.`;
+function buildGoalSummary(params: {
+  goal: string;
+  runId: string;
+  steps: PlanStep[];
+  maxTurnsPerTask?: number;
+}): string {
+  return formatCompactGoalCompletionSummary({
+    title: params.goal,
+    steps: params.steps.map((step) => ({
+      id: step.id,
+      description: step.description,
+      summary: step.taskSummary,
+      status: step.status,
+      turnsUsed: step.turnsUsed,
+    })),
+    attemptsTotal: params.maxTurnsPerTask,
+    resolveStepAttemptsUsed: (stepId) =>
+      loadAttemptBundles(resolveWorkerDir(params.runId, stepId)).length,
+    channel: "telegram",
+  }).text;
 }
 
 function buildSuccessorMap(steps: PlanStep[]): Map<string, Set<string>> {

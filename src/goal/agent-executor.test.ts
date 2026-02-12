@@ -116,6 +116,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.status).toBe("done");
     expect(step.taskSummary).toBe("All set");
     expect(mockCliExecute).toHaveBeenCalledOnce();
+    if (outcome.status === "done") {
+      expect(outcome.summary).toContain("✅ Done:");
+      expect(outcome.summary).toContain("**Progress** 1/1");
+      expect(outcome.summary).toContain("**Retries** 0 retries");
+    }
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {

@@ -12,6 +12,24 @@ export type AttemptBadgeInput = {
   attemptsTotal?: number | null;
 };
 
+export type GoalRetrySummaryStepInput = {
+  id: string;
+  turnsUsed?: number | null;
+};
+
+export type GoalRetrySummaryInput = {
+  steps: GoalRetrySummaryStepInput[];
+  attemptsTotal?: number | null;
+  resolveStepAttemptsUsed?: (stepId: string) => number | undefined;
+};
+
+export type GoalRetrySummaryResult = {
+  text: string;
+  retriesUsed: number;
+  retriedStepCount: number;
+  attemptsByStepId: Map<string, AttemptBadgeInput>;
+};
+
 export type CompactGoalStep = {
   id: string;
   text: string;
@@ -59,6 +77,29 @@ export type CompactGoalRenderOptions = {
   maxTitleChars: number;
 };
 
+export type CompactGoalCompletionStep = {
+  id: string;
+  description: string;
+  summary?: string | null;
+  status?: string;
+  turnsUsed?: number | null;
+};
+
+export type CompactGoalCompletionInput = {
+  title: string;
+  steps: CompactGoalCompletionStep[];
+  attemptsTotal?: number | null;
+  resolveStepAttemptsUsed?: (stepId: string) => number | undefined;
+  mode?: GoalOutputMode;
+  channel?: GoalOutputChannel;
+  textFormat?: GoalOutputTextFormat;
+  stateIndicatorStyle?: GoalStateIndicatorStyle;
+  maxSteps?: number;
+  maxLines?: number;
+  maxStepTextChars?: number;
+  maxTitleChars?: number;
+};
+
 const DEFAULT_MAX_STEPS_BY_MODE: Record<GoalOutputMode, number> = {
   concise: 5,
   verbose: 8,
@@ -93,6 +134,12 @@ function normalizeCount(value: number | null | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const rounded = Math.floor(value);
   return rounded >= 0 ? rounded : undefined;
+}
+
+function normalizePositiveCount(value: number | null | undefined): number | undefined {
+  const normalized = normalizeCount(value);
+  if (!normalized || normalized <= 0) return undefined;
+  return normalized;
 }
 
 export function formatAttemptBadge(input: AttemptBadgeInput | undefined): string {
@@ -280,4 +327,82 @@ export function formatCompactGoalOutput(input: CompactGoalRenderInput): CompactG
     shownStepCount,
     hiddenStepCount,
   };
+}
+
+export function buildGoalRetrySummary(input: GoalRetrySummaryInput): GoalRetrySummaryResult {
+  const attemptsByStepId = new Map<string, AttemptBadgeInput>();
+  const attemptsTotal = normalizePositiveCount(input.attemptsTotal);
+  let retriesUsed = 0;
+  let retriedStepCount = 0;
+
+  for (const step of input.steps) {
+    const turnsUsed = normalizePositiveCount(step.turnsUsed);
+    const usesTurnCount = Boolean(turnsUsed && turnsUsed > 1);
+    let stepAttempts = 0;
+
+    if (usesTurnCount) {
+      stepAttempts = turnsUsed ?? 0;
+    } else if (input.resolveStepAttemptsUsed) {
+      const resolved = normalizePositiveCount(input.resolveStepAttemptsUsed(step.id));
+      stepAttempts = resolved ?? 0;
+    }
+
+    if (stepAttempts <= 1) continue;
+
+    attemptsByStepId.set(
+      step.id,
+      usesTurnCount && attemptsTotal
+        ? { attemptsUsed: stepAttempts, attemptsTotal }
+        : { attemptsUsed: stepAttempts },
+    );
+
+    retriesUsed += stepAttempts - 1;
+    retriedStepCount += 1;
+  }
+
+  return {
+    text:
+      retriesUsed <= 0
+        ? "0 retries"
+        : `${retriesUsed} ${retriesUsed === 1 ? "retry" : "retries"} across ${retriedStepCount} ${
+            retriedStepCount === 1 ? "step" : "steps"
+          }`,
+    retriesUsed,
+    retriedStepCount,
+    attemptsByStepId,
+  };
+}
+
+export function formatCompactGoalCompletionSummary(
+  input: CompactGoalCompletionInput,
+): CompactGoalRenderResult {
+  const doneSteps = input.steps.filter((step) => (step.status ?? "done") === "done");
+  const retrySummary = buildGoalRetrySummary({
+    steps: input.steps.map((step) => ({ id: step.id, turnsUsed: step.turnsUsed })),
+    attemptsTotal: input.attemptsTotal,
+    resolveStepAttemptsUsed: input.resolveStepAttemptsUsed,
+  });
+
+  return formatCompactGoalOutput({
+    state: "done",
+    title: input.title,
+    progress: {
+      completed: doneSteps.length,
+      total: input.steps.length,
+    },
+    retrySummary: retrySummary.text,
+    steps: doneSteps.map((step) => ({
+      id: step.id,
+      text: step.summary?.trim() ? step.summary : step.description,
+      attempt: retrySummary.attemptsByStepId.get(step.id),
+    })),
+    mode: input.mode,
+    channel: input.channel ?? "telegram",
+    textFormat: input.textFormat ?? "markdown",
+    stateIndicatorStyle: input.stateIndicatorStyle,
+    maxSteps: input.maxSteps,
+    maxLines: input.maxLines,
+    maxStepTextChars: input.maxStepTextChars,
+    maxTitleChars: input.maxTitleChars,
+  });
 }

@@ -1473,7 +1473,7 @@ export function buildOnStatusChange(params: {
         plan,
         steps: event.steps,
         stepResults,
-        caption: `DONE (${prefix}): ${event.summary}`,
+        caption: event.summary,
       });
     }
   };

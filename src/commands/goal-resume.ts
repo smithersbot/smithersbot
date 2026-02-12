@@ -605,7 +605,7 @@ export async function goalResumeCommand(
     runtime.log(JSON.stringify(outcome, null, 2));
   } else if (!quiet) {
     if (outcome.status === "done") {
-      runtime.log(`DONE: ${outcome.summary}`);
+      runtime.log(outcome.summary);
     } else if (outcome.status === "blocked") {
       runtime.log(`BLOCKED: ${outcome.question}`);
     } else if (outcome.status === "cancelled") {

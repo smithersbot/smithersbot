@@ -366,7 +366,7 @@ export async function goalCommand(
     } else {
       runtime.log("");
       if (outcome.status === "done") {
-        runtime.log(`DONE: ${outcome.summary}`);
+        runtime.log(outcome.summary);
       } else if (outcome.status === "blocked") {
         runtime.log(`BLOCKED: ${outcome.question}`);
       } else if (outcome.status === "cancelled") {

@@ -467,6 +467,57 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("buildOnStatusChange", () => {
+    it("sends compact all_done captions without redundant DONE prefix", async () => {
+      saveRun(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            summary: "Done plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Test goal\n**Progress** 1/1\n**Retries** 0 retries",
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("✅ Done: Test goal");
+      expect(options.caption).not.toContain("DONE (test-run)");
+    });
+  });
+
   describe("sendGoalPlanResult", () => {
     it("includes planner fallback notice with reset hint in plan caption", async () => {
       const degradedPlan = {

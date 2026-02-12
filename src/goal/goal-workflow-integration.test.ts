@@ -1100,7 +1100,7 @@ describe("goal workflow integration tests", () => {
 
       mockCliExecute
         .mockResolvedValueOnce({ status: "complete", summary: "Created files", turnsUsed: 1 })
-        .mockResolvedValueOnce({ status: "complete", summary: "Ran tests", turnsUsed: 1 });
+        .mockResolvedValueOnce({ status: "complete", summary: "Ran tests", turnsUsed: 2 });
 
       const { executeGoalWithAgent } = await import("./agent-executor.js");
       const outcome = await executeGoalWithAgent({
@@ -1111,9 +1111,13 @@ describe("goal workflow integration tests", () => {
 
       expect(outcome.status).toBe("done");
       if (outcome.status === "done") {
-        expect(outcome.summary).toContain("2/2 tasks completed");
+        expect(outcome.summary).toContain("✅ Done:");
+        expect(outcome.summary).toContain("**Progress** 2/2");
+        expect(outcome.summary).toContain("**Retries** 1 retry across 1 step");
+        expect(outcome.summary).toContain("**Top Steps**");
         expect(outcome.summary).toContain("Created files");
         expect(outcome.summary).toContain("Ran tests");
+        expect(outcome.summary).toContain("[2/5]");
       }
     });
   });

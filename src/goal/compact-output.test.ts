@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildGoalRetrySummary,
   formatAttemptBadge,
+  formatCompactGoalCompletionSummary,
   formatCompactGoalOutput,
   formatGoalSectionTitle,
   formatGoalStateIndicator,
@@ -127,5 +129,90 @@ describe("formatCompactGoalOutput", () => {
     expect(verbose.maxSteps).toBeGreaterThan(defaults.maxSteps);
     expect(full.mode).toBe("full");
     expect(Number.isFinite(full.maxSteps)).toBe(false);
+  });
+});
+
+describe("buildGoalRetrySummary", () => {
+  it("uses turns when available and falls back to worker attempt counts", () => {
+    const summary = buildGoalRetrySummary({
+      steps: [{ id: "1", turnsUsed: 2 }, { id: "2", turnsUsed: 1 }, { id: "3" }],
+      attemptsTotal: 5,
+      resolveStepAttemptsUsed: (stepId) => {
+        if (stepId === "2") return 4;
+        if (stepId === "3") return 1;
+        return 0;
+      },
+    });
+
+    expect(summary.text).toBe("4 retries across 2 steps");
+    expect(summary.attemptsByStepId.get("1")).toEqual({ attemptsUsed: 2, attemptsTotal: 5 });
+    expect(summary.attemptsByStepId.get("2")).toEqual({ attemptsUsed: 4 });
+    expect(summary.attemptsByStepId.has("3")).toBe(false);
+  });
+});
+
+describe("formatCompactGoalCompletionSummary", () => {
+  it("renders a compact done summary with capped highlights and retry badges", () => {
+    const result = formatCompactGoalCompletionSummary({
+      title: "Ship the release rollout and confirm all environments are healthy",
+      attemptsTotal: 4,
+      steps: [
+        {
+          id: "1",
+          description: "Prepare schema",
+          summary: "Created migration files",
+          status: "done",
+        },
+        {
+          id: "2",
+          description: "Run migrations",
+          summary: "Applied migrations to staging and production",
+          status: "done",
+          turnsUsed: 2,
+        },
+        {
+          id: "3",
+          description: "Write tests",
+          summary: "Added regression coverage",
+          status: "done",
+        },
+        { id: "4", description: "Update docs", summary: "Updated release notes", status: "done" },
+        {
+          id: "5",
+          description: "Announce rollout",
+          summary: "Shared deployment update",
+          status: "done",
+        },
+        {
+          id: "6",
+          description: "Follow up with support",
+          summary: "Sent support handoff message",
+          status: "done",
+        },
+      ],
+    });
+
+    expect(result.lines[0]).toContain("Done:");
+    expect(result.lines[1]).toBe("**Progress** 6/6");
+    expect(result.lines[2]).toBe("**Retries** 1 retry across 1 step");
+    expect(result.lines[3]).toBe("**Top Steps**");
+    expect(result.lines).toContain("+ 1 more steps not shown");
+    expect(result.lines.find((line) => line.includes("2."))).toContain("[2/4]");
+    expect(result.lines.filter((line) => line.startsWith("- "))).toHaveLength(5);
+  });
+
+  it("keeps completion summaries within Telegram's default line budget", () => {
+    const result = formatCompactGoalCompletionSummary({
+      title: "Finish every cleanup task",
+      steps: Array.from({ length: 30 }, (_, index) => ({
+        id: String(index + 1),
+        description: `Complete cleanup task number ${index + 1} with long explanatory text`,
+        summary: `Completed cleanup task number ${index + 1} with long explanatory text`,
+        status: "done",
+      })),
+    });
+
+    expect(result.lines.length).toBeLessThanOrEqual(15);
+    expect(result.lines[result.lines.length - 1]).toMatch(/^\+ \d+ more steps not shown$/);
   });
 });
