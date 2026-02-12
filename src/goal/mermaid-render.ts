@@ -1,6 +1,6 @@
 import type { CpmResult } from "./cpm.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
-import type { Plan } from "./types.js";
+import type { Plan, StepResult } from "./types.js";
 import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
 
 /** Init directive — must precede the graph declaration. */
@@ -52,6 +52,34 @@ function escapeLabel(text: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function formatActualDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return "0s";
+  const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds === 0) return `${minutes} min`;
+  return `${minutes}m ${seconds}s`;
+}
+
+function nodeDurationLabel(
+  stepId: string,
+  status: ExecutionDisplayStatus,
+  cpm?: CpmResult,
+  stepResults?: ReadonlyMap<string, StepResult>,
+): string {
+  if (status === "done") {
+    const result = stepResults?.get(stepId);
+    if (result && Number.isFinite(result.durationMs)) {
+      return `<br/>${formatActualDuration(result.durationMs)}`;
+    }
+  }
+  if (cpm) {
+    return `<br/>~${cpm.steps[stepId].durationMinutesEffective} min`;
+  }
+  return "";
 }
 
 /**
@@ -109,11 +137,14 @@ export function normalizeLabel(raw: string): string {
  *
  * When `displayStatuses` is provided, nodes are coloured by execution status
  * with emoji prefixes.
+ *
+ * When `stepResults` is provided, `done` steps use actual elapsed duration.
  */
 export function renderMermaid(
   plan: Plan,
   cpm?: CpmResult,
   displayStatuses?: Map<string, ExecutionDisplayStatus>,
+  stepResults?: ReadonlyMap<string, StepResult>,
 ): string {
   const lines: string[] = [INIT_DIRECTIVE, "", "flowchart TD"];
 
@@ -132,7 +163,7 @@ export function renderMermaid(
     const prefix = emoji ? `${emoji} ` : "";
     const num = orderNum.get(step.id) ?? 0;
     const shortDesc = normalizeLabel(step.description);
-    const dur = cpm ? `<br/>~${cpm.steps[step.id].durationMinutesEffective} min` : "";
+    const dur = nodeDurationLabel(step.id, status, cpm, stepResults);
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;
     lines.push(`  ${step.id}["${label}"]`);
   }

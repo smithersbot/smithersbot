@@ -3,7 +3,7 @@ import { computeCpm } from "./cpm.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
 import { normalizeLabel, renderMermaid } from "./mermaid-render.js";
 import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
-import type { Plan, PlanStep } from "./types.js";
+import type { Plan, PlanStep, StepResult } from "./types.js";
 
 function makePlan(steps: Plan["steps"]): Plan {
   return { goal: "test", summary: "Test plan", steps };
@@ -515,6 +515,38 @@ describe("renderMermaid", () => {
       expect(out).not.toContain("classDef critical");
       expect(out).toContain("classDef done");
       expect(out).toContain("class X done;");
+    });
+
+    it("uses actual elapsed duration labels for done steps when stepResults are provided", () => {
+      const plan = makePlan([
+        {
+          id: "A",
+          description: "Done step",
+          dependsOn: [],
+          status: "done",
+          durationMinutes: 10,
+        },
+        {
+          id: "B",
+          description: "Pending step",
+          dependsOn: ["A"],
+          status: "pending",
+          durationMinutes: 2,
+        },
+      ]);
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([
+        ["A", "done"],
+        ["B", "pending"],
+      ]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: true, output: "ok", durationMs: 31_000 }],
+      ]);
+
+      const out = renderMermaid(plan, cpm, statuses, stepResults);
+      expect(out).toContain("Done<br/>31s");
+      expect(out).not.toContain("Done<br/>~10 min");
+      expect(out).toContain("Pending<br/>~2 min");
     });
   });
 
