@@ -550,6 +550,140 @@ describe("renderMermaid", () => {
     });
   });
 
+  describe("actual duration formatting edge cases", () => {
+    function durationPlan(id: string, durationMinutes = 5): Plan {
+      return makePlan([step({ id, description: "Task", status: "done", durationMinutes })]);
+    }
+
+    function renderWithDuration(durationMs: number, durationMinutes = 5): string {
+      const plan = durationPlan("A", durationMinutes);
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([["A", "done"]]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: true, output: "ok", durationMs }],
+      ]);
+      return renderMermaid(plan, cpm, statuses, stepResults);
+    }
+
+    it("formats sub-second duration as 1s (minimum)", () => {
+      const out = renderWithDuration(500);
+      expect(out).toContain("<br/>1s");
+    });
+
+    it("formats exactly 1 second", () => {
+      const out = renderWithDuration(1000);
+      expect(out).toContain("<br/>1s");
+    });
+
+    it("formats 59 seconds without minutes", () => {
+      const out = renderWithDuration(59_000);
+      expect(out).toContain("<br/>59s");
+    });
+
+    it("formats exactly 60 seconds as minutes", () => {
+      const out = renderWithDuration(60_000);
+      expect(out).toContain("<br/>1 min");
+    });
+
+    it("formats 90 seconds as 1m 30s", () => {
+      const out = renderWithDuration(90_000);
+      expect(out).toContain("<br/>1m 30s");
+    });
+
+    it("formats exact minutes without seconds", () => {
+      const out = renderWithDuration(300_000);
+      expect(out).toContain("<br/>5 min");
+    });
+
+    it("formats large duration (10+ minutes)", () => {
+      const out = renderWithDuration(639_000);
+      expect(out).toContain("<br/>10m 39s");
+    });
+
+    it("falls back to CPM estimate when stepResults are not provided", () => {
+      const plan = durationPlan("A");
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([["A", "done"]]);
+      const out = renderMermaid(plan, cpm, statuses);
+      expect(out).toContain("~5 min");
+      expect(out).not.toMatch(/<br\/>\d+s/);
+    });
+
+    it("falls back to CPM estimate when step is missing from stepResults", () => {
+      const plan = durationPlan("A");
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([["A", "done"]]);
+      const stepResults = new Map<string, StepResult>();
+      const out = renderMermaid(plan, cpm, statuses, stepResults);
+      expect(out).toContain("~5 min");
+    });
+
+    it("does not use actual duration for non-done steps even if stepResults has an entry", () => {
+      const plan = makePlan([
+        step({ id: "A", description: "In progress", status: "in_progress", durationMinutes: 3 }),
+      ]);
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([["A", "in_progress"]]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: false, output: "", durationMs: 15_000 }],
+      ]);
+      const out = renderMermaid(plan, cpm, statuses, stepResults);
+      expect(out).toContain("~3 min");
+      expect(out).not.toContain("15s");
+    });
+
+    it("handles multiple done steps each with their own actual durations", () => {
+      const plan = makePlan([
+        step({ id: "A", description: "First", status: "done", durationMinutes: 10 }),
+        step({
+          id: "B",
+          description: "Second",
+          status: "done",
+          dependsOn: ["A"],
+          durationMinutes: 8,
+        }),
+        step({
+          id: "C",
+          description: "Third",
+          status: "pending",
+          dependsOn: ["B"],
+          durationMinutes: 5,
+        }),
+      ]);
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([
+        ["A", "done"],
+        ["B", "done"],
+        ["C", "pending"],
+      ]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: true, output: "ok", durationMs: 42_000 }],
+        ["B", { stepId: "B", success: true, output: "ok", durationMs: 125_000 }],
+      ]);
+      const out = renderMermaid(plan, cpm, statuses, stepResults);
+      expect(out).toContain("First<br/>42s");
+      expect(out).toContain("Second<br/>2m 5s");
+      expect(out).toContain("Third<br/>~5 min");
+    });
+
+    it("handles zero durationMs gracefully", () => {
+      const out = renderWithDuration(0);
+      // 0ms rounds to max(1, 0) = 1s minimum
+      expect(out).toContain("<br/>1s");
+    });
+
+    it("uses actual duration without CPM (no estimate fallback)", () => {
+      const plan = makePlan([step({ id: "A", description: "Task", status: "done" })]);
+      const statuses = new Map<string, ExecutionDisplayStatus>([["A", "done"]]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: true, output: "ok", durationMs: 7_000 }],
+      ]);
+      // No CPM passed
+      const out = renderMermaid(plan, undefined, statuses, stepResults);
+      expect(out).toContain("<br/>7s");
+    });
+  });
+
   it("uses critical-path-first numbering even with out-of-order step IDs", () => {
     // Steps in reverse order in the array, but deps create: Z→Y→X
     const plan = makePlan([

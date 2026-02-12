@@ -179,6 +179,33 @@ describe("run-store", () => {
     saveRun(sampleRun, tmpDir);
     expect(resolveRunId("zzz", tmpDir)).toBeUndefined();
   });
+
+  it("preserves durationMs through save/load disk round-trip", () => {
+    const run: SerializedRun = {
+      runId: "disk-duration-rt",
+      goal: "Disk round-trip",
+      state: "done",
+      plan: {
+        goal: "Disk round-trip",
+        summary: "Single step",
+        steps: [{ id: "s1", description: "Step", dependsOn: [], status: "done" }],
+      },
+      stepResults: {
+        s1: { stepId: "s1", success: true, output: "ok", durationMs: 42_000 },
+      },
+      blockReason: null,
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:01:00.000Z",
+    };
+
+    saveRun(run, tmpDir);
+    const loaded = loadRun("disk-duration-rt", tmpDir);
+    expect(loaded).toBeDefined();
+    expect(loaded!.stepResults.s1?.durationMs).toBe(42_000);
+  });
 });
 
 describe("session serialization", () => {
@@ -229,6 +256,47 @@ describe("session serialization", () => {
     expect(restored.stepResults.has("2")).toBe(false);
     expect(restored.state).toBe("executing");
     expect(restored.goal).toBe("Test goal");
+  });
+
+  it("round-trips multiple stepResults with durationMs through serialization", () => {
+    const session: GoalSession = {
+      goal: "Duration round-trip",
+      state: "done",
+      plan: {
+        goal: "Duration round-trip",
+        summary: "Multi-step durations",
+        steps: [
+          { id: "1", description: "Fast step", dependsOn: [], status: "done" },
+          { id: "2", description: "Slow step", dependsOn: ["1"], status: "done" },
+          { id: "3", description: "Pending step", dependsOn: ["2"], status: "pending" },
+        ],
+      },
+      stepResults: new Map([
+        ["1", { stepId: "1", success: true, output: "Done quickly", durationMs: 1500 }],
+        ["2", { stepId: "2", success: true, output: "Done slowly", durationMs: 300_000 }],
+      ]),
+      blockReason: null,
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "duration-multi-rt",
+      workingDir: "/tmp/ws",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    // Serialized form: plain object, not Map
+    expect(serialized.stepResults["1"]?.durationMs).toBe(1500);
+    expect(serialized.stepResults["2"]?.durationMs).toBe(300_000);
+    expect(serialized.stepResults["3"]).toBeUndefined();
+
+    // Restored form: Map with same durations
+    const restored = serializedToSession(serialized);
+    expect(restored.stepResults.get("1")?.durationMs).toBe(1500);
+    expect(restored.stepResults.get("2")?.durationMs).toBe(300_000);
+    expect(restored.stepResults.has("3")).toBe(false);
   });
 
   it("handles empty stepResults", () => {

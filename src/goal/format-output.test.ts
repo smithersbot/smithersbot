@@ -233,6 +233,98 @@ describe("formatPlanOutput", () => {
       expect(out).toContain("42s");
       expect(out).not.toContain("~10 min");
     });
+
+    it("passes stepResults through to 'both' diagram mode", () => {
+      const stepResults = new Map<string, StepResult>([
+        [
+          "A",
+          {
+            stepId: "A",
+            success: true,
+            output: "ok",
+            durationMs: 90_000,
+          },
+        ],
+      ]);
+
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "both",
+        format: "md",
+        stepResults,
+      });
+
+      // Mermaid section should show actual duration
+      expect(out).toContain("1m 30s");
+      expect(out).not.toContain("~10 min");
+    });
+
+    it("still shows CPM estimate in step listing even when stepResults are provided", () => {
+      const stepResults = new Map<string, StepResult>([
+        [
+          "A",
+          {
+            stepId: "A",
+            success: true,
+            output: "ok",
+            durationMs: 42_000,
+          },
+        ],
+      ]);
+
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "none",
+        format: "md",
+        stepResults,
+      });
+
+      // Step listing uses CPM duration markers (not actual), since that's a plan view
+      expect(out).toContain("[10m]");
+    });
+
+    it("shows actual durations for multiple done steps in a chain", () => {
+      const multiDonePlan: Plan = {
+        goal: "Multi done",
+        summary: "Multiple completed steps",
+        steps: [
+          {
+            id: "1",
+            description: "First step",
+            dependsOn: [],
+            status: "done",
+            durationMinutes: 5,
+          },
+          {
+            id: "2",
+            description: "Second step",
+            dependsOn: ["1"],
+            status: "done",
+            durationMinutes: 3,
+          },
+          {
+            id: "3",
+            description: "Third step",
+            dependsOn: ["2"],
+            status: "pending",
+            durationMinutes: 2,
+          },
+        ],
+      };
+
+      const stepResults = new Map<string, StepResult>([
+        ["1", { stepId: "1", success: true, output: "ok", durationMs: 15_000 }],
+        ["2", { stepId: "2", success: true, output: "ok", durationMs: 180_000 }],
+      ]);
+
+      const out = formatPlanOutput(multiDonePlan, {
+        diagram: "mermaid",
+        format: "md",
+        stepResults,
+      });
+
+      expect(out).toContain("15s");
+      expect(out).toContain("3 min");
+      expect(out).toContain("~2 min");
+    });
   });
 
   describe("json format", () => {
@@ -345,6 +437,38 @@ describe("formatPlanOutput", () => {
       const parsed = JSON.parse(out);
       expect(parsed.diagrams.mermaid).toContain("42s");
       expect(parsed.diagrams.mermaid).not.toContain("~10 min");
+    });
+
+    it("JSON both diagram mode passes stepResults to mermaid", () => {
+      const stepResults = new Map<string, StepResult>([
+        [
+          "A",
+          {
+            stepId: "A",
+            success: true,
+            output: "ok",
+            durationMs: 75_000,
+          },
+        ],
+      ]);
+
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "both",
+        format: "json",
+        stepResults,
+      });
+      const parsed = JSON.parse(out);
+      expect(parsed.diagrams.mermaid).toContain("1m 15s");
+      expect(parsed.diagrams.mermaid).not.toContain("~10 min");
+    });
+
+    it("JSON output without stepResults uses estimated durations for done steps", () => {
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "mermaid",
+        format: "json",
+      });
+      const parsed = JSON.parse(out);
+      expect(parsed.diagrams.mermaid).toContain("~10 min");
     });
   });
 });
