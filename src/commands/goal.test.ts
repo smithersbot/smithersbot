@@ -22,8 +22,9 @@ vi.mock("../goal/run-store.js", async (importOriginal) => {
   };
 });
 
-// Mock generatePlan to control planning behavior
-const mockGeneratePlan = vi.fn();
+// Mock CLI planner to control planning behavior
+const mockRunCliPlanning = vi.fn();
+const mockPersistRawPlanResponse = vi.fn();
 class MockPlanParseError extends Error {
   readonly rawResponse: string;
   constructor(message: string, rawResponse: string) {
@@ -33,28 +34,12 @@ class MockPlanParseError extends Error {
   }
 }
 vi.mock("../goal/planner.js", () => ({
-  generatePlan: (...args: unknown[]) => mockGeneratePlan(...args),
   PlanParseError: MockPlanParseError,
-  persistRawPlanResponse: vi.fn(),
+  persistRawPlanResponse: (...args: unknown[]) => mockPersistRawPlanResponse(...args),
 }));
 
-// Mock model-auth to provide a test API key
-const mockResolveApiKeyForProvider = vi.fn();
-vi.mock("../agents/model-auth.js", () => ({
-  resolveApiKeyForProvider: (...args: unknown[]) => mockResolveApiKeyForProvider(...args),
-}));
-
-// Mock llm-client
-vi.mock("../goal/llm-client.js", () => ({
-  createGoalLlmClient: () => ({
-    complete: vi.fn(),
-  }),
-}));
-
-// Mock scout to skip real claude -p execution in unit tests
-const mockRunScoutWithRetry = vi.fn();
-vi.mock("../goal/scout.js", () => ({
-  runScoutWithRetry: (...args: unknown[]) => mockRunScoutWithRetry(...args),
+vi.mock("../goal/cli-planner.js", () => ({
+  runCliPlanning: (...args: unknown[]) => mockRunCliPlanning(...args),
 }));
 
 // Mock isGitRepo for resolveWorkingDir tests
@@ -103,12 +88,14 @@ describe("goal command — early failure persistence", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-cmd-test-"));
     vi.clearAllMocks();
-    mockResolveApiKeyForProvider.mockResolvedValue({
-      apiKey: "test-key",
-      source: "test",
-      mode: "api-key",
+    mockRunCliPlanning.mockResolvedValue({
+      status: "success",
+      plan: {
+        summary: "Test plan",
+        steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+      },
+      scoutStatus: "success",
     });
-    mockRunScoutWithRetry.mockResolvedValue({ status: "skipped", reason: "mocked in test" });
     savedExitCode = process.exitCode;
     process.exitCode = undefined;
   });
@@ -118,8 +105,8 @@ describe("goal command — early failure persistence", () => {
     fs.rmSync(testGoalsDir, { recursive: true, force: true });
   });
 
-  it("persists run.json with lastError when generatePlan throws", async () => {
-    mockGeneratePlan.mockRejectedValue(new Error("Plan must contain at least one step"));
+  it("persists run.json with lastError when unified CLI planning throws", async () => {
+    mockRunCliPlanning.mockRejectedValue(new Error("Plan must contain at least one step"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -145,9 +132,9 @@ describe("goal command — early failure persistence", () => {
     expect(run!.lastError).toContain("Plan must contain at least one step");
   });
 
-  it("persists run.json with lastError when API key is missing", async () => {
-    mockResolveApiKeyForProvider.mockRejectedValue(
-      new Error('No API key found for provider "anthropic".'),
+  it("persists raw planner output when CLI planning throws PlanParseError", async () => {
+    mockRunCliPlanning.mockRejectedValue(
+      new MockPlanParseError("Failed to parse plan JSON", "raw planner output"),
     );
 
     const { goalCommand } = await import("./goal.js");
@@ -162,19 +149,16 @@ describe("goal command — early failure persistence", () => {
         },
         rt,
       ),
-    ).rejects.toThrow("No API key found");
+    ).rejects.toThrow("Failed to parse plan JSON");
 
-    const runs = listRuns(testGoalsDir);
-    expect(runs).toHaveLength(1);
-
-    const run = loadRun(runs[0]!.runId, testGoalsDir);
-    expect(run).toBeDefined();
-    expect(run!.state).toBe("planning");
-    expect(run!.lastError).toContain("No API key found");
+    expect(mockPersistRawPlanResponse).toHaveBeenCalledWith(
+      expect.any(String),
+      "raw planner output",
+    );
   });
 
   it("JSON mode throws JsonExitError after emitting error JSON", async () => {
-    mockGeneratePlan.mockRejectedValue(new Error("Planning failed unexpectedly"));
+    mockRunCliPlanning.mockRejectedValue(new Error("Planning failed unexpectedly"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -206,7 +190,7 @@ describe("goal command — early failure persistence", () => {
   });
 
   it("runCommandWithRuntime sets process.exitCode on JsonExitError", async () => {
-    mockGeneratePlan.mockRejectedValue(new Error("Allowlist rejection"));
+    mockRunCliPlanning.mockRejectedValue(new Error("Allowlist rejection"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -237,10 +221,8 @@ describe("goal command — early failure persistence", () => {
     expect(rt.errors).toHaveLength(0);
   });
 
-  it("JSON mode sets non-zero exit code on API key failure", async () => {
-    mockResolveApiKeyForProvider.mockRejectedValue(
-      new Error('No API key found for provider "anthropic".'),
-    );
+  it("JSON mode sets non-zero exit code on planner auth failure", async () => {
+    mockRunCliPlanning.mockRejectedValue(new Error("Authentication failed for planner CLI"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
@@ -262,55 +244,80 @@ describe("goal command — early failure persistence", () => {
     const jsonOutput = rt.logs.find((l) => l.startsWith("{"));
     expect(jsonOutput).toBeDefined();
     const parsed = JSON.parse(jsonOutput!) as Record<string, unknown>;
-    expect(parsed.error).toContain("No API key found");
+    expect(parsed.error).toContain("Authentication failed");
     expect(parsed.runId).toBeDefined();
   });
 
-  it("scout error degrades gracefully instead of cancelling the goal", async () => {
-    mockRunScoutWithRetry.mockResolvedValue({
-      status: "error",
-      error: "Claude Code timed out",
-      errorKind: "timeout",
-    });
-    // Plan should still succeed (planning without scout data)
-    mockGeneratePlan.mockResolvedValue({
-      summary: "Test plan",
-      steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+  it("handles blocked-at-planning from unified CLI planner", async () => {
+    mockRunCliPlanning.mockResolvedValue({
+      status: "blocked",
+      question: "Which target environment should I use?",
+      scoutStatus: "needs_clarification",
     });
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();
 
-    // planOnly so we don't hit the approval gate
+    const outcome = await goalCommand(
+      {
+        goal: "Deploy this service",
+        workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
+        yes: true,
+      },
+      rt,
+    );
+
+    expect(outcome).toEqual({
+      status: "blocked",
+      question: "Which target environment should I use?",
+      requiredInputKey: "step:planning:input",
+      blockedAt: "planning",
+    });
+    const runs = listRuns(testGoalsDir);
+    expect(runs).toHaveLength(1);
+    const run = loadRun(runs[0]!.runId, testGoalsDir);
+    expect(run).toBeDefined();
+    expect(run!.state).toBe("blocked");
+    expect(run!.scoutStatus).toBe("needs_clarification");
+    expect(run!.blocked?.blockedAt).toBe("planning");
+  });
+
+  it("records skipped scout metadata from unified planning result", async () => {
+    mockRunCliPlanning.mockResolvedValue({
+      status: "success",
+      plan: {
+        summary: "Test plan",
+        steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+      },
+      scoutStatus: "skipped",
+      scoutSkipReason: "--no-scout flag",
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+
     const outcome = await goalCommand(
       {
         goal: "Build a thing",
         workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
         yes: true,
         planOnly: true,
+        noScout: true,
       },
       rt,
     );
 
-    // Should NOT throw — command succeeds with a plan
-    expect(outcome).toBeUndefined(); // planOnly returns undefined on success
-
+    expect(outcome).toBeUndefined();
     const runs = listRuns(testGoalsDir);
-    expect(runs).toHaveLength(1);
-
     const run = loadRun(runs[0]!.runId, testGoalsDir);
-    expect(run).toBeDefined();
     expect(run!.state).toBe("awaiting_approval");
     expect(run!.scoutStatus).toBe("skipped");
-    expect(run!.scoutSkipReason).toContain("scout_error(timeout)");
-    expect(run!.plan).toBeDefined();
-
-    // Verify the scout failure was logged
-    expect(rt.logs.some((l) => l.includes("Scout failed (timeout)"))).toBe(true);
+    expect(run!.scoutSkipReason).toBe("--no-scout flag");
+    expect(rt.logs.some((line) => line.includes("Scout skipped: --no-scout flag"))).toBe(true);
   });
 
   it("goal list finds incomplete runs", async () => {
-    mockGeneratePlan.mockRejectedValue(new Error("Allowlist rejection"));
+    mockRunCliPlanning.mockRejectedValue(new Error("Allowlist rejection"));
 
     const { goalCommand } = await import("./goal.js");
     const rt = mockRuntime();

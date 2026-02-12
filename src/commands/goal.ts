@@ -5,14 +5,12 @@ import path from "node:path";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
-import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
+import { runCliPlanning } from "../goal/cli-planner.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { isGitRepo } from "../goal/git-checkpoint.js";
-import { createGoalLlmClient } from "../goal/llm-client.js";
-import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
-import { runScoutWithRetry, type ScoutResult } from "../goal/scout.js";
 import type { GoalBackendId } from "../goal/backend-types.js";
 import type {
   DiagramMode,
@@ -146,126 +144,61 @@ export async function goalCommand(
   persistRun();
 
   try {
-    // Resolve API key
-    const authResult = await resolveApiKeyForProvider({ provider: "anthropic" });
-    if (!authResult.apiKey) {
-      throw new Error(
-        "Anthropic auth resolved but no API key available (mode: " + authResult.mode + ").",
-      );
-    }
-
-    const client = createGoalLlmClient({
-      apiKey: authResult.apiKey,
-      modelOverride: opts.model,
-    });
-
-    // Resolve auth mode early so both scout and executor can use it
+    // Resolve auth mode early so planner and executor stay in sync
     const resolvedAuthMode = opts.claudeCodeAuth ?? opts.config?.goal?.claudeCodeAuth;
 
-    // Phase 0: Scout pre-pass (optional, best-effort)
-    let scoutData: ScoutResult | undefined;
-    if (!opts.noScout) {
-      const scoutProgress = createCliProgress({
-        label: "Running scout analysis...",
-        indeterminate: true,
-        enabled: !isJson,
-      });
-      try {
-        scoutData = await runScoutWithRetry({
-          runId,
-          goalText: goal,
-          timeoutMs: opts.scoutTimeoutMs,
-          claudeCodeAuth: resolvedAuthMode,
-        });
-        if (scoutData.status === "skipped") {
-          scoutStatus = "skipped";
-          scoutSkipReason = scoutData.reason;
-          if (!isJson) {
-            runtime.log(`Scout skipped: ${scoutData.reason}`);
-          }
-        }
-        if (scoutData.status === "needs_clarification") {
-          scoutStatus = "needs_clarification";
-          session.state = "blocked";
-          session.blocked = {
-            blockedAt: "planning",
-            prompt: scoutData.question,
-            requiredInputKey: "step:planning:input",
-          };
-          persistRun();
-          const outcome: GoalOutcome = {
-            status: "blocked",
-            question: scoutData.question,
-            requiredInputKey: "step:planning:input",
-            blockedAt: "planning",
-          };
-          if (isJson) {
-            runtime.log(JSON.stringify(outcome, null, 2));
-          } else {
-            runtime.log(`\nCLARIFICATION NEEDED: ${scoutData.question}`);
-          }
-          return outcome;
-        }
-        if (scoutData.status === "error") {
-          const errorKind = scoutData.errorKind ?? "unknown";
-          const errorDetail = scoutData.error ?? "unknown error";
-          scoutStatus = "skipped";
-          scoutSkipReason = `scout_error(${errorKind}): ${errorDetail}`;
-          if (!isJson) {
-            runtime.log(`Scout failed (${errorKind}), continuing without scout data.`);
-          }
-          scoutData = undefined;
-        }
-        if (scoutData?.status === "success") {
-          scoutStatus = "success";
-        }
-      } finally {
-        scoutProgress.done();
-      }
-    } else {
-      scoutStatus = "skipped";
-      scoutSkipReason = "--no-scout flag";
-    }
-
-    // Phase 1: Planning (enriched with scout data when available)
+    // Phase 1: Single CLI planning pass (plan + scout artifacts)
     session.state = "planning";
     persistRun();
-    let planResult;
-    {
+    const planningResult = await (async () => {
       const progress = createCliProgress({
         label: "Generating plan...",
         indeterminate: true,
         enabled: !isJson,
       });
       try {
-        planResult = await generatePlan(client, goal, scoutData);
+        return await runCliPlanning({
+          runId,
+          goalText: goal,
+          timeoutMs: opts.scoutTimeoutMs,
+          claudeCodeAuth: resolvedAuthMode,
+          includeScoutArtifacts: !opts.noScout,
+        });
       } finally {
         progress.done();
       }
+    })();
+
+    scoutStatus = planningResult.scoutStatus;
+    scoutSkipReason = planningResult.scoutSkipReason;
+    if (scoutStatus === "skipped" && scoutSkipReason && !isJson) {
+      runtime.log(`Scout skipped: ${scoutSkipReason}`);
     }
 
     // Handle blocked-at-planning (pre-plan clarification, not execution-time block)
-    if ("blocked" in planResult) {
+    if (planningResult.status === "blocked") {
       session.state = "blocked";
       session.blocked = {
         blockedAt: "planning",
-        prompt: planResult.question,
+        prompt: planningResult.question,
         requiredInputKey: "step:planning:input",
       };
       persistRun();
       const outcome: GoalOutcome = {
         status: "blocked",
-        question: planResult.question,
+        question: planningResult.question,
         requiredInputKey: "step:planning:input",
         blockedAt: "planning",
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
       } else {
-        runtime.log(`\nCLARIFICATION NEEDED: ${planResult.question}`);
+        runtime.log(`\nCLARIFICATION NEEDED: ${planningResult.question}`);
       }
       return outcome;
     }
+
+    const planResult = planningResult.plan;
 
     // After the blocked check, planResult is narrowed to Plan
     session.plan = planResult;

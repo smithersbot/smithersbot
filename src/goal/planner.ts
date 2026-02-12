@@ -6,7 +6,7 @@ import type { GoalBackendId } from "./backend-types.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 
-const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
+export const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
 Each step describes a task that an autonomous coding agent will carry out. The agent has full access to the filesystem, shell commands (bash), and can read/write/edit files. Within a single turn the agent can chain as many tool calls as it needs — read dozens of files, edit many, run builds and tests — so each step can encompass substantial work. You do NOT need to specify tools — just describe what to do.
 
@@ -117,19 +117,22 @@ export async function generatePlan(
     throw wrapLlmCallError(err);
   }
 
-  const parsed = extractJson(response.text);
-
-  if (isBlockedResponse(parsed)) {
-    return { blocked: true, question: String(parsed.question ?? "Unknown reason") };
-  }
-
-  return validatePlan(parsed, goal);
+  return parsePlanResultFromText(response.text, goal);
 }
 
 function isBlockedResponse(
   obj: Record<string, unknown>,
 ): obj is { blocked: true; question: string } {
   return obj.blocked === true && typeof obj.question === "string";
+}
+
+/** Parse planner response text into a validated plan (or blocked clarification request). */
+export function parsePlanResultFromText(text: string, goal: string): PlanResult {
+  const parsed = extractJson(text);
+  if (isBlockedResponse(parsed)) {
+    return { blocked: true, question: String(parsed.question ?? "Unknown reason") };
+  }
+  return validatePlan(parsed, goal);
 }
 
 /**
@@ -272,11 +275,7 @@ export async function generatePlanRevision(
     throw wrapLlmCallError(err);
   }
 
-  const parsed = extractJson(response.text);
-  if (isBlockedResponse(parsed)) {
-    return { blocked: true, question: String(parsed.question ?? "Unknown reason") };
-  }
-  return validatePlan(parsed, goal);
+  return parsePlanResultFromText(response.text, goal);
 }
 
 function detectCycles(steps: PlanStep[]): void {

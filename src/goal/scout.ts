@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { resolveRunDir } from "./run-store.js";
 import { runCliProcess } from "./cli-process.js";
 import { tailText, writeAttemptBundle } from "./attempt-bundle.js";
@@ -70,17 +69,25 @@ export function classifyScoutError(errorMessage: string): ScoutErrorKind {
 
 let claudeBinaryPath: string | null | undefined; // undefined = not checked yet
 
+function findExecutableOnPath(commandName: string): string | null {
+  const pathValue = process.env.PATH ?? "";
+  const pathEntries = pathValue.split(path.delimiter).filter(Boolean);
+  for (const entry of pathEntries) {
+    const candidate = path.join(entry, commandName);
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export function resolveClaudeBinary(): string | null {
   if (claudeBinaryPath !== undefined) return claudeBinaryPath;
-  try {
-    const result = execFileSync("which", ["claude"], {
-      encoding: "utf8",
-      timeout: 5_000,
-    }).trim();
-    claudeBinaryPath = result || null;
-  } catch {
-    claudeBinaryPath = null;
-  }
+  claudeBinaryPath = findExecutableOnPath("claude");
   return claudeBinaryPath;
 }
 
@@ -106,7 +113,7 @@ function resolveNodeSpecsDir(scoutDir: string): string {
 // ---------------------------------------------------------------------------
 
 /** Resolve the template file path relative to the package root. */
-function resolveTemplatePath(): string {
+export function resolveScoutTemplatePath(): string {
   // Works from both src/goal/ and dist/goal/ (both two levels deep)
   const moduleDir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
   return path.join(moduleDir, "..", "..", "templates", "scout_prompt_template.md");
@@ -276,7 +283,7 @@ export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
   fs.mkdirSync(nodeSpecsDir, { recursive: true });
 
   // Load template
-  const templatePath = resolveTemplatePath();
+  const templatePath = resolveScoutTemplatePath();
   if (!fs.existsSync(templatePath)) {
     return { status: "skipped", reason: `Scout template not found: ${templatePath}` };
   }
@@ -439,7 +446,7 @@ export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutRe
   }
 
   // Load and render template with error context appended
-  const templatePath = resolveTemplatePath();
+  const templatePath = resolveScoutTemplatePath();
   if (!fs.existsSync(templatePath)) return firstResult;
   const template = fs.readFileSync(templatePath, "utf8");
 

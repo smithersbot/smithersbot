@@ -20,6 +20,7 @@ export function registerGoalCommand(program: Command) {
     .option("--no-git-checkpoints", "Disable git checkpoints during execution")
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--dry-run", "Generate and display plan without executing", false)
+    .option("--plan-only", "Generate and persist a plan, then stop before execution", false)
     .option("--scout-timeout <minutes>", "Scout timeout in minutes (default: 20)")
     .option(
       "--diagram <mode>",
@@ -77,6 +78,7 @@ export function registerGoalCommand(program: Command) {
             noGitCheckpoints: opts.gitCheckpoints === false,
             json: Boolean(opts.json),
             dryRun: Boolean(opts.dryRun),
+            planOnly: Boolean(opts.planOnly),
             scoutTimeoutMs,
             diagram: opts.diagram as DiagramMode | undefined,
             output: opts.output as OutputFormat | undefined,
