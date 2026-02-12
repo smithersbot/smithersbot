@@ -38,29 +38,11 @@ vi.mock("@clack/prompts", () => ({
   isCancel: (value: unknown) => typeof value === "symbol",
 }));
 
-// Mock model-auth so resume doesn't need a real API key
-vi.mock("../agents/model-auth.js", () => ({
-  resolveApiKeyForProvider: () =>
-    Promise.resolve({ apiKey: "test-key", source: "test", mode: "api-key" }),
+// Mock unified CLI planner
+const mockRunCliPlanning = vi.fn();
+vi.mock("../goal/cli-planner.js", () => ({
+  runCliPlanning: (...args: unknown[]) => mockRunCliPlanning(...args),
 }));
-
-// Mock llm-client (not used in approval-flow tests but required by import)
-const mockLlmComplete = vi.fn();
-vi.mock("../goal/llm-client.js", () => ({
-  createGoalLlmClient: () => ({
-    complete: mockLlmComplete,
-  }),
-}));
-
-// Mock planner
-const mockGeneratePlan = vi.fn();
-vi.mock("../goal/planner.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../goal/planner.js")>();
-  return {
-    ...actual,
-    generatePlan: mockGeneratePlan,
-  };
-});
 
 // Mock the agent executor so resume tests don't need a real PI agent session
 const mockExecuteGoalWithAgent = vi.fn(
@@ -138,8 +120,23 @@ describe("goal-resume command", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-resume-test-"));
     vi.clearAllMocks();
-    // Reset generatePlan mock to default (no-op)
-    mockGeneratePlan.mockReset();
+    mockRunCliPlanning.mockResolvedValue({
+      status: "success",
+      plan: {
+        summary: "Default replanned plan",
+        steps: [
+          {
+            id: "default-step",
+            description: "Default replanned task",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 15,
+          },
+        ],
+        goal: "Test goal",
+      },
+      scoutStatus: "success",
+    });
   });
 
   afterEach(() => {
@@ -596,19 +593,22 @@ describe("goal-resume command", () => {
 
   describe("--replan flag", () => {
     it("retries planning for a run in 'planning' state", async () => {
-      // Mock generatePlan to succeed
-      mockGeneratePlan.mockResolvedValueOnce({
-        summary: "Replanned successfully",
-        steps: [
-          {
-            id: "replanned-step",
-            description: "A replanned task",
-            dependsOn: [],
-            durationMinutes: 30,
-            status: "pending",
-          },
-        ],
-        goal: "Original goal text",
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "Replanned successfully",
+          steps: [
+            {
+              id: "replanned-step",
+              description: "A replanned task",
+              dependsOn: [],
+              durationMinutes: 30,
+              status: "pending",
+            },
+          ],
+          goal: "Original goal text",
+        },
+        scoutStatus: "success",
       });
 
       saveRun(
@@ -630,22 +630,27 @@ describe("goal-resume command", () => {
       expect(persisted?.plan).toBeDefined();
       expect(persisted?.plan?.summary).toBe("Replanned successfully");
       expect(persisted?.plan?.steps).toHaveLength(1);
+      expect(persisted?.scoutStatus).toBe("success");
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
     });
 
     it("retries planning for a cancelled run with no plan", async () => {
-      mockGeneratePlan.mockResolvedValueOnce({
-        summary: "Recovery plan",
-        steps: [
-          {
-            id: "recovery-step",
-            description: "Recovered from failure",
-            dependsOn: [],
-            durationMinutes: 20,
-            status: "pending",
-          },
-        ],
-        goal: "Goal that failed during planning",
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "Recovery plan",
+          steps: [
+            {
+              id: "recovery-step",
+              description: "Recovered from failure",
+              dependsOn: [],
+              durationMinutes: 20,
+              status: "pending",
+            },
+          ],
+          goal: "Goal that failed during planning",
+        },
+        scoutStatus: "success",
       });
 
       saveRun(
@@ -703,9 +708,10 @@ describe("goal-resume command", () => {
     });
 
     it("handles replanning that results in blocked", async () => {
-      mockGeneratePlan.mockResolvedValueOnce({
-        blocked: true,
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "blocked",
         question: "Need more info about the database",
+        scoutStatus: "needs_clarification",
       });
 
       saveRun(
@@ -727,10 +733,11 @@ describe("goal-resume command", () => {
       const persisted = loadRun("replan-blocked", testGoalsDir);
       expect(persisted?.state).toBe("blocked");
       expect(persisted?.blocked?.prompt).toBe("Need more info about the database");
+      expect(persisted?.scoutStatus).toBe("needs_clarification");
     });
 
     it("persists error when replanning fails again", async () => {
-      mockGeneratePlan.mockRejectedValueOnce(new Error("Still rate limited"));
+      mockRunCliPlanning.mockRejectedValueOnce(new Error("Still rate limited"));
 
       saveRun(
         makeRun({
@@ -753,18 +760,22 @@ describe("goal-resume command", () => {
     });
 
     it("--replan works in JSON mode", async () => {
-      mockGeneratePlan.mockResolvedValueOnce({
-        summary: "JSON mode replan",
-        steps: [
-          {
-            id: "json-step",
-            description: "A step",
-            dependsOn: [],
-            durationMinutes: 15,
-            status: "pending",
-          },
-        ],
-        goal: "Goal for JSON mode test",
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "JSON mode replan",
+          steps: [
+            {
+              id: "json-step",
+              description: "A step",
+              dependsOn: [],
+              durationMinutes: 15,
+              status: "pending",
+            },
+          ],
+          goal: "Goal for JSON mode test",
+        },
+        scoutStatus: "success",
       });
 
       saveRun(
@@ -792,18 +803,22 @@ describe("goal-resume command", () => {
     });
 
     it("--replan in quiet mode suppresses output", async () => {
-      mockGeneratePlan.mockResolvedValueOnce({
-        summary: "Quiet replan",
-        steps: [
-          {
-            id: "quiet-step",
-            description: "Silently replanned",
-            dependsOn: [],
-            durationMinutes: 10,
-            status: "pending",
-          },
-        ],
-        goal: "Quiet mode goal",
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "Quiet replan",
+          steps: [
+            {
+              id: "quiet-step",
+              description: "Silently replanned",
+              dependsOn: [],
+              durationMinutes: 10,
+              status: "pending",
+            },
+          ],
+          goal: "Quiet mode goal",
+        },
+        scoutStatus: "success",
       });
 
       saveRun(
@@ -827,21 +842,25 @@ describe("goal-resume command", () => {
       expect(persisted?.plan?.summary).toBe("Quiet replan");
     });
 
-    it("calls generatePlan when replanning", async () => {
+    it("calls unified CLI planner when replanning", async () => {
       const runId = "replan-check-call";
 
-      mockGeneratePlan.mockResolvedValueOnce({
-        summary: "Generated plan",
-        steps: [
-          {
-            id: "generated-step",
-            description: "A generated task",
-            dependsOn: [],
-            durationMinutes: 25,
-            status: "pending",
-          },
-        ],
-        goal: "Goal text",
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "Generated plan",
+          steps: [
+            {
+              id: "generated-step",
+              description: "A generated task",
+              dependsOn: [],
+              durationMinutes: 25,
+              status: "pending",
+            },
+          ],
+          goal: "Goal text",
+        },
+        scoutStatus: "success",
       });
 
       saveRun(
@@ -856,16 +875,110 @@ describe("goal-resume command", () => {
       const rt = mockRuntime();
       await goalResumeCommand(runId, { replan: true }, rt);
 
-      // Verify generatePlan was called
-      expect(mockGeneratePlan).toHaveBeenCalled();
-      const callArgs = mockGeneratePlan.mock.calls[0];
-      // First arg is client, second is goal text, third is optional scoutData
-      expect(callArgs?.[0]).toBeDefined(); // Client
-      expect(callArgs?.[1]).toBe("Goal text"); // Goal
+      expect(mockRunCliPlanning).toHaveBeenCalledWith({
+        runId,
+        goalText: "Goal text",
+        includeScoutArtifacts: true,
+      });
 
       const persisted = loadRun(runId, testGoalsDir);
       expect(persisted?.state).toBe("awaiting_approval");
       expect(persisted?.plan?.summary).toBe("Generated plan");
+    });
+
+    it("loads canonical scout artifact names when replanning", async () => {
+      const runId = "replan-canonical-scout";
+      const scoutDir = path.join(testGoalsDir, runId, "scout");
+      fs.mkdirSync(scoutDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(scoutDir, "scout_report.json"),
+        '{"goal_id":"g","nodes":[],"edges":[]}',
+        "utf8",
+      );
+      fs.writeFileSync(path.join(scoutDir, "plan_draft.md"), "canonical plan draft", "utf8");
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true }, rt);
+
+      expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+    });
+
+    it("falls back to legacy scout artifact names when replanning", async () => {
+      const runId = "replan-legacy-scout";
+      const scoutDir = path.join(testGoalsDir, runId, "scout");
+      fs.mkdirSync(scoutDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(scoutDir, "report.json"),
+        '{"goal_id":"g","nodes":[],"edges":[]}',
+        "utf8",
+      );
+      fs.writeFileSync(path.join(scoutDir, "plan.md"), "legacy plan draft", "utf8");
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true }, rt);
+
+      expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+    });
+
+    it("preserves --no-scout mode on replanning", async () => {
+      const runId = "replan-no-scout";
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "No scout replan",
+          steps: [
+            {
+              id: "ns-step",
+              description: "No scout task",
+              dependsOn: [],
+              durationMinutes: 12,
+              status: "pending",
+            },
+          ],
+          goal: "Goal text",
+        },
+        scoutStatus: "skipped",
+        scoutSkipReason: "--no-scout flag",
+      });
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Goal text",
+          scoutStatus: "skipped",
+          scoutSkipReason: "--no-scout flag",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true }, rt);
+
+      expect(mockRunCliPlanning).toHaveBeenCalledWith({
+        runId,
+        goalText: "Goal text",
+        includeScoutArtifacts: false,
+      });
+      expect(rt.logs.join("\n")).toContain("Replanning (--no-scout mode)...");
     });
   });
 });

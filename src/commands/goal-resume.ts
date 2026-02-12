@@ -5,19 +5,19 @@ import fs from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
-import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import {
   loadRun,
   saveRun,
   serializedToSession,
   sessionToSerialized,
+  resolveGoalsDir,
   resolveRunId,
   resolveRunDir,
 } from "../goal/run-store.js";
-import { createGoalLlmClient } from "../goal/llm-client.js";
-import { generatePlan, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { type ScoutResult } from "../goal/scout.js";
 import type { GoalOutcome, OutputFormat, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -52,25 +52,46 @@ function requiresExecutionAnswer(run: SerializedRun, requiredKey?: string): bool
   return blockedSteps.some((step) => (step.blockedReason ?? "user_input") === "user_input");
 }
 
-/** Load scout data from a previous run if it exists and was successful. */
-function loadScoutData(runId: string): ScoutResult | undefined {
-  try {
-    const runDir = resolveRunDir(runId);
-    const scoutReportPath = path.join(runDir, "scout", "report.json");
-    const scoutPlanPath = path.join(runDir, "scout", "plan.md");
+type ScoutArtifactFiles = {
+  reportFile: string;
+  planDraftFile: string;
+};
 
-    if (!fs.existsSync(scoutReportPath) || !fs.existsSync(scoutPlanPath)) {
-      return undefined;
+const CANONICAL_SCOUT_ARTIFACTS: ScoutArtifactFiles = {
+  reportFile: "scout_report.json",
+  planDraftFile: "plan_draft.md",
+};
+
+const LEGACY_SCOUT_ARTIFACTS: ScoutArtifactFiles = {
+  reportFile: "report.json",
+  planDraftFile: "plan.md",
+};
+
+/** Load scout data from a previous run if it exists and was successful. */
+function loadScoutData(runId: string): Extract<ScoutResult, { status: "success" }> | undefined {
+  try {
+    const runDir = resolveRunDir(runId, resolveGoalsDir());
+    const scoutDir = path.join(runDir, "scout");
+    const candidates = [CANONICAL_SCOUT_ARTIFACTS, LEGACY_SCOUT_ARTIFACTS];
+
+    for (const candidate of candidates) {
+      const scoutReportPath = path.join(scoutDir, candidate.reportFile);
+      const scoutPlanPath = path.join(scoutDir, candidate.planDraftFile);
+
+      if (!fs.existsSync(scoutReportPath) || !fs.existsSync(scoutPlanPath)) {
+        continue;
+      }
+
+      const report = JSON.parse(fs.readFileSync(scoutReportPath, "utf8"));
+      const planDraft = fs.readFileSync(scoutPlanPath, "utf8");
+      return {
+        status: "success",
+        report,
+        planDraft,
+      };
     }
 
-    const report = JSON.parse(fs.readFileSync(scoutReportPath, "utf8"));
-    const planDraft = fs.readFileSync(scoutPlanPath, "utf8");
-
-    return {
-      status: "success",
-      report,
-      planDraft,
-    };
+    return undefined;
   } catch {
     return undefined;
   }
@@ -78,7 +99,7 @@ function loadScoutData(runId: string): ScoutResult | undefined {
 
 /**
  * Retry planning phase for a run that stalled during planning.
- * Reuses the original goal text and scout data (if available).
+ * Reuses the original goal text; preserves prior scout/no-scout mode.
  */
 async function retryPlanning(
   run: SerializedRun,
@@ -101,24 +122,15 @@ async function retryPlanning(
   saveRun(run);
 
   try {
-    // Resolve API key
-    const authResult = await resolveApiKeyForProvider({ provider: "anthropic" });
-    if (!authResult.apiKey) {
-      throw new Error(
-        "Anthropic auth resolved but no API key available (mode: " + authResult.mode + ").",
-      );
-    }
-
-    const client = createGoalLlmClient({
-      apiKey: authResult.apiKey,
-      modelOverride: run.model,
-    });
-
-    // Try to load scout data from previous run
+    const includeScoutArtifacts = !(
+      run.scoutStatus === "skipped" && run.scoutSkipReason === "--no-scout flag"
+    );
     const scoutData = loadScoutData(run.runId);
 
     if (!isJson && !quiet) {
-      if (scoutData) {
+      if (!includeScoutArtifacts) {
+        runtime.log("Replanning (--no-scout mode)...");
+      } else if (scoutData) {
         runtime.log("Replanning with cached scout data...");
       } else {
         runtime.log("Replanning (no scout data available)...");
@@ -130,8 +142,8 @@ async function retryPlanning(
       ? `${session.goal}\n\nUser clarification: ${planningAnswer}`
       : session.goal;
 
-    // Generate plan
-    let planResult;
+    // Generate plan + scout artifacts in one CLI planning pass
+    let planningResult: CliPlanningResult;
     {
       const progress = createCliProgress({
         label: "Generating plan...",
@@ -139,18 +151,29 @@ async function retryPlanning(
         enabled: !isJson && !quiet,
       });
       try {
-        planResult = await generatePlan(client, goalText, scoutData);
+        planningResult = await runCliPlanning({
+          runId: run.runId,
+          goalText,
+          includeScoutArtifacts,
+        });
       } finally {
         progress.done();
       }
     }
 
     // Handle blocked-at-planning (pre-plan clarification)
-    if ("blocked" in planResult) {
+    run.scoutStatus = planningResult.scoutStatus;
+    if (planningResult.scoutSkipReason) {
+      run.scoutSkipReason = planningResult.scoutSkipReason;
+    } else {
+      delete run.scoutSkipReason;
+    }
+
+    if (planningResult.status === "blocked") {
       session.state = "blocked";
       session.blocked = {
         blockedAt: "planning",
-        prompt: planResult.question,
+        prompt: planningResult.question,
         requiredInputKey: "step:planning:input",
       };
       run.state = "blocked";
@@ -160,17 +183,19 @@ async function retryPlanning(
 
       const outcome: GoalOutcome = {
         status: "blocked",
-        question: planResult.question,
+        question: planningResult.question,
         requiredInputKey: "step:planning:input",
         blockedAt: "planning",
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
       } else if (!quiet) {
-        runtime.log(`\nCLARIFICATION NEEDED: ${planResult.question}`);
+        runtime.log(`\nCLARIFICATION NEEDED: ${planningResult.question}`);
       }
       return outcome;
     }
+
+    const planResult = planningResult.plan;
 
     // Success! Update session with plan
     session.plan = planResult;
