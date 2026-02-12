@@ -47,6 +47,7 @@ import {
   buildTelegramGroupPeerId,
 } from "./bot/helpers.js";
 import { firstDefined } from "./bot-access.js";
+import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
@@ -153,6 +154,7 @@ export const registerTelegramNativeCommands = ({
     pluginCommands.push({ command: normalized, description });
   }
   const goalSpecs = nativeEnabled ? GOAL_COMMAND_SPECS : [];
+  const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
   const allCommands: Array<{ command: string; description: string }> = [
     ...nativeCommands.map((command) => ({
       command: command.name,
@@ -160,6 +162,7 @@ export const registerTelegramNativeCommands = ({
     })),
     ...pluginCommands,
     ...goalSpecs,
+    ...gatewayRestartSpecs,
     ...customCommands,
   ];
 
@@ -463,6 +466,10 @@ export const registerTelegramNativeCommands = ({
           resolveTelegramGroupConfig,
           shouldSkipUpdate,
           textLimit,
+        });
+        registerGatewayRestartCommand({
+          bot,
+          shouldSkipUpdate,
         });
       }
     }
