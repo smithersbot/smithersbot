@@ -191,6 +191,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const successors = buildSuccessorMap(plan.steps);
   let lastExecutedId: string | null = null;
   const orderedSteps = orderStepsCriticalPathFirst(plan.steps, scores);
+  // Retry non-user-input blocked tasks once on resume, even without new answers.
+  // This lets fixed environments (PATH/auth/network) take effect without requiring
+  // fake /goal_answer input, while avoiding retry loops in a single execution run.
+  const retryableBlockedIds = new Set(
+    orderedSteps
+      .filter(
+        (step) =>
+          step.status === "blocked" &&
+          step.blockedReason != null &&
+          step.blockedReason !== "user_input",
+      )
+      .map((step) => step.id),
+  );
 
   const previouslyBlockedIds = new Set<string>();
   let stopAllTasks = false;
@@ -229,7 +242,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       return { status: "cancelled" };
     }
 
-    const runnable = findRunnableTasks(orderedSteps, session.answers);
+    const runnable = findRunnableTasks(orderedSteps, session.answers, retryableBlockedIds);
     if (runnable.length === 0) break;
 
     const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
@@ -237,6 +250,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     let resumeAnswer: string | undefined;
     let resumeQuestion: string | undefined;
     if (task.status === "blocked") {
+      retryableBlockedIds.delete(task.id);
       resumeAnswer = getAnswerForTask(task.id, session.answers);
       resumeQuestion = task.blockedQuestion;
       task.turnsUsed = 0;
@@ -393,7 +407,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       session.lastError = task.blockedQuestion ?? session.lastError;
     }
 
-    const hasRunnable = findRunnableTasks(orderedSteps, session.answers).length > 0;
+    const hasRunnable =
+      findRunnableTasks(orderedSteps, session.answers, retryableBlockedIds).length > 0;
     if (task.blockedReason && !previouslyBlockedIds.has(task.id) && onStatusChange && hasRunnable) {
       previouslyBlockedIds.add(task.id);
       await onStatusChange({
@@ -573,7 +588,11 @@ function consumeAnswerForTask(taskId: string, answers: Record<string, string>): 
   }
 }
 
-function findRunnableTasks(steps: PlanStep[], answers?: Record<string, string>): PlanStep[] {
+function findRunnableTasks(
+  steps: PlanStep[],
+  answers?: Record<string, string>,
+  retryableBlockedIds?: Set<string>,
+): PlanStep[] {
   return steps.filter((step) => {
     const depsReady = step.dependsOn.every((depId) => {
       const dep = steps.find((s) => s.id === depId);
@@ -581,7 +600,10 @@ function findRunnableTasks(steps: PlanStep[], answers?: Record<string, string>):
     });
     if (!depsReady) return false;
     if (step.status === "pending") return true;
-    if (step.status === "blocked" && answers && hasAnswerForTask(step.id, answers)) return true;
+    if (step.status === "blocked") {
+      if (answers && hasAnswerForTask(step.id, answers)) return true;
+      return Boolean(retryableBlockedIds?.has(step.id));
+    }
     return false;
   });
 }

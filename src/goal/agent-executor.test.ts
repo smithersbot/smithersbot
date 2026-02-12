@@ -197,6 +197,34 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.blockedQuestion).toContain("Backend 'codex' is not available");
   });
 
+  it("re-runs blocked non-user-input steps without requiring an answer", async () => {
+    const step = makeStep({
+      backend: "codex",
+      status: "blocked",
+      blockedReason: "error",
+      blockedQuestion: "Backend unavailable earlier",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Recovered after retry",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-blocked-error-rerun",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
   it("detects external cancellation via goal-stop and exits gracefully", async () => {
     const { saveRun } = await import("./run-store.js");
 

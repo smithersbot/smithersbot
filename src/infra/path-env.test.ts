@@ -155,4 +155,32 @@ describe("ensureMoltbotCliOnPath", () => {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it("includes NVM node bin dir when execPath comes from nvm", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-path-"));
+    const originalPath = process.env.PATH;
+    const originalFlag = process.env.CLAWDBOT_PATH_BOOTSTRAPPED;
+    try {
+      const nvmNodeBin = path.join(tmp, ".nvm", "versions", "node", "v22.22.0", "bin");
+      await fs.mkdir(nvmNodeBin, { recursive: true });
+
+      process.env.PATH = "/usr/bin";
+      delete process.env.CLAWDBOT_PATH_BOOTSTRAPPED;
+
+      ensureMoltbotCliOnPath({
+        execPath: path.join(nvmNodeBin, "node"),
+        cwd: tmp,
+        homeDir: tmp,
+        platform: "linux",
+      });
+
+      const parts = (process.env.PATH ?? "").split(path.delimiter);
+      expect(parts).toContain(nvmNodeBin);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalFlag === undefined) delete process.env.CLAWDBOT_PATH_BOOTSTRAPPED;
+      else process.env.CLAWDBOT_PATH_BOOTSTRAPPED = originalFlag;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

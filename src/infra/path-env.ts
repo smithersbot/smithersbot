@@ -59,8 +59,11 @@ function candidateBinDirs(opts: EnsureMoltbotPathOpts): string[] {
   // Bundled macOS app: `moltbot` lives next to the executable (process.execPath).
   try {
     const execDir = path.dirname(execPath);
+    const normalizedExecDir = execDir.split(path.sep).join("/");
     const siblingMoltbot = path.join(execDir, "moltbot");
     if (isExecutable(siblingMoltbot)) candidates.push(execDir);
+    // NVM installs place globally installed CLIs (like codex) next to the Node binary.
+    if (normalizedExecDir.includes("/.nvm/versions/node/")) candidates.push(execDir);
   } catch {
     // ignore
   }
@@ -75,6 +78,9 @@ function candidateBinDirs(opts: EnsureMoltbotPathOpts): string[] {
   if (isDirectory(miseShims)) candidates.push(miseShims);
 
   candidates.push(...resolveBrewPathDirs({ homeDir }));
+
+  const nvmCurrentBin = path.join(homeDir, ".nvm", "current", "bin");
+  if (isDirectory(nvmCurrentBin)) candidates.push(nvmCurrentBin);
 
   // Common global install locations (macOS first).
   if (platform === "darwin") {
