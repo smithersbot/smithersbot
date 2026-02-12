@@ -24,6 +24,7 @@ import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 
 const WORKER_RESULT_FILENAME = "worker_result.json";
 const LOG_EXCERPT_CHARS = 2048;
+const WORKER_RESULT_WORKSPACE_DIR = ".moltbot-goal-worker-results";
 
 // --- Public API ---
 
@@ -51,6 +52,52 @@ export type CliWorkerParams = {
   /** How Claude Code workers authenticate: subscription (default) or api_key. */
   claudeCodeAuth?: ClaudeCodeAuthMode;
 };
+
+function resolveWorkspaceResultPath(params: {
+  workingDir: string;
+  runId: string;
+  stepId: string;
+  attemptNumber: number;
+}): string {
+  return path.join(
+    params.workingDir,
+    WORKER_RESULT_WORKSPACE_DIR,
+    params.runId,
+    params.stepId,
+    `attempt-${params.attemptNumber}`,
+    WORKER_RESULT_FILENAME,
+  );
+}
+
+function prepareResultPaths(params: {
+  workspaceResultPath: string;
+  canonicalResultPath: string;
+}): void {
+  fs.mkdirSync(path.dirname(params.workspaceResultPath), { recursive: true });
+  removeIfExists(params.workspaceResultPath);
+  removeIfExists(params.canonicalResultPath);
+}
+
+function removeIfExists(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Best-effort cleanup before each attempt.
+  }
+}
+
+function persistCanonicalWorkerResult(params: {
+  sourcePath: string;
+  canonicalResultPath: string;
+}): void {
+  if (params.sourcePath === params.canonicalResultPath) return;
+  try {
+    fs.mkdirSync(path.dirname(params.canonicalResultPath), { recursive: true });
+    fs.copyFileSync(params.sourcePath, params.canonicalResultPath);
+  } catch {
+    // Best-effort artifact copy; execution result is already validated.
+  }
+}
 
 /**
  * Execute a goal step using a CLI worker (Codex or Claude Code).
@@ -83,13 +130,22 @@ export async function executeTaskWithCliWorker(
 
   const workerDir = resolveWorkerDir(runId, step.id);
   fs.mkdirSync(workerDir, { recursive: true });
+  const canonicalResultPath = path.join(workerDir, WORKER_RESULT_FILENAME);
+  const workspaceResultPath = resolveWorkspaceResultPath({
+    workingDir,
+    runId,
+    stepId: step.id,
+    attemptNumber,
+  });
+  prepareResultPaths({
+    workspaceResultPath,
+    canonicalResultPath,
+  });
 
   // Build worker env based on auth mode
   const workerEnv =
     backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
   if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
-
-  const resultPath = path.join(workerDir, WORKER_RESULT_FILENAME);
 
   const prompt = buildCliWorkerPrompt({
     step,
@@ -99,7 +155,7 @@ export async function executeTaskWithCliWorker(
     completedSummaries,
     resumeAnswer,
     resumeQuestion,
-    resultPath,
+    resultPath: workspaceResultPath,
     previousAttempt,
   });
 
@@ -139,8 +195,18 @@ export async function executeTaskWithCliWorker(
   const codexParsed = backend === "codex" ? parseCodexSchemaOutput(stdout) : null;
   const codexValidated = codexParsed ? validateWorkerOutput(codexParsed) : null;
 
-  const resultRead = readWorkerResultFile(workerDir);
+  const resultRead = readWorkerResultFile({
+    primaryPath: workspaceResultPath,
+    fallbackPath: canonicalResultPath,
+  });
   const fileValidated = resultRead.output;
+
+  if (resultRead.output && resultRead.sourcePath) {
+    persistCanonicalWorkerResult({
+      sourcePath: resultRead.sourcePath,
+      canonicalResultPath,
+    });
+  }
 
   let output = codexValidated ?? fileValidated;
   let errorType: string | undefined;
@@ -218,7 +284,7 @@ export async function executeTaskWithCliWorker(
 
   const outcome = classifyAttemptOutcome(output, timedOut, exitCode, signal);
   const { diffstat, changedFiles } = collectGitDiffSummary(workingDir);
-  const resultFile = fs.existsSync(resultPath) ? WORKER_RESULT_FILENAME : null;
+  const resultFile = fs.existsSync(canonicalResultPath) ? WORKER_RESULT_FILENAME : null;
 
   writeAttemptBundle(workerDir, {
     attemptNumber,
@@ -468,37 +534,79 @@ function buildCliArgs(params: {
   return args;
 }
 
-export function readWorkerResultFile(workerDir: string): {
+export function readWorkerResultFile(params: { primaryPath: string; fallbackPath?: string }): {
   output: GoalWorkerOutput | null;
+  sourcePath?: string;
   error?: { kind: "missing" | "invalid_json" | "invalid_schema"; message: string };
 } {
-  const filePath = path.join(workerDir, WORKER_RESULT_FILENAME);
-  if (!fs.existsSync(filePath)) {
-    return { output: null, error: { kind: "missing", message: "worker_result.json not found" } };
+  const primary = readResultPath(params.primaryPath);
+  if (primary.exists) {
+    if (primary.output) {
+      return { output: primary.output, sourcePath: params.primaryPath };
+    }
+    return { output: null, error: primary.error };
   }
+
+  if (params.fallbackPath) {
+    const fallback = readResultPath(params.fallbackPath);
+    if (fallback.exists) {
+      if (fallback.output) {
+        return { output: fallback.output, sourcePath: params.fallbackPath };
+      }
+      return { output: null, error: fallback.error };
+    }
+  }
+
+  return {
+    output: null,
+    error: {
+      kind: "missing",
+      message: "worker_result.json not found",
+    },
+  };
+}
+
+function readResultPath(filePath: string): {
+  exists: boolean;
+  output: GoalWorkerOutput | null;
+  error?: { kind: "invalid_json" | "invalid_schema"; message: string };
+} {
+  if (!fs.existsSync(filePath)) {
+    return { exists: false, output: null };
+  }
+
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, "utf8");
   } catch {
-    return { output: null, error: { kind: "invalid_json", message: "Unable to read result file" } };
+    return {
+      exists: true,
+      output: null,
+      error: { kind: "invalid_json", message: "Unable to read result file" },
+    };
   }
+
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return {
+      exists: true,
       output: null,
       error: { kind: "invalid_json", message: "Result file is invalid JSON" },
     };
   }
+
   const validated = validateWorkerOutput(parsed);
   if (!validated) {
     return {
+      exists: true,
       output: null,
       error: { kind: "invalid_schema", message: "Result file does not match schema" },
     };
   }
-  return { output: validated };
+
+  return { exists: true, output: validated };
 }
 
 function makeFailureOutput(

@@ -65,7 +65,7 @@ describe("cli-worker", () => {
         "utf8",
       );
 
-      const result = readWorkerResultFile(dir);
+      const result = readWorkerResultFile({ primaryPath: resultPath });
       expect(result.output).toEqual({ status: "complete", summary: "All set" });
       expect(result.error).toBeUndefined();
     });
@@ -75,7 +75,7 @@ describe("cli-worker", () => {
       const resultPath = path.join(dir, "worker_result.json");
       fs.writeFileSync(resultPath, "{not json", "utf8");
 
-      const result = readWorkerResultFile(dir);
+      const result = readWorkerResultFile({ primaryPath: resultPath });
       expect(result.output).toBeNull();
       expect(result.error?.kind).toBe("invalid_json");
     });
@@ -85,16 +85,52 @@ describe("cli-worker", () => {
       const resultPath = path.join(dir, "worker_result.json");
       fs.writeFileSync(resultPath, JSON.stringify({ status: "complete" }), "utf8");
 
-      const result = readWorkerResultFile(dir);
+      const result = readWorkerResultFile({ primaryPath: resultPath });
       expect(result.output).toBeNull();
       expect(result.error?.kind).toBe("invalid_schema");
     });
 
     it("reports missing file", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
-      const result = readWorkerResultFile(dir);
+      const result = readWorkerResultFile({ primaryPath: path.join(dir, "worker_result.json") });
       expect(result.output).toBeNull();
       expect(result.error?.kind).toBe("missing");
+    });
+
+    it("falls back to canonical path when primary path is missing", () => {
+      const primaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-primary-"));
+      const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-fallback-"));
+      const primaryPath = path.join(primaryDir, "worker_result.json");
+      const fallbackPath = path.join(fallbackDir, "worker_result.json");
+
+      fs.writeFileSync(
+        fallbackPath,
+        JSON.stringify({ status: "complete", summary: "Recovered from fallback" }),
+        "utf8",
+      );
+
+      const result = readWorkerResultFile({ primaryPath, fallbackPath });
+      expect(result.output).toEqual({ status: "complete", summary: "Recovered from fallback" });
+      expect(result.sourcePath).toBe(fallbackPath);
+      expect(result.error).toBeUndefined();
+    });
+
+    it("does not use fallback when primary path exists but is invalid", () => {
+      const primaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-primary-"));
+      const fallbackDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-fallback-"));
+      const primaryPath = path.join(primaryDir, "worker_result.json");
+      const fallbackPath = path.join(fallbackDir, "worker_result.json");
+
+      fs.writeFileSync(primaryPath, "{not json", "utf8");
+      fs.writeFileSync(
+        fallbackPath,
+        JSON.stringify({ status: "complete", summary: "Should not be used" }),
+        "utf8",
+      );
+
+      const result = readWorkerResultFile({ primaryPath, fallbackPath });
+      expect(result.output).toBeNull();
+      expect(result.error?.kind).toBe("invalid_json");
     });
   });
 
