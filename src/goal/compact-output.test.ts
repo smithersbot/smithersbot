@@ -11,10 +11,19 @@ import {
   truncateSingleLine,
 } from "./compact-output.js";
 
+function findLineIndex(lines: string[], prefix: string): number {
+  return lines.findIndex((line) => line.startsWith(prefix));
+}
+
+function getStepLines(lines: string[]): string[] {
+  return lines.filter((line) => line.startsWith("- "));
+}
+
 describe("formatAttemptBadge", () => {
   it("hides zero-attempt and 1/1 badges", () => {
     expect(formatAttemptBadge({ attemptsUsed: 0, attemptsTotal: 3 })).toBe("");
     expect(formatAttemptBadge({ attemptsUsed: 1, attemptsTotal: 1 })).toBe("");
+    expect(formatAttemptBadge({ attemptsUsed: 0 })).toBe("");
     expect(formatAttemptBadge(undefined)).toBe("");
   });
 
@@ -71,13 +80,18 @@ describe("formatCompactGoalOutput", () => {
       ],
     });
 
-    expect(result.lines[0]).toContain("Blocked:");
-    expect(result.lines[1]).toBe("**Progress** 3/9");
-    expect(result.lines[2]).toContain("**Blocker**");
-    expect(result.lines[3]).toContain("**Retries**");
-    expect(result.lines[4]).toBe("**Top Steps**");
+    const headlineIndex = findLineIndex(result.lines, "\u26D4 Blocked:");
+    const progressIndex = findLineIndex(result.lines, "**Progress** 3/9");
+    const blockerIndex = findLineIndex(result.lines, "**Blocker**");
+    const retriesIndex = findLineIndex(result.lines, "**Retries**");
+    const stepsHeaderIndex = findLineIndex(result.lines, "**Top Steps**");
+    expect(headlineIndex).toBe(0);
+    expect(progressIndex).toBeGreaterThan(headlineIndex);
+    expect(blockerIndex).toBeGreaterThan(progressIndex);
+    expect(retriesIndex).toBeGreaterThan(blockerIndex);
+    expect(stepsHeaderIndex).toBeGreaterThan(retriesIndex);
 
-    const bulletLines = result.lines.filter((line) => line.startsWith("- "));
+    const bulletLines = getStepLines(result.lines);
     expect(bulletLines).toHaveLength(5);
     expect(result.lines).toContain("+ 2 more steps not shown");
     expect(result.hiddenStepCount).toBe(2);
@@ -92,6 +106,28 @@ describe("formatCompactGoalOutput", () => {
     expect(bulletLines.find((line) => line.includes("4."))).not.toContain("[1/1]");
     // Unknown total keeps explicit attempt count.
     expect(bulletLines.find((line) => line.includes("5."))).toContain("[4 attempts]");
+  });
+
+  it("truncates step bullets to a single line with a deterministic width cap", () => {
+    const result = formatCompactGoalOutput({
+      state: "executing",
+      title: "Run deployment",
+      progress: { completed: 1, total: 2 },
+      retrySummary: "1 retry across 1 step",
+      maxStepTextChars: 20,
+      steps: [
+        {
+          id: "1",
+          text: "Long line one\nline two\tline three and more",
+          attempt: { attemptsUsed: 2, attemptsTotal: 3 },
+        },
+      ],
+    });
+
+    const stepLine = getStepLines(result.lines)[0];
+    expect(stepLine).toContain("Long line one line …");
+    expect(stepLine).toContain("[2/3]");
+    expect(stepLine.includes("\n")).toBe(false);
   });
 
   it("keeps telegram output near 15 lines by shrinking step list", () => {
@@ -112,8 +148,11 @@ describe("formatCompactGoalOutput", () => {
     });
 
     expect(result.lines.length).toBeLessThanOrEqual(15);
-    expect(result.lines[0]).toContain("Executing:");
-    expect(result.lines[1]).toBe("**Progress** 4/20");
+    expect(findLineIndex(result.lines, "\u23F3 Executing:")).toBe(0);
+    expect(findLineIndex(result.lines, "**Progress** 4/20")).toBe(1);
+    expect(findLineIndex(result.lines, "**Blocker**")).toBe(2);
+    expect(findLineIndex(result.lines, "**Retries**")).toBe(3);
+    expect(findLineIndex(result.lines, "**Top Steps**")).toBe(4);
     expect(result.hiddenStepCount).toBeGreaterThan(0);
     expect(result.lines[result.lines.length - 1]).toMatch(/^\+ \d+ more steps not shown$/);
   });
@@ -192,13 +231,17 @@ describe("formatCompactGoalCompletionSummary", () => {
       ],
     });
 
-    expect(result.lines[0]).toContain("Done:");
-    expect(result.lines[1]).toBe("**Progress** 6/6");
-    expect(result.lines[2]).toBe("**Retries** 1 retry across 1 step");
-    expect(result.lines[3]).toBe("**Top Steps**");
+    const headlineIndex = findLineIndex(result.lines, "\u2705 Done:");
+    const progressIndex = findLineIndex(result.lines, "**Progress** 6/6");
+    const retriesIndex = findLineIndex(result.lines, "**Retries** 1 retry across 1 step");
+    const stepsHeaderIndex = findLineIndex(result.lines, "**Top Steps**");
+    expect(headlineIndex).toBe(0);
+    expect(progressIndex).toBeGreaterThan(headlineIndex);
+    expect(retriesIndex).toBeGreaterThan(progressIndex);
+    expect(stepsHeaderIndex).toBeGreaterThan(retriesIndex);
     expect(result.lines).toContain("+ 1 more steps not shown");
     expect(result.lines.find((line) => line.includes("2."))).toContain("[2/4]");
-    expect(result.lines.filter((line) => line.startsWith("- "))).toHaveLength(5);
+    expect(getStepLines(result.lines)).toHaveLength(5);
   });
 
   it("keeps completion summaries within Telegram's default line budget", () => {

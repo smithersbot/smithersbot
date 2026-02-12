@@ -130,6 +130,17 @@ function makeRuntime() {
   };
 }
 
+function summaryLines(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+}
+
+function findLineIndex(lines: string[], prefix: string): number {
+  return lines.findIndex((line) => line.startsWith(prefix));
+}
+
 describe("goal workflow integration tests", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-integration-test-"));
@@ -1111,13 +1122,22 @@ describe("goal workflow integration tests", () => {
 
       expect(outcome.status).toBe("done");
       if (outcome.status === "done") {
-        expect(outcome.summary).toContain("✅ Done:");
-        expect(outcome.summary).toContain("**Progress** 2/2");
-        expect(outcome.summary).toContain("**Retries** 1 retry across 1 step");
-        expect(outcome.summary).toContain("**Top Steps**");
-        expect(outcome.summary).toContain("Created files");
-        expect(outcome.summary).toContain("Ran tests");
-        expect(outcome.summary).toContain("[2/5]");
+        const lines = summaryLines(outcome.summary);
+        const headlineIndex = findLineIndex(lines, "✅ Done:");
+        const progressIndex = findLineIndex(lines, "**Progress** 2/2");
+        const retriesIndex = findLineIndex(lines, "**Retries** 1 retry across 1 step");
+        const topStepsIndex = findLineIndex(lines, "**Top Steps**");
+        expect(headlineIndex).toBe(0);
+        expect(progressIndex).toBeGreaterThan(headlineIndex);
+        expect(retriesIndex).toBeGreaterThan(progressIndex);
+        expect(topStepsIndex).toBeGreaterThan(retriesIndex);
+
+        const stepLines = lines.filter((line) => line.startsWith("- "));
+        expect(stepLines).toHaveLength(2);
+        expect(stepLines.some((line) => line.includes("Created files"))).toBe(true);
+        expect(stepLines.some((line) => line.includes("Ran tests"))).toBe(true);
+        expect(stepLines.some((line) => line.includes("[2/5]"))).toBe(true);
+        expect(stepLines.some((line) => line.includes("[1/1]"))).toBe(false);
       }
     });
   });

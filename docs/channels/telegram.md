@@ -120,6 +120,29 @@ You can add custom commands to the menu via config:
 }
 ```
 
+### Goal status and completion format
+
+`/goal_status` replies and goal completion captions use the same compact structure so long runs stay readable:
+
+1. Headline: state + short goal title
+2. `Progress`: `X/Y`
+3. `Blocker`: only shown when blocked
+4. `Retries`: retry summary across steps
+5. `Top Steps`: up to 5 single-line bullets, then `+ N more steps not shown` when needed
+
+Attempt badges on step lines follow fixed rules:
+
+- Hide for zero attempts
+- Hide `[1/1]` (no extra signal)
+- Show `[x/y]` when total attempts are known and useful
+- Show `[x attempt]` or `[x attempts]` when total attempts are unknown
+
+Telegram-specific guardrails:
+
+- Replies are kept near a readable budget of about 15 lines
+- When over budget, Moltbot drops extra step bullets first and keeps the overflow line
+- `all_done` uses the same compact hierarchy (Done + Progress + Retries + Top Steps)
+
 ## Troubleshooting
 
 - `setMyCommands failed` in logs usually means outbound HTTPS/DNS is blocked to `api.telegram.org`.

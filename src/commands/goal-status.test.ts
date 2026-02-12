@@ -15,6 +15,17 @@ async function catchJsonExit(fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
+function outputLines(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+}
+
+function findLineIndex(lines: string[], prefix: string): number {
+  return lines.findIndex((line) => line.startsWith(prefix));
+}
+
 let testGoalsDir: string;
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
@@ -88,11 +99,15 @@ describe("goal-status command", () => {
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", {}, rt);
-    const output = rt.logs.join("\n");
-    expect(output).toContain("✅ Done: Build a widget");
-    expect(output).toContain("**Progress** 1/1");
-    expect(output).toContain("**Retries** 0 retries");
-    expect(output).toContain("Run ID: status-test-aaaa");
+    const lines = outputLines(rt.logs.join("\n"));
+    const headlineIndex = findLineIndex(lines, "✅ Done: Build a widget");
+    const progressIndex = findLineIndex(lines, "**Progress** 1/1");
+    const retriesIndex = findLineIndex(lines, "**Retries** 0 retries");
+    const runIdIndex = findLineIndex(lines, "Run ID: status-test-aaaa");
+    expect(headlineIndex).toBe(0);
+    expect(progressIndex).toBeGreaterThan(headlineIndex);
+    expect(retriesIndex).toBeGreaterThan(progressIndex);
+    expect(runIdIndex).toBeGreaterThan(retriesIndex);
   });
 
   it("renders in-progress Mermaid class when run lock is active", async () => {
@@ -284,13 +299,17 @@ describe("goal-status command", () => {
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand(runId, {}, rt);
-    const output = rt.logs.join("\n");
+    const lines = outputLines(rt.logs.join("\n"));
+    const retriesIndex = findLineIndex(lines, "**Retries** 2 retries across 2 steps");
+    const topStepsIndex = findLineIndex(lines, "**Top Steps**");
+    expect(topStepsIndex).toBeGreaterThan(retriesIndex);
 
-    expect(output).toContain("**Top Steps**");
-    expect(output).toContain("[2/4]");
-    expect(output).toContain("[2 attempts]");
-    expect(output).toContain("**Retries** 2 retries across 2 steps");
-    expect(output).toContain("+ 1 more steps not shown");
+    const stepLines = lines.filter((line) => line.startsWith("- "));
+    expect(stepLines).toHaveLength(5);
+    expect(lines).toContain("+ 1 more steps not shown");
+    expect(stepLines.some((line) => line.includes("[2/4]"))).toBe(true);
+    expect(stepLines.some((line) => line.includes("[2 attempts]"))).toBe(true);
+    expect(stepLines.some((line) => line.includes("[1/1]"))).toBe(false);
   });
 
   it("uses Telegram line budget when channel is telegram", async () => {
@@ -315,13 +334,16 @@ describe("goal-status command", () => {
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand(runId, { channel: "telegram" }, rt);
-    const output = rt.logs.join("\n");
-    const lineCount = output.trim().split("\n").length;
-
-    expect(lineCount).toBeLessThanOrEqual(15);
-    expect(output).toContain("Next: /goal_resume");
-    expect(output).toContain("more steps not shown");
-    expect(output).not.toContain("Dependency Graph");
+    const lines = outputLines(rt.logs.join("\n"));
+    expect(lines.length).toBeLessThanOrEqual(15);
+    expect(findLineIndex(lines, "✅ Awaiting Approval: Build a widget")).toBe(0);
+    expect(findLineIndex(lines, "**Progress** 1/25")).toBe(1);
+    expect(findLineIndex(lines, "**Retries** 0 retries")).toBe(2);
+    expect(findLineIndex(lines, "**Top Steps**")).toBe(3);
+    expect(lines.some((line) => line.startsWith("Next: /goal_resume"))).toBe(true);
+    expect(lines.some((line) => line.includes("more steps not shown"))).toBe(true);
+    expect(lines.some((line) => line.includes("Run ID:"))).toBe(false);
+    expect(lines.some((line) => line.includes("Dependency Graph"))).toBe(false);
   });
 
   it("JSON mode includes blocked object with prompt and requiredInputKey", async () => {

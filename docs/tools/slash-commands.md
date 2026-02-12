@@ -117,6 +117,30 @@ Notes:
   - Example: `/prose` (OpenProse plugin) — see [OpenProse](/prose).
 - **Native command arguments:** Discord uses autocomplete for dynamic options (and button menus when you omit required args). Telegram and Slack show a button menu when a command supports choices and you omit the arg.
 
+## Telegram goal commands
+
+Telegram registers goal commands via the bot menu:
+
+- `/new_goal`
+- `/goal_approve`
+- `/goal_resume`
+- `/goal_reject`
+- `/goal_edit`
+- `/goal_status`
+- `/goal_answer`
+- `/goal_stop`
+- `/goal_list`
+
+`/goal_status` and completion captions use a compact, fixed hierarchy:
+
+1. Headline (state + goal title)
+2. `Progress` (`X/Y`)
+3. `Blocker` (only when present)
+4. `Retries`
+5. `Top Steps` (max 5, then `+ N more steps not shown`)
+
+Telegram output is kept near a readable line budget (about 15 lines). See [Telegram channel docs](/channels/telegram#goal-status-and-completion-format).
+
 ## Usage surfaces (what shows where)
 
 - **Provider usage/quota** (example: “Claude 80% left”) shows up in `/status` for the current model provider when usage tracking is enabled.

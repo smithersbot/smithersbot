@@ -54,7 +54,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_resume", description: "Resume a goal run (alias of /goal_approve)" },
   { command: "goal_reject", description: "Reject a goal plan" },
   { command: "goal_edit", description: "Edit a goal plan" },
-  { command: "goal_status", description: "Show goal run details" },
+  {
+    command: "goal_status",
+    description: "Show concise status (state, progress, blocker, retries)",
+  },
   { command: "goal_answer", description: "Answer a goal's clarification question" },
   { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
