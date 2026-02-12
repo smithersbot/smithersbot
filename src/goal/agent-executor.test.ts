@@ -225,6 +225,61 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 
+  it("accumulates duration across resumed attempts and keeps it on done steps", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+      const step = makeStep({ backend: "codex" });
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+
+      mockCliExecute.mockImplementationOnce(async () => {
+        vi.advanceTimersByTime(1200);
+        return {
+          status: "blocked",
+          question: "Need input",
+          blockedReason: "user_input",
+          turnsUsed: 1,
+        };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+
+      const firstOutcome = await executeGoalWithAgent({
+        session,
+        runId: "run-duration-resume-1",
+        workingDir: "/tmp/moltbot-goal-test",
+      });
+
+      expect(firstOutcome.status).toBe("blocked");
+      expect(session.stepResults.get("1")?.durationMs).toBe(1200);
+
+      session.answers["task:1:input"] = "continue";
+      mockCliExecute.mockImplementationOnce(async () => {
+        vi.advanceTimersByTime(800);
+        return {
+          status: "complete",
+          summary: "Completed after answer",
+          turnsUsed: 1,
+        };
+      });
+
+      const secondOutcome = await executeGoalWithAgent({
+        session,
+        runId: "run-duration-resume-1",
+        workingDir: "/tmp/moltbot-goal-test",
+      });
+
+      expect(secondOutcome.status).toBe("done");
+      const finalResult = session.stepResults.get("1");
+      expect(finalResult?.success).toBe(true);
+      expect(finalResult?.durationMs).toBe(2000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("detects external cancellation via goal-stop and exits gracefully", async () => {
     const { saveRun } = await import("./run-store.js");
 

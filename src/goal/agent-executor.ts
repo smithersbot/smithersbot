@@ -519,7 +519,9 @@ function recordTaskResult(
   taskStartMs: number,
   onTaskUpdate?: (result: TaskExecutionResult) => void,
 ): void {
-  const durationMs = Date.now() - taskStartMs;
+  const elapsedMs = Math.max(0, Date.now() - taskStartMs);
+  const previous = session.stepResults.get(task.id);
+  const durationMs = normalizeDurationMs(previous?.durationMs) + elapsedMs;
   session.stepResults.set(task.id, {
     stepId: task.id,
     success: task.status === "done",
@@ -543,6 +545,11 @@ function recordTaskResult(
     blockedReason: task.blockedReason,
   };
   onTaskUpdate?.(result);
+}
+
+function normalizeDurationMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
+  return value;
 }
 
 function hasAnswerForTask(taskId: string, answers: Record<string, string>): boolean {

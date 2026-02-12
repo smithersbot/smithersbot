@@ -136,7 +136,7 @@ describe("run-store", () => {
             },
           ],
         },
-        // stepResults is empty — agent executor doesn't populate it
+        // Legacy/manual runs may have empty stepResults.
         stepResults: {},
       },
       tmpDir,
