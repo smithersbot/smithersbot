@@ -938,6 +938,41 @@ describe("goal-resume command", () => {
       expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
     });
 
+    it("falls back to legacy scout artifacts when canonical artifacts are incomplete", async () => {
+      const runId = "replan-legacy-partial-canonical";
+      const scoutDir = path.join(testGoalsDir, runId, "scout");
+      fs.mkdirSync(scoutDir, { recursive: true });
+
+      // Canonical artifact set is incomplete (missing plan_draft.md).
+      fs.writeFileSync(
+        path.join(scoutDir, "scout_report.json"),
+        '{"goal_id":"g","nodes":[],"edges":[]}',
+        "utf8",
+      );
+
+      // Legacy pair is complete and should be accepted as fallback.
+      fs.writeFileSync(
+        path.join(scoutDir, "report.json"),
+        '{"goal_id":"g","nodes":[],"edges":[]}',
+        "utf8",
+      );
+      fs.writeFileSync(path.join(scoutDir, "plan.md"), "legacy fallback draft", "utf8");
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true }, rt);
+
+      expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+    });
+
     it("preserves --no-scout mode on replanning", async () => {
       const runId = "replan-no-scout";
       mockRunCliPlanning.mockResolvedValueOnce({

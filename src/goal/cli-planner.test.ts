@@ -245,4 +245,53 @@ describe("runCliPlanning", () => {
     expect(attempt.outcome).toBe("failed");
     expect(attempt.errorClassification).toBe("parse");
   });
+
+  it("throws validation errors for invalid plan JSON shape and still writes diagnostics", async () => {
+    const invalidPlanJson = JSON.stringify({
+      summary: "Missing backend field",
+      steps: [
+        {
+          id: "analyze-repo",
+          description: "Inspect repository files",
+          dependsOn: [],
+          durationMinutes: 30,
+        },
+      ],
+    });
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.writeFileSync(String(params.stdoutPath), invalidPlanJson, "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeScoutArtifacts(scoutDir, "run-validation-fail");
+      fs.writeFileSync(path.join(scoutDir, EXECUTION_PLAN_FILE), invalidPlanJson, "utf8");
+      return {
+        stdout: invalidPlanJson,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 51,
+      };
+    });
+
+    await expect(
+      runCliPlanning({
+        runId: "run-validation-fail",
+        goalText: "Create a tiny test artifact",
+        goalsDir,
+      }),
+    ).rejects.toThrow("backend is required");
+
+    const scoutDir = path.join(goalsDir, "run-validation-fail", "scout");
+    expect(fs.readFileSync(path.join(scoutDir, "planning_raw_output.txt"), "utf8")).toBe(
+      invalidPlanJson,
+    );
+
+    const attempt = JSON.parse(
+      fs.readFileSync(path.join(scoutDir, "attempt-1.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(attempt.outcome).toBe("failed");
+    expect(attempt.errorClassification).toBe("validation");
+  });
 });
