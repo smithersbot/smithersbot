@@ -163,6 +163,19 @@ export function isGoalOpLocked(
   return { locked: true, label: payload.label };
 }
 
+/**
+ * Force-release a goal op lock (e.g. when /goal_stop cancels a run externally).
+ * Safe to call even if no lock exists.
+ */
+export function forceReleaseGoalOpLock(runId: string, goalsDir?: string): void {
+  const lockPath = resolveRunLockPath(runId, goalsDir);
+  try {
+    fsSync.unlinkSync(lockPath);
+  } catch {
+    // No lock file — fine
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Planning lock (per-scope)
 // ---------------------------------------------------------------------------

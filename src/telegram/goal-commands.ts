@@ -28,6 +28,7 @@ import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "..
 import {
   acquireGoalOpLock,
   acquirePlanningLock as acquireFilePlanningLock,
+  forceReleaseGoalOpLock,
   isGoalOpLocked,
 } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
@@ -399,8 +400,8 @@ export async function handleGoalApprove(
   // Idempotent state check
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
-  if (run.state === "done" || run.state === "executing") {
-    return "Run is already executing or complete.";
+  if (run.state === "done") {
+    return "Run is already complete.";
   }
 
   const prefix = resolvedId.slice(0, 8);
@@ -693,10 +694,15 @@ export async function handleGoalStop(rawId: string, force?: boolean): Promise<st
     return "Usage: /goal_stop <runId>";
   }
 
+  const resolvedId = resolveRunId(rawId.trim());
   const cap = createCaptureRuntime();
   try {
     const { goalStopCommand } = await import("../commands/goal-stop.js");
     await goalStopCommand(rawId.trim(), { force: Boolean(force) }, cap.runtime);
+    // Release the file lock so /goal_resume can re-acquire it.
+    // The background fn() promise may still be hanging (awaiting the killed worker),
+    // so the normal finally-based release in runGoalInBackground won't fire.
+    if (resolvedId) forceReleaseGoalOpLock(resolvedId);
     const logs = cap.getLogs();
     const errors = cap.getErrors();
     return errors || logs || "Goal stopped.";
