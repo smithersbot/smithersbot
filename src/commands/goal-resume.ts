@@ -43,6 +43,23 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
 
 const AUTO_RETRY_EXECUTION_KEYS = new Set(["git"]);
 
+function formatPlannerFallbackNotice(params: {
+  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
+  resetHint?: string;
+}): string {
+  const reasonLabel =
+    params.degradedReason === "anthropic_usage_limit"
+      ? "usage limit"
+      : params.degradedReason === "anthropic_rate_limit"
+        ? "rate limit"
+        : "availability issue";
+  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
+  return (
+    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
+    "Falling back to Codex planning for this run."
+  );
+}
+
 /**
  * For execution-time blocked runs, only user_input blocks must require
  * an explicit answer before resume. Error-class blocks should be retriable
@@ -178,6 +195,30 @@ async function retryPlanning(
       run.scoutSkipReason = planningResult.scoutSkipReason;
     } else {
       delete run.scoutSkipReason;
+    }
+    if (planningResult.plannerBackendUsed) {
+      run.plannerBackendUsed = planningResult.plannerBackendUsed;
+    } else {
+      delete run.plannerBackendUsed;
+    }
+    if (planningResult.plannerDegradedReason) {
+      run.plannerDegradedReason = planningResult.plannerDegradedReason;
+    } else {
+      delete run.plannerDegradedReason;
+    }
+    if (planningResult.plannerDegradedResetHint) {
+      run.plannerDegradedResetHint = planningResult.plannerDegradedResetHint;
+    } else {
+      delete run.plannerDegradedResetHint;
+    }
+
+    if (!isJson && !quiet && planningResult.plannerDegradedReason) {
+      runtime.log(
+        formatPlannerFallbackNotice({
+          degradedReason: planningResult.plannerDegradedReason,
+          resetHint: planningResult.plannerDegradedResetHint,
+        }),
+      );
     }
 
     if (planningResult.status === "blocked") {
@@ -527,6 +568,19 @@ export async function goalResumeCommand(
   persistRun();
 
   const disableCheckpoints = process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";
+  if (
+    !isJson &&
+    !quiet &&
+    run.backendOverride === "claude_code" &&
+    (run.plannerDegradedReason === "anthropic_rate_limit" ||
+      run.plannerDegradedReason === "anthropic_usage_limit")
+  ) {
+    runtime.log(
+      "Warning: Planner degraded away from Claude due to Anthropic limits. " +
+        "--backend claude_code is overriding that safeguard for this execution.",
+    );
+    runtime.log("");
+  }
   const outcome = await executeGoalWithAgent({
     session,
     runId: savedRunId,

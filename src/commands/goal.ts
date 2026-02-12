@@ -25,6 +25,23 @@ import type { RuntimeEnv } from "../runtime.js";
 
 const DEFAULT_WORKSPACE_DIR = ".moltbot-goal-workspace";
 
+function formatPlannerFallbackNotice(params: {
+  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
+  resetHint?: string;
+}): string {
+  const reasonLabel =
+    params.degradedReason === "anthropic_usage_limit"
+      ? "usage limit"
+      : params.degradedReason === "anthropic_rate_limit"
+        ? "rate limit"
+        : "availability issue";
+  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
+  return (
+    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
+    "Falling back to Codex planning for this run."
+  );
+}
+
 export type GoalCommandOptions = {
   goal: string;
   model?: string;
@@ -108,6 +125,9 @@ export async function goalCommand(
   const createdAt = new Date().toISOString();
   let scoutStatus: SerializedRun["scoutStatus"];
   let scoutSkipReason: string | undefined;
+  let plannerBackendUsed: SerializedRun["plannerBackendUsed"];
+  let plannerDegradedReason: SerializedRun["plannerDegradedReason"];
+  let plannerDegradedResetHint: SerializedRun["plannerDegradedResetHint"];
 
   if (!isJson) {
     runtime.log(`Run: ${runId}`);
@@ -136,6 +156,9 @@ export async function goalCommand(
       scoutStatus,
       scoutSkipReason,
       backendOverride: opts.backend,
+      plannerBackendUsed,
+      plannerDegradedReason,
+      plannerDegradedResetHint,
     });
     saveRun(serialized);
   }
@@ -172,8 +195,25 @@ export async function goalCommand(
 
     scoutStatus = planningResult.scoutStatus;
     scoutSkipReason = planningResult.scoutSkipReason;
+    plannerBackendUsed = planningResult.plannerBackendUsed;
+    plannerDegradedReason = planningResult.plannerDegradedReason;
+    plannerDegradedResetHint = planningResult.plannerDegradedResetHint;
+    if (!isJson && plannerDegradedReason) {
+      runtime.log(
+        formatPlannerFallbackNotice({
+          degradedReason: plannerDegradedReason,
+          resetHint: plannerDegradedResetHint,
+        }),
+      );
+    }
     if (scoutStatus === "skipped" && scoutSkipReason && !isJson) {
       runtime.log(`Scout skipped: ${scoutSkipReason}`);
+    }
+    if (!isJson && opts.backend === "claude_code" && plannerDegradedReason) {
+      runtime.log(
+        "Warning: Planner degraded away from Claude due to Anthropic limits. " +
+          "--backend claude_code will override that safeguard for execution.",
+      );
     }
 
     // Handle blocked-at-planning (pre-plan clarification, not execution-time block)
@@ -298,7 +338,12 @@ export async function goalCommand(
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,
       gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
-      serializedRun: { backendOverride: opts.backend } as SerializedRun,
+      serializedRun: {
+        backendOverride: opts.backend,
+        plannerBackendUsed,
+        plannerDegradedReason,
+        plannerDegradedResetHint,
+      } as SerializedRun,
       claudeCodeAuth: resolvedAuthMode,
       onTaskUpdate: () => persistRun(),
       onProgress: (text) => {

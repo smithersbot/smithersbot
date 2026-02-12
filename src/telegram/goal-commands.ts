@@ -247,7 +247,7 @@ function resolveByNormalizedDirectoryName(value: string, roots: string[]): strin
   const target = normalizeDirectoryToken(value);
   if (!target) return undefined;
 
-  for (const root of [...new Set(roots)]) {
+  for (const root of new Set(roots)) {
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       for (const entry of entries) {
@@ -869,7 +869,7 @@ export async function handleGoalEdit(
   const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
 
   try {
-    const result = await runCliPlanRevision({
+    const revisionResult = await runCliPlanRevision({
       runId: resolvedId,
       goalText: run.goal,
       currentPlan: run.plan,
@@ -878,12 +878,41 @@ export async function handleGoalEdit(
       model: run.model,
       claudeCodeAuth: authMode,
     });
+    const result = revisionResult.plan;
+    const plannerFallbackNotice = revisionResult.plannerDegradedReason
+      ? formatPlannerFallbackNotice({
+          degradedReason: revisionResult.plannerDegradedReason,
+          resetHint: revisionResult.plannerDegradedResetHint,
+        })
+      : undefined;
+    if (revisionResult.plannerBackendUsed) {
+      run.plannerBackendUsed = revisionResult.plannerBackendUsed;
+    } else {
+      delete run.plannerBackendUsed;
+    }
+    if (revisionResult.plannerDegradedReason) {
+      run.plannerDegradedReason = revisionResult.plannerDegradedReason;
+    } else {
+      delete run.plannerDegradedReason;
+    }
+    if (revisionResult.plannerDegradedResetHint) {
+      run.plannerDegradedResetHint = revisionResult.plannerDegradedResetHint;
+    } else {
+      delete run.plannerDegradedResetHint;
+    }
 
     if ("blocked" in result) {
-      const prefix = workingDirChanged
-        ? `Working dir updated: ${shortenHomePath(run.workingDir)}\n`
-        : "";
-      return { text: `${prefix}Revision blocked: ${result.question}`, blocked: true };
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+      const lines: string[] = [];
+      if (workingDirChanged) {
+        lines.push(`Working dir updated: ${shortenHomePath(run.workingDir)}`);
+      }
+      if (plannerFallbackNotice) {
+        lines.push(plannerFallbackNotice);
+      }
+      lines.push(`Revision blocked: ${result.question}`);
+      return { text: lines.join("\n"), blocked: true };
     }
 
     // Update run with new plan revision
@@ -913,6 +942,9 @@ export async function handleGoalEdit(
     parts.push(`**Revision ${newRevision}**\n`);
     if (workingDirChanged) {
       parts.push(`Working dir: \`${shortenHomePath(run.workingDir)}\`\n`);
+    }
+    if (plannerFallbackNotice) {
+      parts.push(`${plannerFallbackNotice}\n`);
     }
     parts.push(planText);
     parts.push(`\nRun ID: \`${resolvedId.slice(0, 8)}\``);
@@ -1118,6 +1150,37 @@ function resolveStepWorker(step: import("../goal/types.js").PlanStep): string {
   return BACKEND_DISPLAY_NAMES[backend] ?? DEFAULT_BACKEND_DISPLAY;
 }
 
+function formatPlannerFallbackLine(run: SerializedRun): string | undefined {
+  const reason = run.plannerDegradedReason;
+  if (!reason) return undefined;
+
+  const reasonLabel =
+    reason === "anthropic_usage_limit"
+      ? "usage limit"
+      : reason === "anthropic_rate_limit"
+        ? "rate limit"
+        : "availability issue";
+  const resetSuffix = run.plannerDegradedResetHint ? ` (${run.plannerDegradedResetHint})` : "";
+  return `Planner fallback: Anthropic ${reasonLabel}${resetSuffix} -> Codex`;
+}
+
+function formatPlannerFallbackNotice(params: {
+  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
+  resetHint?: string;
+}): string {
+  const reasonLabel =
+    params.degradedReason === "anthropic_usage_limit"
+      ? "usage limit"
+      : params.degradedReason === "anthropic_rate_limit"
+        ? "rate limit"
+        : "availability issue";
+  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
+  return (
+    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
+    "Falling back to Codex planning for this run."
+  );
+}
+
 /** Build a metadata caption header for plan messages. */
 function buildCaptionHeader(result: GoalPlanResult): string {
   const lines: string[] = [];
@@ -1128,6 +1191,10 @@ function buildCaptionHeader(result: GoalPlanResult): string {
   const run = result.runId ? loadRun(result.runId) : undefined;
   if (run?.workingDir) {
     lines.push(`Working dir: ${shortenHomePath(run.workingDir)}`);
+  }
+  const plannerFallbackLine = run ? formatPlannerFallbackLine(run) : undefined;
+  if (plannerFallbackLine) {
+    lines.push(plannerFallbackLine);
   }
   if (result.plan) {
     // Resolve workers from classification + planner hints, deduplicated

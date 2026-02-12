@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GoalSession, Plan, PlanStep } from "./types.js";
+import type { GoalSession, Plan, PlanStep, SerializedRun } from "./types.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 
@@ -278,6 +278,83 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("uses codex on resume when planner degraded and executedBackend was stale claude_code", async () => {
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude unavailable in degraded mode test" },
+    ];
+
+    const step = makeStep({
+      backend: "claude_code",
+      executedBackend: "claude_code",
+      status: "blocked",
+      blockedReason: "error",
+      blockedQuestion: "Previous Anthropic limit",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Recovered with codex",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-degraded-resume",
+      workingDir: "/tmp/moltbot-goal-test",
+      serializedRun: { plannerDegradedReason: "anthropic_rate_limit" } as unknown as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.backend).toBe("codex");
+    expect(step.executedBackend).toBe("codex");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
+  it("keeps claude_code when explicit backend override is set during degraded mode", async () => {
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex intentionally unavailable" },
+      { id: "claude_code", available: true },
+    ];
+
+    const step = makeStep({
+      backend: "claude_code",
+      executedBackend: "claude_code",
+      status: "blocked",
+      blockedReason: "error",
+      blockedQuestion: "Previous Anthropic limit",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Forced claude override worked",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-degraded-override-claude",
+      workingDir: "/tmp/moltbot-goal-test",
+      serializedRun: {
+        plannerDegradedReason: "anthropic_usage_limit",
+        backendOverride: "claude_code",
+      } as unknown as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.backend).toBe("claude_code");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 
   it("detects external cancellation via goal-stop and exits gracefully", async () => {

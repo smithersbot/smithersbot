@@ -19,6 +19,11 @@ vi.mock("./scout.js", async (importOriginal) => {
   };
 });
 
+const mockGetCodexAskForApprovalPlacement = vi.fn(() => "unsupported" as const);
+vi.mock("./backend-availability.js", () => ({
+  getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
+}));
+
 function writeScoutArtifacts(scoutDir: string, goalId: string): void {
   fs.mkdirSync(path.join(scoutDir, "node_specs"), { recursive: true });
 
@@ -297,6 +302,138 @@ describe("runCliPlanning", () => {
     expect(attempt.errorClassification).toBe("validation");
   });
 
+  it("falls back to codex on Anthropic limits and rewrites all claude_code steps", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Planning execution failed: You've hit your limit · resets 6pm (America/Toronto)",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 31,
+      })
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const stdoutPath = String(params.stdoutPath);
+        const scoutDir = path.dirname(stdoutPath);
+        fs.writeFileSync(stdoutPath, "planner stdout", "utf8");
+        fs.writeFileSync(String(params.stderrPath), "", "utf8");
+        writeScoutArtifacts(scoutDir, "run-fallback");
+        fs.writeFileSync(
+          path.join(scoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify(
+            {
+              summary: "Fallback planning summary",
+              steps: [
+                {
+                  id: "analyze-repo",
+                  description: "Inspect repository files and verify with a targeted test run",
+                  dependsOn: [],
+                  durationMinutes: 45,
+                  backend: "claude_code",
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+          "utf8",
+        );
+        return {
+          stdout:
+            '{"summary":"Fallback planning summary","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"claude_code"}]}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 53,
+        };
+      });
+
+    const result = await runCliPlanning({
+      runId: "run-fallback",
+      goalText: "Create fallback plan",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.plannerBackendUsed).toBe("codex");
+    expect(result.plannerDegradedReason).toBe("anthropic_usage_limit");
+    expect(result.plannerDegradedResetHint).toBe("resets 6pm (America/Toronto)");
+    if (result.status === "success") {
+      expect(result.plan.steps.every((step) => step.backend === "codex")).toBe(true);
+      expect(result.plan.steps.every((step) => step.executedBackend !== "claude_code")).toBe(true);
+    }
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    const firstCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    const secondCall = mockRunCliProcess.mock.calls[1]?.[0] as { command: string };
+    expect(firstCall.command).toBe("/usr/bin/claude");
+    expect(secondCall.command).toBe("codex");
+  });
+
+  it("copies codex fallback scout artifacts from writable temp dir into canonical scout dir", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Planning execution failed: You've hit your limit · resets 6pm (America/Toronto)",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 30,
+      })
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const args = (params.args as string[]) ?? [];
+        const prompt = String(args.at(-1) ?? "");
+        const outDirMatch =
+          /Write all output files to ([^\n]+)\/ \(create subdirectories as needed\)\./.exec(prompt);
+        if (!outDirMatch?.[1])
+          throw new Error("expected codex prompt to include writable output dir");
+        const codexScoutDir = outDirMatch[1];
+        writeScoutArtifacts(codexScoutDir, "run-codex-copy");
+        fs.writeFileSync(
+          path.join(codexScoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify(
+            {
+              summary: "Codex copied artifacts",
+              steps: [
+                {
+                  id: "analyze-repo",
+                  description: "Inspect repository files and verify with a targeted test run",
+                  dependsOn: [],
+                  durationMinutes: 45,
+                  backend: "codex",
+                },
+              ],
+            },
+            null,
+            2,
+          ),
+          "utf8",
+        );
+        return {
+          stdout:
+            '{"summary":"Codex copied artifacts","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"codex"}]}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 49,
+        };
+      });
+
+    const result = await runCliPlanning({
+      runId: "run-codex-copy",
+      goalText: "Create fallback plan with copied artifacts",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("success");
+    const canonicalScoutDir = path.join(goalsDir, "run-codex-copy", "scout");
+    expect(fs.existsSync(path.join(canonicalScoutDir, "plan_draft.md"))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalScoutDir, "scout_report.json"))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalScoutDir, EXECUTION_PLAN_FILE))).toBe(true);
+  });
+
   it("runs CLI plan revision with subscription auth and parses revised plan", async () => {
     process.env.ANTHROPIC_API_KEY = "should-be-stripped";
     process.env.ANTHROPIC_AUTH_TOKEN = "should-be-stripped";
@@ -342,10 +479,14 @@ describe("runCliPlanning", () => {
       goalsDir,
       model: "claude-sonnet-4-20250514",
     });
+    const revisedPlan = result.plan;
 
-    if ("blocked" in result) throw new Error("Expected plan result, got blocked");
-    expect(result.summary).toBe("Revised summary");
-    expect(result.steps[0]?.id).toBe("refine-auth");
+    if ("blocked" in revisedPlan) throw new Error("Expected plan result, got blocked");
+    expect(revisedPlan.summary).toBe("Revised summary");
+    expect(revisedPlan.steps[0]?.id).toBe("refine-auth");
+    expect(result.plannerBackendUsed).toBe("claude_code");
+    expect(result.plannerDegradedReason).toBeUndefined();
+    expect(result.plannerDegradedResetHint).toBeUndefined();
 
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       env: Record<string, string | undefined>;
@@ -357,6 +498,73 @@ describe("runCliPlanning", () => {
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
     expect(procCall.cwd).toBe(process.cwd());
+  });
+
+  it("falls back to codex for plan revision on Anthropic limits and rewrites claude_code steps", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Plan revision failed: You've hit your limit · resets 6pm (America/Toronto)",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 21,
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          summary: "Revised summary from fallback",
+          steps: [
+            {
+              id: "refine-auth",
+              description: "Adjust auth flow and verify behavior",
+              dependsOn: [],
+              durationMinutes: 30,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 41,
+      });
+
+    const result = await runCliPlanRevision({
+      runId: "run-revision-fallback",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "claude_code",
+          },
+        ],
+      },
+      editInstructions: "Tighten validation logic",
+      goalsDir,
+    });
+    const revisedPlan = result.plan;
+
+    if ("blocked" in revisedPlan) throw new Error("Expected plan result, got blocked");
+    expect(result.plannerBackendUsed).toBe("codex");
+    expect(result.plannerDegradedReason).toBe("anthropic_usage_limit");
+    expect(result.plannerDegradedResetHint).toBe("resets 6pm (America/Toronto)");
+    expect(revisedPlan.steps.every((step) => step.backend === "codex")).toBe(true);
+    expect(revisedPlan.steps.every((step) => step.executedBackend !== "claude_code")).toBe(true);
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    const firstCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    const secondCall = mockRunCliProcess.mock.calls[1]?.[0] as { command: string; args: string[] };
+    expect(firstCall.command).toBe("/usr/bin/claude");
+    expect(secondCall.command).toBe("codex");
+    expect(secondCall.args).toContain("exec");
   });
 
   it("uses caller-provided cwd for planning and revision", async () => {

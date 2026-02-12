@@ -123,6 +123,12 @@ export type TaskCheckpoint = {
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
 export type OutputFormat = "md" | "json";
 
+export type PlannerBackendId = "claude_code" | "codex";
+export type PlannerDegradedReason =
+  | "anthropic_rate_limit"
+  | "anthropic_usage_limit"
+  | "planner_backend_unavailable";
+
 /** Serialized form of a goal session persisted to disk. */
 export type SerializedRun = {
   runId: string;
@@ -175,6 +181,12 @@ export type SerializedRun = {
   scoutSkipReason?: string;
   /** CLI backend override from --backend flag. */
   backendOverride?: GoalBackendId;
+  /** Planner backend that produced the current persisted plan. */
+  plannerBackendUsed?: PlannerBackendId;
+  /** Why planner degraded away from Claude Code for this run. */
+  plannerDegradedReason?: PlannerDegradedReason;
+  /** Human-readable reset hint extracted from planner errors (for user messaging). */
+  plannerDegradedResetHint?: string;
   /** Per-task git checkpoint bookkeeping. */
   taskCheckpoints?: Record<string, TaskCheckpoint>;
 };

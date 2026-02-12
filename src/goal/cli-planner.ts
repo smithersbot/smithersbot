@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
+import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import {
   PLAN_SYSTEM_PROMPT,
   PlanParseError,
@@ -19,10 +21,11 @@ import {
   validateScoutOutput,
   SCOUT_NEEDS_CLARIFICATION_FILE,
   SCOUT_NODE_SPECS_DIR,
+  SCOUT_PLAN_DRAFT_FILE,
   SCOUT_REPORT_FILE,
   type ScoutResult,
 } from "./scout.js";
-import type { Plan } from "./types.js";
+import type { Plan, PlannerBackendId, PlannerDegradedReason } from "./types.js";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 1_200_000;
@@ -37,6 +40,10 @@ const PLANNER_RAW_OUTPUT_FILE = "planning_raw_output.txt";
 export const EXECUTION_PLAN_FILE = "execution_plan.json";
 
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash,Write";
+const ANTHROPIC_RATE_LIMIT_RE =
+  /rate.?limit|429|too many requests|overloaded|resource has been exhausted|quota exceeded/i;
+const ANTHROPIC_USAGE_LIMIT_RE =
+  /(?:you(?:'|’)?ve|you have)\s+hit\s+your\s+(?:chatgpt\s+)?(?:usage\s+)?limit|usage\s+limit|resets?\s+\d/i;
 
 const PLAN_AND_SCOUT_APPENDIX = `## Canonical Execution Plan Output
 
@@ -78,6 +85,9 @@ export type CliPlanningSuccess = {
   scoutStatus: "success" | "skipped";
   scoutSkipReason?: string;
   scoutData?: Extract<ScoutResult, { status: "success" }>;
+  plannerBackendUsed?: PlannerBackendId;
+  plannerDegradedReason?: PlannerDegradedReason;
+  plannerDegradedResetHint?: string;
 };
 
 export type CliPlanningBlocked = {
@@ -86,6 +96,9 @@ export type CliPlanningBlocked = {
   scoutStatus: "needs_clarification" | "success" | "skipped";
   scoutSkipReason?: string;
   scoutData?: Extract<ScoutResult, { status: "success" }>;
+  plannerBackendUsed?: PlannerBackendId;
+  plannerDegradedReason?: PlannerDegradedReason;
+  plannerDegradedResetHint?: string;
 };
 
 export type CliPlanningResult = CliPlanningSuccess | CliPlanningBlocked;
@@ -104,10 +117,105 @@ export type CliPlanRevisionParams = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
 };
 
+export type CliPlanRevisionResult = {
+  plan: PlanResult;
+  plannerBackendUsed?: PlannerBackendId;
+  plannerDegradedReason?: PlannerDegradedReason;
+  plannerDegradedResetHint?: string;
+};
+
 const PLAN_REVISION_DIR = "replan";
 const PLAN_REVISION_STDOUT_FILE = "revision_stdout.txt";
 const PLAN_REVISION_STDERR_FILE = "revision_stderr.txt";
 const PLAN_REVISION_RAW_OUTPUT_FILE = "revision_raw_output.txt";
+
+function detectAnthropicDegradedReason(errorMessage: string): PlannerDegradedReason | undefined {
+  if (!errorMessage) return undefined;
+  if (ANTHROPIC_USAGE_LIMIT_RE.test(errorMessage)) return "anthropic_usage_limit";
+  if (ANTHROPIC_RATE_LIMIT_RE.test(errorMessage)) return "anthropic_rate_limit";
+  return undefined;
+}
+
+function extractResetHint(errorMessage: string): string | undefined {
+  if (!errorMessage) return undefined;
+  for (const line of errorMessage.split(/\r?\n/)) {
+    const match = /\b(reset(?:s)?(?:\s+at)?\s+[^.;,\n\r]+)/i.exec(line);
+    if (match?.[1]) return match[1].trim();
+  }
+  return undefined;
+}
+
+function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
+  const codexAskForApproval = getCodexAskForApprovalPlacement();
+  return [
+    ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+    "exec",
+    ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
+    "--sandbox",
+    "workspace-write",
+    "--cd",
+    plannerCwd,
+    "-c",
+    "net.allowed=true",
+    prompt,
+  ];
+}
+
+function rewritePlanForDegradedPlanner(plan: Plan): Plan {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      const backend = !step.backend || step.backend === "claude_code" ? "codex" : step.backend;
+      const executedBackend =
+        step.executedBackend === "claude_code" ? "codex" : step.executedBackend;
+      return { ...step, backend, executedBackend };
+    }),
+  };
+}
+
+function resolveCodexScoutDir(runId: string): string {
+  const safeRunId = runId.replace(/[^a-zA-Z0-9-]/g, "_");
+  return path.join(os.tmpdir(), "moltbot-goal-planner", safeRunId, "scout");
+}
+
+function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string }): void {
+  const { sourceDir, targetDir } = params;
+  if (!fs.existsSync(sourceDir)) return;
+
+  const singleFileArtifacts = [
+    SCOUT_PLAN_DRAFT_FILE,
+    SCOUT_REPORT_FILE,
+    SCOUT_NEEDS_CLARIFICATION_FILE,
+    EXECUTION_PLAN_FILE,
+  ];
+
+  try {
+    for (const fileName of singleFileArtifacts) {
+      const sourcePath = path.join(sourceDir, fileName);
+      if (!fs.existsSync(sourcePath)) continue;
+      fs.mkdirSync(path.dirname(path.join(targetDir, fileName)), { recursive: true });
+      fs.copyFileSync(sourcePath, path.join(targetDir, fileName));
+    }
+
+    const sourceNodeSpecsDir = path.join(sourceDir, SCOUT_NODE_SPECS_DIR);
+    if (fs.existsSync(sourceNodeSpecsDir) && fs.statSync(sourceNodeSpecsDir).isDirectory()) {
+      const sourceNodeSpecFiles = fs
+        .readdirSync(sourceNodeSpecsDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"));
+      if (sourceNodeSpecFiles.length > 0) {
+        const targetNodeSpecsDir = path.join(targetDir, SCOUT_NODE_SPECS_DIR);
+        fs.rmSync(targetNodeSpecsDir, { recursive: true, force: true });
+        fs.cpSync(sourceNodeSpecsDir, targetNodeSpecsDir, { recursive: true });
+      }
+    }
+  } catch (err) {
+    throw new Error(
+      `Failed to copy Codex planner artifacts from ${sourceDir} to ${targetDir}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
 
 function buildPlanningPrompt(params: {
   runId: string;
@@ -221,7 +329,9 @@ function buildPlanRevisionPrompt(params: {
   ].join("\n");
 }
 
-export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise<PlanResult> {
+export async function runCliPlanRevision(
+  params: CliPlanRevisionParams,
+): Promise<CliPlanRevisionResult> {
   const { runId, goalText, currentPlan, editInstructions, goalsDir, model, claudeCodeAuth } =
     params;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
@@ -246,19 +356,63 @@ export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise
     editInstructions,
   });
 
-  const args = ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS];
-  if (model) args.push("--model", model);
+  let plannerBackendUsed: PlannerBackendId | undefined;
+  let plannerDegradedReason: PlannerDegradedReason | undefined;
+  let plannerDegradedResetHint: string | undefined;
+  let attemptNumber = 1;
+  let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
 
-  const procResult = await runCliProcess({
-    command: claudeBin,
-    args,
-    cwd: plannerCwd,
-    timeoutMs: timeout,
-    stdin: prompt,
-    stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
-    stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
-    env: revisionEnv,
-  });
+  while (true) {
+    const backend = attemptNumber === 1 ? "claude_code" : "codex";
+    const command = backend === "claude_code" ? claudeBin : "codex";
+    const args =
+      backend === "claude_code"
+        ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS, ...(model ? ["--model", model] : [])]
+        : buildCodexPlanningArgs(plannerCwd, prompt);
+
+    procResult = await runCliProcess({
+      command,
+      args,
+      cwd: plannerCwd,
+      timeoutMs: timeout,
+      ...(backend === "claude_code" ? { stdin: prompt } : {}),
+      stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
+      stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
+      env: backend === "claude_code" ? revisionEnv : { ...process.env },
+    });
+
+    if (procResult.timedOut) {
+      throw new Error(`Plan revision timed out after ${(timeout / 60_000).toFixed(0)} minutes.`);
+    }
+
+    if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+      const errMsg =
+        procResult.stderr ||
+        procResult.stdout ||
+        (procResult.signal
+          ? `Plan revision process terminated by ${procResult.signal}.`
+          : "Plan revision process failed.");
+
+      if (backend === "claude_code") {
+        const degradedReason = detectAnthropicDegradedReason(errMsg);
+        if (degradedReason) {
+          plannerDegradedReason = degradedReason;
+          plannerDegradedResetHint = extractResetHint(errMsg);
+          attemptNumber += 1;
+          continue;
+        }
+      }
+
+      throw new Error(`Plan revision failed: ${errMsg}`);
+    }
+
+    plannerBackendUsed = backend;
+    break;
+  }
+
+  if (!procResult) {
+    throw new Error("Plan revision failed before producing output.");
+  }
 
   try {
     fs.writeFileSync(
@@ -270,21 +424,18 @@ export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise
     // Best-effort diagnostics.
   }
 
-  if (procResult.timedOut) {
-    throw new Error(`Plan revision timed out after ${(timeout / 60_000).toFixed(0)} minutes.`);
-  }
+  const parsedPlan = parsePlanResultFromText(procResult.stdout, goalText);
+  const plan =
+    plannerDegradedReason && !("blocked" in parsedPlan)
+      ? rewritePlanForDegradedPlanner(parsedPlan)
+      : parsedPlan;
 
-  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
-    const errMsg =
-      procResult.stderr ||
-      procResult.stdout ||
-      (procResult.signal
-        ? `Plan revision process terminated by ${procResult.signal}.`
-        : "Plan revision process failed.");
-    throw new Error(`Plan revision failed: ${errMsg}`);
-  }
-
-  return parsePlanResultFromText(procResult.stdout, goalText);
+  return {
+    plan,
+    ...(plannerBackendUsed ? { plannerBackendUsed } : {}),
+    ...(plannerDegradedReason ? { plannerDegradedReason } : {}),
+    ...(plannerDegradedResetHint ? { plannerDegradedResetHint } : {}),
+  };
 }
 
 export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlanningResult> {
@@ -303,62 +454,122 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   if (includeScoutArtifacts) {
     fs.mkdirSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
   }
+  const codexScoutDir = includeScoutArtifacts ? resolveCodexScoutDir(runId) : undefined;
+  if (codexScoutDir) {
+    fs.rmSync(codexScoutDir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(codexScoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
+  }
 
-  const prompt = buildPlanningPrompt({
+  const claudePrompt = buildPlanningPrompt({
     runId,
     goalText,
     scoutDir,
     includeScoutArtifacts,
   });
-  fs.writeFileSync(path.join(scoutDir, PLANNING_BRIEF_FILE), prompt, "utf8");
+  const codexPrompt =
+    codexScoutDir == null
+      ? claudePrompt
+      : buildPlanningPrompt({
+          runId,
+          goalText,
+          scoutDir: codexScoutDir,
+          includeScoutArtifacts,
+        });
+  fs.writeFileSync(path.join(scoutDir, PLANNING_BRIEF_FILE), claudePrompt, "utf8");
 
   const authMode = params.claudeCodeAuth ?? "subscription";
   const planningEnv = buildClaudeCodeEnv(authMode);
   writeAuthModeArtifact(scoutDir, authMode);
+  let plannerBackendUsed: PlannerBackendId | undefined;
+  let plannerDegradedReason: PlannerDegradedReason | undefined;
+  let plannerDegradedResetHint: string | undefined;
+  let attemptNumber = 1;
+  let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
 
-  const procResult = await runCliProcess({
-    command: claudeBin,
-    args: ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS],
-    cwd: plannerCwd,
-    timeoutMs: timeout,
-    stdin: prompt,
-    stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),
-    stderrPath: path.join(scoutDir, PLANNER_STDERR_FILE),
-    env: planningEnv,
-  });
+  while (true) {
+    const backend = attemptNumber === 1 ? "claude_code" : "codex";
+    const prompt = backend === "codex" ? codexPrompt : claudePrompt;
+    const command = backend === "claude_code" ? claudeBin : "codex";
+    const args =
+      backend === "claude_code"
+        ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS]
+        : buildCodexPlanningArgs(plannerCwd, prompt);
 
-  writePlannerRawOutput(scoutDir, procResult.stdout);
-
-  if (procResult.timedOut) {
-    const message = `Planning timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "timeout",
-      errorClassification: "timeout",
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
+    procResult = await runCliProcess({
+      command,
+      args,
+      cwd: plannerCwd,
+      timeoutMs: timeout,
+      ...(backend === "claude_code" ? { stdin: prompt } : {}),
+      stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),
+      stderrPath: path.join(scoutDir, PLANNER_STDERR_FILE),
+      env: backend === "claude_code" ? planningEnv : { ...process.env },
     });
-    throw new Error(message);
+
+    writePlannerRawOutput(scoutDir, procResult.stdout);
+
+    if (procResult.timedOut) {
+      const message = `Planning timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
+      writeAttemptBundle(scoutDir, {
+        attemptNumber,
+        backend,
+        outcome: "timeout",
+        errorClassification: "timeout",
+        logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+        durationMs: procResult.durationMs,
+      });
+      throw new Error(message);
+    }
+
+    if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+      const errMsg =
+        procResult.stderr ||
+        procResult.stdout ||
+        (procResult.signal
+          ? `Planning process terminated by ${procResult.signal}.`
+          : "Planning process failed.");
+      const errorKind = classifyScoutError(errMsg);
+      writeAttemptBundle(scoutDir, {
+        attemptNumber,
+        backend,
+        outcome: "crash",
+        errorClassification: errorKind,
+        logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+        durationMs: procResult.durationMs,
+      });
+
+      if (backend === "claude_code") {
+        const degradedReason = detectAnthropicDegradedReason(errMsg);
+        if (degradedReason) {
+          plannerDegradedReason = degradedReason;
+          plannerDegradedResetHint = extractResetHint(errMsg);
+          attemptNumber += 1;
+          continue;
+        }
+      }
+
+      throw new Error(`Planning execution failed: ${errMsg}`);
+    }
+
+    plannerBackendUsed = backend;
+    break;
   }
 
-  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
-    const errMsg =
-      procResult.stderr ||
-      procResult.stdout ||
-      (procResult.signal
-        ? `Planning process terminated by ${procResult.signal}.`
-        : "Planning process failed.");
-    const errorKind = classifyScoutError(errMsg);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "crash",
-      errorClassification: errorKind,
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-    });
-    throw new Error(`Planning execution failed: ${errMsg}`);
+  if (!procResult) {
+    throw new Error("Planning process failed before producing output.");
+  }
+  const finalAttemptNumber = attemptNumber;
+  const degradedMetadata =
+    plannerDegradedReason && plannerBackendUsed
+      ? {
+          plannerBackendUsed,
+          plannerDegradedReason,
+          ...(plannerDegradedResetHint ? { plannerDegradedResetHint } : {}),
+        }
+      : {};
+
+  if (includeScoutArtifacts && plannerBackendUsed === "codex" && codexScoutDir) {
+    copyCodexScoutArtifacts({ sourceDir: codexScoutDir, targetDir: scoutDir });
   }
 
   let scoutData: Extract<ScoutResult, { status: "success" }> | undefined;
@@ -370,8 +581,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
     if (scoutResult.status === "error") {
       writeAttemptBundle(scoutDir, {
-        attemptNumber: 1,
-        backend: "claude_code",
+        attemptNumber: finalAttemptNumber,
+        backend: plannerBackendUsed ?? "claude_code",
         outcome: "failed",
         errorClassification: scoutResult.errorKind,
         resultFile: SCOUT_REPORT_FILE,
@@ -383,8 +594,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
     if (scoutResult.status === "needs_clarification") {
       writeAttemptBundle(scoutDir, {
-        attemptNumber: 1,
-        backend: "claude_code",
+        attemptNumber: finalAttemptNumber,
+        backend: plannerBackendUsed ?? "claude_code",
         outcome: "blocked",
         errorClassification: "needs_clarification",
         resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
@@ -395,6 +606,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         status: "blocked",
         question: scoutResult.question,
         scoutStatus: "needs_clarification",
+        ...degradedMetadata,
       };
     }
 
@@ -415,8 +627,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     parsedPlan = parsePlanWithFallback(goalText, scoutDir, procResult.stdout);
   } catch (err) {
     writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
+      attemptNumber: finalAttemptNumber,
+      backend: plannerBackendUsed ?? "claude_code",
       outcome: "failed",
       errorClassification: err instanceof PlanParseError ? "parse" : "validation",
       resultFile: fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
@@ -430,8 +642,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   if ("blocked" in parsedPlan) {
     writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
+      attemptNumber: finalAttemptNumber,
+      backend: plannerBackendUsed ?? "claude_code",
       outcome: "blocked",
       errorClassification: "needs_clarification",
       resultFile: fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
@@ -446,14 +658,18 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       scoutStatus,
       ...(scoutSkipReason ? { scoutSkipReason } : {}),
       ...(scoutData ? { scoutData } : {}),
+      ...degradedMetadata,
     };
   }
 
-  writeCanonicalPlanArtifact(scoutDir, parsedPlan);
+  const effectivePlan = plannerDegradedReason
+    ? rewritePlanForDegradedPlanner(parsedPlan)
+    : parsedPlan;
+  writeCanonicalPlanArtifact(scoutDir, effectivePlan);
 
   writeAttemptBundle(scoutDir, {
-    attemptNumber: 1,
-    backend: "claude_code",
+    attemptNumber: finalAttemptNumber,
+    backend: plannerBackendUsed ?? "claude_code",
     outcome: "complete",
     resultFile: EXECUTION_PLAN_FILE,
     logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
@@ -462,9 +678,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   return {
     status: "success",
-    plan: parsedPlan,
+    plan: effectivePlan,
     scoutStatus,
     ...(scoutSkipReason ? { scoutSkipReason } : {}),
     ...(scoutData ? { scoutData } : {}),
+    ...degradedMetadata,
   };
 }

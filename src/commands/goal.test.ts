@@ -322,6 +322,97 @@ describe("goal command — early failure persistence", () => {
     expect(rt.logs.some((line) => line.includes("Scout skipped: --no-scout flag"))).toBe(true);
   });
 
+  it("logs planner fallback notice with reset hint and persists degraded metadata", async () => {
+    mockRunCliPlanning.mockResolvedValueOnce({
+      status: "success",
+      plan: {
+        summary: "Degraded plan",
+        steps: [
+          {
+            id: "s1",
+            description: "Step 1",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 5,
+          },
+        ],
+      },
+      scoutStatus: "success",
+      plannerBackendUsed: "codex",
+      plannerDegradedReason: "anthropic_usage_limit",
+      plannerDegradedResetHint: "resets 6pm (America/Toronto)",
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+
+    await goalCommand(
+      {
+        goal: "Trigger degraded planner fallback",
+        workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
+        planOnly: true,
+        yes: true,
+      },
+      rt,
+    );
+
+    expect(
+      rt.logs.some(
+        (line) =>
+          line.includes("Planner notice: Anthropic usage limit reached") &&
+          line.includes("resets 6pm (America/Toronto)") &&
+          line.includes("Falling back to Codex planning for this run."),
+      ),
+    ).toBe(true);
+
+    const runs = listRuns(testGoalsDir);
+    expect(runs).toHaveLength(1);
+    const run = loadRun(runs[0]!.runId, testGoalsDir);
+    expect(run?.plannerBackendUsed).toBe("codex");
+    expect(run?.plannerDegradedReason).toBe("anthropic_usage_limit");
+    expect(run?.plannerDegradedResetHint).toBe("resets 6pm (America/Toronto)");
+  });
+
+  it("warns once when planner degraded but execution is explicitly forced to claude_code", async () => {
+    mockRunCliPlanning.mockResolvedValueOnce({
+      status: "success",
+      plan: {
+        summary: "Degraded plan",
+        steps: [
+          {
+            id: "s1",
+            description: "Step 1",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 5,
+          },
+        ],
+      },
+      scoutStatus: "success",
+      plannerBackendUsed: "codex",
+      plannerDegradedReason: "anthropic_usage_limit",
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+
+    await goalCommand(
+      {
+        goal: "Force claude backend after degraded plan",
+        workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
+        backend: "claude_code",
+        planOnly: true,
+        yes: true,
+      },
+      rt,
+    );
+
+    const warningLogs = rt.logs.filter((line) =>
+      line.includes("--backend claude_code will override that safeguard for execution."),
+    );
+    expect(warningLogs).toHaveLength(1);
+  });
+
   it("goal list finds incomplete runs", async () => {
     mockRunCliPlanning.mockRejectedValue(new Error("Allowlist rejection"));
 

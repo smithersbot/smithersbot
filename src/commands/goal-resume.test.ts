@@ -523,6 +523,32 @@ describe("goal-resume command", () => {
     }
   });
 
+  it("warns once when explicit claude backend override is used in degraded planner mode", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-degraded-warning-ws-"));
+    saveRun(
+      makeRun({
+        runId: "resume-degraded-warning",
+        state: "awaiting_approval",
+        plan: samplePlan,
+        workingDir: workDir,
+        backendOverride: "claude_code",
+        plannerDegradedReason: "anthropic_usage_limit",
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand("resume-degraded-warning", { yes: true }, rt);
+
+    expect(result?.status).toBe("done");
+    const warningLogs = rt.logs.filter((line) =>
+      line.includes("overriding that safeguard for this execution."),
+    );
+    expect(warningLogs).toHaveLength(1);
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("quiet mode suppresses progress output but preserves return value", async () => {
     // This test verifies quiet mode by using a run with all steps already done
     // (no agent executor needed — resumableSteps === 0)
@@ -682,6 +708,55 @@ describe("goal-resume command", () => {
       expect(persisted?.plan?.steps).toHaveLength(1);
       expect(persisted?.scoutStatus).toBe("success");
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
+    });
+
+    it("logs planner fallback notice with reset hint and persists degraded metadata on replan", async () => {
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          summary: "Replanned with codex fallback",
+          steps: [
+            {
+              id: "replanned-step",
+              description: "A replanned task",
+              dependsOn: [],
+              durationMinutes: 30,
+              status: "pending",
+            },
+          ],
+          goal: "Original goal text",
+        },
+        scoutStatus: "success",
+        plannerBackendUsed: "codex",
+        plannerDegradedReason: "anthropic_usage_limit",
+        plannerDegradedResetHint: "resets 6pm (America/Toronto)",
+      });
+
+      saveRun(
+        makeRun({
+          runId: "planning-degraded",
+          state: "planning",
+          goal: "Original goal text",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand("planning-degraded", { replan: true }, rt);
+
+      expect(
+        rt.logs.some(
+          (line) =>
+            line.includes("Planner notice: Anthropic usage limit reached") &&
+            line.includes("resets 6pm (America/Toronto)") &&
+            line.includes("Falling back to Codex planning for this run."),
+        ),
+      ).toBe(true);
+
+      const persisted = loadRun("planning-degraded", testGoalsDir);
+      expect(persisted?.plannerBackendUsed).toBe("codex");
+      expect(persisted?.plannerDegradedReason).toBe("anthropic_usage_limit");
+      expect(persisted?.plannerDegradedResetHint).toBe("resets 6pm (America/Toronto)");
     });
 
     it("retries planning for a cancelled run with no plan", async () => {

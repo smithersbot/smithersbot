@@ -462,6 +462,58 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("sendGoalPlanResult", () => {
+    it("includes planner fallback notice with reset hint in plan caption", async () => {
+      const degradedPlan = {
+        goal: "Test goal",
+        summary: "A degraded test plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "codex",
+          },
+        ],
+      } as const;
+
+      saveRun(
+        makeRun({
+          plan: degradedPlan,
+          plannerBackendUsed: "codex",
+          plannerDegradedReason: "anthropic_usage_limit",
+          plannerDegradedResetHint: "resets 6pm (America/Toronto)",
+        }),
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 101 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 102 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan: degradedPlan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("Planner fallback: Anthropic usage limit");
+      expect(options.caption).toContain("resets 6pm (America/Toronto)");
+      expect(options.caption).toContain("Codex");
+    });
+  });
+
   describe("handleGoalAnswer", () => {
     it("returns usage on empty input", async () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
@@ -744,7 +796,7 @@ describe("goal-commands telegram adapter", () => {
           },
         ],
       };
-      mockRunCliPlanRevision.mockResolvedValue(revisedPlan);
+      mockRunCliPlanRevision.mockResolvedValue({ plan: revisedPlan });
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one\n2. Add README");
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -779,17 +831,19 @@ describe("goal-commands telegram adapter", () => {
       saveRun(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
-        goal: "Test goal",
-        summary: "Revised plan",
-        steps: [
-          {
-            id: "1",
-            description: "Step one",
-            dependsOn: [],
-            status: "pending",
-            durationMinutes: 1,
-          },
-        ],
+        plan: {
+          goal: "Test goal",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
       });
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
@@ -817,17 +871,19 @@ describe("goal-commands telegram adapter", () => {
       saveRun(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
-        goal: "Test goal",
-        summary: "Revised plan",
-        steps: [
-          {
-            id: "1",
-            description: "Step one",
-            dependsOn: [],
-            status: "pending",
-            durationMinutes: 1,
-          },
-        ],
+        plan: {
+          goal: "Test goal",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
       });
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
@@ -859,17 +915,19 @@ describe("goal-commands telegram adapter", () => {
       saveRun(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
-        goal: "Test goal",
-        summary: "Revised plan",
-        steps: [
-          {
-            id: "1",
-            description: "Step one",
-            dependsOn: [],
-            status: "pending",
-            durationMinutes: 1,
-          },
-        ],
+        plan: {
+          goal: "Test goal",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
       });
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
@@ -916,6 +974,43 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toContain("no plan");
     });
 
+    it("shows fallback notice and persists degraded planner metadata on revision fallback", async () => {
+      saveRun(makeRun());
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          summary: "Revised with fallback",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+              backend: "claude_code",
+            },
+          ],
+        },
+        plannerBackendUsed: "codex",
+        plannerDegradedReason: "anthropic_usage_limit",
+        plannerDegradedResetHint: "resets 6pm (America/Toronto)",
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "change it");
+
+      expect(result.text).toContain("Planner notice: Anthropic usage limit reached");
+      expect(result.text).toContain("resets 6pm (America/Toronto)");
+      expect(result.text).toContain("Falling back to Codex planning for this run.");
+
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.plannerBackendUsed).toBe("codex");
+      expect(run?.plannerDegradedReason).toBe("anthropic_usage_limit");
+      expect(run?.plannerDegradedResetHint).toBe("resets 6pm (America/Toronto)");
+      expect(run?.plan?.steps[0]?.backend).toBe("claude_code");
+    });
+
     it("returns auth error when revision CLI reports auth failure", async () => {
       saveRun(makeRun());
       mockRunCliPlanRevision.mockRejectedValue(new Error("authentication failed"));
@@ -935,8 +1030,10 @@ describe("goal-commands telegram adapter", () => {
     it("handles blocked revision", async () => {
       saveRun(makeRun());
       mockRunCliPlanRevision.mockResolvedValue({
-        blocked: true,
-        question: "What framework?",
+        plan: {
+          blocked: true,
+          question: "What framework?",
+        },
       });
 
       const { handleGoalEdit } = await import("./goal-commands.js");

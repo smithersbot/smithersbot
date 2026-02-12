@@ -1,0 +1,63 @@
+{
+  "goal_id": "942c5427-58b0-4f4b-9f37-4507e8c5d29c",
+  "nodes": [
+    {
+      "id": "add-goal-status-view-model",
+      "type": "Impl",
+      "objective": "Define compact status formatter",
+      "verification": "pnpm vitest run src/goal/goal-status-format.test.ts",
+      "effort": 3,
+      "risk": 2,
+      "uncertainty": 3
+    },
+    {
+      "id": "implement-compact-goal-status-output",
+      "type": "Impl",
+      "objective": "Make status output concise",
+      "verification": "pnpm vitest run src/commands/goal-status.test.ts",
+      "effort": 4,
+      "risk": 3,
+      "uncertainty": 2
+    },
+    {
+      "id": "shorten-goal-completion-summaries",
+      "type": "Impl",
+      "objective": "Trim done summary text",
+      "verification": "pnpm vitest run src/goal/agent-executor.test.ts src/goal/goal-workflow-integration.test.ts",
+      "effort": 3,
+      "risk": 3,
+      "uncertainty": 3
+    },
+    {
+      "id": "update-telegram-goal-status-messages",
+      "type": "Impl",
+      "objective": "Improve Telegram status readability",
+      "verification": "pnpm vitest run src/telegram/goal-commands.test.ts",
+      "effort": 3,
+      "risk": 3,
+      "uncertainty": 2
+    }
+  ],
+  "edges": [
+    {
+      "from": "add-goal-status-view-model",
+      "to": "implement-compact-goal-status-output",
+      "why": "CLI status should consume shared compact formatting rules."
+    },
+    {
+      "from": "add-goal-status-view-model",
+      "to": "shorten-goal-completion-summaries",
+      "why": "Completion digest should reuse shared truncation and normalization behavior."
+    },
+    {
+      "from": "implement-compact-goal-status-output",
+      "to": "update-telegram-goal-status-messages",
+      "why": "Telegram status output should match the new concise status presentation."
+    },
+    {
+      "from": "shorten-goal-completion-summaries",
+      "to": "update-telegram-goal-status-messages",
+      "why": "Telegram DONE captions depend on shorter completion summary text."
+    }
+  ]
+}

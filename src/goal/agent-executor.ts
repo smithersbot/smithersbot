@@ -52,6 +52,21 @@ const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
 const PI_RETRYABLE: PlanStep["blockedReason"][] = ["timeout", "network", "rate_limit"];
 const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
 
+function isAnthropicPlannerDegraded(
+  reason: string | undefined,
+): reason is "anthropic_rate_limit" | "anthropic_usage_limit" {
+  return reason === "anthropic_rate_limit" || reason === "anthropic_usage_limit";
+}
+
+function rewriteStepBackendsForDegradedPlanner(step: PlanStep): void {
+  if (!step.backend || step.backend === "claude_code") {
+    step.backend = "codex";
+  }
+  if (step.executedBackend === "claude_code") {
+    step.executedBackend = "codex";
+  }
+}
+
 export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
@@ -215,7 +230,16 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   const availability = detectBackendAvailability();
   const backendOverride = params.serializedRun?.backendOverride;
-  const defaultBackend = DEFAULT_BACKEND;
+  const degradedPlanner =
+    backendOverride !== "claude_code" &&
+    isAnthropicPlannerDegraded(params.serializedRun?.plannerDegradedReason);
+  const defaultBackend: GoalBackendId = degradedPlanner ? "codex" : DEFAULT_BACKEND;
+
+  if (degradedPlanner) {
+    for (const step of plan.steps) {
+      rewriteStepBackendsForDegradedPlanner(step);
+    }
+  }
 
   const piRunner = new PiTaskRunner({
     workingDir,

@@ -250,6 +250,9 @@ export function sessionToSerialized(params: {
   scoutStatus?: SerializedRun["scoutStatus"];
   scoutSkipReason?: string;
   backendOverride?: SerializedRun["backendOverride"];
+  plannerBackendUsed?: SerializedRun["plannerBackendUsed"];
+  plannerDegradedReason?: SerializedRun["plannerDegradedReason"];
+  plannerDegradedResetHint?: SerializedRun["plannerDegradedResetHint"];
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -273,6 +276,13 @@ export function sessionToSerialized(params: {
     ...(params.scoutStatus ? { scoutStatus: params.scoutStatus } : {}),
     ...(params.scoutSkipReason ? { scoutSkipReason: params.scoutSkipReason } : {}),
     ...(params.backendOverride ? { backendOverride: params.backendOverride } : {}),
+    ...(params.plannerBackendUsed ? { plannerBackendUsed: params.plannerBackendUsed } : {}),
+    ...(params.plannerDegradedReason
+      ? { plannerDegradedReason: params.plannerDegradedReason }
+      : {}),
+    ...(params.plannerDegradedResetHint
+      ? { plannerDegradedResetHint: params.plannerDegradedResetHint }
+      : {}),
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
   };
   const previous = params.previousRun;
@@ -301,6 +311,15 @@ export function sessionToSerialized(params: {
   }
   if (!serialized.backendOverride && previous.backendOverride) {
     serialized.backendOverride = previous.backendOverride;
+  }
+  if (!serialized.plannerBackendUsed && previous.plannerBackendUsed) {
+    serialized.plannerBackendUsed = previous.plannerBackendUsed;
+  }
+  if (!serialized.plannerDegradedReason && previous.plannerDegradedReason) {
+    serialized.plannerDegradedReason = previous.plannerDegradedReason;
+  }
+  if (!serialized.plannerDegradedResetHint && previous.plannerDegradedResetHint) {
+    serialized.plannerDegradedResetHint = previous.plannerDegradedResetHint;
   }
   if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
     serialized.taskCheckpoints = previous.taskCheckpoints;
