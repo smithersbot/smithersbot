@@ -592,7 +592,7 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
 
   const cap = createCaptureRuntime();
   try {
-    await goalStatusCommand(rawId.trim(), { diagram: "none" }, cap.runtime);
+    await goalStatusCommand(rawId.trim(), { diagram: "none", channel: "telegram" }, cap.runtime);
     const logs = cap.getLogs();
     const errors = cap.getErrors();
     return errors || logs || "No status output.";

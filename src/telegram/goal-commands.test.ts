@@ -399,6 +399,11 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalStatus("abc12345");
       expect(result).toContain("Run: abc12345");
       expect(result).toContain("State: done");
+      expect(mockGoalStatusCommand).toHaveBeenCalledWith(
+        "abc12345",
+        expect.objectContaining({ diagram: "none", channel: "telegram" }),
+        expect.any(Object),
+      );
     });
   });
 

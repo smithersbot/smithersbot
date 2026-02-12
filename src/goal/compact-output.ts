@@ -20,7 +20,7 @@ export type CompactGoalStep = {
 };
 
 export type CompactGoalRenderInput = {
-  state: KnownGoalState | string;
+  state: string;
   title: string;
   progress?: {
     completed: number;
@@ -127,7 +127,7 @@ export function formatGoalSectionTitle(
 }
 
 export function formatGoalStateIndicator(
-  state: KnownGoalState | string,
+  state: string,
   style: GoalStateIndicatorStyle = "emoji",
 ): string {
   const known = STATE_INDICATORS[state as KnownGoalState];

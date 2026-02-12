@@ -1,19 +1,245 @@
+import path from "node:path";
 import { JsonExitError } from "../cli/cli-utils.js";
-import { loadRun, resolveRunId } from "../goal/run-store.js";
-import { formatPlanOutput } from "../goal/format-output.js";
-import type { DiagramMode, OutputFormat } from "../goal/types.js";
+import { loadAttemptBundles } from "../goal/attempt-bundle.js";
+import type {
+  AttemptBadgeInput,
+  GoalOutputChannel,
+  GoalOutputMode,
+} from "../goal/compact-output.js";
+import { formatCompactGoalOutput } from "../goal/compact-output.js";
+import { computeCpm } from "../goal/cpm.js";
+import { renderAsciiDependencies } from "../goal/dag-render.js";
+import { computeDisplayStatuses } from "../goal/execution-status.js";
+import { renderMermaid } from "../goal/mermaid-render.js";
+import { loadRun, resolveGoalsDir, resolveRunId } from "../goal/run-store.js";
+import type {
+  DiagramMode,
+  OutputFormat,
+  PlanStep,
+  SerializedRun,
+  StepResult,
+} from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+
+const TELEGRAM_LINE_BUDGET = 15;
 
 export type GoalStatusOptions = {
   json?: boolean;
   output?: OutputFormat;
   diagram?: DiagramMode;
+  mode?: GoalOutputMode;
+  channel?: GoalOutputChannel;
 };
 
 /** Resolve whether JSON mode is active: --output wins over --json. */
 function resolveIsJson(opts: GoalStatusOptions): boolean {
   if (opts.output) return opts.output === "json";
   return Boolean(opts.json);
+}
+
+function resolveChannel(opts: GoalStatusOptions): GoalOutputChannel {
+  return opts.channel ?? "cli";
+}
+
+function resolveMode(opts: GoalStatusOptions): GoalOutputMode {
+  return opts.mode ?? "concise";
+}
+
+function resolveDiagramMode(opts: GoalStatusOptions, channel: GoalOutputChannel): DiagramMode {
+  if (opts.diagram) return opts.diagram;
+  if (channel === "telegram") return "none";
+  return resolveMode(opts) === "full" ? "both" : "none";
+}
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const integer = Math.floor(value);
+  if (integer <= 0) return undefined;
+  return integer;
+}
+
+function formatStepState(step: PlanStep, displayStatus: string | undefined): string {
+  const status = displayStatus ?? step.status;
+  if (status === "done") return "done";
+  if (status === "in_progress") return "in progress";
+  if (status === "blocked") return "blocked";
+  if (status === "soft_blocked") return "waiting";
+  return "pending";
+}
+
+type RetrySummary = {
+  text: string;
+  attemptsByStepId: Map<string, AttemptBadgeInput>;
+};
+
+function loadWorkerAttemptCount(runId: string, stepId: string): number {
+  const workerDir = path.join(resolveGoalsDir(), runId, "workers", stepId);
+  return loadAttemptBundles(workerDir).length;
+}
+
+function buildRetrySummary(run: SerializedRun): RetrySummary {
+  const steps = run.plan?.steps ?? [];
+  const attemptsByStepId = new Map<string, AttemptBadgeInput>();
+  let retriesUsed = 0;
+  let retriedStepCount = 0;
+
+  for (const step of steps) {
+    const workerAttempts = loadWorkerAttemptCount(run.runId, step.id);
+    const turnsUsed = normalizePositiveInteger(step.turnsUsed);
+    const turnsTotal = normalizePositiveInteger(run.agentMaxTurnsPerTask);
+    const usesTurnCount = Boolean(turnsUsed && turnsUsed > 1);
+    const attemptsUsed = usesTurnCount ? (turnsUsed ?? 0) : workerAttempts > 1 ? workerAttempts : 0;
+    if (attemptsUsed <= 1) continue;
+
+    const attempt: AttemptBadgeInput =
+      usesTurnCount && turnsTotal ? { attemptsUsed, attemptsTotal: turnsTotal } : { attemptsUsed };
+    attemptsByStepId.set(step.id, attempt);
+
+    retriesUsed += attemptsUsed - 1;
+    retriedStepCount += 1;
+  }
+
+  if (retriesUsed <= 0) {
+    return { text: "0 retries", attemptsByStepId };
+  }
+
+  return {
+    text: `${retriesUsed} ${retriesUsed === 1 ? "retry" : "retries"} across ${retriedStepCount} ${
+      retriedStepCount === 1 ? "step" : "steps"
+    }`,
+    attemptsByStepId,
+  };
+}
+
+function buildProgress(run: SerializedRun): { completed: number; total: number } {
+  const planSteps = run.plan?.steps ?? [];
+  if (planSteps.length > 0) {
+    const completed = planSteps.filter((step) => step.status === "done").length;
+    return { completed, total: planSteps.length };
+  }
+
+  const results = Object.values(run.stepResults ?? {});
+  if (results.length > 0) {
+    const completed = results.filter((result) => result.success).length;
+    return { completed, total: results.length };
+  }
+
+  return { completed: 0, total: 0 };
+}
+
+function buildBlockerSummary(run: SerializedRun): string | undefined {
+  if (run.blocked) {
+    const blockedAt = run.blocked.blockedAt === "planning" ? "Planning" : "Execution";
+    const keySuffix = run.blocked.requiredInputKey ? ` (key: ${run.blocked.requiredInputKey})` : "";
+    return `${blockedAt}: ${run.blocked.prompt}${keySuffix}`;
+  }
+  return run.lastError;
+}
+
+function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string | undefined {
+  const runPrefix = run.runId.slice(0, 8);
+
+  if (run.state === "blocked" && run.blocked) {
+    if (channel === "telegram") {
+      return `Next: /goal_answer ${runPrefix} <answer>`;
+    }
+    return (
+      `Next: moltbot goal answer ${runPrefix} --key ${run.blocked.requiredInputKey} ` +
+      "--value <VALUE>"
+    );
+  }
+
+  if (run.state === "awaiting_approval" || run.state === "executing") {
+    if (channel === "telegram") {
+      return `Next: /goal_resume ${runPrefix}`;
+    }
+    return `Next: moltbot goal resume ${runPrefix}`;
+  }
+
+  return undefined;
+}
+
+function fitLinesToBudget(lines: string[], maxLines: number): string[] {
+  if (maxLines <= 0) return [];
+  if (lines.length <= maxLines) return lines;
+  if (maxLines === 1) return [`+ ${lines.length} more lines not shown`];
+  const kept = lines.slice(0, maxLines - 1);
+  const hidden = lines.length - kept.length;
+  kept.push(`+ ${hidden} more lines not shown`);
+  return kept;
+}
+
+function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): string {
+  const channel = resolveChannel(opts);
+  const mode = resolveMode(opts);
+  const steps = run.plan?.steps ?? [];
+  const displayStatuses = run.plan ? computeDisplayStatuses(steps) : new Map<string, string>();
+  const retrySummary = buildRetrySummary(run);
+  const actionHint = buildActionHint(run, channel);
+  const reservedLines = channel === "telegram" && actionHint ? 1 : 0;
+  const maxLines =
+    channel === "telegram" ? Math.max(1, TELEGRAM_LINE_BUDGET - reservedLines) : undefined;
+
+  const compact = formatCompactGoalOutput({
+    state: run.state,
+    title: run.goal,
+    progress: buildProgress(run),
+    blockerSummary: buildBlockerSummary(run),
+    retrySummary: retrySummary.text,
+    steps: steps.map((step) => ({
+      id: step.id,
+      text: step.description,
+      state: formatStepState(step, displayStatuses.get(step.id)),
+      attempt: retrySummary.attemptsByStepId.get(step.id),
+    })),
+    mode,
+    channel,
+    textFormat: "markdown",
+    maxLines,
+  });
+
+  const lines = [...compact.lines];
+  if (channel === "cli") {
+    lines.push(`Run ID: ${run.runId}`);
+  }
+  if (actionHint) {
+    lines.push(actionHint);
+  }
+  if (channel === "telegram") {
+    return fitLinesToBudget(lines, TELEGRAM_LINE_BUDGET).join("\n");
+  }
+  return lines.join("\n");
+}
+
+function renderDiagrams(run: SerializedRun, diagramMode: DiagramMode): string {
+  if (!run.plan || diagramMode === "none") return "";
+  const lines: string[] = [];
+  const stepResults = new Map<string, StepResult>(Object.entries(run.stepResults));
+  const wantAscii = diagramMode === "ascii" || diagramMode === "both";
+  const wantMermaid = diagramMode === "mermaid" || diagramMode === "both";
+
+  if (wantAscii) {
+    lines.push("**Dependencies (ASCII)**");
+    lines.push("```text");
+    lines.push(renderAsciiDependencies(run.plan));
+    lines.push("```");
+  }
+
+  if (wantMermaid) {
+    let cpm: ReturnType<typeof computeCpm> | undefined;
+    try {
+      cpm = computeCpm(run.plan);
+    } catch {
+      // Best-effort rendering: mermaid output can proceed without CPM.
+    }
+    const displayStatuses = computeDisplayStatuses(run.plan.steps);
+    lines.push("**Dependency Graph**");
+    lines.push("```mermaid");
+    lines.push(renderMermaid(run.plan, cpm, displayStatuses, stepResults));
+    lines.push("```");
+  }
+
+  return lines.join("\n");
 }
 
 export async function goalStatusCommand(
@@ -48,62 +274,16 @@ export async function goalStatusCommand(
     return;
   }
 
-  const diagramMode = opts.diagram ?? "both";
+  const channel = resolveChannel(opts);
+  const diagramMode = resolveDiagramMode(opts, channel);
 
-  runtime.log(`Run:       ${run.runId}`);
-  runtime.log(`Goal:      ${run.goal}`);
-  runtime.log(`State:     ${run.state}`);
-  runtime.log(`Model:     ${run.model ?? "default"}`);
-  runtime.log(`Workspace: ${run.workingDir}`);
-  if (run.scoutStatus) {
-    runtime.log(
-      `Scout:     ${run.scoutStatus}${run.scoutSkipReason ? ` (${run.scoutSkipReason})` : ""}`,
-    );
-  }
-  runtime.log(`Created:   ${run.createdAt}`);
-  runtime.log(`Updated:   ${run.updatedAt}`);
-  if (run.dryRun) {
-    runtime.log("Dry run:   yes");
-  }
+  runtime.log(renderStatusSummary(run, opts));
 
-  if (run.lastError) {
-    runtime.log(`\nError:     ${run.lastError}`);
-  }
-
-  if (run.blocked) {
-    runtime.log(`\nBlocked:   ${run.blocked.prompt}`);
-    runtime.log(`BlockedAt: ${run.blocked.blockedAt}`);
-    runtime.log(`Input key: ${run.blocked.requiredInputKey}`);
-    runtime.log(
-      `Answer:    moltbot goal answer ${run.runId.slice(0, 8)} --key ${run.blocked.requiredInputKey} --value <VALUE>`,
-    );
-  }
-
-  if (run.plan) {
-    const stepResults = new Map(Object.entries(run.stepResults));
-    runtime.log("");
-    runtime.log(
-      formatPlanOutput(run.plan, {
-        diagram: diagramMode,
-        format: "md",
-        stepResults,
-      }),
-    );
-
-    // Show step results
-    const results = Object.values(run.stepResults);
-    if (results.length > 0) {
-      runtime.log("\n### Step Results\n");
-      for (const result of results) {
-        const icon = result.success ? "x" : "!";
-        runtime.log(
-          `[${icon}] ${result.stepId} (${result.durationMs}ms)${result.error ? ` -- ${result.error}` : ""}`,
-        );
-      }
+  if (channel === "cli") {
+    const diagrams = renderDiagrams(run, diagramMode);
+    if (diagrams) {
+      runtime.log("");
+      runtime.log(diagrams);
     }
-  }
-
-  if (run.state === "awaiting_approval" || run.state === "executing" || run.state === "blocked") {
-    runtime.log(`\nResume: moltbot goal resume ${run.runId.slice(0, 8)}`);
   }
 }

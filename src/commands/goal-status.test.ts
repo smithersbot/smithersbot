@@ -89,9 +89,10 @@ describe("goal-status command", () => {
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", {}, rt);
     const output = rt.logs.join("\n");
-    expect(output).toContain("status-test-aaaa");
-    expect(output).toContain("Build a widget");
-    expect(output).toContain("done");
+    expect(output).toContain("✅ Done: Build a widget");
+    expect(output).toContain("**Progress** 1/1");
+    expect(output).toContain("**Retries** 0 retries");
+    expect(output).toContain("Run ID: status-test-aaaa");
   });
 
   it("renders in-progress Mermaid class when run lock is active", async () => {
@@ -158,8 +159,8 @@ describe("goal-status command", () => {
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", { json: true, output: "md" }, rt);
     const output = rt.logs.join("\n");
-    expect(output).toContain("Run:");
-    expect(output).toContain("Goal:");
+    expect(output).toContain("✅ Done: Build a widget");
+    expect(output).toContain("**Progress**");
   });
 
   it("errors for unknown run ID", async () => {
@@ -199,7 +200,7 @@ describe("goal-status command", () => {
     const rt = mockRuntime();
     await goalStatusCommand("failed-status-run", {}, rt);
     const output = rt.logs.join("\n");
-    expect(output).toContain("planning");
+    expect(output).toContain("Planning");
     expect(output).toContain("shell_exec command not in read-only allowlist");
   });
 
@@ -233,6 +234,94 @@ describe("goal-status command", () => {
     expect(output).toContain("Need creds");
     expect(output).toContain("db_password");
     expect(output).toContain("moltbot goal answer");
+  });
+
+  it("caps top steps and shows retry attempt badges", async () => {
+    const runId = "retry-status-run";
+    saveRun({
+      ...sampleRun,
+      runId,
+      state: "executing",
+      agentMaxTurnsPerTask: 4,
+      plan: {
+        goal: "Build a widget",
+        summary: "Retry-heavy plan",
+        steps: [
+          { id: "1", description: "Prepare schema", dependsOn: [], status: "done", turnsUsed: 2 },
+          { id: "2", description: "Run migrations", dependsOn: ["1"], status: "blocked" },
+          { id: "3", description: "Write service layer", dependsOn: ["2"], status: "pending" },
+          { id: "4", description: "Add API routes", dependsOn: ["3"], status: "pending" },
+          { id: "5", description: "Add tests", dependsOn: ["4"], status: "pending" },
+          { id: "6", description: "Update docs", dependsOn: ["5"], status: "pending" },
+        ],
+      },
+      stepResults: {},
+    });
+
+    const stepWorkerDir = path.join(testGoalsDir, runId, "workers", "2");
+    fs.mkdirSync(stepWorkerDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(stepWorkerDir, "attempt-1.json"),
+      JSON.stringify({
+        attemptNumber: 1,
+        backend: "claude_code",
+        outcome: "timeout",
+        durationMs: 1000,
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(stepWorkerDir, "attempt-2.json"),
+      JSON.stringify({
+        attemptNumber: 2,
+        backend: "codex",
+        outcome: "blocked",
+        durationMs: 1000,
+      }),
+      "utf8",
+    );
+
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand(runId, {}, rt);
+    const output = rt.logs.join("\n");
+
+    expect(output).toContain("**Top Steps**");
+    expect(output).toContain("[2/4]");
+    expect(output).toContain("[2 attempts]");
+    expect(output).toContain("**Retries** 2 retries across 2 steps");
+    expect(output).toContain("+ 1 more steps not shown");
+  });
+
+  it("uses Telegram line budget when channel is telegram", async () => {
+    const runId = "telegram-status-run";
+    saveRun({
+      ...sampleRun,
+      runId,
+      state: "awaiting_approval",
+      plan: {
+        goal: "Build a widget",
+        summary: "Long plan",
+        steps: Array.from({ length: 25 }, (_, index) => ({
+          id: String(index + 1),
+          description: `Task ${index + 1} with long explanation that should be truncated for Telegram readability`,
+          dependsOn: index === 0 ? [] : [String(index)],
+          status: index === 0 ? "done" : "pending",
+        })),
+      },
+      stepResults: {},
+    });
+
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand(runId, { channel: "telegram" }, rt);
+    const output = rt.logs.join("\n");
+    const lineCount = output.trim().split("\n").length;
+
+    expect(lineCount).toBeLessThanOrEqual(15);
+    expect(output).toContain("Next: /goal_resume");
+    expect(output).toContain("more steps not shown");
+    expect(output).not.toContain("Dependency Graph");
   });
 
   it("JSON mode includes blocked object with prompt and requiredInputKey", async () => {

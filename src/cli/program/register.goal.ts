@@ -117,7 +117,7 @@ export function registerGoalCommand(program: Command) {
     .description("Show details for a specific goal run")
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--output <format>", "Output format: md, json (default: md)")
-    .option("--diagram <mode>", "Diagram format: none, ascii, mermaid, both (default: both)")
+    .option("--diagram <mode>", "Diagram format: none, ascii, mermaid, both (default: none)")
     .action(async (runId, opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { goalStatusCommand } = await import("../../commands/goal-status.js");
