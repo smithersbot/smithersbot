@@ -468,6 +468,33 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
   }
 }
 
+/** Send `/goal_status` reply text and attach DAG PNG when the run has a plan. */
+export async function sendGoalStatusResponse(params: {
+  bot: Bot;
+  chatId: number;
+  runtime: RuntimeEnv;
+  rawId: string;
+  threadId?: number;
+}): Promise<void> {
+  const { bot, chatId, runtime, rawId, threadId } = params;
+  const reply = await handleGoalStatus(rawId);
+  const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
+  const run = resolvedId ? loadRun(resolvedId) : undefined;
+  if (run?.plan) {
+    await sendDagPng({
+      bot,
+      chatId,
+      threadId,
+      runtime,
+      plan: run.plan,
+      steps: run.plan.steps,
+      caption: reply,
+    });
+    return;
+  }
+  await sendGoalReply(bot, chatId, reply, runtime, threadId);
+}
+
 /** /goal_answer <runId> <value> -- answer a blocked goal's question. */
 export async function handleGoalAnswer(
   rawId: string,
@@ -1693,22 +1720,13 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const raw = ctx.match?.trim() ?? "";
-    const reply = await handleGoalStatus(raw);
-    const resolvedId = raw ? resolveRunId(raw) : undefined;
-    const run = resolvedId ? loadRun(resolvedId) : undefined;
-    if (run?.plan) {
-      await sendDagPng({
-        bot,
-        chatId: resolved.chatId,
-        threadId: resolved.threadIdForSend,
-        runtime,
-        plan: run.plan,
-        steps: run.plan.steps,
-        caption: reply,
-      });
-      return;
-    }
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    await sendGoalStatusResponse({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      rawId: raw,
+    });
   });
 
   // /goal_answer <runId> <value>

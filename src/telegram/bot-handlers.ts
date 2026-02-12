@@ -35,6 +35,7 @@ import {
   runGoalInBackground,
   sendGoalPlanResult,
   sendGoalReply,
+  sendGoalStatusResponse,
 } from "./goal-commands.js";
 import type { GoalPlanResult } from "./goal-commands.js";
 import { routeTelegramText } from "./goal-router.js";
@@ -82,11 +83,11 @@ function isGoalRecentIntent(text: string): boolean {
   return false;
 }
 
-// C) GOAL_STATUS: bare 8-hex-char run ID, or "status <id>" / "goal_status <id>" / "run <id>"
+// C) GOAL_STATUS: bare 8-hex-char run ID, or optional-leading-slash command aliases.
 function matchGoalStatusIntent(text: string): string | undefined {
   const trimmed = text.trim();
   if (RUN_ID_PREFIX_RE.test(trimmed)) return trimmed;
-  const m = /^(?:status|goal_status|run)\s+([a-f0-9]{8})$/i.exec(trimmed);
+  const m = /^\/?(?:status|goal_status|run)\s+([a-f0-9]{8})$/i.exec(trimmed);
   return m ? m[1]! : undefined;
 }
 
@@ -449,6 +450,17 @@ export const registerTelegramHandlers = ({
     threadId?: number;
   }): Promise<boolean> {
     const chatId = params.msg.chat.id;
+    const statusId = matchGoalStatusIntent(params.text);
+    if (statusId) {
+      await sendGoalStatusResponse({
+        bot,
+        chatId,
+        threadId: params.threadId,
+        runtime,
+        rawId: statusId,
+      });
+      return true;
+    }
     const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
       .reply_to_message?.message_id;
     const runs = loadRunsForChatThread(chatId, params.threadId);

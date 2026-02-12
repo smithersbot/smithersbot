@@ -76,6 +76,11 @@ vi.mock("../goal/format-output.js", () => ({
   formatPlanOutput: (...args: unknown[]) => mockFormatPlanOutput(...args),
 }));
 
+const mockRenderMermaidToPng = vi.fn(() => Buffer.from("png"));
+vi.mock("../goal/mermaid-png.js", () => ({
+  renderMermaidToPng: (...args: unknown[]) => mockRenderMermaidToPng(...args),
+}));
+
 function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
   return {
     runId: "test-run-id-1234",
@@ -372,6 +377,66 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalStatus("abc12345");
       expect(result).toContain("Run: abc12345");
       expect(result).toContain("State: done");
+    });
+  });
+
+  describe("sendGoalStatusResponse", () => {
+    it("sends status as a DAG PNG when the run has a plan", async () => {
+      saveRun(makeRun());
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+      mockRenderMermaidToPng.mockReturnValue(Buffer.from("png"));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalStatusResponse } = await import("./goal-commands.js");
+
+      await sendGoalStatusResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendPhoto).toHaveBeenCalledWith(
+        42,
+        expect.anything(),
+        expect.objectContaining({
+          caption: expect.stringContaining("Run: test-run-id-1234"),
+        }),
+      );
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("falls back to text when the run has no plan", async () => {
+      saveRun(makeRun({ plan: null }));
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalStatusResponse } = await import("./goal-commands.js");
+
+      await sendGoalStatusResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalled();
     });
   });
 
