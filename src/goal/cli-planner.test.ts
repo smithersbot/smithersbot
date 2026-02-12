@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
-import { runCliPlanning, EXECUTION_PLAN_FILE } from "./cli-planner.js";
+import { runCliPlanning, runCliPlanRevision, EXECUTION_PLAN_FILE } from "./cli-planner.js";
 
 const mockRunCliProcess = vi.fn();
 vi.mock("./cli-process.js", () => ({
@@ -293,5 +293,65 @@ describe("runCliPlanning", () => {
     ) as Record<string, unknown>;
     expect(attempt.outcome).toBe("failed");
     expect(attempt.errorClassification).toBe("validation");
+  });
+
+  it("runs CLI plan revision with subscription auth and parses revised plan", async () => {
+    process.env.ANTHROPIC_API_KEY = "should-be-stripped";
+    process.env.ANTHROPIC_AUTH_TOKEN = "should-be-stripped";
+
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Revised summary",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    const result = await runCliPlanRevision({
+      runId: "run-revision",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Tighten validation logic",
+      goalsDir,
+      model: "claude-sonnet-4-20250514",
+    });
+
+    if ("blocked" in result) throw new Error("Expected plan result, got blocked");
+    expect(result.summary).toBe("Revised summary");
+    expect(result.steps[0]?.id).toBe("refine-auth");
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
+      env: Record<string, string | undefined>;
+      args: string[];
+    };
+    expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(procCall.args).toContain("--model");
+    expect(procCall.args).toContain("claude-sonnet-4-20250514");
   });
 });

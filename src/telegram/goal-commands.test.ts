@@ -44,19 +44,11 @@ vi.mock("../commands/goal-answer.js", () => ({
 
 // goal-list.js no longer imported by goal-commands (Telegram uses listRuns directly)
 
-// Mocks for plan revision (handleGoalEdit)
-const mockResolveApiKeyForProvider = vi.fn();
-vi.mock("../agents/model-auth.js", () => ({
-  resolveApiKeyForProvider: (...args: unknown[]) => mockResolveApiKeyForProvider(...args),
+const mockRunCliPlanRevision = vi.fn();
+vi.mock("../goal/cli-planner.js", () => ({
+  runCliPlanRevision: (...args: unknown[]) => mockRunCliPlanRevision(...args),
 }));
 
-const mockCreateGoalLlmClient = vi.fn();
-vi.mock("../goal/llm-client.js", () => ({
-  createGoalLlmClient: (...args: unknown[]) => mockCreateGoalLlmClient(...args),
-}));
-
-const mockGeneratePlan = vi.fn();
-const mockGeneratePlanRevision = vi.fn();
 class MockPlanParseError extends Error {
   readonly rawResponse: string;
   constructor(message: string, rawResponse: string) {
@@ -66,8 +58,6 @@ class MockPlanParseError extends Error {
   }
 }
 vi.mock("../goal/planner.js", () => ({
-  generatePlan: (...args: unknown[]) => mockGeneratePlan(...args),
-  generatePlanRevision: (...args: unknown[]) => mockGeneratePlanRevision(...args),
   PlanParseError: MockPlanParseError,
   persistRawPlanResponse: vi.fn(),
 }));
@@ -729,13 +719,6 @@ describe("goal-commands telegram adapter", () => {
     it("creates a revision", async () => {
       saveRun(makeRun());
 
-      mockResolveApiKeyForProvider.mockResolvedValue({
-        apiKey: "test-key",
-        source: "env",
-        mode: "api-key",
-      });
-      mockCreateGoalLlmClient.mockReturnValue({});
-
       const revisedPlan = {
         goal: "Test goal",
         summary: "Revised plan",
@@ -756,7 +739,7 @@ describe("goal-commands telegram adapter", () => {
           },
         ],
       };
-      mockGeneratePlanRevision.mockResolvedValue(revisedPlan);
+      mockRunCliPlanRevision.mockResolvedValue(revisedPlan);
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one\n2. Add README");
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -776,9 +759,12 @@ describe("goal-commands telegram adapter", () => {
       expect(run!.planHistory![0].revision).toBe(1);
       expect(run!.planHistory![0].editInstructions).toBe("add a README step");
 
-      // Verify generatePlanRevision was called with run.goal
-      expect(mockGeneratePlanRevision).toHaveBeenCalledOnce();
-      expect(mockGeneratePlanRevision.mock.calls[0][1]).toBe("Test goal");
+      // Verify CLI revision was called with run.goal
+      expect(mockRunCliPlanRevision).toHaveBeenCalledOnce();
+      expect(mockRunCliPlanRevision.mock.calls[0]?.[0]).toMatchObject({
+        runId: "test-run-id-1234",
+        goalText: "Test goal",
+      });
     });
 
     it("refuses non-awaiting_approval run", async () => {
@@ -798,15 +784,14 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toContain("no plan");
     });
 
-    it("returns error when no API key available", async () => {
+    it("returns auth error when revision CLI reports auth failure", async () => {
       saveRun(makeRun());
-      mockResolveApiKeyForProvider.mockRejectedValue(
-        new Error('No API key found for provider "anthropic".'),
-      );
+      mockRunCliPlanRevision.mockRejectedValue(new Error("authentication failed"));
 
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "change it");
-      expect(result.text).toContain("API key");
+      expect(result.text).toContain("Authentication failed");
+      expect(result.text).not.toContain("API key");
     });
 
     it("returns error for unknown run", async () => {
@@ -817,13 +802,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("handles blocked revision", async () => {
       saveRun(makeRun());
-      mockResolveApiKeyForProvider.mockResolvedValue({
-        apiKey: "test-key",
-        source: "env",
-        mode: "api-key",
-      });
-      mockCreateGoalLlmClient.mockReturnValue({});
-      mockGeneratePlanRevision.mockResolvedValue({
+      mockRunCliPlanRevision.mockResolvedValue({
         blocked: true,
         question: "What framework?",
       });

@@ -37,7 +37,7 @@ export function formatGoalError(err: unknown, runId?: string): string {
     case "network":
       return "Network error reaching the planner API. Check your connection and try again.";
     case "auth":
-      return "Authentication failed. Verify your API key is set correctly.";
+      return "Authentication failed. Verify your auth configuration and try again.";
     case "parse": {
       const hint = runId
         ? `Debug: cat $STATE_DIR/goals/${runId}/plan-raw.txt`

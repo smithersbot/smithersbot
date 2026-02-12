@@ -9,6 +9,7 @@ import {
   parsePlanResultFromText,
   type PlanResult,
 } from "./planner.js";
+import { resolveRunDir } from "./run-store.js";
 import {
   classifyScoutError,
   renderScoutTemplate,
@@ -87,6 +88,23 @@ export type CliPlanningBlocked = {
 
 export type CliPlanningResult = CliPlanningSuccess | CliPlanningBlocked;
 
+export type CliPlanRevisionParams = {
+  runId: string;
+  goalText: string;
+  currentPlan: Plan;
+  editInstructions: string;
+  goalsDir?: string;
+  timeoutMs?: number;
+  model?: string;
+  /** How Claude Code revision process authenticates (default: "subscription"). */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
+};
+
+const PLAN_REVISION_DIR = "replan";
+const PLAN_REVISION_STDOUT_FILE = "revision_stdout.txt";
+const PLAN_REVISION_STDERR_FILE = "revision_stderr.txt";
+const PLAN_REVISION_RAW_OUTPUT_FILE = "revision_raw_output.txt";
+
 function buildPlanningPrompt(params: {
   runId: string;
   goalText: string;
@@ -161,6 +179,107 @@ function parsePlanWithFallback(goalText: string, scoutDir: string, stdout: strin
   }
 
   return parsePlanResultFromText(stdout, goalText);
+}
+
+function buildPlanRevisionPrompt(params: {
+  goalText: string;
+  currentPlan: Plan;
+  editInstructions: string;
+}): string {
+  const { goalText, currentPlan, editInstructions } = params;
+  const currentPlanJson = JSON.stringify(
+    {
+      summary: currentPlan.summary,
+      steps: currentPlan.steps.map((step) => ({
+        id: step.id,
+        description: step.description,
+        dependsOn: step.dependsOn,
+        durationMinutes: step.durationMinutes,
+        backend: step.backend,
+      })),
+    },
+    null,
+    2,
+  );
+
+  return [
+    PLAN_SYSTEM_PROMPT,
+    "",
+    `Goal: ${goalText}`,
+    "",
+    "Current plan:",
+    currentPlanJson,
+    "",
+    `Revision instructions: ${editInstructions}`,
+    "",
+    "Generate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.",
+    "Respond ONLY with a JSON object matching the schema above.",
+  ].join("\n");
+}
+
+export async function runCliPlanRevision(params: CliPlanRevisionParams): Promise<PlanResult> {
+  const { runId, goalText, currentPlan, editInstructions, goalsDir, model, claudeCodeAuth } =
+    params;
+  const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
+
+  const claudeBin = resolveClaudeBinary();
+  if (!claudeBin) {
+    throw new Error("claude binary not found on PATH");
+  }
+
+  const runDir = resolveRunDir(runId, goalsDir);
+  const revisionDir = path.join(runDir, PLAN_REVISION_DIR);
+  fs.mkdirSync(revisionDir, { recursive: true });
+
+  const authMode = claudeCodeAuth ?? "subscription";
+  const revisionEnv = buildClaudeCodeEnv(authMode);
+  writeAuthModeArtifact(revisionDir, authMode);
+
+  const prompt = buildPlanRevisionPrompt({
+    goalText,
+    currentPlan,
+    editInstructions,
+  });
+
+  const args = ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS];
+  if (model) args.push("--model", model);
+
+  const procResult = await runCliProcess({
+    command: claudeBin,
+    args,
+    cwd: process.cwd(),
+    timeoutMs: timeout,
+    stdin: prompt,
+    stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
+    stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
+    env: revisionEnv,
+  });
+
+  try {
+    fs.writeFileSync(
+      path.join(revisionDir, PLAN_REVISION_RAW_OUTPUT_FILE),
+      procResult.stdout,
+      "utf8",
+    );
+  } catch {
+    // Best-effort diagnostics.
+  }
+
+  if (procResult.timedOut) {
+    throw new Error(`Plan revision timed out after ${(timeout / 60_000).toFixed(0)} minutes.`);
+  }
+
+  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+    const errMsg =
+      procResult.stderr ||
+      procResult.stdout ||
+      (procResult.signal
+        ? `Plan revision process terminated by ${procResult.signal}.`
+        : "Plan revision process failed.");
+    throw new Error(`Plan revision failed: ${errMsg}`);
+  }
+
+  return parsePlanResultFromText(procResult.stdout, goalText);
 }
 
 export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlanningResult> {

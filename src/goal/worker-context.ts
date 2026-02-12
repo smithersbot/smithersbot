@@ -14,7 +14,8 @@ const WORKER_CLAUDE_MD = `# Moltbot — Project Reference
 ## Testing
 
 - Framework: Vitest. Colocated test files: \`*.test.ts\`.
-- The full test suite (\`pnpm test\`) is very large and slow. Do NOT run it. Instead, run only the tests relevant to your changes: \`pnpm vitest run src/goal/\` for goal-system changes, or \`pnpm vitest run <path-to-specific-test>\` for anything else.
+- Prefer targeted runs: \`pnpm vitest run <targets>\` (for example \`pnpm vitest run src/goal/\`).
+- Bare \`pnpm test\` is only acceptable under scoped worker mode (\`MOLTBOT_GOAL_TEST_SCOPE=1\`). Outside scoped mode it runs the full suite and is too slow for goal tasks.
 - Coverage target: 70% lines/branches/functions/statements.
 - Do not set test workers above 16.
 

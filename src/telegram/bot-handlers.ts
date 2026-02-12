@@ -503,7 +503,7 @@ export const registerTelegramHandlers = ({
             runtime,
             label: "goal-router:edit",
             releaseGoalLock: editLock.release,
-            fn: () => handleGoalEdit(runId, text),
+            fn: () => handleGoalEdit(runId, text, cfg),
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {

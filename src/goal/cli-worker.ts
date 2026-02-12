@@ -101,6 +101,20 @@ function persistCanonicalWorkerResult(params: {
 }
 
 /**
+ * Build env for goal worker subprocesses.
+ *
+ * Always sets MOLTBOT_GOAL_TEST_SCOPE=1 so any `pnpm test` invocation inside a
+ * goal worker runs the scoped fast subset from scripts/test-parallel.mjs.
+ */
+export function buildGoalWorkerEnv(
+  backend: GoalBackendId,
+  claudeCodeAuth: ClaudeCodeAuthMode,
+): Record<string, string | undefined> {
+  const base = backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
+  return { ...base, MOLTBOT_GOAL_TEST_SCOPE: "1" };
+}
+
+/**
  * Execute a goal step using a CLI worker (Codex or Claude Code).
  *
  * Single invocation per attempt. Returns structured output, or a synthetic
@@ -144,8 +158,7 @@ export async function executeTaskWithCliWorker(
   });
 
   // Build worker env based on auth mode
-  const workerEnv =
-    backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
+  const workerEnv = buildGoalWorkerEnv(backend, claudeCodeAuth);
   if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
 
   const prompt = buildCliWorkerPrompt({

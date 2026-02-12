@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PlanStep, Plan } from "./types.js";
 import {
   buildAllowedToolsList,
+  buildGoalWorkerEnv,
   buildCliWorkerPrompt,
   parseClaudeCodeStreamError,
   parseCodexSchemaOutput,
@@ -178,6 +179,40 @@ describe("cli-worker", () => {
       expect(tools).toContain("Glob");
       expect(tools).toContain("Grep");
       expect(tools).toContain("Bash(*)");
+    });
+  });
+
+  describe("buildGoalWorkerEnv", () => {
+    it("sets scoped test mode for codex workers without mutating process env", () => {
+      const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      try {
+        const env = buildGoalWorkerEnv("codex", "subscription");
+        expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
+        expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
+      } finally {
+        if (prevScope === undefined) delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
+        else process.env.MOLTBOT_GOAL_TEST_SCOPE = prevScope;
+      }
+    });
+
+    it("keeps scoping local to worker env and preserves global auth env", () => {
+      const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = "secret";
+      delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      try {
+        const env = buildGoalWorkerEnv("claude_code", "subscription");
+        expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
+        expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(process.env.ANTHROPIC_API_KEY).toBe("secret");
+        expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
+      } finally {
+        if (prevScope === undefined) delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
+        else process.env.MOLTBOT_GOAL_TEST_SCOPE = prevScope;
+        if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+      }
     });
   });
 

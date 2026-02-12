@@ -1,7 +1,6 @@
 import { InputFile, type Bot, type Context } from "grammy";
 import type { InlineKeyboardMarkup, ReactionTypeEmoji } from "grammy/types";
 
-import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import { warn } from "../globals.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
@@ -17,14 +16,14 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { runCliPlanRevision } from "../goal/cli-planner.js";
 import { computeCpm } from "../goal/cpm.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { formatPlanOutput } from "../goal/format-output.js";
-import { createGoalLlmClient } from "../goal/llm-client.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
-import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import {
   acquireGoalOpLock,
   acquirePlanningLock as acquireFilePlanningLock,
@@ -715,7 +714,11 @@ export async function handleGoalStop(rawId: string, force?: boolean): Promise<st
 }
 
 /** /goal_edit <runId> <instructions> -- revise a plan via LLM re-planning. */
-export async function handleGoalEdit(rawId: string, instructions: string): Promise<GoalPlanResult> {
+export async function handleGoalEdit(
+  rawId: string,
+  instructions: string,
+  config?: MoltbotConfig,
+): Promise<GoalPlanResult> {
   if (!rawId.trim() || !instructions.trim()) {
     return { text: "Usage: /goal_edit <runId> <edit instructions>" };
   }
@@ -732,21 +735,17 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
   if (!run.plan) {
     return { text: "Run has no plan to edit." };
   }
-
-  let keyResult;
-  try {
-    keyResult = await resolveApiKeyForProvider({ provider: "anthropic" });
-  } catch {
-    return { text: "No Anthropic API key found. Set ANTHROPIC_API_KEY." };
-  }
-  if (!keyResult.apiKey) {
-    return { text: "Anthropic auth resolved but no API key available." };
-  }
-
-  const client = createGoalLlmClient({ apiKey: keyResult.apiKey, modelOverride: run.model });
+  const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
 
   try {
-    const result = await generatePlanRevision(client, run.goal, run.plan, instructions.trim());
+    const result = await runCliPlanRevision({
+      runId: resolvedId,
+      goalText: run.goal,
+      currentPlan: run.plan,
+      editInstructions: instructions.trim(),
+      model: run.model,
+      claudeCodeAuth: authMode,
+    });
 
     if ("blocked" in result) {
       return { text: `Revision blocked: ${result.question}`, blocked: true };
@@ -1765,7 +1764,7 @@ export function registerTelegramGoalCommands({
       runtime,
       label: "goal_edit",
       releaseGoalLock: editLock.release,
-      fn: () => handleGoalEdit(editRunIdRaw, instructions),
+      fn: () => handleGoalEdit(editRunIdRaw, instructions, cfg),
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {
