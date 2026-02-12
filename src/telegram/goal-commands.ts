@@ -102,6 +102,30 @@ export type GoalPlanResult = {
   plan?: Plan;
 };
 
+function trackBlockedStatusChange(
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+): {
+  onStatusChange?: (event: GoalStatusChangeEvent) => Promise<void>;
+  didSendFullyBlocked: () => boolean;
+} {
+  let sentFullyBlocked = false;
+  if (!onStatusChange) {
+    return {
+      onStatusChange: undefined,
+      didSendFullyBlocked: () => false,
+    };
+  }
+  return {
+    onStatusChange: async (event: GoalStatusChangeEvent) => {
+      await onStatusChange(event);
+      if (event.type === "fully_blocked") {
+        sentFullyBlocked = true;
+      }
+    },
+    didSendFullyBlocked: () => sentFullyBlocked,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Inline keyboard builder
 // ---------------------------------------------------------------------------
@@ -373,10 +397,11 @@ export async function handleGoalApprove(
   const prefix = resolvedId.slice(0, 8);
   const stepCount = run.plan?.steps?.length ?? 0;
   const cap = createCaptureRuntime();
+  const trackedStatus = trackBlockedStatusChange(onStatusChange);
   try {
     const outcome = await goalResumeCommand(
       resolvedId,
-      { yes: true, quiet: true, onStatusChange },
+      { yes: true, quiet: true, onStatusChange: trackedStatus.onStatusChange },
       cap.runtime,
     );
 
@@ -384,8 +409,9 @@ export async function handleGoalApprove(
     if (errors) return errors;
 
     // Pre-execution blocks (e.g. git errors) fire before onStatusChange
-    // has a chance to notify — always surface these to the user.
+    // has a chance to notify — only suppress when fully_blocked was already emitted.
     if (outcome?.status === "blocked") {
+      if (trackedStatus.didSendFullyBlocked()) return undefined;
       return `Run blocked: ${outcome.question ?? "Unknown reason"}`;
     }
 
@@ -395,7 +421,7 @@ export async function handleGoalApprove(
 
     // When onStatusChange is wired, it already sent DAG PNGs for done/step events —
     // return undefined so callers don't send a stray message after the notifications.
-    if (onStatusChange && outcome?.status === "done") return undefined;
+    if (trackedStatus.onStatusChange && outcome?.status === "done") return undefined;
 
     return `Executing: ${prefix} (0/${stepCount}). I'll notify you if input is needed.`;
   } catch (err) {
@@ -501,10 +527,11 @@ export async function handleGoalAnswer(
   if (run.state === "executing") {
     const prefix = resolvedId.slice(0, 8);
     const cap = createCaptureRuntime();
+    const trackedStatus = trackBlockedStatusChange(onStatusChange);
     try {
       const outcome = await goalResumeCommand(
         resolvedId,
-        { yes: true, quiet: true, onStatusChange },
+        { yes: true, quiet: true, onStatusChange: trackedStatus.onStatusChange },
         cap.runtime,
       );
 
@@ -512,11 +539,12 @@ export async function handleGoalAnswer(
       if (errors) return errors;
 
       if (outcome?.status === "blocked") {
+        if (trackedStatus.didSendFullyBlocked()) return undefined;
         return `Run blocked: ${outcome.question}`;
       }
 
       // onStatusChange already sent notifications for done/step-level events
-      if (onStatusChange) return undefined;
+      if (trackedStatus.onStatusChange) return undefined;
 
       return `Resuming interrupted run: ${prefix}...`;
     } catch (err) {

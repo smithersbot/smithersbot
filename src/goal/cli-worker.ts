@@ -18,6 +18,7 @@ import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
+import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 
 // --- Constants ---
@@ -519,6 +520,7 @@ function buildCliArgs(params: {
   // Claude Code
   const allowedTools = buildAllowedToolsList();
   const denyContent = fs.readFileSync(denyFilePath, "utf8");
+  const appendedPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
   const args = [
     "-p",
     "--verbose",
@@ -527,7 +529,7 @@ function buildCliArgs(params: {
     "--allowedTools",
     allowedTools.join(","),
     "--append-system-prompt",
-    denyContent,
+    appendedPrompt,
   ];
   if (model) args.push("--model", model);
   args.push(prompt);

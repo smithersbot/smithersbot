@@ -278,10 +278,35 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toBeUndefined();
       expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
       const opts = mockGoalResumeCommand.mock.calls[0][1] as Record<string, unknown>;
-      expect(opts.onStatusChange).toBe(statusCb);
+      expect(typeof opts.onStatusChange).toBe("function");
     });
 
-    it("returns blocked message even when onStatusChange is provided", async () => {
+    it("returns undefined when blocked update was already sent via onStatusChange", async () => {
+      saveRun(makeRun());
+      mockGoalResumeCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
+        const onStatusChange = (opts as { onStatusChange?: (event: unknown) => Promise<void> })
+          .onStatusChange;
+        await onStatusChange?.({
+          type: "fully_blocked",
+          steps: makeRun().plan?.steps ?? [],
+        });
+        return {
+          status: "blocked",
+          question: "Out of credits",
+          requiredInputKey: "billing",
+          blockedAt: "execution",
+        };
+      });
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalApprove("test-run", statusCb);
+
+      expect(result).toBeUndefined();
+      expect(statusCb).toHaveBeenCalledWith(expect.objectContaining({ type: "fully_blocked" }));
+    });
+
+    it("returns blocked message when no blocked status update was sent", async () => {
       saveRun(makeRun());
       mockGoalResumeCommand.mockResolvedValue({
         status: "blocked",
@@ -617,7 +642,48 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toBeUndefined();
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
-      expect(opts.onStatusChange).toBe(statusCb);
+      expect(typeof opts.onStatusChange).toBe("function");
+    });
+
+    it("suppresses duplicate blocked reply when resume emitted fully_blocked event", async () => {
+      saveRun(makeRun({ state: "executing" }));
+      mockGoalResumeCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
+        const onStatusChange = (opts as { onStatusChange?: (event: unknown) => Promise<void> })
+          .onStatusChange;
+        await onStatusChange?.({
+          type: "fully_blocked",
+          steps: makeRun().plan?.steps ?? [],
+        });
+        return {
+          status: "blocked",
+          question: "Need credentials",
+          requiredInputKey: "task:1:input",
+          blockedAt: "execution",
+        };
+      });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalAnswer("test-run", "resume", statusCb);
+
+      expect(result).toBeUndefined();
+      expect(statusCb).toHaveBeenCalledWith(expect.objectContaining({ type: "fully_blocked" }));
+    });
+
+    it("returns blocked reply when resume blocks before status callback emits", async () => {
+      saveRun(makeRun({ state: "executing" }));
+      mockGoalResumeCommand.mockResolvedValue({
+        status: "blocked",
+        question: "Need credentials",
+        requiredInputKey: "task:1:input",
+        blockedAt: "execution",
+      });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const statusCb = vi.fn();
+      const result = await handleGoalAnswer("test-run", "resume", statusCb);
+
+      expect(result).toContain("Run blocked: Need credentials");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {

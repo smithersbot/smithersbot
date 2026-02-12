@@ -33,6 +33,7 @@ import type { HardDenyList } from "./hard-deny.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { Plan, PlanStep } from "./types.js";
 import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
+import { WORKER_CONTEXT } from "./worker-context.js";
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
@@ -552,6 +553,10 @@ function buildGoalSystemPrompt(
       "covering what changed, what verification ran, and any follow-ups.",
   );
   lines.push("- If you didn't struggle, keep the completion note minimal.");
+  if (WORKER_CONTEXT) {
+    lines.push("");
+    lines.push(WORKER_CONTEXT);
+  }
   return lines.join("\n");
 }
 
