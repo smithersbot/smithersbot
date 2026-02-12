@@ -428,7 +428,7 @@ describe("renderMermaid", () => {
       const out = renderMermaid(statusPlan, undefined, statuses);
       expect(out).toContain("classDef blocked fill:#450a0a");
       expect(out).toContain("classDef waiting fill:#4C1D95");
-      expect(out).toContain("classDef inprog fill:#1F2937");
+      expect(out).toContain("classDef inprog fill:#C2410C");
       expect(out).toContain("classDef done fill:#3F4F3A");
       expect(out).toContain("classDef pending fill:#2D3748");
     });
@@ -463,7 +463,7 @@ describe("renderMermaid", () => {
       // No emojis in labels when displayStatuses is omitted
       expect(out).not.toContain("✅");
       expect(out).not.toContain("⛔");
-      expect(out).not.toContain("🏃");
+      expect(out).not.toContain("🛠");
       expect(out).not.toContain("⏳");
     });
 
@@ -479,7 +479,7 @@ describe("renderMermaid", () => {
       expect(out).toContain("✅ 1.");
       expect(out).toContain("⛔ 2.");
       expect(out).toContain("⏳ 3.");
-      expect(out).toContain("🏃 4.");
+      expect(out).toContain("🛠 4.");
     });
 
     it("soft_blocked maps to ⏳ emoji and waiting class", () => {

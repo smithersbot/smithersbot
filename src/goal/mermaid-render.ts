@@ -23,7 +23,7 @@ const CLASS_DEFS = [
   `classDef waiting fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF,rx:4,ry:4;`,
   `classDef done fill:#3F4F3A,stroke:#84CC16,stroke-width:3px,color:#ECFCCB,rx:4,ry:4;`,
   `classDef blocked fill:#450a0a,stroke:#EF4444,stroke-width:4px,color:#FECACA,stroke-dasharray: 8 4,rx:4,ry:4;`,
-  `classDef inprog fill:#1F2937,stroke:#A855F7,color:#E9D5FF,stroke-width:2px,rx:4,ry:4;`,
+  `classDef inprog fill:#C2410C,stroke:#F97316,color:#FFF,stroke-width:2px,rx:4,ry:4;`,
 ].join("\n");
 
 /** Default link style applied to all edges. */
@@ -40,7 +40,7 @@ const STATUS_CLASS: Record<ExecutionDisplayStatus, string> = {
 const STATUS_EMOJI: Record<ExecutionDisplayStatus, string> = {
   done: "✅",
   blocked: "⛔",
-  in_progress: "🏃",
+  in_progress: "🛠",
   soft_blocked: "⏳",
   pending: "",
 };
