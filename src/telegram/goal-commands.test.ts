@@ -964,6 +964,44 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("runGoalInBackground", () => {
+    it("sends start preface before background work starts", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const fn = vi.fn(async () => "ok");
+      let resolveDone: (() => void) | undefined;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      const onResult = vi.fn(async () => {
+        resolveDone?.();
+      });
+
+      const { runGoalInBackground, START_PREFACE } = await import("./goal-commands.js");
+      runGoalInBackground({
+        bot: mockBot,
+        chatId: 42,
+        runtime: {
+          log: vi.fn(),
+          error: vi.fn(),
+          exit: ((_: number) => {
+            throw new Error("exit called");
+          }) as never,
+        },
+        label: "start-test",
+        preface: START_PREFACE,
+        fn,
+        onResult,
+      });
+
+      await done;
+      expect(sendMessage).toHaveBeenCalledWith(42, START_PREFACE, {});
+      expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(fn.mock.invocationCallOrder[0]);
+    });
+
     it("sends resume preface before background work starts", async () => {
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
       const sendChatAction = vi.fn().mockResolvedValue(true);
@@ -1000,6 +1038,26 @@ describe("goal-commands telegram adapter", () => {
       await done;
       expect(sendMessage).toHaveBeenCalledWith(42, RESUME_PREFACE, {});
       expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(fn.mock.invocationCallOrder[0]);
+    });
+  });
+
+  describe("getGoalExecutionPreface", () => {
+    it("uses start preface for awaiting approval runs", async () => {
+      const { getGoalExecutionPreface, START_PREFACE } = await import("./goal-commands.js");
+      expect(getGoalExecutionPreface("awaiting_approval")).toBe(START_PREFACE);
+    });
+
+    it("uses start preface for cancelled runs pending re-approval", async () => {
+      const { getGoalExecutionPreface, START_PREFACE } = await import("./goal-commands.js");
+      expect(getGoalExecutionPreface("cancelled")).toBe(START_PREFACE);
+    });
+
+    it("uses resume preface for resumable non-approval states", async () => {
+      const { getGoalExecutionPreface, RESUME_PREFACE } = await import("./goal-commands.js");
+      expect(getGoalExecutionPreface("blocked")).toBe(RESUME_PREFACE);
+      expect(getGoalExecutionPreface("executing")).toBe(RESUME_PREFACE);
+      expect(getGoalExecutionPreface("planning")).toBe(RESUME_PREFACE);
+      expect(getGoalExecutionPreface("done")).toBe(RESUME_PREFACE);
     });
   });
 

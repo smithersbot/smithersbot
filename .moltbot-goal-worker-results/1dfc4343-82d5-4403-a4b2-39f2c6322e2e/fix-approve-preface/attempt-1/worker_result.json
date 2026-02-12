@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Updated Telegram goal approval preface logic to use 'Right away, sir. Starting the goal now.' for approval-start states and keep 'Resuming...' for actual resume states; added tests for start/resume preface selection and verified with targeted tests, lint, and local /goal CLI commands." }

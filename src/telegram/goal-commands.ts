@@ -170,7 +170,15 @@ function planningKey(chatId: number, threadId?: number): string {
 // ---------------------------------------------------------------------------
 
 export const PLANNING_PREFACE = "Right away, sir.";
+export const START_PREFACE = "Right away, sir. Starting the goal now.";
 export const RESUME_PREFACE = "Right away, sir. Resuming the goal now.";
+
+export function getGoalExecutionPreface(state: SerializedRun["state"] | undefined): string {
+  if (state === "awaiting_approval" || state === "cancelled") {
+    return START_PREFACE;
+  }
+  return RESUME_PREFACE;
+}
 
 /**
  * Send a short preface message, then run `fn` with an immediate typing loop.
@@ -1309,6 +1317,12 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
+    const run = loadRun(resolvedId);
+    if (!run) {
+      lockResult.release();
+      await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+      return;
+    }
     const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
     runGoalInBackground({
       bot,
@@ -1316,7 +1330,7 @@ export function registerTelegramGoalCommands({
       threadId,
       runtime,
       label: backgroundLabel,
-      preface: RESUME_PREFACE,
+      preface: getGoalExecutionPreface(run.state),
       releaseGoalLock: lockResult.release,
       fn: () => handleGoalApprove(rawId, statusCb),
       onResult: async (reply) => sendGoalBackgroundResult(chatId, threadId, reply),
@@ -1515,6 +1529,7 @@ export function registerTelegramGoalCommands({
         threadId,
         runtime,
         label: "reaction:approve",
+        preface: getGoalExecutionPreface(run.state),
         releaseGoalLock: lockResult.release,
         fn: () => handleGoalApprove(run.runId, statusCb),
         onResult: async (reply) => {
