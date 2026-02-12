@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Root cause: task.status was set to 'in_progress' in agent-executor.ts (line 341) but persistRun() was never called at that point. The onTaskUpdate callback only fired after task completion (via recordTaskResult), so the on-disk run state never showed in_progress — it went straight from pending to done/blocked. Fix: Added onTaskStart callback to ExecuteGoalParams (agent-executor.ts) that fires right after setting task.status = 'in_progress', and wired it to persistRun() in goal-resume.ts. Now when /goal_status is called during execution, the persisted plan steps correctly show the running task as in_progress, which triggers the inprog classDef styling and emoji. Build, lint, and all goal tests pass."
+}

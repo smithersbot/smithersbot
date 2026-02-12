@@ -69,6 +69,8 @@ export type ExecuteGoalParams = {
   retryConfig?: Partial<RetryConfig>;
   gitCheckpointConfig?: Partial<GitCheckpointConfig>;
   onTaskUpdate?: (result: TaskExecutionResult) => void;
+  /** Called when a task transitions to in_progress (before execution). */
+  onTaskStart?: (taskId: string) => void;
   onProgress?: (text: string) => void;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
   abortSignal?: AbortSignal;
@@ -133,6 +135,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     retryConfig,
     gitCheckpointConfig,
     onTaskUpdate,
+    onTaskStart,
     onProgress,
     onStatusChange,
     abortSignal,
@@ -336,6 +339,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       };
 
       task.status = "in_progress";
+      onTaskStart?.(task.id);
       if (attempt === 1) {
         onProgress?.(`\n--- Task ${task.id} [${backend}]: ${task.description} ---`);
       } else {

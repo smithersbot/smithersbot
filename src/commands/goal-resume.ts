@@ -531,6 +531,7 @@ export async function goalResumeCommand(
     gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
     serializedRun: run,
     onTaskUpdate: () => persistRun(),
+    onTaskStart: () => persistRun(),
     onProgress: (text) => {
       if (!isJson && !quiet) runtime.log(text);
     },
