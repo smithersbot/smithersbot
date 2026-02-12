@@ -16,6 +16,9 @@ import {
   resolveScoutDir,
   resolveScoutTemplatePath,
   validateScoutOutput,
+  SCOUT_NEEDS_CLARIFICATION_FILE,
+  SCOUT_NODE_SPECS_DIR,
+  SCOUT_REPORT_FILE,
   type ScoutResult,
 } from "./scout.js";
 import type { Plan } from "./types.js";
@@ -24,8 +27,8 @@ import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 const DEFAULT_PLANNING_TIMEOUT_MS = 1_200_000;
 const LOG_EXCERPT_CHARS = 2048;
 
-// Canonical planning artifacts live under <run>/scout/ so execution and resume
-// can keep loading stable file paths (plan draft, scout report, node specs).
+// Canonical planning artifacts live under <run>/scout/ so execution + resume can
+// rely on stable paths. Shared scout constants define scout_report/node_specs/etc.
 const PLANNING_BRIEF_FILE = "PLANNING_BRIEF.md";
 const PLANNER_STDOUT_FILE = "planning_stdout.txt";
 const PLANNER_STDERR_FILE = "planning_stderr.txt";
@@ -46,9 +49,9 @@ The JSON must satisfy the planning schema below exactly.
 ${PLAN_SYSTEM_PROMPT}
 
 Additional requirements:
-- Keep dependency structure aligned with scout_report.json.
+- Keep dependency structure aligned with ${SCOUT_REPORT_FILE}.
 - Every step id must map to an existing scout node id.
-- If clarification is required, create plan_needs_clarification.md and return:
+- If clarification is required, create ${SCOUT_NEEDS_CLARIFICATION_FILE} and return:
   { "blocked": true, "question": "The specific question you need answered" }`;
 
 const PLAN_ONLY_PROMPT = `${PLAN_SYSTEM_PROMPT}
@@ -173,7 +176,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const scoutDir = resolveScoutDir(runId, goalsDir);
   fs.mkdirSync(scoutDir, { recursive: true });
   if (includeScoutArtifacts) {
-    fs.mkdirSync(path.join(scoutDir, "node_specs"), { recursive: true });
+    fs.mkdirSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
   }
 
   const prompt = buildPlanningPrompt({
@@ -246,7 +249,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         backend: "claude_code",
         outcome: "failed",
         errorClassification: scoutResult.errorKind,
-        resultFile: "scout_report.json",
+        resultFile: SCOUT_REPORT_FILE,
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
       });
@@ -259,7 +262,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         backend: "claude_code",
         outcome: "blocked",
         errorClassification: "needs_clarification",
-        resultFile: "plan_needs_clarification.md",
+        resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
       });

@@ -1,10 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveRunDir } from "./run-store.js";
-import { runCliProcess } from "./cli-process.js";
-import { tailText, writeAttemptBundle } from "./attempt-bundle.js";
-import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
-import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,10 +40,19 @@ export type ScoutResult =
 // Constants
 // ---------------------------------------------------------------------------
 
-const SCOUT_TIMEOUT_MS = 1_200_000;
+/** Canonical run-relative directory where planning/scout artifacts are persisted. */
+export const SCOUT_DIR_NAME = "scout";
+/** Canonical scout artifact file name with the dependency graph and node metadata. */
+export const SCOUT_REPORT_FILE = "scout_report.json";
+/** Canonical scout artifact file name with markdown draft + sentinels. */
+export const SCOUT_PLAN_DRAFT_FILE = "plan_draft.md";
+/** Canonical scout artifact file name for clarification requests. */
+export const SCOUT_NEEDS_CLARIFICATION_FILE = "plan_needs_clarification.md";
+/** Canonical scout artifact subdirectory with one markdown file per node id. */
+export const SCOUT_NODE_SPECS_DIR = "node_specs";
+
 const DEFAULT_NODE_COUNT_MIN = 1;
 const DEFAULT_NODE_COUNT_MAX = 10;
-const LOG_EXCERPT_CHARS = 2048;
 
 // ---------------------------------------------------------------------------
 // Error classification
@@ -101,11 +106,11 @@ export function _resetClaudeBinaryCache(): void {
 // ---------------------------------------------------------------------------
 
 export function resolveScoutDir(runId: string, goalsDir?: string): string {
-  return path.join(resolveRunDir(runId, goalsDir), "scout");
+  return path.join(resolveRunDir(runId, goalsDir), SCOUT_DIR_NAME);
 }
 
 function resolveNodeSpecsDir(scoutDir: string): string {
-  return path.join(scoutDir, "node_specs");
+  return path.join(scoutDir, SCOUT_NODE_SPECS_DIR);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,8 +149,8 @@ export function renderScoutTemplate(params: {
 
 /** Validate scout output artifacts. Pure validation — no side effects beyond reading files. */
 export function validateScoutOutput(scoutDir: string): ScoutResult {
-  // Clarification check first: if the scout needs more info it writes this file
-  const clarificationPath = path.join(scoutDir, "plan_needs_clarification.md");
+  // Clarification check first: if planning needs more info it writes this file.
+  const clarificationPath = path.join(scoutDir, SCOUT_NEEDS_CLARIFICATION_FILE);
   if (fs.existsSync(clarificationPath)) {
     const question = fs.readFileSync(clarificationPath, "utf8").trim();
     return {
@@ -155,34 +160,42 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   }
 
   // --- plan_draft.md ---
-  const draftPath = path.join(scoutDir, "plan_draft.md");
+  const draftPath = path.join(scoutDir, SCOUT_PLAN_DRAFT_FILE);
   if (!fs.existsSync(draftPath)) {
-    return { status: "error", error: "plan_draft.md not found", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_PLAN_DRAFT_FILE} not found`,
+      errorKind: "validation",
+    };
   }
   const draft = fs.readFileSync(draftPath, "utf8");
 
   if (!draft.includes("BEGIN_PLAN_DRAFT") || !draft.includes("END_PLAN_DRAFT")) {
     return {
       status: "error",
-      error: "plan_draft.md missing BEGIN_PLAN_DRAFT / END_PLAN_DRAFT sentinels",
+      error: `${SCOUT_PLAN_DRAFT_FILE} missing BEGIN_PLAN_DRAFT / END_PLAN_DRAFT sentinels`,
       errorKind: "validation",
     };
   }
   if (!draft.includes("GOAL_ID:")) {
-    return { status: "error", error: "plan_draft.md missing GOAL_ID", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_PLAN_DRAFT_FILE} missing GOAL_ID`,
+      errorKind: "validation",
+    };
   }
   if (!draft.includes("graph TD") && !draft.includes("flowchart TD")) {
     return {
       status: "error",
-      error: "plan_draft.md missing mermaid graph (expected 'graph TD' or 'flowchart TD')",
+      error: `${SCOUT_PLAN_DRAFT_FILE} missing mermaid graph (expected 'graph TD' or 'flowchart TD')`,
       errorKind: "validation",
     };
   }
 
   // --- scout_report.json ---
-  const reportPath = path.join(scoutDir, "scout_report.json");
+  const reportPath = path.join(scoutDir, SCOUT_REPORT_FILE);
   if (!fs.existsSync(reportPath)) {
-    return { status: "error", error: "scout_report.json not found", errorKind: "validation" };
+    return { status: "error", error: `${SCOUT_REPORT_FILE} not found`, errorKind: "validation" };
   }
 
   let report: ScoutReport;
@@ -191,21 +204,29 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   } catch {
     return {
       status: "error",
-      error: "scout_report.json is not valid JSON",
+      error: `${SCOUT_REPORT_FILE} is not valid JSON`,
       errorKind: "validation",
     };
   }
 
   if (!report.goal_id) {
-    return { status: "error", error: "scout_report.json missing goal_id", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_REPORT_FILE} missing goal_id`,
+      errorKind: "validation",
+    };
   }
   if (!Array.isArray(report.nodes) || report.nodes.length === 0) {
-    return { status: "error", error: "scout_report.json has no nodes", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_REPORT_FILE} has no nodes`,
+      errorKind: "validation",
+    };
   }
   if (!Array.isArray(report.edges)) {
     return {
       status: "error",
-      error: "scout_report.json missing edges array",
+      error: `${SCOUT_REPORT_FILE} missing edges array`,
       errorKind: "validation",
     };
   }
@@ -213,12 +234,20 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   // --- node_specs/ ---
   const nodeSpecsDir = resolveNodeSpecsDir(scoutDir);
   if (!fs.existsSync(nodeSpecsDir)) {
-    return { status: "error", error: "node_specs/ directory not found", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_NODE_SPECS_DIR}/ directory not found`,
+      errorKind: "validation",
+    };
   }
 
   const specFiles = new Set(fs.readdirSync(nodeSpecsDir).filter((f) => f.endsWith(".md")));
   if (specFiles.size === 0) {
-    return { status: "error", error: "node_specs/ contains no .md files", errorKind: "validation" };
+    return {
+      status: "error",
+      error: `${SCOUT_NODE_SPECS_DIR}/ contains no .md files`,
+      errorKind: "validation",
+    };
   }
 
   // Every node in report must have a matching spec file
@@ -226,7 +255,7 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
     if (!specFiles.has(`${node.id}.md`)) {
       return {
         status: "error",
-        error: `Missing node spec: node_specs/${node.id}.md`,
+        error: `Missing node spec: ${SCOUT_NODE_SPECS_DIR}/${node.id}.md`,
         errorKind: "validation",
       };
     }
@@ -238,351 +267,11 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   if (beginIdx >= endIdx) {
     return {
       status: "error",
-      error: "plan_draft.md has BEGIN_PLAN_DRAFT after END_PLAN_DRAFT (sentinels out of order)",
+      error: `${SCOUT_PLAN_DRAFT_FILE} has BEGIN_PLAN_DRAFT after END_PLAN_DRAFT (sentinels out of order)`,
       errorKind: "validation",
     };
   }
   const planDraft = draft.slice(beginIdx, endIdx + "END_PLAN_DRAFT".length);
 
   return { status: "success", report, planDraft };
-}
-
-// ---------------------------------------------------------------------------
-// Execute scout
-// ---------------------------------------------------------------------------
-
-export type RunScoutParams = {
-  runId: string;
-  goalText: string;
-  goalsDir?: string;
-  nodeCountMin?: number;
-  nodeCountMax?: number;
-  timeoutMs?: number;
-  /** How the scout's Claude Code process authenticates (default: "subscription"). */
-  claudeCodeAuth?: ClaudeCodeAuthMode;
-};
-
-export async function runScout(params: RunScoutParams): Promise<ScoutResult> {
-  const { runId, goalText, goalsDir } = params;
-
-  // Skip via env var
-  if (process.env.MOLTBOT_NO_SCOUT === "1") {
-    return { status: "skipped", reason: "MOLTBOT_NO_SCOUT=1" };
-  }
-
-  // Check claude binary
-  const claudeBin = resolveClaudeBinary();
-  if (!claudeBin) {
-    return { status: "skipped", reason: "claude binary not found on PATH" };
-  }
-
-  const scoutDir = resolveScoutDir(runId, goalsDir);
-  const nodeSpecsDir = resolveNodeSpecsDir(scoutDir);
-
-  // Ensure output directories exist
-  fs.mkdirSync(nodeSpecsDir, { recursive: true });
-
-  // Load template
-  const templatePath = resolveScoutTemplatePath();
-  if (!fs.existsSync(templatePath)) {
-    return { status: "skipped", reason: `Scout template not found: ${templatePath}` };
-  }
-  const template = fs.readFileSync(templatePath, "utf8");
-
-  // Render template
-  const brief = renderScoutTemplate({
-    template,
-    goalId: runId,
-    goalText,
-    outputDir: scoutDir,
-    nodeCountMin: params.nodeCountMin,
-    nodeCountMax: params.nodeCountMax,
-  });
-
-  // Write PLANNING_BRIEF.md for debugging/audit
-  const briefPath = path.join(scoutDir, "PLANNING_BRIEF.md");
-  fs.writeFileSync(briefPath, brief, "utf8");
-
-  // Build env based on auth mode (default: subscription — strips API keys)
-  const authMode = params.claudeCodeAuth ?? "subscription";
-  const scoutEnv = buildClaudeCodeEnv(authMode);
-  writeAuthModeArtifact(scoutDir, authMode);
-
-  // Execute claude -p with stdin piping
-  const stdoutPath = path.join(scoutDir, "scout_stdout.txt");
-  const stderrPath = path.join(scoutDir, "scout_stderr.txt");
-  const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
-
-  const procResult = await runCliProcess({
-    command: claudeBin,
-    args: ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"],
-    cwd: process.cwd(),
-    timeoutMs: timeout,
-    stdin: brief,
-    stdoutPath,
-    stderrPath,
-    env: scoutEnv,
-  });
-
-  if (procResult.timedOut) {
-    const message = `Scout timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
-    writeScoutError(scoutDir, message);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "timeout",
-      errorClassification: "timeout",
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-    });
-    return { status: "error", error: message, errorKind: "timeout" };
-  }
-
-  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
-    const errMsg =
-      procResult.stderr ||
-      procResult.stdout ||
-      (procResult.signal
-        ? `Scout process terminated by ${procResult.signal}.`
-        : "Scout process failed.");
-    const errorKind = classifyScoutError(errMsg);
-    writeScoutError(scoutDir, errMsg);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "crash",
-      errorClassification: errorKind,
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-    });
-    return {
-      status: "error",
-      error: `Scout execution failed: ${errMsg}`,
-      errorKind,
-    };
-  }
-
-  // Validate output artifacts
-  const result = validateScoutOutput(scoutDir);
-  const resultFile = fs.existsSync(path.join(scoutDir, "scout_report.json"))
-    ? "scout_report.json"
-    : null;
-
-  if (result.status === "error") {
-    writeScoutError(scoutDir, result.error);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "failed",
-      errorClassification: result.errorKind,
-      resultFile,
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-    });
-    return result;
-  }
-
-  if (result.status === "needs_clarification") {
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 1,
-      backend: "claude_code",
-      outcome: "blocked",
-      errorClassification: "needs_clarification",
-      resultFile,
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-    });
-    return result;
-  }
-
-  if (result.status === "skipped") {
-    return result;
-  }
-
-  writeAttemptBundle(scoutDir, {
-    attemptNumber: 1,
-    backend: "claude_code",
-    outcome: "complete",
-    resultFile,
-    logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-    durationMs: procResult.durationMs,
-  });
-
-  return result;
-}
-
-/**
- * Run scout with one automatic retry on validation errors.
- *
- * - Validation failure: retry once with the validation error appended to the
- *   prompt so the scout knows what went wrong.
- * - Timeout / rate limit / other: return immediately without retrying.
- * - Skipped / needs_clarification / success: return immediately.
- */
-export async function runScoutWithRetry(params: RunScoutParams): Promise<ScoutResult> {
-  const firstResult = await runScout(params);
-
-  // Only retry on validation errors
-  if (firstResult.status !== "error" || firstResult.errorKind !== "validation") {
-    return firstResult;
-  }
-
-  // --- Error-informed retry ---
-  const { runId, goalText, goalsDir } = params;
-
-  // Skip checks already passed in first run; go straight to re-execution
-  const claudeBin = resolveClaudeBinary();
-  if (!claudeBin) return firstResult; // shouldn't happen since first run used it
-
-  const scoutDir = resolveScoutDir(runId, goalsDir);
-  const nodeSpecsDir = resolveNodeSpecsDir(scoutDir);
-
-  // Clean previous output so the scout starts fresh
-  fs.rmSync(nodeSpecsDir, { recursive: true, force: true });
-  fs.mkdirSync(nodeSpecsDir, { recursive: true });
-  for (const file of ["plan_draft.md", "scout_report.json", "plan_needs_clarification.md"]) {
-    const p = path.join(scoutDir, file);
-    if (fs.existsSync(p)) fs.rmSync(p);
-  }
-
-  // Load and render template with error context appended
-  const templatePath = resolveScoutTemplatePath();
-  if (!fs.existsSync(templatePath)) return firstResult;
-  const template = fs.readFileSync(templatePath, "utf8");
-
-  const brief = renderScoutTemplate({
-    template,
-    goalId: runId,
-    goalText,
-    outputDir: scoutDir,
-    nodeCountMin: params.nodeCountMin,
-    nodeCountMax: params.nodeCountMax,
-  });
-
-  const retryBrief =
-    brief +
-    "\n\n" +
-    "## PREVIOUS ATTEMPT FAILED VALIDATION\n\n" +
-    `Error: ${firstResult.error}\n\n` +
-    "Fix the issues above. Ensure ALL required output files exist and pass validation.\n" +
-    "Double-check: plan_draft.md (with sentinels), scout_report.json, and node_specs/<id>.md for every node.\n";
-
-  // Write retry brief for debugging
-  fs.writeFileSync(path.join(scoutDir, "PLANNING_BRIEF_RETRY.md"), retryBrief, "utf8");
-
-  const stdoutPath = path.join(scoutDir, "scout_stdout_retry.txt");
-  const stderrPath = path.join(scoutDir, "scout_stderr_retry.txt");
-  const timeout = params.timeoutMs ?? SCOUT_TIMEOUT_MS;
-
-  // Reuse the same auth-mode env as the first attempt
-  const retryAuthMode = params.claudeCodeAuth ?? "subscription";
-  const retryEnv = buildClaudeCodeEnv(retryAuthMode);
-
-  const retryProc = await runCliProcess({
-    command: claudeBin,
-    args: ["-p", "--allowedTools", "Read,Glob,Grep,Bash,Write"],
-    cwd: process.cwd(),
-    timeoutMs: timeout,
-    stdin: retryBrief,
-    stdoutPath,
-    stderrPath,
-    env: retryEnv,
-  });
-
-  if (retryProc.timedOut) {
-    const message = `Scout retry timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
-    writeScoutError(scoutDir, `Retry failed: ${message}`);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 2,
-      backend: "claude_code",
-      outcome: "timeout",
-      errorClassification: "timeout",
-      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
-      durationMs: retryProc.durationMs,
-    });
-    return {
-      status: "error",
-      error: `Scout retry failed: ${message} (original error: ${firstResult.error})`,
-      errorKind: "timeout",
-    };
-  }
-
-  if ((retryProc.exitCode && retryProc.exitCode !== 0) || retryProc.signal) {
-    const errMsg =
-      retryProc.stderr ||
-      retryProc.stdout ||
-      (retryProc.signal ? `Scout retry terminated by ${retryProc.signal}.` : "Scout retry failed.");
-    const errorKind = classifyScoutError(errMsg);
-    writeScoutError(scoutDir, `Retry failed: ${errMsg}`);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 2,
-      backend: "claude_code",
-      outcome: "crash",
-      errorClassification: errorKind,
-      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
-      durationMs: retryProc.durationMs,
-    });
-    return {
-      status: "error",
-      error: `Scout retry failed: ${errMsg} (original error: ${firstResult.error})`,
-      errorKind,
-    };
-  }
-
-  const retryResult = validateScoutOutput(scoutDir);
-  const resultFile = fs.existsSync(path.join(scoutDir, "scout_report.json"))
-    ? "scout_report.json"
-    : null;
-
-  if (retryResult.status === "error") {
-    writeScoutError(scoutDir, `Retry validation failed: ${retryResult.error}`);
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 2,
-      backend: "claude_code",
-      outcome: "failed",
-      errorClassification: retryResult.errorKind,
-      resultFile,
-      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
-      durationMs: retryProc.durationMs,
-    });
-    // Include both errors so the user sees the full picture
-    return {
-      status: "error",
-      error: `Scout failed validation after retry. First: ${firstResult.error}. Retry: ${retryResult.error}`,
-      errorKind: "validation",
-    };
-  }
-
-  if (retryResult.status === "needs_clarification") {
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: 2,
-      backend: "claude_code",
-      outcome: "blocked",
-      errorClassification: "needs_clarification",
-      resultFile,
-      logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
-      durationMs: retryProc.durationMs,
-    });
-    return retryResult;
-  }
-
-  writeAttemptBundle(scoutDir, {
-    attemptNumber: 2,
-    backend: "claude_code",
-    outcome: "complete",
-    resultFile,
-    logExcerpt: tailText(retryProc.stdout, LOG_EXCERPT_CHARS),
-    durationMs: retryProc.durationMs,
-  });
-
-  return retryResult;
-}
-
-/** Write scout_error.txt for post-mortem debugging. */
-function writeScoutError(scoutDir: string, message: string): void {
-  try {
-    fs.writeFileSync(path.join(scoutDir, "scout_error.txt"), message, "utf8");
-  } catch {
-    // Best-effort; don't mask the original error.
-  }
 }

@@ -15,10 +15,14 @@ import {
   sessionToSerialized,
   resolveGoalsDir,
   resolveRunId,
-  resolveRunDir,
 } from "../goal/run-store.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import { type ScoutResult } from "../goal/scout.js";
+import {
+  resolveScoutDir,
+  SCOUT_PLAN_DRAFT_FILE,
+  SCOUT_REPORT_FILE,
+  type ScoutResult,
+} from "../goal/scout.js";
 import type { GoalOutcome, OutputFormat, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -58,11 +62,13 @@ type ScoutArtifactFiles = {
 };
 
 const CANONICAL_SCOUT_ARTIFACTS: ScoutArtifactFiles = {
-  reportFile: "scout_report.json",
-  planDraftFile: "plan_draft.md",
+  // Canonical names must match the planning writer (src/goal/scout.ts constants).
+  reportFile: SCOUT_REPORT_FILE,
+  planDraftFile: SCOUT_PLAN_DRAFT_FILE,
 };
 
 const LEGACY_SCOUT_ARTIFACTS: ScoutArtifactFiles = {
+  // Backward-compat: older runs wrote these pre-canonical names.
   reportFile: "report.json",
   planDraftFile: "plan.md",
 };
@@ -70,8 +76,7 @@ const LEGACY_SCOUT_ARTIFACTS: ScoutArtifactFiles = {
 /** Load scout data from a previous run if it exists and was successful. */
 function loadScoutData(runId: string): Extract<ScoutResult, { status: "success" }> | undefined {
   try {
-    const runDir = resolveRunDir(runId, resolveGoalsDir());
-    const scoutDir = path.join(runDir, "scout");
+    const scoutDir = resolveScoutDir(runId, resolveGoalsDir());
     const candidates = [CANONICAL_SCOUT_ARTIFACTS, LEGACY_SCOUT_ARTIFACTS];
 
     for (const candidate of candidates) {
