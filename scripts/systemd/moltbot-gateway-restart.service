@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart Moltbot dev gateway from trigger requests
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'status=0; /usr/bin/systemctl --user restart moltbot-gateway-dev.service || status=$?; /usr/bin/find %h/.moltbot/gateway-restart-triggers -maxdepth 1 -type f -name "*.req" -delete; exit "$status"'
