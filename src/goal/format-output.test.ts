@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatPlanOutput } from "./format-output.js";
-import type { Plan } from "./types.js";
+import type { Plan, StepResult } from "./types.js";
 
 const samplePlan: Plan = {
   goal: "Create a landing page",
@@ -91,6 +91,20 @@ const fanInPlan: Plan = {
       dependsOn: ["B", "C"],
       status: "pending",
       durationMinutes: 1,
+    },
+  ],
+};
+
+const doneSingleStepPlan: Plan = {
+  goal: "Done duration test",
+  summary: "Single completed step",
+  steps: [
+    {
+      id: "A",
+      description: "Completed task",
+      dependsOn: [],
+      status: "done",
+      durationMinutes: 10,
     },
   ],
 };
@@ -196,6 +210,29 @@ describe("formatPlanOutput", () => {
       expect(out).toContain("~1 min");
       expect(out).toContain("linkStyle");
     });
+
+    it("uses actual elapsed duration labels for done steps when stepResults are provided", () => {
+      const stepResults = new Map<string, StepResult>([
+        [
+          "A",
+          {
+            stepId: "A",
+            success: true,
+            output: "ok",
+            durationMs: 42_000,
+          },
+        ],
+      ]);
+
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "mermaid",
+        format: "md",
+        stepResults,
+      });
+
+      expect(out).toContain("42s");
+      expect(out).not.toContain("~10 min");
+    });
   });
 
   describe("json format", () => {
@@ -285,6 +322,29 @@ describe("formatPlanOutput", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "json" });
       const parsed = JSON.parse(out);
       expect(parsed.diagrams.mermaid).toContain("~1 min");
+    });
+
+    it("JSON mermaid uses actual elapsed duration labels for done steps when stepResults are provided", () => {
+      const stepResults = new Map<string, StepResult>([
+        [
+          "A",
+          {
+            stepId: "A",
+            success: true,
+            output: "ok",
+            durationMs: 42_000,
+          },
+        ],
+      ]);
+
+      const out = formatPlanOutput(doneSingleStepPlan, {
+        diagram: "mermaid",
+        format: "json",
+        stepResults,
+      });
+      const parsed = JSON.parse(out);
+      expect(parsed.diagrams.mermaid).toContain("42s");
+      expect(parsed.diagrams.mermaid).not.toContain("~10 min");
     });
   });
 });

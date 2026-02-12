@@ -80,11 +80,13 @@ export async function goalStatusCommand(
   }
 
   if (run.plan) {
+    const stepResults = new Map(Object.entries(run.stepResults));
     runtime.log("");
     runtime.log(
       formatPlanOutput(run.plan, {
         diagram: diagramMode,
         format: "md",
+        stepResults,
       }),
     );
 

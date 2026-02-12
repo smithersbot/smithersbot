@@ -31,7 +31,7 @@ import {
   isGoalOpLocked,
 } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
-import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
+import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks } from "./format.js";
@@ -100,7 +100,15 @@ export type GoalPlanResult = {
   blocked?: boolean;
   /** Plan object for PNG rendering (when available, sendGoalPlanResult renders a DAG photo). */
   plan?: Plan;
+  /** Runtime results used to show actual elapsed durations for completed steps. */
+  stepResults?: ReadonlyMap<string, StepResult>;
 };
+
+function serializedStepResultsToMap(
+  run: SerializedRun | undefined,
+): ReadonlyMap<string, StepResult> {
+  return new Map(Object.entries(run?.stepResults ?? {}));
+}
 
 function trackBlockedStatusChange(
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
@@ -364,6 +372,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       runId,
       revision: 1,
       plan: savedRun?.plan ?? undefined,
+      stepResults: serializedStepResultsToMap(savedRun),
     };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
@@ -500,6 +509,7 @@ export async function sendGoalStatusResponse(params: {
       runtime,
       plan: run.plan,
       steps: run.plan.steps,
+      stepResults: serializedStepResultsToMap(run),
       caption: reply,
     });
     return;
@@ -599,13 +609,19 @@ export async function handleGoalAnswer(
       const updated = loadRun(resolvedId);
       const plan = updated?.plan;
       if (plan) {
-        const planText = formatPlanOutput(plan, { diagram: "none", format: "md" });
+        const stepResults = serializedStepResultsToMap(updated);
+        const planText = formatPlanOutput(plan, {
+          diagram: "none",
+          format: "md",
+          stepResults,
+        });
         const parts: string[] = [planText, `\nRun ID: \`${prefix}\``];
         return {
           text: parts.join("\n"),
           runId: resolvedId,
           revision: updated?.planRevision ?? 1,
           plan,
+          stepResults,
         };
       }
 
@@ -747,13 +763,24 @@ export async function handleGoalEdit(rawId: string, instructions: string): Promi
     run.updatedAt = new Date().toISOString();
     saveRun(run);
 
-    const planText = formatPlanOutput(result, { diagram: "none", format: "md" });
+    const stepResults = serializedStepResultsToMap(run);
+    const planText = formatPlanOutput(result, {
+      diagram: "none",
+      format: "md",
+      stepResults,
+    });
     const parts: string[] = [];
     parts.push(`**Revision ${newRevision}**\n`);
     parts.push(planText);
     parts.push(`\nRun ID: \`${resolvedId.slice(0, 8)}\``);
 
-    return { text: parts.join("\n"), runId: resolvedId, revision: newRevision, plan: result };
+    return {
+      text: parts.join("\n"),
+      runId: resolvedId,
+      revision: newRevision,
+      plan: result,
+      stepResults,
+    };
   } catch (err) {
     if (err instanceof PlanParseError) {
       persistRawPlanResponse(resolvedId, err.rawResponse);
@@ -995,6 +1022,7 @@ export async function sendGoalPlanResult(params: {
         runtime,
         plan: result.plan,
         steps: result.plan.steps,
+        stepResults: result.stepResults,
         caption: captionHeader,
         replyMarkup,
       });
@@ -1019,7 +1047,7 @@ export async function sendGoalPlanResult(params: {
       } catch {
         /* non-critical */
       }
-      const mermaidText = renderMermaid(result.plan, cpm);
+      const mermaidText = renderMermaid(result.plan, cpm, undefined, result.stepResults);
       markdown += `\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
     }
 
@@ -1091,10 +1119,11 @@ async function sendDagPng(params: {
   runtime: RuntimeEnv;
   plan: Plan;
   steps: PlanStep[];
+  stepResults?: ReadonlyMap<string, StepResult>;
   caption: string;
   replyMarkup?: InlineKeyboardMarkup;
 }): Promise<number | undefined> {
-  const { bot, chatId, threadId, runtime, plan, steps, caption, replyMarkup } = params;
+  const { bot, chatId, threadId, runtime, plan, steps, stepResults, caption, replyMarkup } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   const split = splitTelegramCaption(caption);
 
@@ -1105,7 +1134,7 @@ async function sendDagPng(params: {
   } catch {
     // CPM not critical for visual output
   }
-  const mermaidText = renderMermaid(plan, cpm, displayStatuses);
+  const mermaidText = renderMermaid(plan, cpm, displayStatuses, stepResults);
   const pngBuffer = renderMermaidToPng(mermaidText);
 
   if (pngBuffer) {
@@ -1151,6 +1180,7 @@ export function buildOnStatusChange(params: {
     const run = loadRun(runId);
     const plan = run?.plan;
     if (!plan) return;
+    const stepResults = serializedStepResultsToMap(run);
 
     if (event.type === "step_blocked") {
       const caption = [
@@ -1167,6 +1197,7 @@ export function buildOnStatusChange(params: {
         runtime,
         plan,
         steps: event.steps,
+        stepResults,
         caption,
         replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
       });
@@ -1201,6 +1232,7 @@ export function buildOnStatusChange(params: {
         runtime,
         plan,
         steps: event.steps,
+        stepResults,
         caption: lines.join("\n"),
         replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
       });
@@ -1229,6 +1261,7 @@ export function buildOnStatusChange(params: {
         runtime,
         plan,
         steps: event.steps,
+        stepResults,
         caption: `DONE (${prefix}): ${event.summary}`,
       });
     }

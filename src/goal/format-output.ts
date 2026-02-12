@@ -1,6 +1,7 @@
 import os from "node:os";
 import { computeCpm } from "./cpm.js";
-import type { DiagramMode, OutputFormat, Plan } from "./types.js";
+import { computeDisplayStatuses } from "./execution-status.js";
+import type { DiagramMode, OutputFormat, Plan, StepResult } from "./types.js";
 import { renderAsciiDependencies } from "./dag-render.js";
 import { renderMermaid } from "./mermaid-render.js";
 
@@ -20,12 +21,17 @@ function tildeShorten(p: string): string {
  */
 export function formatPlanOutput(
   plan: Plan,
-  opts: { diagram: DiagramMode; format: OutputFormat; workingDir?: string },
+  opts: {
+    diagram: DiagramMode;
+    format: OutputFormat;
+    workingDir?: string;
+    stepResults?: ReadonlyMap<string, StepResult>;
+  },
 ): string {
   if (opts.format === "json") {
-    return formatJson(plan, opts.diagram, opts.workingDir);
+    return formatJson(plan, opts.diagram, opts.workingDir, opts.stepResults);
   }
-  return formatMarkdown(plan, opts.diagram, opts.workingDir);
+  return formatMarkdown(plan, opts.diagram, opts.workingDir, opts.stepResults);
 }
 
 function wantAscii(mode: DiagramMode): boolean {
@@ -36,7 +42,12 @@ function wantMermaid(mode: DiagramMode): boolean {
   return mode === "mermaid" || mode === "both";
 }
 
-function formatMarkdown(plan: Plan, diagram: DiagramMode, workingDir?: string): string {
+function formatMarkdown(
+  plan: Plan,
+  diagram: DiagramMode,
+  workingDir?: string,
+  stepResults?: ReadonlyMap<string, StepResult>,
+): string {
   const cpm = computeCpm(plan);
   const lines: string[] = [];
 
@@ -68,22 +79,31 @@ function formatMarkdown(plan: Plan, diagram: DiagramMode, workingDir?: string): 
   }
 
   if (wantMermaid(diagram)) {
+    const displayStatuses = computeDisplayStatuses(plan.steps);
     lines.push("");
     lines.push("### Dependency Graph (Mermaid)");
     lines.push("");
     lines.push("```mermaid");
-    lines.push(renderMermaid(plan, cpm));
+    lines.push(renderMermaid(plan, cpm, displayStatuses, stepResults));
     lines.push("```");
   }
 
   return lines.join("\n");
 }
 
-function formatJson(plan: Plan, diagram: DiagramMode, workingDir?: string): string {
+function formatJson(
+  plan: Plan,
+  diagram: DiagramMode,
+  workingDir?: string,
+  stepResults?: ReadonlyMap<string, StepResult>,
+): string {
   const cpm = computeCpm(plan);
   const diagrams: Record<string, string> = {};
   if (wantAscii(diagram)) diagrams.ascii = renderAsciiDependencies(plan);
-  if (wantMermaid(diagram)) diagrams.mermaid = renderMermaid(plan, cpm);
+  if (wantMermaid(diagram)) {
+    const displayStatuses = computeDisplayStatuses(plan.steps);
+    diagrams.mermaid = renderMermaid(plan, cpm, displayStatuses, stepResults);
+  }
 
   const output: Record<string, unknown> = {
     goal: plan.goal,

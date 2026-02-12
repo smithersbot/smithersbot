@@ -275,7 +275,12 @@ export async function goalCommand(
     if (!isJson) {
       runtime.log("\n");
       runtime.log(
-        formatPlanOutput(planResult, { diagram: diagramMode, format: outputFormat, workingDir }),
+        formatPlanOutput(planResult, {
+          diagram: diagramMode,
+          format: outputFormat,
+          workingDir,
+          stepResults: session.stepResults,
+        }),
       );
       runtime.log("");
     }
@@ -297,7 +302,11 @@ export async function goalCommand(
       };
       if (isJson) {
         const planData = JSON.parse(
-          formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+          formatPlanOutput(planResult, {
+            diagram: diagramMode,
+            format: "json",
+            stepResults: session.stepResults,
+          }),
         );
         runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
       }
@@ -368,7 +377,11 @@ export async function goalCommand(
     // Final result
     if (isJson) {
       const planData = JSON.parse(
-        formatPlanOutput(planResult, { diagram: diagramMode, format: "json" }),
+        formatPlanOutput(planResult, {
+          diagram: diagramMode,
+          format: "json",
+          stepResults: session.stepResults,
+        }),
       );
       runtime.log(JSON.stringify({ ...outcome, plan: planData }, null, 2));
     } else {

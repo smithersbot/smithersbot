@@ -185,7 +185,13 @@ async function retryPlanning(
     // Display plan
     if (!isJson && !quiet) {
       runtime.log("\n");
-      runtime.log(formatPlanOutput(planResult, { diagram: "both", format: "md" }));
+      runtime.log(
+        formatPlanOutput(planResult, {
+          diagram: "both",
+          format: "md",
+          stepResults: session.stepResults,
+        }),
+      );
       runtime.log("");
       runtime.log(
         `Plan generated successfully. Use 'moltbot goal resume ${run.runId}' to approve and execute.`,
@@ -398,7 +404,13 @@ export async function goalResumeCommand(
   if (needsApproval) {
     if (session.plan) {
       if (!isJson && !quiet) {
-        runtime.log(formatPlanOutput(session.plan, { diagram: "both", format: "md" }));
+        runtime.log(
+          formatPlanOutput(session.plan, {
+            diagram: "both",
+            format: "md",
+            stepResults: session.stepResults,
+          }),
+        );
         runtime.log("");
       }
     }
