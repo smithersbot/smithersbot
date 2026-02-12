@@ -207,30 +207,16 @@ export async function goalCommand(
           return outcome;
         }
         if (scoutData.status === "error") {
-          scoutStatus = "error";
-          scoutSkipReason = scoutData.error;
-          const hint = "Run with --no-scout to skip scout analysis.";
-          const kind = scoutData.errorKind;
-          let message: string;
-          if (kind === "timeout") {
-            message = `Scout timed out. Try again later or increase the timeout. ${hint}`;
-          } else if (kind === "rate_limit") {
-            message = `Scout hit a rate limit. Try again later. ${hint}`;
-          } else if (kind === "validation") {
-            message = `Scout failed to produce valid output after retry. ${hint}`;
-          } else {
-            message = `Scout failed: ${scoutData.error}. ${hint}`;
+          const errorKind = scoutData.errorKind ?? "unknown";
+          const errorDetail = scoutData.error ?? "unknown error";
+          scoutStatus = "skipped";
+          scoutSkipReason = `scout_error(${errorKind}): ${errorDetail}`;
+          if (!isJson) {
+            runtime.log(`Scout failed (${errorKind}), continuing without scout data.`);
           }
-          session.state = "cancelled";
-          session.lastError = message;
-          persistRun();
-          if (isJson) {
-            runtime.log(JSON.stringify({ error: message, runId }));
-            throw new JsonExitError(1);
-          }
-          throw new Error(message);
+          scoutData = undefined;
         }
-        if (scoutData.status === "success") {
+        if (scoutData?.status === "success") {
           scoutStatus = "success";
         }
       } finally {

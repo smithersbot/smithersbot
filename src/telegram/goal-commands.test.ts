@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadRun, saveRun } from "../goal/run-store.js";
+import { resetMessageIndex } from "./goal-message-index.js";
 import type { SerializedRun } from "../goal/types.js";
 
 let testGoalsDir: string;
@@ -118,6 +119,7 @@ describe("goal-commands telegram adapter", () => {
   });
 
   afterEach(() => {
+    resetMessageIndex();
     fs.rmSync(testGoalsDir, { recursive: true, force: true });
   });
 

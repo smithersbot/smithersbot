@@ -24,10 +24,9 @@ import {
   resolveSenderAllowMatch,
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
+import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import {
-  acquireGoalLock,
   buildOnStatusChange,
-  getGoalLockLabel,
   handleGoalAnswer,
   handleGoalEdit,
   handleGoalList,
@@ -486,25 +485,24 @@ export const registerTelegramHandlers = ({
       },
       runHandlers: {
         edit: (runId, text) => {
-          const existingLabel = getGoalLockLabel(runId);
-          if (existingLabel) {
+          const editLock = acquireGoalOpLock(runId, "edit");
+          if (!editLock.acquired) {
             void sendGoalReply(
               bot,
               chatId,
-              `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+              `Goal \`${runId.slice(0, 8)}\` is already being processed (${editLock.existingLabel ?? "unknown"}).`,
               runtime,
               params.threadId,
             );
             return;
           }
-          acquireGoalLock(runId, "edit");
           runGoalInBackground({
             bot,
             chatId,
             threadId: params.threadId,
             runtime,
             label: "goal-router:edit",
-            runId,
+            releaseGoalLock: editLock.release,
             fn: () => handleGoalEdit(runId, text),
             onResult: async (result) => {
               if (result == null) return;
@@ -523,18 +521,17 @@ export const registerTelegramHandlers = ({
           });
         },
         answer: (runId, text) => {
-          const existingLabel = getGoalLockLabel(runId);
-          if (existingLabel) {
+          const answerLock = acquireGoalOpLock(runId, "answer");
+          if (!answerLock.acquired) {
             void sendGoalReply(
               bot,
               chatId,
-              `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+              `Goal \`${runId.slice(0, 8)}\` is already being processed (${answerLock.existingLabel ?? "unknown"}).`,
               runtime,
               params.threadId,
             );
             return;
           }
-          acquireGoalLock(runId, "answer");
           const statusCb = buildOnStatusChange({
             bot,
             chatId,
@@ -548,7 +545,7 @@ export const registerTelegramHandlers = ({
             threadId: params.threadId,
             runtime,
             label: "goal-router:answer",
-            runId,
+            releaseGoalLock: answerLock.release,
             fn: () => handleGoalAnswer(runId, text, statusCb),
             onResult: async (result) => {
               if (result == null) return;

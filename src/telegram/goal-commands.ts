@@ -25,6 +25,11 @@ import { createGoalLlmClient } from "../goal/llm-client.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { generatePlanRevision, PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import {
+  acquireGoalOpLock,
+  acquirePlanningLock as acquireFilePlanningLock,
+  isGoalOpLocked,
+} from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -32,6 +37,7 @@ import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks } from "./format.js";
 import { buildInlineKeyboard } from "./send.js";
 import { recordSentMessage } from "./sent-message-cache.js";
+import { findRunByPlanMessageIdIndexed, indexPlanMessage } from "./goal-message-index.js";
 import { shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
@@ -146,38 +152,17 @@ export async function withChatAction<T>(params: {
 }
 
 // ---------------------------------------------------------------------------
-// In-flight guards: prevent overlapping long-running ops per run / per chat
+// File-based lock helpers (survive gateway restarts)
 // ---------------------------------------------------------------------------
 
-/** Per-runId guard — prevents overlapping approve/answer/edit for the same goal. */
-const inFlightGoals = new Map<string, string>(); // runId → label
-
-export function acquireGoalLock(runId: string, label: string): boolean {
-  if (inFlightGoals.has(runId)) return false;
-  inFlightGoals.set(runId, label);
-  return true;
-}
-function releaseGoalLock(runId: string): void {
-  inFlightGoals.delete(runId);
-}
+/** Read-only check: return the label of an in-flight goal op, or undefined. */
 export function getGoalLockLabel(runId: string): string | undefined {
-  return inFlightGoals.get(runId);
+  return isGoalOpLocked(runId).label;
 }
 
-/** Per-chat planning guard — prevents concurrent /new_goal planning in the same chat/thread. */
-const inFlightPlanning = new Set<string>(); // "chatId" or "chatId:threadId"
-
+/** Build a planning scope key from Telegram chatId + optional threadId. */
 function planningKey(chatId: number, threadId?: number): string {
-  return threadId != null ? `${chatId}:${threadId}` : String(chatId);
-}
-function acquirePlanningLock(chatId: number, threadId?: number): boolean {
-  const key = planningKey(chatId, threadId);
-  if (inFlightPlanning.has(key)) return false;
-  inFlightPlanning.add(key);
-  return true;
-}
-function releasePlanningLock(chatId: number, threadId?: number): void {
-  inFlightPlanning.delete(planningKey(chatId, threadId));
+  return threadId != null ? `${chatId}-${threadId}` : String(chatId);
 }
 
 // ---------------------------------------------------------------------------
@@ -235,14 +220,14 @@ export function runGoalInBackground(params: {
   runtime: RuntimeEnv;
   label?: string;
   preface?: string;
-  /** When set, releases the per-runId lock in `finally`. */
-  runId?: string;
+  /** When set, called in `finally` to release per-runId file lock. */
+  releaseGoalLock?: () => void;
   /** When set, called in `finally` to release planning lock. */
   releasePlanningLock?: () => void;
   fn: () => Promise<GoalPlanResult | string | undefined>;
   onResult: (result: GoalPlanResult | string | undefined) => Promise<void>;
 }): void {
-  const { bot, chatId, threadId, runtime, label, runId, fn, onResult } = params;
+  const { bot, chatId, threadId, runtime, label, fn, onResult } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   const tag = label ? `${label} ` : "";
   const preface = params.preface ?? PLANNING_PREFACE;
@@ -278,28 +263,21 @@ export function runGoalInBackground(params: {
       });
     } finally {
       loop.stop();
-      if (runId) releaseGoalLock(runId);
+      params.releaseGoalLock?.();
       params.releasePlanningLock?.();
     }
   })();
 }
 
 // ---------------------------------------------------------------------------
-// Lookup helper: find a run by its Telegram plan message ID
+// Lookup helper: find a run by its Telegram plan message ID (indexed)
 // ---------------------------------------------------------------------------
 
 export function findRunByPlanMessageId(
   chatId: number,
   messageId: number,
 ): SerializedRun | undefined {
-  for (const summary of listRuns()) {
-    const run = loadRun(summary.runId);
-    if (!run?.telegramPlanMessage) continue;
-    if (run.telegramPlanMessage.chatId !== chatId) continue;
-    if (run.telegramPlanMessage.messageId === messageId) return run;
-    if (run.telegramPlanMessage.messageHistory?.includes(messageId)) return run;
-  }
-  return undefined;
+  return findRunByPlanMessageIdIndexed(chatId, messageId);
 }
 
 // ---------------------------------------------------------------------------
@@ -867,6 +845,8 @@ function persistTelegramPlanMessage(params: {
     messageHistory: history,
   };
   saveRun(run);
+  // Write-through to the in-memory message index
+  indexPlanMessage(params.chatId, params.messageId, params.runId, oldMsgId);
 }
 
 const TELEGRAM_QUESTION_MESSAGE_CAP = 10;
@@ -1318,18 +1298,17 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(bot, chatId, `Run not found: ${rawId}`, runtime, threadId);
       return;
     }
-    const existingLabel = getGoalLockLabel(resolvedId);
-    if (existingLabel) {
+    const lockResult = acquireGoalOpLock(resolvedId, lockLabel);
+    if (!lockResult.acquired) {
       await sendGoalReply(
         bot,
         chatId,
-        `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${lockResult.existingLabel ?? "unknown"}).`,
         runtime,
         threadId,
       );
       return;
     }
-    acquireGoalLock(resolvedId, lockLabel);
     const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
     runGoalInBackground({
       bot,
@@ -1338,7 +1317,7 @@ export function registerTelegramGoalCommands({
       runtime,
       label: backgroundLabel,
       preface: RESUME_PREFACE,
-      runId: resolvedId,
+      releaseGoalLock: lockResult.release,
       fn: () => handleGoalApprove(rawId, statusCb),
       onResult: async (reply) => sendGoalBackgroundResult(chatId, threadId, reply),
     });
@@ -1518,18 +1497,17 @@ export function registerTelegramGoalCommands({
     const hasReject = newEmojis.some((e) => REJECT_EMOJIS.has(e));
 
     if (hasApprove) {
-      const existingLabel = getGoalLockLabel(run.runId);
-      if (existingLabel) {
+      const lockResult = acquireGoalOpLock(run.runId, "approve");
+      if (!lockResult.acquired) {
         await sendGoalReply(
           bot,
           chatId,
-          `Goal \`${run.runId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+          `Goal \`${run.runId.slice(0, 8)}\` is already being processed (${lockResult.existingLabel ?? "unknown"}).`,
           runtime,
           threadId,
         );
         return;
       }
-      acquireGoalLock(run.runId, "approve");
       const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: run.runId });
       runGoalInBackground({
         bot,
@@ -1537,7 +1515,7 @@ export function registerTelegramGoalCommands({
         threadId,
         runtime,
         label: "reaction:approve",
-        runId: run.runId,
+        releaseGoalLock: lockResult.release,
         fn: () => handleGoalApprove(run.runId, statusCb),
         onResult: async (reply) => {
           if (reply == null) return;
@@ -1570,7 +1548,10 @@ export function registerTelegramGoalCommands({
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
       return;
     }
-    if (!acquirePlanningLock(resolved.chatId, resolved.threadIdForSend)) {
+    const planLock = acquireFilePlanningLock(
+      planningKey(resolved.chatId, resolved.threadIdForSend),
+    );
+    if (!planLock.acquired) {
       await sendGoalReply(
         bot,
         resolved.chatId,
@@ -1586,7 +1567,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal",
-      releasePlanningLock: () => releasePlanningLock(resolved.chatId, resolved.threadIdForSend),
+      releasePlanningLock: planLock.release,
       fn: () => handleGoal(text, cfg),
       onResult: async (result) => {
         if (result == null) return;
@@ -1684,25 +1665,24 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const existingLabel = getGoalLockLabel(editRunId);
-    if (existingLabel) {
+    const editLock = acquireGoalOpLock(editRunId, "edit");
+    if (!editLock.acquired) {
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal \`${editRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        `Goal \`${editRunId.slice(0, 8)}\` is already being processed (${editLock.existingLabel ?? "unknown"}).`,
         runtime,
         resolved.threadIdForSend,
       );
       return;
     }
-    acquireGoalLock(editRunId, "edit");
     runGoalInBackground({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_edit",
-      runId: editRunId,
+      releaseGoalLock: editLock.release,
       fn: () => handleGoalEdit(editRunIdRaw, instructions),
       onResult: async (result) => {
         if (result == null) return;
@@ -1758,18 +1738,17 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const existingLabel = getGoalLockLabel(answerRunId);
-    if (existingLabel) {
+    const answerLock = acquireGoalOpLock(answerRunId, "answer");
+    if (!answerLock.acquired) {
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal \`${answerRunId.slice(0, 8)}\` is already being processed (${existingLabel}).`,
+        `Goal \`${answerRunId.slice(0, 8)}\` is already being processed (${answerLock.existingLabel ?? "unknown"}).`,
         runtime,
         resolved.threadIdForSend,
       );
       return;
     }
-    acquireGoalLock(answerRunId, "answer");
     const statusCb = buildOnStatusChange({
       bot,
       chatId: resolved.chatId,
@@ -1783,7 +1762,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_answer",
-      runId: answerRunId,
+      releaseGoalLock: answerLock.release,
       fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb),
       onResult: async (result) => {
         if (result == null) return;

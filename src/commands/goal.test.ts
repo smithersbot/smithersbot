@@ -266,6 +266,49 @@ describe("goal command — early failure persistence", () => {
     expect(parsed.runId).toBeDefined();
   });
 
+  it("scout error degrades gracefully instead of cancelling the goal", async () => {
+    mockRunScoutWithRetry.mockResolvedValue({
+      status: "error",
+      error: "Claude Code timed out",
+      errorKind: "timeout",
+    });
+    // Plan should still succeed (planning without scout data)
+    mockGeneratePlan.mockResolvedValue({
+      summary: "Test plan",
+      steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+
+    // planOnly so we don't hit the approval gate
+    const outcome = await goalCommand(
+      {
+        goal: "Build a thing",
+        workingDir: fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-")),
+        yes: true,
+        planOnly: true,
+      },
+      rt,
+    );
+
+    // Should NOT throw — command succeeds with a plan
+    expect(outcome).toBeUndefined(); // planOnly returns undefined on success
+
+    const runs = listRuns(testGoalsDir);
+    expect(runs).toHaveLength(1);
+
+    const run = loadRun(runs[0]!.runId, testGoalsDir);
+    expect(run).toBeDefined();
+    expect(run!.state).toBe("awaiting_approval");
+    expect(run!.scoutStatus).toBe("skipped");
+    expect(run!.scoutSkipReason).toContain("scout_error(timeout)");
+    expect(run!.plan).toBeDefined();
+
+    // Verify the scout failure was logged
+    expect(rt.logs.some((l) => l.includes("Scout failed (timeout)"))).toBe(true);
+  });
+
   it("goal list finds incomplete runs", async () => {
     mockGeneratePlan.mockRejectedValue(new Error("Allowlist rejection"));
 
