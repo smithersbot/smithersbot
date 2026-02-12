@@ -3,10 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ADMIN_USER_IDS, registerGatewayRestartCommand } from "./gateway-restart.js";
+import type { ChannelGroupPolicy } from "../config/group-policy.js";
+import type { MoltbotConfig } from "../config/config.js";
+import type { TelegramAccountConfig } from "../config/types.js";
+import { registerGatewayRestartCommand } from "./gateway-restart.js";
 
 const TRIGGER_DIRNAME = "gateway-restart-triggers";
 const AUDIT_LOG_FILENAME = "gateway-restart.log";
+const AUTHORIZED_USER_ID = 5232990709;
 
 type AuditEntry = {
   timestamp: string;
@@ -20,15 +24,7 @@ type AuditEntry = {
 let testStateDir = "";
 let previousStateDir: string | undefined;
 
-function requireAdminUserId(): number {
-  const adminUserId = ADMIN_USER_IDS[0];
-  if (typeof adminUserId !== "number") {
-    throw new Error("ADMIN_USER_IDS must include at least one numeric user id");
-  }
-  return adminUserId;
-}
-
-function createHarness() {
+function createHarness(params?: { allowFrom?: Array<string | number> }) {
   const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const bot = {
@@ -40,6 +36,20 @@ function createHarness() {
 
   registerGatewayRestartCommand({
     bot,
+    cfg: {} as MoltbotConfig,
+    telegramCfg: {} as TelegramAccountConfig,
+    allowFrom: params?.allowFrom ?? [AUTHORIZED_USER_ID],
+    groupAllowFrom: [],
+    useAccessGroups: true,
+    resolveGroupPolicy: () =>
+      ({
+        allowlistEnabled: false,
+        allowed: true,
+      }) as ChannelGroupPolicy,
+    resolveTelegramGroupConfig: () => ({
+      groupConfig: undefined,
+      topicConfig: undefined,
+    }),
     shouldSkipUpdate: () => false,
   });
 
@@ -97,7 +107,7 @@ describe("gateway_restart telegram command", () => {
 
   it("rejects unauthorized users", async () => {
     const { handler, sendMessage } = createHarness();
-    const unauthorizedUserId = requireAdminUserId() + 1;
+    const unauthorizedUserId = AUTHORIZED_USER_ID + 1;
 
     await handler(createCtx({ userId: unauthorizedUserId }));
 
@@ -116,9 +126,9 @@ describe("gateway_restart telegram command", () => {
 
   it("rejects non-private chats", async () => {
     const { handler, sendMessage } = createHarness();
-    const adminUserId = requireAdminUserId();
+    const authorizedUserId = AUTHORIZED_USER_ID;
 
-    await handler(createCtx({ chatId: -99, chatType: "group", userId: adminUserId }));
+    await handler(createCtx({ chatId: -99, chatType: "group", userId: authorizedUserId }));
 
     expect(sendMessage).toHaveBeenCalledWith(-99, expect.stringContaining("private chat only"));
     expect(listTriggerRequests()).toHaveLength(0);
@@ -126,7 +136,7 @@ describe("gateway_restart telegram command", () => {
     const entries = readAuditEntries();
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
-      userId: adminUserId,
+      userId: authorizedUserId,
       accepted: false,
       reason: "non_private_chat",
     });
@@ -134,10 +144,10 @@ describe("gateway_restart telegram command", () => {
 
   it("enforces cooldown for repeated accepted requests", async () => {
     const { handler, sendMessage } = createHarness();
-    const adminUserId = requireAdminUserId();
+    const authorizedUserId = AUTHORIZED_USER_ID;
 
-    await handler(createCtx({ chatId: 7, userId: adminUserId }));
-    await handler(createCtx({ chatId: 7, userId: adminUserId }));
+    await handler(createCtx({ chatId: 7, userId: authorizedUserId }));
+    await handler(createCtx({ chatId: 7, userId: authorizedUserId }));
 
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage.mock.calls[0]?.[1]).toContain("accepted");
@@ -153,9 +163,9 @@ describe("gateway_restart telegram command", () => {
 
   it("writes a trigger file when accepted", async () => {
     const { handler, sendMessage } = createHarness();
-    const adminUserId = requireAdminUserId();
+    const authorizedUserId = AUTHORIZED_USER_ID;
 
-    await handler(createCtx({ chatId: 88, userId: adminUserId }));
+    await handler(createCtx({ chatId: 88, userId: authorizedUserId }));
 
     expect(sendMessage).toHaveBeenCalledWith(88, expect.stringContaining("accepted"));
 
@@ -168,7 +178,7 @@ describe("gateway_restart telegram command", () => {
       requestedAt?: string;
       userId?: number;
     };
-    expect(payload.userId).toBe(adminUserId);
+    expect(payload.userId).toBe(authorizedUserId);
     expect(typeof payload.requestedAt).toBe("string");
 
     const lastRestartPath = path.join(testStateDir, TRIGGER_DIRNAME, ".last-restart-ts");
@@ -177,10 +187,10 @@ describe("gateway_restart telegram command", () => {
 
   it("appends audit log entries for each request", async () => {
     const { handler } = createHarness();
-    const adminUserId = requireAdminUserId();
+    const authorizedUserId = AUTHORIZED_USER_ID;
 
-    await handler(createCtx({ chatId: 101, userId: adminUserId }));
-    await handler(createCtx({ chatId: 101, userId: adminUserId + 1 }));
+    await handler(createCtx({ chatId: 101, userId: authorizedUserId }));
+    await handler(createCtx({ chatId: 101, userId: authorizedUserId + 1 }));
 
     const auditPath = path.join(testStateDir, AUDIT_LOG_FILENAME);
     expect(fs.existsSync(auditPath)).toBe(true);

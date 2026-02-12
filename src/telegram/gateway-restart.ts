@@ -4,16 +4,21 @@ import os from "node:os";
 import path from "node:path";
 import type { Bot, Context } from "grammy";
 
+import type { ChannelGroupPolicy } from "../config/group-policy.js";
+import type { MoltbotConfig } from "../config/config.js";
+import type {
+  TelegramAccountConfig,
+  TelegramGroupConfig,
+  TelegramTopicConfig,
+} from "../config/types.js";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const GATEWAY_RESTART_COMMAND = "gateway_restart";
 const GATEWAY_RESTART_COOLDOWN_MS = 60_000;
 const GATEWAY_RESTART_TRIGGER_DIR = "gateway-restart-triggers";
 const GATEWAY_RESTART_AUDIT_LOG = "gateway-restart.log";
 const LAST_RESTART_FILENAME = ".last-restart-ts";
-
-// Replace with your own Telegram user id if this ever changes.
-export const ADMIN_USER_IDS = [5232990709];
 
 export const GATEWAY_RESTART_COMMAND_SPEC = {
   command: GATEWAY_RESTART_COMMAND,
@@ -50,13 +55,18 @@ type GatewayRestartAuditEntry = {
 
 type RegisterGatewayRestartCommandParams = {
   bot: Bot;
+  cfg: MoltbotConfig;
+  telegramCfg: TelegramAccountConfig;
+  allowFrom?: Array<string | number>;
+  groupAllowFrom?: Array<string | number>;
+  useAccessGroups: boolean;
+  resolveGroupPolicy: (chatId: string | number) => ChannelGroupPolicy;
+  resolveTelegramGroupConfig: (
+    chatId: string | number,
+    messageThreadId?: number,
+  ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
 };
-
-function isAdminUser(userId: number | null): boolean {
-  if (userId == null) return false;
-  return ADMIN_USER_IDS.includes(userId);
-}
 
 function resolveGatewayRestartPaths(env: NodeJS.ProcessEnv = process.env) {
   const stateDir = resolveStateDir(env, os.homedir);
@@ -111,6 +121,7 @@ function appendAuditLog(auditLogPath: string, entry: GatewayRestartAuditEntry): 
 function decideGatewayRestart(params: {
   chatType: string;
   userId: number | null;
+  commandAuthorized: boolean;
   nowMs: number;
   triggerDir: string;
   lastRestartPath: string;
@@ -123,15 +134,7 @@ function decideGatewayRestart(params: {
     };
   }
 
-  if (!isAdminUser(params.userId)) {
-    return {
-      accepted: false,
-      reason: "unauthorized",
-      message: "gateway_restart rejected: unauthorized user.",
-    };
-  }
-  const authorizedUserId = params.userId;
-  if (authorizedUserId == null) {
+  if (!params.commandAuthorized || params.userId == null) {
     return {
       accepted: false,
       reason: "unauthorized",
@@ -155,7 +158,7 @@ function decideGatewayRestart(params: {
     }
   }
 
-  const triggerPath = writeRestartTrigger(params.triggerDir, params.nowMs, authorizedUserId);
+  const triggerPath = writeRestartTrigger(params.triggerDir, params.nowMs, params.userId);
   fsSync.writeFileSync(params.lastRestartPath, `${params.nowMs}\n`, "utf8");
 
   return {
@@ -168,6 +171,13 @@ function decideGatewayRestart(params: {
 
 export function registerGatewayRestartCommand({
   bot,
+  cfg,
+  telegramCfg,
+  allowFrom,
+  groupAllowFrom,
+  useAccessGroups,
+  resolveGroupPolicy,
+  resolveTelegramGroupConfig,
   shouldSkipUpdate,
 }: RegisterGatewayRestartCommandParams): void {
   bot.command(GATEWAY_RESTART_COMMAND, async (ctx: TelegramGatewayRestartContext) => {
@@ -184,9 +194,26 @@ export function registerGatewayRestartCommand({
 
     let decision: GatewayRestartDecision;
     try {
+      let commandAuthorized = false;
+      if (chatType === "private") {
+        const auth = await resolveTelegramCommandAuth({
+          msg,
+          bot,
+          cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          requireAuth: false,
+        });
+        commandAuthorized = auth?.commandAuthorized === true;
+      }
       decision = decideGatewayRestart({
         chatType,
         userId,
+        commandAuthorized,
         nowMs,
         triggerDir,
         lastRestartPath,

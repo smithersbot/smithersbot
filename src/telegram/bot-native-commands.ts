@@ -469,6 +469,13 @@ export const registerTelegramNativeCommands = ({
         });
         registerGatewayRestartCommand({
           bot,
+          cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
           shouldSkipUpdate,
         });
       }
