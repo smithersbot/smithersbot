@@ -94,6 +94,41 @@ describe("goal-status command", () => {
     expect(output).toContain("done");
   });
 
+  it("renders in-progress Mermaid class when run lock is active", async () => {
+    const runId = "status-inprog";
+    saveRun({
+      ...sampleRun,
+      runId,
+      state: "executing",
+      plan: {
+        goal: "Build a widget",
+        summary: "Widget plan",
+        steps: [
+          {
+            id: "1",
+            description: "Create dir",
+            dependsOn: [],
+            status: "in_progress",
+          },
+        ],
+      },
+      stepResults: {},
+    });
+    fs.mkdirSync(path.join(testGoalsDir, ".locks", "runs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(testGoalsDir, ".locks", "runs", `${runId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "approve", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand(runId, { diagram: "mermaid" }, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("🛠");
+    expect(output).toContain("class 1 inprog;");
+  });
+
   it("--json outputs strict JSON object", async () => {
     saveRun(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");

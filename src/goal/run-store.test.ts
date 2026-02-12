@@ -206,6 +206,75 @@ describe("run-store", () => {
     expect(loaded).toBeDefined();
     expect(loaded!.stepResults.s1?.durationMs).toBe(42_000);
   });
+
+  it("migrates in_progress to pending when no active run lock exists", () => {
+    const runId = "crash-recovery-no-lock";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Recover crashed run",
+        state: "executing",
+        plan: {
+          goal: "Recover crashed run",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    expect(loaded?.plan?.steps[0]?.status).toBe("pending");
+  });
+
+  it("preserves in_progress when an active run lock exists", () => {
+    const runId = "active-run-lock";
+    const runDir = path.join(tmpDir, runId);
+    const lockDir = path.join(tmpDir, ".locks", "runs");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Running goal",
+        state: "executing",
+        plan: {
+          goal: "Running goal",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(lockDir, `${runId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "approve", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    expect(loaded?.plan?.steps[0]?.status).toBe("in_progress");
+  });
 });
 
 describe("session serialization", () => {

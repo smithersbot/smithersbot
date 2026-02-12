@@ -14,6 +14,8 @@ import type {
 
 const GOALS_DIRNAME = "goals";
 const RUN_FILENAME = "run.json";
+const LOCKS_DIRNAME = ".locks";
+const RUN_LOCKS_DIRNAME = "runs";
 
 /** Returns the goals storage directory: $STATE_DIR/goals/ */
 export function resolveGoalsDir(stateDir: string = resolveStateDir()): string {
@@ -52,11 +54,11 @@ export function loadRun(
   const filePath = path.join(resolveRunDir(runId, goalsDir), RUN_FILENAME);
   const data = loadJsonFile(filePath);
   if (!data || typeof data !== "object") return undefined;
-  return migrateRun(data as Record<string, unknown>) as SerializedRun;
+  return migrateRun(data as Record<string, unknown>, goalsDir) as SerializedRun;
 }
 
 /** Migrate old run data (blockReason → blocked, add answers, step status normalization). */
-function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
+function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<string, unknown> {
   // Backward compat: migrate blockReason → structured blocked
   if (!data.blocked && typeof data.blockReason === "string") {
     data.blocked = {
@@ -77,14 +79,19 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
 
   // Migrate legacy step statuses (running/failed/skipped → new enum)
   const plan = data.plan as { steps?: Array<Record<string, unknown>> } | null;
+  const runId = typeof data.runId === "string" ? data.runId : null;
+  const keepInProgress = runId ? hasActiveRunLock(runId, goalsDir) : false;
   if (plan?.steps) {
     for (const step of plan.steps) {
       if (step.status === "running") {
-        // Process crash mid-task → reset to pending so it re-runs
-        step.status = "pending";
+        // Legacy "running" status: preserve for active runs, otherwise recover to pending.
+        step.status = keepInProgress ? "in_progress" : "pending";
       } else if (step.status === "in_progress") {
-        // Process crash mid-task → reset to pending
-        step.status = "pending";
+        // Preserve active task colouring while a live run lock exists.
+        if (!keepInProgress) {
+          // Process crash mid-task → reset to pending so resume can re-run it.
+          step.status = "pending";
+        }
       } else if (step.status === "failed") {
         step.status = "blocked";
         step.blockedReason = step.blockedReason ?? "error";
@@ -133,6 +140,38 @@ function migrateRun(data: Record<string, unknown>): Record<string, unknown> {
   }
 
   return data;
+}
+
+function isAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasActiveRunLock(runId: string, goalsDir: string): boolean {
+  const lockPath = path.join(goalsDir, LOCKS_DIRNAME, RUN_LOCKS_DIRNAME, `${runId}.lock`);
+  let payload: { pid?: unknown } | undefined;
+  try {
+    const raw = fs.readFileSync(lockPath, "utf8");
+    payload = JSON.parse(raw) as { pid?: unknown };
+  } catch {
+    return false;
+  }
+
+  const pid = typeof payload.pid === "number" ? payload.pid : Number.NaN;
+  if (isAlive(pid)) return true;
+
+  // Stale lock from a dead process — best effort cleanup.
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // Already removed or inaccessible; treat as unlocked.
+  }
+  return false;
 }
 
 /** List all runs as summaries, sorted by updatedAt descending (newest first). */
