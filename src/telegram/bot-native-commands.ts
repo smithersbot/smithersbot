@@ -48,6 +48,10 @@ import {
 } from "./bot/helpers.js";
 import { firstDefined } from "./bot-access.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
+import {
+  requestTelegramGatewayRestart,
+  TELEGRAM_GATEWAY_RESTART_COMMAND_SPEC,
+} from "./gateway-restart-command.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 
@@ -100,11 +104,15 @@ export const registerTelegramNativeCommands = ({
   const nativeCommands = nativeEnabled
     ? listNativeCommandSpecsForConfig(cfg, { skillCommands, provider: "telegram" })
     : [];
+  const gatewayRestartSpecs = nativeEnabled ? [TELEGRAM_GATEWAY_RESTART_COMMAND_SPEC] : [];
   const reservedCommands = new Set(
     listNativeCommandSpecs().map((command) => command.name.toLowerCase()),
   );
   for (const command of skillCommands) {
     reservedCommands.add(command.name.toLowerCase());
+  }
+  for (const command of gatewayRestartSpecs) {
+    reservedCommands.add(command.command.toLowerCase());
   }
   const customResolution = resolveTelegramCustomCommands({
     commands: telegramCfg.customCommands,
@@ -119,6 +127,7 @@ export const registerTelegramNativeCommands = ({
   const existingCommands = new Set(
     [
       ...nativeCommands.map((command) => command.name),
+      ...gatewayRestartSpecs.map((command) => command.command),
       ...customCommands.map((command) => command.command),
     ].map((command) => command.toLowerCase()),
   );
@@ -159,6 +168,7 @@ export const registerTelegramNativeCommands = ({
       description: command.description,
     })),
     ...pluginCommands,
+    ...gatewayRestartSpecs,
     ...goalSpecs,
     ...customCommands,
   ];
@@ -445,6 +455,28 @@ export const registerTelegramNativeCommands = ({
             tableMode,
             chunkMode,
             linkPreview: telegramCfg.linkPreview,
+          });
+        });
+      }
+
+      for (const restartCommand of gatewayRestartSpecs) {
+        bot.command(restartCommand.command, async (ctx: TelegramNativeCommandContext) => {
+          const msg = ctx.message;
+          if (!msg) return;
+          if (shouldSkipUpdate(ctx)) return;
+          const chatId = msg.chat.id;
+          const result = await requestTelegramGatewayRestart({
+            chatType: msg.chat.type,
+            senderId: msg.from?.id,
+            allowFrom,
+          });
+          if (result.reason === "io_error") {
+            runtime.error?.(danger("telegram /gateway_restart: failed to queue restart request"));
+          }
+          await withTelegramApiErrorLogging({
+            operation: "sendMessage",
+            runtime,
+            fn: () => bot.api.sendMessage(chatId, result.ackText),
           });
         });
       }
