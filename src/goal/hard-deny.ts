@@ -19,6 +19,16 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "rm -rf /", reason: "Recursive root deletion not permitted", type: "command" },
   { pattern: "mkfs", reason: "Filesystem formatting not permitted", type: "command" },
   { pattern: "dd if=", reason: "Raw disk writes not permitted", type: "command" },
+  {
+    pattern: "systemctl --user restart",
+    reason: "Restarting the gateway service is not permitted during goal execution",
+    type: "command",
+  },
+  {
+    pattern: "moltbot gateway restart",
+    reason: "Restarting the gateway service is not permitted during goal execution",
+    type: "command",
+  },
 
   // Deploy tools — explicit commands, NOT a *deploy* substring glob.
   // Substring globs cause false positives on filenames, echo statements, docs.
@@ -181,7 +191,8 @@ export function checkCommandDeny(
   const tokens = tokenizeCommand(trimmed).map((token) => token.toLowerCase());
   if (tokens.length === 0) return null;
 
-  const cmd = tokens[0]!;
+  const cmdToken = tokens[0]!;
+  const cmd = path.posix.basename(cmdToken).replace(/\\/g, "/").split("/").pop() ?? cmdToken;
   const args = tokens.slice(1);
 
   for (const deny of hardDenies) {
@@ -203,6 +214,12 @@ export function checkCommandDeny(
         break;
       case "dd if=":
         if (cmd === "dd" && args.some((arg) => arg.startsWith("if="))) return deny;
+        break;
+      case "systemctl --user restart":
+        if (cmd === "systemctl" && args[0] === "--user" && args[1] === "restart") return deny;
+        break;
+      case "moltbot gateway restart":
+        if (cmd === "moltbot" && args[0] === "gateway" && args[1] === "restart") return deny;
         break;
       case "vercel":
         if (cmd === "vercel") return deny;

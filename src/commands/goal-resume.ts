@@ -41,7 +41,7 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
   return Boolean(opts.json);
 }
 
-const AUTO_RETRY_EXECUTION_KEYS = new Set(["git"]);
+const AUTO_RETRY_EXECUTION_KEYS = new Set(["git", "resume_execution"]);
 
 function formatPlannerFallbackNotice(params: {
   degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
@@ -543,6 +543,7 @@ export async function goalResumeCommand(
     session.plan?.steps.filter((s) => s.status === "pending" || s.status === "blocked") ?? [];
   if (resumableSteps.length === 0) {
     session.state = "done";
+    session.blocked = null;
     persistRun();
     const outcome: GoalOutcome = {
       status: "done",

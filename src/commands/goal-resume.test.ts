@@ -266,6 +266,52 @@ describe("goal-resume command", () => {
 
     const persisted = loadRun(runId, testGoalsDir);
     expect(persisted?.state).toBe("done");
+    expect(persisted?.blocked).toBeNull();
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("retries interrupted execution blocks without requiring /goal_answer", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-interrupted-ws-"));
+    saveRun(
+      makeRun({
+        runId: "blocked-interrupted-run",
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Interrupted run",
+          steps: [
+            {
+              id: "pending-step",
+              description: "Continue work",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Run was interrupted. Resume to continue.",
+          requiredInputKey: "resume_execution",
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(
+      "blocked-interrupted-run",
+      { yes: true, quiet: true },
+      rt,
+    );
+
+    expect(result?.status).toBe("done");
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    const persisted = loadRun("blocked-interrupted-run", testGoalsDir);
+    expect(persisted?.state).toBe("done");
+    expect(persisted?.blocked).toBeNull();
 
     fs.rmSync(workDir, { recursive: true, force: true });
   });

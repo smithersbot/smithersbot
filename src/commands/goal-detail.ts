@@ -16,6 +16,7 @@ import type { DiagramMode, OutputFormat, SerializedRun, StepResult } from "../go
 import type { RuntimeEnv } from "../runtime.js";
 
 const NO_TRUNCATION = Number.POSITIVE_INFINITY;
+const AUTO_RESUME_BLOCK_KEYS = new Set(["git", "resume_execution"]);
 
 export type GoalDetailOptions = {
   json?: boolean;
@@ -83,6 +84,12 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
   const runPrefix = run.runId.slice(0, 8);
 
   if (run.state === "blocked" && run.blocked) {
+    if (AUTO_RESUME_BLOCK_KEYS.has(run.blocked.requiredInputKey)) {
+      if (channel === "telegram") {
+        return `Next: /goal_resume ${runPrefix}`;
+      }
+      return `Next: moltbot goal resume ${runPrefix}`;
+    }
     if (channel === "telegram") {
       return `Next: /goal_answer ${runPrefix} <answer>`;
     }

@@ -49,6 +49,17 @@ describe("hard deny helpers", () => {
     const deny = checkCommandDeny("pnpm test");
     expect(deny).toBeNull();
   });
+
+  it("checkCommandDeny blocks gateway service restart commands", () => {
+    const direct = checkCommandDeny("systemctl --user restart moltbot-gateway-dev.service");
+    const absolute = checkCommandDeny(
+      "/usr/bin/systemctl --user restart moltbot-gateway-dev.service",
+    );
+    const cli = checkCommandDeny("moltbot gateway restart");
+    expect(direct).not.toBeNull();
+    expect(absolute).not.toBeNull();
+    expect(cli).not.toBeNull();
+  });
 });
 
 describe("createEnforcedBashOperations", () => {

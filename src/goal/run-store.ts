@@ -81,12 +81,15 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
   const plan = data.plan as { steps?: Array<Record<string, unknown>> } | null;
   const runId = typeof data.runId === "string" ? data.runId : null;
   const keepInProgress = runId ? hasActiveRunLock(runId, goalsDir) : false;
+  let hadInProgressStep = false;
   if (plan?.steps) {
     for (const step of plan.steps) {
       if (step.status === "running") {
+        hadInProgressStep = true;
         // Legacy "running" status: preserve for active runs, otherwise recover to pending.
         step.status = keepInProgress ? "in_progress" : "pending";
       } else if (step.status === "in_progress") {
+        hadInProgressStep = true;
         // Preserve active task colouring while a live run lock exists.
         if (!keepInProgress) {
           // Process crash mid-task → reset to pending so resume can re-run it.
@@ -120,6 +123,28 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
       }
     } else {
       data.state = "cancelled";
+    }
+  }
+
+  // Recover stale executing runs after process restarts/crashes.
+  // If no active run lock exists, the run is not currently executing.
+  if (data.state === "executing" && !keepInProgress) {
+    const steps = (plan?.steps ?? []) as Array<Record<string, unknown>>;
+    const hasSteps = steps.length > 0;
+    const allStepsDone = hasSteps && steps.every((step) => step.status === "done");
+    if (allStepsDone) {
+      data.state = "done";
+      data.blocked = null;
+    } else if (hadInProgressStep) {
+      data.state = "blocked";
+      if (!data.blocked) {
+        data.blocked = {
+          blockedAt: "execution",
+          prompt:
+            "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+          requiredInputKey: "resume_execution",
+        } satisfies BlockedDetail;
+      }
     }
   }
 

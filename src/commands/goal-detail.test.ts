@@ -257,6 +257,34 @@ describe("goal-detail command", () => {
     expect(output).toContain("- 2. blocked Run migrations");
   });
 
+  it("shows resume hint for auto-retry execution blocks", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "detail-resume-blocked",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Run interrupted, resume to continue.",
+        requiredInputKey: "resume_execution",
+      },
+      plan: {
+        goal: "Build a widget",
+        summary: "Interrupted plan",
+        steps: [{ id: "1", description: "Continue", dependsOn: [], status: "pending" }],
+      },
+      stepResults: {},
+    });
+
+    const { goalDetailCommand } = await import("./goal-detail.js");
+    const rt = mockRuntime();
+    await goalDetailCommand("detail-resume-blocked", {}, rt);
+    const output = rt.logs.join("\n");
+
+    expect(output).toContain("**Blocker** Execution: Run interrupted, resume to continue.");
+    expect(output).toContain("Next: moltbot goal resume detail-r");
+    expect(output).not.toContain("moltbot goal answer");
+  });
+
   it("--output json outputs strict JSON object", async () => {
     saveRun(sampleRun);
     const { goalDetailCommand } = await import("./goal-detail.js");

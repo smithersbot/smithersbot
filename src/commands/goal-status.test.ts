@@ -251,6 +251,26 @@ describe("goal-status command", () => {
     expect(output).toContain("moltbot goal answer");
   });
 
+  it("text mode shows resume hint for auto-retry execution blocks", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "blocked-resume-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Run interrupted, resume to continue.",
+        requiredInputKey: "resume_execution",
+      },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-resume-run", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("Run interrupted, resume to continue.");
+    expect(output).toContain("Next: moltbot goal resume blocked-");
+    expect(output).not.toContain("moltbot goal answer");
+  });
+
   it("shows retry summary without top steps output", async () => {
     const runId = "retry-status-run";
     saveRun({

@@ -236,6 +236,8 @@ describe("run-store", () => {
 
     const loaded = loadRun(runId, tmpDir);
     expect(loaded?.plan?.steps[0]?.status).toBe("pending");
+    expect(loaded?.state).toBe("blocked");
+    expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
   });
 
   it("preserves in_progress when an active run lock exists", () => {
@@ -274,6 +276,73 @@ describe("run-store", () => {
 
     const loaded = loadRun(runId, tmpDir);
     expect(loaded?.plan?.steps[0]?.status).toBe("in_progress");
+    expect(loaded?.state).toBe("executing");
+  });
+
+  it("migrates stale executing runs with all done steps to done", () => {
+    const runId = "executing-all-done";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Finish run on crash",
+        state: "executing",
+        plan: {
+          goal: "Finish run on crash",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "done" }],
+        },
+        stepResults: {
+          "1": { stepId: "1", success: true, output: "Done", durationMs: 1 },
+        },
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    expect(loaded?.state).toBe("done");
+    expect(loaded?.blocked).toBeNull();
+  });
+
+  it("keeps executing state when no in_progress step exists and no lock is present", () => {
+    const runId = "executing-pending-no-lock";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Pending run",
+        state: "executing",
+        plan: {
+          goal: "Pending run",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "pending" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    expect(loaded?.state).toBe("executing");
+    expect(loaded?.blocked).toBeNull();
   });
 });
 
