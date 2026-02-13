@@ -54,6 +54,11 @@ vi.mock("../goal/cli-planner.js", () => ({
   runCliPlanRevision: (...args: unknown[]) => mockRunCliPlanRevision(...args),
 }));
 
+const mockRunPlanAutocheck = vi.fn();
+vi.mock("../goal/plan-autocheck.js", () => ({
+  runPlanAutocheck: (...args: unknown[]) => mockRunPlanAutocheck(...args),
+}));
+
 class MockPlanParseError extends Error {
   readonly rawResponse: string;
   constructor(message: string, rawResponse: string) {
@@ -75,6 +80,26 @@ vi.mock("../goal/format-output.js", () => ({
 const mockRenderMermaidToPng = vi.fn(() => Buffer.from("png"));
 vi.mock("../goal/mermaid-png.js", () => ({
   renderMermaidToPng: (...args: unknown[]) => mockRenderMermaidToPng(...args),
+}));
+
+const mockResolveChannelConfigWrites = vi.fn(() => true);
+vi.mock("../channels/plugins/config-writes.js", () => ({
+  resolveChannelConfigWrites: (...args: unknown[]) => mockResolveChannelConfigWrites(...args),
+}));
+
+const mockLoadConfig = vi.fn(() => ({}));
+vi.mock("../config/config.js", () => ({
+  loadConfig: (...args: unknown[]) => mockLoadConfig(...args),
+}));
+
+const mockWriteConfigFile = vi.fn(async () => undefined);
+vi.mock("../config/io.js", () => ({
+  writeConfigFile: (...args: unknown[]) => mockWriteConfigFile(...args),
+}));
+
+const mockResolveTelegramCommandAuth = vi.fn();
+vi.mock("./telegram-auth.js", () => ({
+  resolveTelegramCommandAuth: (...args: unknown[]) => mockResolveTelegramCommandAuth(...args),
 }));
 
 function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
@@ -111,6 +136,17 @@ describe("goal-commands telegram adapter", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-test-"));
     vi.clearAllMocks();
+    mockResolveChannelConfigWrites.mockReturnValue(true);
+    mockLoadConfig.mockReturnValue({});
+    mockWriteConfigFile.mockResolvedValue(undefined);
+    mockResolveTelegramCommandAuth.mockResolvedValue({
+      chatId: 42,
+      isGroup: false,
+      isForum: false,
+      senderId: "42",
+      senderUsername: "tester",
+      commandAuthorized: true,
+    });
   });
 
   afterEach(() => {
@@ -165,6 +201,85 @@ describe("goal-commands telegram adapter", () => {
       expect(result.runId).toBeDefined();
       expect(result.revision).toBe(1);
       expect(result.blocked).toBeUndefined();
+    });
+
+    it("runs autocheck in handleGoal when enabled and persists autocheck session metadata", async () => {
+      const autocheckPlan = {
+        goal: "Test goal",
+        summary: "Autochecked plan",
+        steps: [
+          {
+            id: "1",
+            description: "Autochecked step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "codex",
+          },
+        ],
+      } as const;
+
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          saveRun(makeRun({ runId: opts.runId }));
+          runtime.log("## Plan\n1. Do something");
+          return undefined;
+        },
+      );
+      mockRunPlanAutocheck.mockResolvedValue({
+        plan: autocheckPlan,
+        autocheckRounds: 1,
+        autocheckMaxRounds: 3,
+        approved: true,
+        exhausted: false,
+        sessionId: "autocheck-session-1",
+        backend: "codex",
+      });
+
+      const { handleGoal } = await import("./goal-commands.js");
+      const result = await handleGoal("Build a website", {
+        goal: { planAutocheck: "codex" },
+      } as never);
+
+      expect(mockGoalCommand).toHaveBeenCalledOnce();
+      expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
+      expect(mockGoalCommand.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRunPlanAutocheck.mock.invocationCallOrder[0],
+      );
+      const goalCommandOpts = mockGoalCommand.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(goalCommandOpts).not.toHaveProperty("planAutocheck");
+
+      expect(mockRunPlanAutocheck).toHaveBeenCalledWith(
+        expect.objectContaining({
+          existingSessionId: undefined,
+          existingBackend: undefined,
+          mode: "codex",
+        }),
+      );
+
+      const persisted = loadRun(result.runId!, testGoalsDir);
+      expect(persisted?.autocheckRounds).toBe(1);
+      expect(persisted?.autocheckMaxRounds).toBe(3);
+      expect(persisted?.autocheckBackend).toBe("codex");
+      expect(persisted?.autocheckSessionId).toBe("autocheck-session-1");
+    });
+
+    it("skips autocheck in handleGoal when planAutocheck is off", async () => {
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          saveRun(makeRun({ runId: opts.runId }));
+          runtime.log("## Plan\n1. Do something");
+          return undefined;
+        },
+      );
+
+      const { handleGoal } = await import("./goal-commands.js");
+      const result = await handleGoal("Build a website", {
+        goal: { planAutocheck: "off" },
+      } as never);
+
+      expect(result.runId).toBeDefined();
+      expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
     });
 
     it("handles blocked-at-planning outcome", async () => {
@@ -665,6 +780,51 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("resets 6pm (America/Toronto)");
       expect(options.caption).toContain("Codex");
     });
+
+    it("shows replanned count and max-round warning in plan caption", async () => {
+      const plan = {
+        goal: "Test goal",
+        summary: "Plan with autocheck loops",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "claude_code",
+          },
+        ],
+      } as const;
+
+      saveRun(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 201 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 202 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 3,
+          plan,
+          stepResults: new Map(),
+          autocheckRounds: 3,
+          autocheckMaxRounds: 3,
+          autocheckExhausted: true,
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("Replanned: 3/3");
+      expect(options.caption).toContain("Autocheck hit max rounds (3/3)");
+    });
   });
 
   describe("handleGoalAnswer", () => {
@@ -978,6 +1138,90 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
+    it("runs autocheck in handleGoalEdit and persists updated session metadata", async () => {
+      saveRun(
+        makeRun({
+          autocheckSessionId: "session-old",
+          autocheckBackend: "codex",
+        }),
+      );
+
+      const revisedPlan = {
+        goal: "Test goal",
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "claude_code",
+          },
+        ],
+      };
+      mockRunCliPlanRevision.mockResolvedValue({ plan: revisedPlan });
+      mockRunPlanAutocheck.mockResolvedValue({
+        plan: revisedPlan,
+        autocheckRounds: 2,
+        autocheckMaxRounds: 3,
+        approved: true,
+        exhausted: false,
+        sessionId: "session-new",
+        backend: "claude_code",
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "tighten dependencies", {
+        goal: { planAutocheck: "claude_code" },
+      } as never);
+
+      expect(result.revision).toBe(2);
+      expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
+      expect(mockRunPlanAutocheck).toHaveBeenCalledWith(
+        expect.objectContaining({
+          existingSessionId: "session-old",
+          existingBackend: "codex",
+          mode: "claude_code",
+        }),
+      );
+
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.autocheckRounds).toBe(2);
+      expect(run?.autocheckMaxRounds).toBe(3);
+      expect(run?.autocheckBackend).toBe("claude_code");
+      expect(run?.autocheckSessionId).toBe("session-new");
+    });
+
+    it("skips autocheck in handleGoalEdit when planAutocheck is off", async () => {
+      saveRun(makeRun());
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      await handleGoalEdit("test-run", "change it", {
+        goal: { planAutocheck: "off" },
+      } as never);
+
+      expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
+    });
+
     it("updates run working dir from explicit edit instructions", async () => {
       const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-old-"));
       const newDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-new-"));
@@ -1194,6 +1438,141 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toContain("Revision blocked");
       expect(result.text).toContain("What framework?");
       expect(result.blocked).toBe(true);
+    });
+  });
+
+  describe("registerTelegramGoalCommands /goal_plan_autocheck", () => {
+    function makeCommandHarness(cfg: Record<string, unknown> = {}): {
+      handlers: Record<string, (ctx: unknown) => Promise<void>>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+      config: Record<string, unknown>;
+    } {
+      const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto: vi.fn(),
+          answerCallbackQuery: vi.fn(),
+          setMessageReaction: vi.fn(),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) handlers[entry] = handler;
+            return;
+          }
+          handlers[name] = handler;
+        },
+        on: vi.fn(),
+      } as unknown as import("grammy").Bot;
+
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: cfg as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+
+      return { handlers, sendMessage, register, config: cfg };
+    }
+
+    function makeCommandCtx(match = ""): Record<string, unknown> {
+      return {
+        match,
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: 11,
+          date: 123_456,
+        },
+      };
+    }
+
+    it("shows current autocheck mode when no argument is provided", async () => {
+      const harness = makeCommandHarness({ goal: { planAutocheck: "codex" } });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx());
+
+      expect(harness.sendMessage).toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal plan autocheck mode:");
+      expect(sentText).toContain("codex");
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it("persists a valid autocheck mode and updates in-memory config", async () => {
+      const cfg = { goal: { planAutocheck: "off" } };
+      mockLoadConfig.mockReturnValue({ goal: {} });
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx("claude_code"));
+
+      expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: "telegram", accountId: "default" }),
+      );
+      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      expect(mockWriteConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          goal: expect.objectContaining({ planAutocheck: "claude_code" }),
+        }),
+      );
+      expect((cfg.goal as { planAutocheck: string }).planAutocheck).toBe("claude_code");
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal plan autocheck set to");
+      expect(sentText).toContain("claude_code");
+    });
+
+    it("rejects invalid autocheck mode input", async () => {
+      const harness = makeCommandHarness({ goal: { planAutocheck: "off" } });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx("bad-mode"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Invalid mode");
+      expect(sentText).toContain("goal_plan_autocheck");
+    });
+
+    it("blocks mode changes when config writes are disabled", async () => {
+      mockResolveChannelConfigWrites.mockReturnValue(false);
+      const harness = makeCommandHarness({ goal: { planAutocheck: "off" } });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx("codex"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Config writes are disabled");
     });
   });
 
