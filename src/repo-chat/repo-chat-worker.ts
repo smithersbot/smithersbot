@@ -3,7 +3,7 @@ import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
-const DEFAULT_TIMEOUT_MS = 180_000;
+const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const MAX_ERROR_DETAIL_CHARS = 1_000;
