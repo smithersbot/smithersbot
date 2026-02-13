@@ -46,6 +46,7 @@ export function registerGoalCommand(program: Command) {
           ['moltbot goal "Build landing page" --dry-run --output json', "JSON output"],
           ["moltbot goal list", "List all goal runs"],
           ["moltbot goal status <runId>", "Show concise status: state, progress, blocker, retries"],
+          ["moltbot goal detail <runId>", "Show detailed status with full plan steps"],
           ["moltbot goal resume <runId>", "Resume a blocked/interrupted run"],
           ["moltbot goal stop <runId>", "Stop a running goal"],
           [
@@ -128,6 +129,34 @@ export function registerGoalCommand(program: Command) {
       await runCommandWithRuntime(defaultRuntime, async () => {
         const { goalStatusCommand } = await import("../../commands/goal-status.js");
         await goalStatusCommand(
+          String(runId),
+          {
+            json: Boolean(opts.json),
+            output: opts.output as OutputFormat | undefined,
+            diagram: opts.diagram as DiagramMode | undefined,
+          },
+          defaultRuntime,
+        );
+      });
+    });
+
+  // Subcommand: detail
+  goal
+    .command("detail <runId>")
+    .description("Show detailed goal status (state, progress, blocker, retries, all steps)")
+    .option("--json", "Output as JSON (shorthand for --output json)", false)
+    .option("--output <format>", "Output format: md, json (default: md)")
+    .option("--diagram <mode>", "Diagram format: none, ascii, mermaid, both (default: both)")
+    .addHelpText(
+      "after",
+      () =>
+        "\nDetailed layout order: headline, progress, blocker (if any), retries, and all steps.\n" +
+        "Step descriptions are shown in full (no truncation).\n",
+    )
+    .action(async (runId, opts) => {
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { goalDetailCommand } = await import("../../commands/goal-detail.js");
+        await goalDetailCommand(
           String(runId),
           {
             json: Boolean(opts.json),

@@ -9,6 +9,7 @@ import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
+import { goalDetailCommand } from "../commands/goal-detail.js";
 import { goalResumeCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -57,6 +58,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   {
     command: "goal_status",
     description: "Show concise run status (state, progress, blocker, retries)",
+  },
+  {
+    command: "goal_detail",
+    description: "Show detailed run status (includes all steps)",
   },
   { command: "goal_answer", description: "Answer a goal's clarification question" },
   { command: "goal_stop", description: "Stop a running goal" },
@@ -607,6 +612,26 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
   }
 }
 
+/** /goal_detail <runId> -- show detailed run info and all steps. */
+export async function handleGoalDetail(rawId: string): Promise<string> {
+  if (!rawId.trim()) {
+    return "Usage: /goal_detail <runId>";
+  }
+
+  const cap = createCaptureRuntime();
+  try {
+    await goalDetailCommand(rawId.trim(), { diagram: "none", channel: "telegram" }, cap.runtime);
+    const logs = cap.getLogs();
+    const errors = cap.getErrors();
+    return errors || logs || "No detail output.";
+  } catch (err) {
+    if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+      return cap.getErrors() || cap.getLogs() || "Detail command failed.";
+    }
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 /** Send `/goal_status` reply text and attach DAG PNG when the run has a plan. */
 export async function sendGoalStatusResponse(params: {
   bot: Bot;
@@ -617,6 +642,34 @@ export async function sendGoalStatusResponse(params: {
 }): Promise<void> {
   const { bot, chatId, runtime, rawId, threadId } = params;
   const reply = await handleGoalStatus(rawId);
+  const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
+  const run = resolvedId ? loadRun(resolvedId) : undefined;
+  if (run?.plan) {
+    await sendDagPng({
+      bot,
+      chatId,
+      threadId,
+      runtime,
+      plan: run.plan,
+      steps: run.plan.steps,
+      stepResults: serializedStepResultsToMap(run),
+      caption: reply,
+    });
+    return;
+  }
+  await sendGoalReply(bot, chatId, reply, runtime, threadId);
+}
+
+/** Send `/goal_detail` reply text and attach DAG PNG when the run has a plan. */
+export async function sendGoalDetailResponse(params: {
+  bot: Bot;
+  chatId: number;
+  runtime: RuntimeEnv;
+  rawId: string;
+  threadId?: number;
+}): Promise<void> {
+  const { bot, chatId, runtime, rawId, threadId } = params;
+  const reply = await handleGoalDetail(rawId);
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
   if (run?.plan) {
@@ -1991,6 +2044,20 @@ export function registerTelegramGoalCommands({
     if (!resolved) return;
     const raw = ctx.match?.trim() ?? "";
     await sendGoalStatusResponse({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      rawId: raw,
+    });
+  });
+
+  // /goal_detail <runId>
+  bot.command("goal_detail", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const raw = ctx.match?.trim() ?? "";
+    await sendGoalDetailResponse({
       bot,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,

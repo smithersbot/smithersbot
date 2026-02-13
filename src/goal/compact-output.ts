@@ -51,6 +51,7 @@ export type CompactGoalRenderInput = {
   channel?: GoalOutputChannel;
   textFormat?: GoalOutputTextFormat;
   stateIndicatorStyle?: GoalStateIndicatorStyle;
+  stepsTitle?: string;
   maxSteps?: number;
   maxLines?: number;
   maxStepTextChars?: number;
@@ -297,7 +298,7 @@ export function formatCompactGoalOutput(input: CompactGoalRenderInput): CompactG
   let shownStepCount = 0;
   let hiddenStepCount = 0;
   if (steps.length > 0) {
-    const header = formatGoalSectionTitle("Top Steps", options.textFormat);
+    const header = formatGoalSectionTitle(input.stepsTitle ?? "Top Steps", options.textFormat);
     const baseLineCount = lines.length + 1;
     const availableLines = Number.isFinite(options.maxLines)
       ? Math.max(0, options.maxLines - baseLineCount)
