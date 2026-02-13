@@ -1,4 +1,5 @@
 import type { CpmResult } from "./cpm.js";
+import type { GoalBackendId } from "./backend-types.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
 import type { Plan, StepResult } from "./types.js";
 import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
@@ -66,20 +67,32 @@ function formatActualDuration(durationMs: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function backendDisplayName(backend?: GoalBackendId): string | undefined {
+  if (!backend) return undefined;
+  if (backend === "claude_code") return "Claude Code";
+  if (backend === "codex") return "Codex";
+  if (backend === "pi") return "Pi";
+  return undefined;
+}
+
 function nodeDurationLabel(
-  stepId: string,
+  step: Plan["steps"][number],
   status: ExecutionDisplayStatus,
   cpm?: CpmResult,
   stepResults?: ReadonlyMap<string, StepResult>,
 ): string {
+  const backendName = backendDisplayName(step.executedBackend ?? step.backend);
+  const withBackend = (durationLabel: string): string =>
+    backendName ? `${durationLabel} | ${backendName}` : durationLabel;
+
   if (status === "done") {
-    const result = stepResults?.get(stepId);
+    const result = stepResults?.get(step.id);
     if (result && Number.isFinite(result.durationMs)) {
-      return `<br/>${formatActualDuration(result.durationMs)}`;
+      return `<br/>${withBackend(formatActualDuration(result.durationMs))}`;
     }
   }
   if (cpm) {
-    return `<br/>~${cpm.steps[stepId].durationMinutesEffective} min`;
+    return `<br/>${withBackend(`~${cpm.steps[step.id].durationMinutesEffective} min`)}`;
   }
   return "";
 }
@@ -172,7 +185,7 @@ export function renderMermaid(
     const prefix = emoji ? `${emoji} ` : "";
     const num = orderNum.get(step.id) ?? 0;
     const shortDesc = truncateLabel(normalizeLabel(step.description), MAX_NODE_LABEL_CHARS);
-    const dur = nodeDurationLabel(step.id, status, cpm, stepResults);
+    const dur = nodeDurationLabel(step, status, cpm, stepResults);
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;
     lines.push(`  ${step.id}["${label}"]`);
   }

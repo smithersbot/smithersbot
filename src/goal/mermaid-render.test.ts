@@ -321,6 +321,31 @@ describe("renderMermaid", () => {
     expect(out).toContain("~5 min");
   });
 
+  it("shows backend names beside estimated durations", () => {
+    const plan = makePlan([
+      {
+        id: "1",
+        description: "Create dir",
+        dependsOn: [],
+        status: "pending",
+        durationMinutes: 3,
+        backend: "claude_code",
+      },
+      {
+        id: "2",
+        description: "Write file",
+        dependsOn: ["1"],
+        status: "pending",
+        durationMinutes: 5,
+        backend: "pi",
+      },
+    ]);
+    const cpm = computeCpm(plan);
+    const out = renderMermaid(plan, cpm);
+    expect(out).toContain("~3 min | Claude Code");
+    expect(out).toContain("~5 min | Pi");
+  });
+
   it("uses linkStyle for critical path instead of classDef critical", () => {
     const plan = makePlan([
       {
@@ -570,6 +595,43 @@ describe("renderMermaid", () => {
       expect(out).toContain("Done<br/>31s");
       expect(out).not.toContain("Done<br/>~10 min");
       expect(out).toContain("Pending<br/>~2 min");
+    });
+
+    it("prefers executedBackend over backend in duration labels", () => {
+      const plan = makePlan([
+        {
+          id: "A",
+          description: "Done step",
+          dependsOn: [],
+          status: "done",
+          durationMinutes: 10,
+          backend: "pi",
+          executedBackend: "codex",
+        },
+        {
+          id: "B",
+          description: "Pending step",
+          dependsOn: ["A"],
+          status: "pending",
+          durationMinutes: 2,
+          backend: "pi",
+          executedBackend: "claude_code",
+        },
+      ]);
+      const cpm = computeCpm(plan);
+      const statuses = new Map<string, ExecutionDisplayStatus>([
+        ["A", "done"],
+        ["B", "pending"],
+      ]);
+      const stepResults = new Map<string, StepResult>([
+        ["A", { stepId: "A", success: true, output: "ok", durationMs: 42_000 }],
+      ]);
+
+      const out = renderMermaid(plan, cpm, statuses, stepResults);
+      expect(out).toContain("Done<br/>42s | Codex");
+      expect(out).toContain("Pending<br/>~2 min | Claude Code");
+      expect(out).not.toContain("42s | Pi");
+      expect(out).not.toContain("~2 min | Pi");
     });
   });
 
