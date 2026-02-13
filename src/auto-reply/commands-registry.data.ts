@@ -169,6 +169,29 @@ function buildChatCommands(): ChatCommandDefinition[] {
       category: "status",
     }),
     defineChatCommand({
+      key: "repo_chat",
+      description: "Ask questions about this repo (read-only).",
+      textAlias: "/repo_chat",
+      scope: "text",
+      category: "tools",
+    }),
+    defineChatCommand({
+      key: "chat_backend",
+      description: "Set repo chat backend.",
+      textAlias: "/chat_backend",
+      scope: "text",
+      category: "management",
+      args: [
+        {
+          name: "backend",
+          description: "codex, claude_code, or off",
+          type: "string",
+          choices: ["codex", "claude_code", "off"],
+        },
+      ],
+      argsMenu: "auto",
+    }),
+    defineChatCommand({
       key: "allowlist",
       description: "List/add/remove allowlist entries.",
       textAlias: "/allowlist",
@@ -574,6 +597,7 @@ function buildChatCommands(): ChatCommandDefinition[] {
   ];
 
   registerAlias(commands, "whoami", "/id");
+  registerAlias(commands, "repo_chat", "/rc");
   registerAlias(commands, "think", "/thinking", "/t");
   registerAlias(commands, "verbose", "/v");
   registerAlias(commands, "reasoning", "/reason");

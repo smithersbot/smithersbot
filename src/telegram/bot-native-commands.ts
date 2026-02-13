@@ -49,6 +49,7 @@ import {
 import { firstDefined } from "./bot-access.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
+import { REPO_CHAT_COMMAND_SPECS } from "./repo-chat-commands.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 
@@ -154,6 +155,7 @@ export const registerTelegramNativeCommands = ({
     pluginCommands.push({ command: normalized, description });
   }
   const goalSpecs = nativeEnabled ? GOAL_COMMAND_SPECS : [];
+  const repoChatSpecs = nativeEnabled ? REPO_CHAT_COMMAND_SPECS : [];
   const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
   const allCommands: Array<{ command: string; description: string }> = [
     ...nativeCommands.map((command) => ({
@@ -162,6 +164,7 @@ export const registerTelegramNativeCommands = ({
     })),
     ...pluginCommands,
     ...goalSpecs,
+    ...repoChatSpecs,
     ...gatewayRestartSpecs,
     ...customCommands,
   ];

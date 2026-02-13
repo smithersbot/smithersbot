@@ -48,15 +48,17 @@ function topoOrderByPlanOrder(steps: PlanStep[]): string[] {
 }
 
 /**
- * Compute static critical-path scores using unit weights (each step = 1).
- * Score = 1 + max(score of successors), so longer remaining paths score higher.
+ * Compute static critical-path scores weighted by estimated duration.
+ * Score = durationMinutes + max(score of successors), so longer remaining
+ * paths (by time) score higher — matching real CPM scheduling.
  */
 export function computeCriticalPathScores(steps: PlanStep[]): CriticalPathScores {
   const successors = buildSuccessors(steps);
   const order = topoOrderByPlanOrder(steps);
+  const stepMap = new Map(steps.map((s) => [s.id, s]));
 
   if (order.length !== steps.length) {
-    return new Map(steps.map((s) => [s.id, 1]));
+    return new Map(steps.map((s) => [s.id, s.durationMinutes ?? 1]));
   }
 
   const scores = new Map<string, number>();
@@ -67,7 +69,8 @@ export function computeCriticalPathScores(steps: PlanStep[]): CriticalPathScores
       const childScore = scores.get(child) ?? 0;
       if (childScore > maxChildScore) maxChildScore = childScore;
     }
-    scores.set(id, maxChildScore + 1);
+    const duration = stepMap.get(id)?.durationMinutes ?? 1;
+    scores.set(id, maxChildScore + duration);
   }
 
   return scores;

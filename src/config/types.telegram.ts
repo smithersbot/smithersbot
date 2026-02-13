@@ -70,6 +70,12 @@ export type TelegramAccountConfig = {
    * - "chat": local handlers first, then falls through to LLM for unmatched text
    */
   chatMode?: "help" | "chat";
+  /**
+   * Read-only repo chat backend:
+   * - "codex" or "claude_code" enables repo chat
+   * - null/undefined disables repo chat (same as /chat_backend off)
+   */
+  repoChatBackend?: "codex" | "claude_code" | null;
   /** If false, do not start this Telegram account. Default: true. */
   enabled?: boolean;
   botToken?: string;
