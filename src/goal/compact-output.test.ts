@@ -58,6 +58,21 @@ describe("goal visual helpers", () => {
 });
 
 describe("formatCompactGoalOutput", () => {
+  it("omits step section when no steps are provided", () => {
+    const result = formatCompactGoalOutput({
+      state: "executing",
+      title: "Prepare release",
+      progress: { completed: 2, total: 5 },
+      blockerSummary: "Waiting on environment approval",
+      retrySummary: "1 retry across 1 step",
+    });
+
+    expect(findLineIndex(result.lines, "**Top Steps**")).toBe(-1);
+    expect(result.lines.some((line) => line.startsWith("- "))).toBe(false);
+    expect(result.hiddenStepCount).toBe(0);
+    expect(result.shownStepCount).toBe(0);
+  });
+
   it("enforces hierarchy, top-5 step cap, and overflow line", () => {
     const result = formatCompactGoalOutput({
       state: "blocked",

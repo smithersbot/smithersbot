@@ -1,24 +1,14 @@
 import path from "node:path";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { loadAttemptBundles } from "../goal/attempt-bundle.js";
-import type {
-  AttemptBadgeInput,
-  GoalOutputChannel,
-  GoalOutputMode,
-} from "../goal/compact-output.js";
+import type { GoalOutputChannel, GoalOutputMode } from "../goal/compact-output.js";
 import { buildGoalRetrySummary, formatCompactGoalOutput } from "../goal/compact-output.js";
 import { computeCpm } from "../goal/cpm.js";
 import { renderAsciiDependencies } from "../goal/dag-render.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { loadRun, resolveGoalsDir, resolveRunId } from "../goal/run-store.js";
-import type {
-  DiagramMode,
-  OutputFormat,
-  PlanStep,
-  SerializedRun,
-  StepResult,
-} from "../goal/types.js";
+import type { DiagramMode, OutputFormat, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const TELEGRAM_LINE_BUDGET = 15;
@@ -51,36 +41,19 @@ function resolveDiagramMode(opts: GoalStatusOptions, channel: GoalOutputChannel)
   return resolveMode(opts) === "full" ? "both" : "none";
 }
 
-function formatStepState(step: PlanStep, displayStatus: string | undefined): string {
-  const status = displayStatus ?? step.status;
-  if (status === "done") return "done";
-  if (status === "in_progress") return "in progress";
-  if (status === "blocked") return "blocked";
-  if (status === "soft_blocked") return "waiting";
-  return "pending";
-}
-
-type RetrySummary = {
-  text: string;
-  attemptsByStepId: Map<string, AttemptBadgeInput>;
-};
-
 function loadWorkerAttemptCount(runId: string, stepId: string): number {
   const workerDir = path.join(resolveGoalsDir(), runId, "workers", stepId);
   return loadAttemptBundles(workerDir).length;
 }
 
-function buildRetrySummary(run: SerializedRun): RetrySummary {
+function buildRetrySummary(run: SerializedRun): string {
   const steps = run.plan?.steps ?? [];
   const summary = buildGoalRetrySummary({
     steps: steps.map((step) => ({ id: step.id, turnsUsed: step.turnsUsed })),
     attemptsTotal: run.agentMaxTurnsPerTask,
     resolveStepAttemptsUsed: (stepId) => loadWorkerAttemptCount(run.runId, stepId),
   });
-  return {
-    text: summary.text,
-    attemptsByStepId: summary.attemptsByStepId,
-  };
+  return summary.text;
 }
 
 function buildProgress(run: SerializedRun): { completed: number; total: number } {
@@ -144,8 +117,6 @@ function fitLinesToBudget(lines: string[], maxLines: number): string[] {
 function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): string {
   const channel = resolveChannel(opts);
   const mode = resolveMode(opts);
-  const steps = run.plan?.steps ?? [];
-  const displayStatuses = run.plan ? computeDisplayStatuses(steps) : new Map<string, string>();
   const retrySummary = buildRetrySummary(run);
   const actionHint = buildActionHint(run, channel);
   const reservedLines = channel === "telegram" && actionHint ? 1 : 0;
@@ -157,13 +128,7 @@ function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): strin
     title: run.goal,
     progress: buildProgress(run),
     blockerSummary: buildBlockerSummary(run),
-    retrySummary: retrySummary.text,
-    steps: steps.map((step) => ({
-      id: step.id,
-      text: step.description,
-      state: formatStepState(step, displayStatuses.get(step.id)),
-      attempt: retrySummary.attemptsByStepId.get(step.id),
-    })),
+    retrySummary,
     mode,
     channel,
     textFormat: "markdown",

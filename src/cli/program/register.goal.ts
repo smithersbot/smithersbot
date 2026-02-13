@@ -45,10 +45,7 @@ export function registerGoalCommand(program: Command) {
           ['moltbot goal "Build landing page" --dry-run --diagram mermaid', "Mermaid diagram only"],
           ['moltbot goal "Build landing page" --dry-run --output json', "JSON output"],
           ["moltbot goal list", "List all goal runs"],
-          [
-            "moltbot goal status <runId>",
-            "Show concise status: state, progress, blocker/retries, top steps",
-          ],
+          ["moltbot goal status <runId>", "Show concise status: state, progress, blocker, retries"],
           ["moltbot goal resume <runId>", "Resume a blocked/interrupted run"],
           ["moltbot goal stop <runId>", "Stop a running goal"],
           [
@@ -117,15 +114,14 @@ export function registerGoalCommand(program: Command) {
   // Subcommand: status
   goal
     .command("status <runId>")
-    .description("Show concise goal status (state, progress, blocker, retries, top steps)")
+    .description("Show concise goal status (state, progress, blocker, retries)")
     .option("--json", "Output as JSON (shorthand for --output json)", false)
     .option("--output <format>", "Output format: md, json (default: md)")
     .option("--diagram <mode>", "Diagram format: none, ascii, mermaid, both (default: none)")
     .addHelpText(
       "after",
       () =>
-        "\nConcise layout order: headline, progress, blocker (if any), retries, top steps (max 5).\n" +
-        "If more steps exist, status adds: + N more steps not shown.\n" +
+        "\nConcise layout order: headline, progress, blocker (if any), retries.\n" +
         "Telegram status replies are capped to a readable line budget (~15 lines).\n",
     )
     .action(async (runId, opts) => {

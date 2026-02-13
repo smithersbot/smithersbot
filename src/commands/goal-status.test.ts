@@ -251,7 +251,7 @@ describe("goal-status command", () => {
     expect(output).toContain("moltbot goal answer");
   });
 
-  it("caps top steps and shows retry attempt badges", async () => {
+  it("shows retry summary without top steps output", async () => {
     const runId = "retry-status-run";
     saveRun({
       ...sampleRun,
@@ -301,15 +301,10 @@ describe("goal-status command", () => {
     await goalStatusCommand(runId, {}, rt);
     const lines = outputLines(rt.logs.join("\n"));
     const retriesIndex = findLineIndex(lines, "**Retries** 2 retries across 2 steps");
-    const topStepsIndex = findLineIndex(lines, "**Top Steps**");
-    expect(topStepsIndex).toBeGreaterThan(retriesIndex);
-
-    const stepLines = lines.filter((line) => line.startsWith("- "));
-    expect(stepLines).toHaveLength(5);
-    expect(lines).toContain("+ 1 more steps not shown");
-    expect(stepLines.some((line) => line.includes("[2/4]"))).toBe(true);
-    expect(stepLines.some((line) => line.includes("[2 attempts]"))).toBe(true);
-    expect(stepLines.some((line) => line.includes("[1/1]"))).toBe(false);
+    expect(retriesIndex).toBeGreaterThan(0);
+    expect(findLineIndex(lines, "**Top Steps**")).toBe(-1);
+    expect(lines.some((line) => line.startsWith("- "))).toBe(false);
+    expect(lines.some((line) => line.includes("more steps not shown"))).toBe(false);
   });
 
   it("uses Telegram line budget when channel is telegram", async () => {
@@ -339,9 +334,9 @@ describe("goal-status command", () => {
     expect(findLineIndex(lines, "✅ Awaiting Approval: Build a widget")).toBe(0);
     expect(findLineIndex(lines, "**Progress** 1/25")).toBe(1);
     expect(findLineIndex(lines, "**Retries** 0 retries")).toBe(2);
-    expect(findLineIndex(lines, "**Top Steps**")).toBe(3);
+    expect(findLineIndex(lines, "**Top Steps**")).toBe(-1);
     expect(lines.some((line) => line.startsWith("Next: /goal_resume"))).toBe(true);
-    expect(lines.some((line) => line.includes("more steps not shown"))).toBe(true);
+    expect(lines.some((line) => line.includes("more steps not shown"))).toBe(false);
     expect(lines.some((line) => line.includes("Run ID:"))).toBe(false);
     expect(lines.some((line) => line.includes("Dependency Graph"))).toBe(false);
   });

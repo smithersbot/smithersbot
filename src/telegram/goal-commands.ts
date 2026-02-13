@@ -56,7 +56,7 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_edit", description: "Edit a goal plan" },
   {
     command: "goal_status",
-    description: "Show concise status (state, progress, blocker, retries)",
+    description: "Show concise run status (state, progress, blocker, retries)",
   },
   { command: "goal_answer", description: "Answer a goal's clarification question" },
   { command: "goal_stop", description: "Stop a running goal" },
