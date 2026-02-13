@@ -77,9 +77,17 @@ function isGoalListIntent(text: string): boolean {
 
 // B) GOAL_RECENT: "recent" + "goal"/"run", or starts with "what goals"/"what runs"
 function isGoalRecentIntent(text: string): boolean {
-  const trimmed = text.trim();
-  if (/\brecent\b/i.test(trimmed) && /\b(goal|run)s?\b/i.test(trimmed)) return true;
-  if (/^what\s+(goal|run)s?\b/i.test(trimmed)) return true;
+  const normalized = text.trim().toLowerCase().replace(/[’]/g, "'");
+  if (!normalized) return false;
+
+  // Accept natural phrasings like:
+  // - "what's the latest goal that was run?"
+  // - "latest run"
+  // - "recent goals"
+  if (/\b(recent|latest|last)\b/.test(normalized) && /\b(goal|run)s?\b/.test(normalized)) {
+    return true;
+  }
+  if (/^what(?:'s| is)?\s+(goal|run)s?\b/.test(normalized)) return true;
   return false;
 }
 
@@ -252,6 +260,19 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   return false;
+}
+
+function isRepoChatBackendEnabled(
+  backend: "codex" | "claude_code" | null | undefined,
+): backend is "codex" | "claude_code" {
+  return backend === "codex" || backend === "claude_code";
+}
+
+export function shouldRouteTelegramTextToRepoChat(params: {
+  repoChatBackend: "codex" | "claude_code" | null | undefined;
+  replyToMessageId?: number;
+}): boolean {
+  return isRepoChatBackendEnabled(params.repoChatBackend) && params.replyToMessageId == null;
 }
 
 export const registerTelegramHandlers = ({
@@ -456,8 +477,31 @@ export const registerTelegramHandlers = ({
     threadId?: number;
   }): Promise<boolean> {
     const chatId = params.msg.chat.id;
-    const repoChatEnabled =
-      telegramCfg.repoChatBackend === "codex" || telegramCfg.repoChatBackend === "claude_code";
+    const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
+      .reply_to_message?.message_id;
+    const repoChatEnabled = isRepoChatBackendEnabled(telegramCfg.repoChatBackend);
+
+    // Deterministic routing for free-text chat mode:
+    // non-command + non-reply text goes directly to repo chat when backend is enabled.
+    if (
+      shouldRouteTelegramTextToRepoChat({
+        repoChatBackend: telegramCfg.repoChatBackend,
+        replyToMessageId,
+      })
+    ) {
+      return dispatchTelegramRepoChatForInboundText({
+        bot,
+        runtime,
+        telegramCfg,
+        claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+        chatId,
+        threadId: params.threadId,
+        prompt: params.text,
+        sourceMessageId: params.msg.message_id,
+        replyToMessageId,
+      });
+    }
+
     const statusId = matchGoalStatusIntent(params.text);
     if (statusId) {
       await sendGoalStatusResponse({
@@ -469,8 +513,6 @@ export const registerTelegramHandlers = ({
       });
       return true;
     }
-    const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
-      .reply_to_message?.message_id;
     const runs = loadRunsForChatThread(chatId, params.threadId);
 
     const handledByGoalRouting = await handleTelegramGoalRouting({
@@ -582,6 +624,7 @@ export const registerTelegramHandlers = ({
       bot,
       runtime,
       telegramCfg,
+      claudeCodeAuth: cfg.goal?.claudeCodeAuth,
       chatId,
       threadId: params.threadId,
       prompt: params.text,

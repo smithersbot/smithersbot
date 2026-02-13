@@ -1,10 +1,12 @@
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
+import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
+const MAX_ERROR_DETAIL_CHARS = 1_000;
 
 type ParsedRepoChatOutput = {
   text: string;
@@ -46,25 +48,29 @@ function pickSessionId(parsed: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
-  const lines = raw
+function parseJsonLines(raw: string): Array<Record<string, unknown>> {
+  return raw
     .split(/\r?\n/g)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as unknown;
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is Record<string, unknown> => isRecord(entry));
+}
+
+export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
+  const lines = parseJsonLines(raw);
 
   let cliSessionId: string | undefined;
   let finalResultText: string | undefined;
   const textParts: string[] = [];
 
-  for (const line of lines) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isRecord(parsed)) continue;
-
+  for (const parsed of lines) {
     cliSessionId = cliSessionId ?? pickSessionId(parsed);
 
     const type = typeof parsed.type === "string" ? parsed.type : "";
@@ -91,6 +97,40 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
   };
 }
 
+function parseRepoChatStreamJsonError(raw: string): ParsedRepoChatOutput {
+  const lines = parseJsonLines(raw);
+
+  let cliSessionId: string | undefined;
+  let errorResultText: string | undefined;
+  const textParts: string[] = [];
+
+  for (const parsed of lines) {
+    cliSessionId = cliSessionId ?? pickSessionId(parsed);
+
+    const type = typeof parsed.type === "string" ? parsed.type : "";
+    const isError = parsed.is_error === true;
+
+    if (type === "result" && isError) {
+      const resultText = collectText(parsed.result).trim();
+      if (resultText) {
+        errorResultText = resultText;
+      }
+      continue;
+    }
+
+    const eventText = collectText(parsed).trim();
+    if (!eventText) continue;
+    if (textParts.at(-1) !== eventText) {
+      textParts.push(eventText);
+    }
+  }
+
+  return {
+    text: (errorResultText ?? textParts.join("\n")).trim(),
+    cliSessionId,
+  };
+}
+
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
   cliSessionId?: string;
@@ -98,6 +138,7 @@ export function buildClaudeRepoChatArgs(params: {
 }): string[] {
   const args = [
     "-p",
+    "--verbose",
     "--output-format",
     "stream-json",
     "--allowedTools",
@@ -154,6 +195,24 @@ function parseRepoChatOutput(rawStdout: string): ParsedRepoChatOutput {
   return { text: rawStdout.trim(), cliSessionId: parsed.cliSessionId };
 }
 
+function truncateErrorDetail(detail: string): string {
+  if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
+  return `${detail.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
+}
+
+function parseRepoChatErrorDetails(stdout: string, stderr: string): string {
+  const parsedStdout = parseRepoChatStreamJsonError(stdout);
+  if (parsedStdout.text) return truncateErrorDetail(parsedStdout.text);
+
+  const parsedStderr = parseRepoChatStreamJsonError(stderr);
+  if (parsedStderr.text) return truncateErrorDetail(parsedStderr.text);
+
+  const plainDetail = stderr.trim() || stdout.trim();
+  if (plainDetail) return truncateErrorDetail(plainDetail);
+
+  return "";
+}
+
 export async function runRepoChatWorker(
   params: RepoChatWorkerParams,
 ): Promise<RepoChatWorkerResult> {
@@ -179,6 +238,10 @@ export async function runRepoChatWorker(
     cwd: params.workingDir,
     timeoutMs,
     abortSignal: params.abortSignal,
+    env:
+      params.backend === "claude_code"
+        ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
+        : { ...process.env },
   });
 
   if (timedOut) {
@@ -186,7 +249,7 @@ export async function runRepoChatWorker(
   }
 
   if (exitCode !== 0) {
-    const details = stderr.trim() || stdout.trim() || `signal=${signal ?? "none"}`;
+    const details = parseRepoChatErrorDetails(stdout, stderr) || `signal=${signal ?? "none"}`;
     throw new Error(
       `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"}): ${details}`,
     );

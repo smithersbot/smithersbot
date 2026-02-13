@@ -12,6 +12,7 @@ import type {
   TelegramGroupConfig,
   TelegramTopicConfig,
 } from "../config/types.js";
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { danger } from "../globals.js";
 import { runRepoChatWorker } from "../repo-chat/repo-chat-worker.js";
 import {
@@ -202,6 +203,7 @@ function runRepoChatInBackground(params: {
   prompt: string;
   sourceMessageId: number;
   backend: RepoChatBackend;
+  claudeCodeAuth?: ClaudeCodeAuthMode;
   existingSession?: RepoChatSession;
   workingDir: string;
 }): void {
@@ -220,6 +222,7 @@ function runRepoChatInBackground(params: {
             prompt: params.prompt,
             workingDir,
             cliSessionId: params.existingSession?.cliSessionId,
+            claudeCodeAuth: params.claudeCodeAuth,
           }),
       });
       const sentMessageId = await sendRepoChatReply({
@@ -265,6 +268,7 @@ function startRepoChat(params: {
   prompt: string;
   replyToMessageId?: number;
   allowNewSessionWhenReplyMissing: boolean;
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 }): StartRepoChatResult {
   const configuredBackend = params.telegramCfg.repoChatBackend;
   if (!isRepoChatBackend(configuredBackend)) {
@@ -296,6 +300,7 @@ function startRepoChat(params: {
     sourceMessageId: params.sourceMessageId,
     prompt: params.prompt,
     backend,
+    claudeCodeAuth: params.claudeCodeAuth,
     existingSession,
     workingDir: path.resolve(process.cwd()),
   });
@@ -311,6 +316,7 @@ export function dispatchTelegramRepoChatForInboundText(params: {
   prompt: string;
   sourceMessageId: number;
   replyToMessageId?: number;
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 }): boolean {
   const result = startRepoChat({
     bot: params.bot,
@@ -322,6 +328,7 @@ export function dispatchTelegramRepoChatForInboundText(params: {
     prompt: params.prompt,
     replyToMessageId: params.replyToMessageId,
     allowNewSessionWhenReplyMissing: false,
+    claudeCodeAuth: params.claudeCodeAuth,
   });
   return result.started;
 }
@@ -393,6 +400,7 @@ export function registerTelegramRepoChatCommands({
       prompt,
       replyToMessageId: resolved.replyToMessageId,
       allowNewSessionWhenReplyMissing: true,
+      claudeCodeAuth: cfg.goal?.claudeCodeAuth,
     });
     if (!result.started && result.reason === "disabled") {
       await sendRepoChatReply({

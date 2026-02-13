@@ -633,6 +633,12 @@ const FIELD_HELP: Record<string, string> = {
     "Debounce window (ms) for batching rapid inbound messages from the same sender (0 to disable).",
   "channels.telegram.dmPolicy":
     'Direct message access control ("pairing" recommended). "open" requires channels.telegram.allowFrom=["*"].',
+  "channels.telegram.goalRouter":
+    "Enable goal reply routing for non-command Telegram text messages (default: true).",
+  "channels.telegram.chatMode":
+    'Non-command Telegram chat mode: "help" (deterministic help) or "chat" (LLM fallback).',
+  "channels.telegram.repoChatBackend":
+    'Read-only repo chat backend for non-command text: "codex", "claude_code", or null/off.',
   "channels.telegram.streamMode":
     "Draft streaming mode for Telegram replies (off | partial | block). Separate from block streaming; requires private topics + sendMessageDraft.",
   "channels.telegram.draftChunk.minChars":

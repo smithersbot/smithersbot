@@ -1,3 +1,5 @@
+import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+
 export type RepoChatBackend = "codex" | "claude_code";
 
 export type RepoChatMessageRef = {
@@ -29,6 +31,8 @@ export type RepoChatWorkerParams = {
   prompt: string;
   workingDir: string;
   cliSessionId?: string;
+  /** Claude Code auth mode (defaults to subscription). */
+  claudeCodeAuth?: ClaudeCodeAuthMode;
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   model?: string;

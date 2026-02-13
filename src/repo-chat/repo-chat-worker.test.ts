@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const runCliProcessMock = vi.fn();
 const getCodexAskForApprovalPlacementMock = vi.fn();
+const buildClaudeCodeEnvMock = vi.fn();
 
 vi.mock("../goal/cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
@@ -10,6 +11,10 @@ vi.mock("../goal/cli-process.js", () => ({
 vi.mock("../goal/backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: (...args: unknown[]) =>
     getCodexAskForApprovalPlacementMock(...args),
+}));
+
+vi.mock("../goal/claude-code-env.js", () => ({
+  buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
 }));
 
 import {
@@ -25,7 +30,9 @@ describe("repo-chat-worker", () => {
   beforeEach(() => {
     runCliProcessMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReset();
+    buildClaudeCodeEnvMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReturnValue("before_exec");
+    buildClaudeCodeEnvMock.mockReturnValue({ TEST_ENV: "1" });
   });
 
   describe("args", () => {
@@ -37,6 +44,7 @@ describe("repo-chat-worker", () => {
 
       expect(args).toContain("--resume");
       expect(args).toContain("claude-session-1");
+      expect(args).toContain("--verbose");
       expect(args).toContain("--allowedTools");
       expect(args).toContain(REPO_CHAT_CLAUDE_ALLOWED_TOOLS);
       expect(args).toContain("--append-system-prompt");
@@ -116,12 +124,36 @@ describe("repo-chat-worker", () => {
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         command: string;
         args: string[];
+        env: Record<string, string>;
       };
       expect(call.command).toBe("claude");
+      expect(call.args).toContain("--verbose");
       expect(call.args).toContain("--output-format");
       expect(call.args).toContain("stream-json");
+      expect(buildClaudeCodeEnvMock).toHaveBeenCalledWith("subscription");
+      expect(call.env).toEqual({ TEST_ENV: "1" });
       expect(result.text).toBe("Repository answer");
       expect(result.cliSessionId).toBe("claude-session-42");
+    });
+
+    it("uses configured Claude auth mode when provided", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: '{"type":"result","is_error":false,"result":"ok"}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 35,
+      });
+
+      await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "ping",
+        workingDir: "/repo",
+        claudeCodeAuth: "api_key",
+      });
+
+      expect(buildClaudeCodeEnvMock).toHaveBeenCalledWith("api_key");
     });
 
     it("runs Codex new session with --json and extracts thread id", async () => {
@@ -195,6 +227,26 @@ describe("repo-chat-worker", () => {
           workingDir: "/repo",
         }),
       ).rejects.toThrow(/failed/);
+    });
+
+    it("extracts concise stream-json error text for non-zero exits", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout:
+          '{"type":"result","is_error":true,"result":"Invalid API key · Fix external API key"}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 20,
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "help",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow(/Invalid API key · Fix external API key/);
     });
   });
 });
