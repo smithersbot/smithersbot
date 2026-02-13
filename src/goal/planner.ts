@@ -13,7 +13,7 @@ Each step describes a task that an autonomous coding agent will carry out. The a
 GRANULARITY RULES (strict):
 - Default to 1–10 steps. Use 3–7 for most goals, but go as low as 1 for trivial goals or up to 10 for genuinely large efforts.
 - Each step is a shippable milestone: it starts from exploration/understanding, includes implementation, and ends with verification (tests pass, build succeeds, or a smoke check).
-- Target 30–120 minutes of real work per step, not 5–10 minutes.
+- Target 5–30 minutes of agent runtime work per step. Avoid human-time estimates like 30–120 minutes.
 - DO NOT create separate steps for "explore the repo", "understand the code", "read the files", or "plan the approach". Fold exploration and understanding into the implementation step that needs it.
 - DO NOT split "write code" and "write tests" into separate steps. Implementation + tests belong in the same step.
 - DO NOT create a standalone "run tests" or "verify" step at the end. Each step must verify its own work before completing.
@@ -30,7 +30,7 @@ Step schema:
 - id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
 - description: clear, actionable description of what the agent should do, including what "done" looks like
 - dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
-- durationMinutes: estimated duration in minutes (integer, 30–120 typical)
+- durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): "codex" | "claude_code" | "pi" — execution backend
 
 Respond ONLY with a JSON object (no markdown fences) matching this schema:
@@ -41,7 +41,7 @@ Respond ONLY with a JSON object (no markdown fences) matching this schema:
       "id": "unique-step-id",
       "description": "What this step does and how to verify it is done",
       "dependsOn": ["step-ids-that-must-complete-first"],
-      "durationMinutes": 45,
+      "durationMinutes": 12,
       "backend": "codex"
     }
   ]
