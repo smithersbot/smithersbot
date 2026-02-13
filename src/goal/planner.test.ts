@@ -271,9 +271,21 @@ describe("planner", () => {
       expect(result).toEqual({ key: "value" });
     });
 
+    it("parses bare JSON that follows a prose preamble", () => {
+      const result = extractJson(
+        'Now I have all the context needed. Here is the revised plan:\n{"key":"value"}',
+      );
+      expect(result).toEqual({ key: "value" });
+    });
+
     it("throws PlanParseError on non-JSON text", () => {
       expect(() => extractJson("not json at all")).toThrow(PlanParseError);
       expect(() => extractJson("not json at all")).toThrow(/failed to parse/i);
+    });
+
+    it("throws PlanParseError when prose contains an invalid JSON object", () => {
+      expect(() => extractJson('Here is the plan:\n{"key": "value"')).toThrow(PlanParseError);
+      expect(() => extractJson('Here is the plan:\n{"key": "value"')).toThrow(/failed to parse/i);
     });
 
     it("PlanParseError carries raw response text", () => {

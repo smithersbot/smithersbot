@@ -33,7 +33,7 @@ Step schema:
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): "codex" | "claude_code" | "pi" — execution backend
 
-Respond ONLY with a JSON object (no markdown fences) matching this schema:
+Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
 {
   "summary": "Brief description of the plan",
   "steps": [
@@ -155,6 +155,17 @@ export function extractJson(text: string): Record<string, unknown> {
   if (fenceMatch?.[1]) {
     try {
       const result = JSON.parse(fenceMatch[1].trim());
+      if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
+    } catch {
+      // Fall through
+    }
+  }
+
+  // Fallback: allow a prose preamble before a bare JSON object.
+  const braceIdx = trimmed.indexOf("{");
+  if (braceIdx > 0) {
+    try {
+      const result = JSON.parse(trimmed.slice(braceIdx));
       if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
     } catch {
       // Fall through
