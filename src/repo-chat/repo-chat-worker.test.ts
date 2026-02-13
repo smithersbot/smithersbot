@@ -48,7 +48,10 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--allowedTools");
       expect(args).toContain(REPO_CHAT_CLAUDE_ALLOWED_TOOLS);
       expect(args).toContain("--append-system-prompt");
-      expect(args).toContain(REPO_CHAT_READ_ONLY_PROMPT);
+      const appendIdx = args.indexOf("--append-system-prompt");
+      const appendedPrompt = args[appendIdx + 1] ?? "";
+      expect(appendedPrompt).toContain(REPO_CHAT_READ_ONLY_PROMPT);
+      expect(appendedPrompt).toContain("Moltbot");
     });
 
     it("builds Codex resume args with read-only sandbox re-applied", () => {

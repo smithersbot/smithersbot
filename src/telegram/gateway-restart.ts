@@ -12,6 +12,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import { resolveStateDir } from "../config/paths.js";
+import { triggerMoltbotRestart } from "../infra/restart.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const GATEWAY_RESTART_COMMAND = "gateway_restart";
@@ -158,13 +159,12 @@ function decideGatewayRestart(params: {
     }
   }
 
-  const triggerPath = writeRestartTrigger(params.triggerDir, params.nowMs, params.userId);
+  // Record accepted request timestamp for cooldown before we attempt the restart.
   fsSync.writeFileSync(params.lastRestartPath, `${params.nowMs}\n`, "utf8");
 
   return {
     accepted: true,
     reason: "accepted",
-    triggerFile: path.basename(triggerPath),
     message: "gateway_restart accepted: restart requested.",
   };
 }
@@ -246,5 +246,34 @@ export function registerGatewayRestartCommand({
     }
 
     await bot.api.sendMessage(chatId, decision.message);
+
+    if (!decision.accepted) return;
+
+    const restartAttempt = triggerMoltbotRestart();
+    if (restartAttempt.ok) return;
+
+    // Fallback path for environments where direct restart is unavailable:
+    // keep compatibility with file-trigger restart workers if present.
+    let fallbackTriggerFile: string | undefined;
+    try {
+      if (userId != null) {
+        fsSync.mkdirSync(triggerDir, { recursive: true });
+        const triggerPath = writeRestartTrigger(triggerDir, Date.now(), userId);
+        fallbackTriggerFile = path.basename(triggerPath);
+      }
+    } catch {
+      fallbackTriggerFile = undefined;
+    }
+
+    const details = restartAttempt.detail ? ` (${restartAttempt.detail})` : "";
+    const fallback = fallbackTriggerFile
+      ? ` Fallback queued: ${fallbackTriggerFile}.`
+      : " No fallback trigger could be queued.";
+    await bot.api
+      .sendMessage(
+        chatId,
+        `gateway_restart warning: direct restart failed via ${restartAttempt.method}${details}.${fallback}`,
+      )
+      .catch(() => undefined);
   });
 }

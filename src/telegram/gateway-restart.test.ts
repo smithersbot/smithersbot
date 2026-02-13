@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const triggerMoltbotRestartMock = vi.fn();
+
+vi.mock("../infra/restart.js", () => ({
+  triggerMoltbotRestart: (...args: unknown[]) => triggerMoltbotRestartMock(...args),
+}));
+
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import type { MoltbotConfig } from "../config/config.js";
 import type { TelegramAccountConfig } from "../config/types.js";
@@ -96,6 +102,8 @@ describe("gateway_restart telegram command", () => {
     previousStateDir = process.env.CLAWDBOT_STATE_DIR;
     testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-restart-test-"));
     process.env.CLAWDBOT_STATE_DIR = testStateDir;
+    triggerMoltbotRestartMock.mockReset();
+    triggerMoltbotRestartMock.mockReturnValue({ ok: true, method: "systemd", tried: [] });
   });
 
   afterEach(() => {
@@ -152,7 +160,8 @@ describe("gateway_restart telegram command", () => {
     expect(sendMessage).toHaveBeenCalledTimes(2);
     expect(sendMessage.mock.calls[0]?.[1]).toContain("accepted");
     expect(sendMessage.mock.calls[1]?.[1]).toContain("cooldown");
-    expect(listTriggerRequests()).toHaveLength(1);
+    expect(listTriggerRequests()).toHaveLength(0);
+    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
 
     const entries = readAuditEntries();
     expect(entries).toHaveLength(2);
@@ -161,28 +170,42 @@ describe("gateway_restart telegram command", () => {
     expect((entries[1]?.cooldownSecondsRemaining ?? 0) > 0).toBe(true);
   });
 
-  it("writes a trigger file when accepted", async () => {
+  it("records cooldown timestamp and performs direct restart when accepted", async () => {
     const { handler, sendMessage } = createHarness();
     const authorizedUserId = AUTHORIZED_USER_ID;
 
     await handler(createCtx({ chatId: 88, userId: authorizedUserId }));
 
     expect(sendMessage).toHaveBeenCalledWith(88, expect.stringContaining("accepted"));
+    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(listTriggerRequests()).toHaveLength(0);
+
+    const lastRestartPath = path.join(testStateDir, TRIGGER_DIRNAME, ".last-restart-ts");
+    expect(fs.existsSync(lastRestartPath)).toBe(true);
+  });
+
+  it("queues fallback trigger when direct restart attempt fails", async () => {
+    triggerMoltbotRestartMock.mockReturnValueOnce({
+      ok: false,
+      method: "systemd",
+      detail: "permission denied",
+      tried: ["systemctl --user restart moltbot-gateway-dev.service"],
+    });
+
+    const { handler, sendMessage } = createHarness();
+    const authorizedUserId = AUTHORIZED_USER_ID;
+
+    await handler(createCtx({ chatId: 77, userId: authorizedUserId }));
+
+    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("accepted");
+    expect(sendMessage.mock.calls[1]?.[1]).toContain("direct restart failed");
+    expect(sendMessage.mock.calls[1]?.[1]).toContain("Fallback queued");
 
     const triggerFiles = listTriggerRequests();
     expect(triggerFiles).toHaveLength(1);
     expect(triggerFiles[0]).toMatch(/^restart-\d+-[a-f0-9]+\.req$/);
-
-    const triggerPath = path.join(testStateDir, TRIGGER_DIRNAME, triggerFiles[0] as string);
-    const payload = JSON.parse(fs.readFileSync(triggerPath, "utf8")) as {
-      requestedAt?: string;
-      userId?: number;
-    };
-    expect(payload.userId).toBe(authorizedUserId);
-    expect(typeof payload.requestedAt).toBe("string");
-
-    const lastRestartPath = path.join(testStateDir, TRIGGER_DIRNAME, ".last-restart-ts");
-    expect(fs.existsSync(lastRestartPath)).toBe(true);
   });
 
   it("appends audit log entries for each request", async () => {
