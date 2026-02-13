@@ -138,5 +138,5 @@ export async function goalStopCommand(
     runtime.log(`Progress: ${completed}/${total} tasks completed.`);
   }
 
-  runtime.log(`Resume with: moltbot goal resume ${prefix}`);
+  runtime.log(`**Goal ID:** ${prefix}`);
 }

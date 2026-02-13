@@ -364,13 +364,13 @@ function formatExecutorError(
   const modelLabel = modelId ? ` (${modelId})` : "";
   switch (kind) {
     case "out_of_credits":
-      return `Out of API credits${providerLabel}${modelLabel}. Add credits to your account and resume with /goal_resume.${suffix}`;
+      return `Out of API credits${providerLabel}${modelLabel}. Add credits to your account.${suffix}`;
     case "auth":
       return `API authentication failed${providerLabel}${modelLabel}. Check your API key configuration.${suffix}`;
     case "rate_limit":
-      return `Rate limited by API${providerLabel}${modelLabel}. Wait a few minutes and resume with /goal_resume.${suffix}`;
+      return `Rate limited by API${providerLabel}${modelLabel}. Wait a few minutes.${suffix}`;
     case "network":
-      return `Network error reaching API. Check your connection and resume with /goal_resume.${suffix}`;
+      return `Network error reaching API. Check your connection.${suffix}`;
     case "timeout":
       return "Task timed out during execution.";
     default:

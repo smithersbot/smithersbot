@@ -280,7 +280,7 @@ describe("goal-stop command", () => {
     await goalStopCommand("partial-run", {}, rt);
 
     expect(rt.logs.join("\n")).toContain("Progress: 1/2 tasks completed");
-    expect(rt.logs.join("\n")).toContain("Resume with: moltbot goal resume partial-");
+    expect(rt.logs.join("\n")).toContain("**Goal ID:** partial-");
   });
 
   it("outputs JSON when --json is passed", async () => {
