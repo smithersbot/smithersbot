@@ -303,8 +303,8 @@ describe("runPlanAutocheck", () => {
       backend: "codex",
     });
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0]?.[0] as { args: string[] }).args;
-    const secondArgs = (mockRunCliProcess.mock.calls[1]?.[0] as { args: string[] }).args;
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
     expect(firstArgs).toContain("--json");
     expect(secondArgs).toEqual(expect.arrayContaining(["exec", "resume", "codex-session-1"]));
     expect(secondArgs).not.toContain("--json");
@@ -410,7 +410,7 @@ describe("runPlanAutocheck", () => {
       commitRevision: vi.fn(),
     });
 
-    const secondCallArgs = (mockRunCliProcess.mock.calls[1]?.[0] as { args: string[] }).args;
+    const secondCallArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
     expect(secondCallArgs).not.toContain("--resume");
     const secondPrompt = secondCallArgs.at(-1) ?? "";
     expect(secondPrompt).toContain("Prior reviewer feedback summary:");
@@ -437,7 +437,7 @@ describe("runPlanAutocheck", () => {
 
     expect(result.sessionId).toBe("new-backend-session");
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0]?.[0] as { args: string[] }).args;
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
     expect(firstArgs).not.toContain("--resume");
     const prompt = firstArgs.at(-1) ?? "";
     expect(prompt).toContain(
@@ -480,8 +480,8 @@ describe("runPlanAutocheck", () => {
     });
 
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
-    const firstArgs = (mockRunCliProcess.mock.calls[0]?.[0] as { args: string[] }).args;
-    const secondArgs = (mockRunCliProcess.mock.calls[1]?.[0] as { args: string[] }).args;
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
     expect(firstArgs).toContain("--resume");
     expect(firstArgs).toContain("stale-session");
     expect(secondArgs).not.toContain("--resume");
