@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Implemented src/goal/plan-autocheck.ts with a full autocheck review loop: codex/claude reviewer execution, session ID extraction and resume support, backend-mismatch guard, resume-failure fallback to fresh sessions with continuity context, robust decision JSON parsing (including lenient codex prose-wrapped extraction), revision loop via runCliPlanRevision + commitRevision callback, and round artifact persistence under <runDir>/autocheck/round-N/. Verified with pnpm build."
+}
