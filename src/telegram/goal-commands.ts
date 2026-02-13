@@ -525,12 +525,20 @@ export function runGoalInBackground(params: {
       const result = await fn();
       try {
         await onResult(result);
-      } catch {
+      } catch (onResultErr) {
+        warn(
+          `[goal] ${tag}onResult failed chatId=${chatId}: ${onResultErr instanceof Error ? onResultErr.message : String(onResultErr)}`,
+        );
         const fallback =
           typeof result === "string" ? result : (result?.text ?? "Goal operation completed.");
-        await bot.api.sendMessage(chatId, fallback, threadParams).catch(() => {});
+        const truncated =
+          fallback.length > 4000 ? `${fallback.slice(0, 3900)}\n\n(truncated)` : fallback;
+        await bot.api.sendMessage(chatId, truncated, threadParams).catch(() => {});
       }
     } catch (err) {
+      warn(
+        `[goal] ${tag}fn failed chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       const msg = formatGoalError(err);
       await sendGoalReply(bot, chatId, msg, runtime, threadId).catch(() => {
         void bot.api
@@ -602,17 +610,25 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     let run = loadRun(runId);
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     if (run?.plan) {
-      const autocheckResult = await runGoalPlanAutocheck({
-        runId,
-        run,
-        plan: run.plan,
-        config,
-        existingSessionId: undefined,
-        existingBackend: undefined,
-      });
-      if (autocheckResult) {
-        run = autocheckResult.run;
-        autocheckDisplay = autocheckResult.display;
+      try {
+        const autocheckResult = await runGoalPlanAutocheck({
+          runId,
+          run,
+          plan: run.plan,
+          config,
+          existingSessionId: undefined,
+          existingBackend: undefined,
+        });
+        if (autocheckResult) {
+          run = autocheckResult.run;
+          autocheckDisplay = autocheckResult.display;
+        }
+      } catch (autocheckErr) {
+        warn(
+          `[goal] autocheck failed for run ${runId.slice(0, 8)}: ${autocheckErr instanceof Error ? autocheckErr.message : String(autocheckErr)}`,
+        );
+        // Re-load the run in case autocheck partially modified it
+        run = loadRun(runId) ?? run;
       }
     }
     if (run?.scoutStatus === "skipped") {
@@ -1116,18 +1132,26 @@ export async function handleGoalEdit(
 
     let finalPlan = result;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
-    const autocheckResult = await runGoalPlanAutocheck({
-      runId: resolvedId,
-      run,
-      plan: finalPlan,
-      config,
-      existingSessionId: run.autocheckSessionId,
-      existingBackend: run.autocheckBackend,
-    });
-    if (autocheckResult) {
-      run = autocheckResult.run;
-      finalPlan = autocheckResult.plan;
-      autocheckDisplay = autocheckResult.display;
+    try {
+      const autocheckResult = await runGoalPlanAutocheck({
+        runId: resolvedId,
+        run,
+        plan: finalPlan,
+        config,
+        existingSessionId: run.autocheckSessionId,
+        existingBackend: run.autocheckBackend,
+      });
+      if (autocheckResult) {
+        run = autocheckResult.run;
+        finalPlan = autocheckResult.plan;
+        autocheckDisplay = autocheckResult.display;
+      }
+    } catch (autocheckErr) {
+      warn(
+        `[goal] autocheck failed for run ${resolvedId.slice(0, 8)}: ${autocheckErr instanceof Error ? autocheckErr.message : String(autocheckErr)}`,
+      );
+      // Re-load the run in case autocheck partially modified it
+      run = loadRun(resolvedId) ?? run;
     }
 
     const finalRevision = run.planRevision ?? newRevision;
@@ -1430,68 +1454,86 @@ export async function sendGoalPlanResult(params: {
     const runIdPrefix = result.runId.slice(0, 8);
     const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);
 
-    // Build a rich caption header with metadata
-    const captionHeader = result.plan ? buildCaptionHeader(result) : `Plan: ${runIdPrefix}`;
+    try {
+      // Build a rich caption header with metadata
+      const captionHeader = result.plan ? buildCaptionHeader(result) : `Plan: ${runIdPrefix}`;
 
-    // Try to send plan DAG as a single PNG photo with inline keyboard
-    if (result.plan) {
-      const pngId = await sendDagPng({
+      // Try to send plan DAG as a single PNG photo with inline keyboard
+      if (result.plan) {
+        const pngId = await sendDagPng({
+          bot,
+          chatId,
+          threadId,
+          runtime,
+          plan: result.plan,
+          steps: result.plan.steps,
+          stepResults: result.stepResults,
+          caption: captionHeader,
+          replyMarkup,
+        });
+        if (pngId != null) {
+          // Single-message success: photo with keyboard is the plan message
+          persistTelegramPlanMessage({ runId: result.runId, chatId, messageId: pngId, threadId });
+          if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+            warn(
+              `telegram-goal: plan sent as single photo messageId=${pngId} (sendGoalPlanMessage skipped)`,
+            );
+          }
+          return;
+        }
+      }
+
+      // PNG failed — fall back to text message with Mermaid code block
+      let markdown = captionHeader;
+      if (result.plan) {
+        let cpm: ReturnType<typeof computeCpm> | undefined;
+        try {
+          cpm = computeCpm(result.plan);
+        } catch {
+          /* non-critical */
+        }
+        const mermaidText = renderMermaid(result.plan, cpm, undefined, result.stepResults);
+        markdown += `\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
+      }
+
+      if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+        warn("telegram-goal: PNG failed, falling back to sendGoalPlanMessage text");
+      }
+
+      const sentId = await sendGoalPlanMessage({
         bot,
         chatId,
-        threadId,
+        markdown,
         runtime,
-        plan: result.plan,
-        steps: result.plan.steps,
-        stepResults: result.stepResults,
-        caption: captionHeader,
-        replyMarkup,
+        runIdPrefix,
+        revision: result.revision,
+        threadId,
       });
-      if (pngId != null) {
-        // Single-message success: photo with keyboard is the plan message
-        persistTelegramPlanMessage({ runId: result.runId, chatId, messageId: pngId, threadId });
-        if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
-          warn(
-            `telegram-goal: plan sent as single photo messageId=${pngId} (sendGoalPlanMessage skipped)`,
-          );
-        }
+      if (sentId != null) {
+        persistTelegramPlanMessage({
+          runId: result.runId,
+          chatId,
+          messageId: sentId,
+          threadId,
+        });
         return;
       }
+    } catch (deliveryErr) {
+      warn(
+        `[goal] plan delivery threw for ${runIdPrefix}: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}`,
+      );
     }
 
-    // PNG failed — fall back to text message with Mermaid code block
-    let markdown = captionHeader;
-    if (result.plan) {
-      let cpm: ReturnType<typeof computeCpm> | undefined;
-      try {
-        cpm = computeCpm(result.plan);
-      } catch {
-        /* non-critical */
-      }
-      const mermaidText = renderMermaid(result.plan, cpm, undefined, result.stepResults);
-      markdown += `\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
-    }
-
-    if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
-      warn("telegram-goal: PNG failed, falling back to sendGoalPlanMessage text");
-    }
-
-    const sentId = await sendGoalPlanMessage({
-      bot,
-      chatId,
-      markdown,
-      runtime,
-      runIdPrefix,
-      revision: result.revision,
-      threadId,
-    });
-    if (sentId != null) {
-      persistTelegramPlanMessage({
-        runId: result.runId,
+    // All delivery attempts failed — send a minimal fallback so the user is not left hanging
+    warn(`[goal] plan delivery failed for ${runIdPrefix}; sending minimal fallback`);
+    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    await bot.api
+      .sendMessage(
         chatId,
-        messageId: sentId,
-        threadId,
-      });
-    }
+        `Plan ready for review (Goal ID: ${runIdPrefix}). Use /goal_detail ${runIdPrefix} to view.`,
+        { ...threadParams, reply_markup: replyMarkup },
+      )
+      .catch(() => {});
   } else if (result.runId && result.blocked) {
     // Question/clarification message — track for reply-to-answer routing
     const sentId = await sendGoalReply(bot, chatId, result.text, runtime, threadId);
