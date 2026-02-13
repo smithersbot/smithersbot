@@ -281,7 +281,7 @@ describe("goal-detail command", () => {
     const output = rt.logs.join("\n");
 
     expect(output).toContain("**Blocker** Execution: Run interrupted, resume to continue.");
-    expect(output).toContain("Next: moltbot goal resume detail-r");
+    expect(output).toContain("**Goal ID:** detail-r");
     expect(output).not.toContain("moltbot goal answer");
   });
 

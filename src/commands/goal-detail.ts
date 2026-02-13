@@ -85,10 +85,7 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
 
   if (run.state === "blocked" && run.blocked) {
     if (AUTO_RESUME_BLOCK_KEYS.has(run.blocked.requiredInputKey)) {
-      if (channel === "telegram") {
-        return `Next: /goal_resume ${runPrefix}`;
-      }
-      return `Next: moltbot goal resume ${runPrefix}`;
+      return `**Goal ID:** ${runPrefix}`;
     }
     if (channel === "telegram") {
       return `Next: /goal_answer ${runPrefix} <answer>`;
@@ -100,10 +97,7 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
   }
 
   if (run.state === "awaiting_approval" || run.state === "executing") {
-    if (channel === "telegram") {
-      return `Next: /goal_resume ${runPrefix}`;
-    }
-    return `Next: moltbot goal resume ${runPrefix}`;
+    return `**Goal ID:** ${runPrefix}`;
   }
 
   return undefined;

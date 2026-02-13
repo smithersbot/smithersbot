@@ -267,7 +267,7 @@ describe("goal-status command", () => {
     await goalStatusCommand("blocked-resume-run", {}, rt);
     const output = rt.logs.join("\n");
     expect(output).toContain("Run interrupted, resume to continue.");
-    expect(output).toContain("Next: moltbot goal resume blocked-");
+    expect(output).toContain("**Goal ID:** blocked-");
     expect(output).not.toContain("moltbot goal answer");
   });
 
@@ -355,7 +355,7 @@ describe("goal-status command", () => {
     expect(findLineIndex(lines, "**Progress** 1/25")).toBe(1);
     expect(findLineIndex(lines, "**Retries** 0 retries")).toBe(2);
     expect(findLineIndex(lines, "**Top Steps**")).toBe(-1);
-    expect(lines.some((line) => line.startsWith("Next: /goal_resume"))).toBe(true);
+    expect(lines.some((line) => line.startsWith("**Goal ID:** telegram"))).toBe(true);
     expect(lines.some((line) => line.includes("more steps not shown"))).toBe(false);
     expect(lines.some((line) => line.includes("Run ID:"))).toBe(false);
     expect(lines.some((line) => line.includes("Dependency Graph"))).toBe(false);
