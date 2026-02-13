@@ -153,7 +153,7 @@ function buildGoalInlineKeyboard(runIdPrefix: string, revision: number) {
   return buildInlineKeyboard([
     [
       { text: "\u2764\uFE0F Approve", callback_data: `ga:${runIdPrefix}:${revision}` },
-      { text: "\uD83D\uDC4D Approve", callback_data: `gA:${runIdPrefix}:${revision}` },
+      { text: "\uD83D\uDD0D Plan Detail", callback_data: `gD:${runIdPrefix}:${revision}` },
     ],
     [
       { text: "\u270F\uFE0F Request changes", callback_data: `ge:${runIdPrefix}:${revision}` },
@@ -1694,8 +1694,8 @@ export function registerTelegramGoalCommands({
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
 
-    // --- Plan buttons: ga/gA/gr/ge:<runIdPrefix>:<revision> ---
-    const planMatch = /^(ga|gA|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
+    // --- Plan buttons: ga/gA/gD/gr/ge:<runIdPrefix>:<revision> ---
+    const planMatch = /^(ga|gA|gD|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
     if (planMatch) {
       await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
       const [, action, runIdPrefix] = planMatch;
@@ -1706,7 +1706,8 @@ export function registerTelegramGoalCommands({
         ?.message_thread_id;
 
       // React with the corresponding emoji on the plan message
-      if (messageId) {
+      // (Plan detail should not set a reaction.)
+      if (messageId && action !== "gD") {
         const emoji: ReactionTypeEmoji["emoji"] =
           action === "ga" || action === "gA"
             ? "\u2764" // ❤ for approve
@@ -1761,6 +1762,14 @@ export function registerTelegramGoalCommands({
           threadId,
           lockLabel: "approve",
           backgroundLabel: "callback:approve",
+        });
+      } else if (action === "gD") {
+        await sendGoalDetailResponse({
+          bot,
+          chatId,
+          runtime,
+          rawId: resolvedId,
+          threadId,
         });
       } else if (action === "gr") {
         const reply = await handleGoalReject(resolvedId);
