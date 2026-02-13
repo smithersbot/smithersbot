@@ -150,6 +150,14 @@ export type SerializedRun = {
   activePlanRevision?: number;
   /** History of previous plans (append-only). */
   planHistory?: Array<{ revision: number; plan: Plan; editInstructions?: string }>;
+  /** Number of autocheck-driven replans applied before user review. */
+  autocheckRounds?: number;
+  /** Configured cap for autocheck rounds. */
+  autocheckMaxRounds?: number;
+  /** Reviewer backend used for autocheck rounds. */
+  autocheckBackend?: "codex" | "claude_code";
+  /** Stable CLI session ID for autocheck reviewer resume. */
+  autocheckSessionId?: string;
   /** Telegram plan message tracking for reply-to-plan and reaction detection. */
   telegramPlanMessage?: {
     chatId: number;

@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Added PlanAutocheckMode and goal.planAutocheck config typing/schema, added autocheck metadata fields to SerializedRun, and updated run-store session serialization carry-forward logic so autocheck fields persist across resume/hydration cycles. Verified with pnpm build."
+}

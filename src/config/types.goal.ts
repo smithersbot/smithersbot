@@ -1,4 +1,5 @@
 export type ClaudeCodeAuthMode = "subscription" | "api_key";
+export type PlanAutocheckMode = "codex" | "claude_code" | "off";
 
 export type GoalConfig = {
   /** Default working directory when --working-dir is not specified. */
@@ -11,4 +12,6 @@ export type GoalConfig = {
    * - "api_key": passes the gateway's ANTHROPIC_API_KEY through to the worker.
    */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /** Auto-review backend for plans before sending them to users. */
+  planAutocheck?: PlanAutocheckMode;
 };

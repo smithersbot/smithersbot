@@ -278,6 +278,10 @@ export function sessionToSerialized(params: {
   plannerBackendUsed?: SerializedRun["plannerBackendUsed"];
   plannerDegradedReason?: SerializedRun["plannerDegradedReason"];
   plannerDegradedResetHint?: SerializedRun["plannerDegradedResetHint"];
+  autocheckRounds?: SerializedRun["autocheckRounds"];
+  autocheckMaxRounds?: SerializedRun["autocheckMaxRounds"];
+  autocheckBackend?: SerializedRun["autocheckBackend"];
+  autocheckSessionId?: SerializedRun["autocheckSessionId"];
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -308,6 +312,10 @@ export function sessionToSerialized(params: {
     ...(params.plannerDegradedResetHint
       ? { plannerDegradedResetHint: params.plannerDegradedResetHint }
       : {}),
+    ...(params.autocheckRounds != null ? { autocheckRounds: params.autocheckRounds } : {}),
+    ...(params.autocheckMaxRounds != null ? { autocheckMaxRounds: params.autocheckMaxRounds } : {}),
+    ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
+    ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
   };
   const previous = params.previousRun;
@@ -345,6 +353,18 @@ export function sessionToSerialized(params: {
   }
   if (!serialized.plannerDegradedResetHint && previous.plannerDegradedResetHint) {
     serialized.plannerDegradedResetHint = previous.plannerDegradedResetHint;
+  }
+  if (serialized.autocheckRounds == null && previous.autocheckRounds != null) {
+    serialized.autocheckRounds = previous.autocheckRounds;
+  }
+  if (serialized.autocheckMaxRounds == null && previous.autocheckMaxRounds != null) {
+    serialized.autocheckMaxRounds = previous.autocheckMaxRounds;
+  }
+  if (!serialized.autocheckBackend && previous.autocheckBackend) {
+    serialized.autocheckBackend = previous.autocheckBackend;
+  }
+  if (!serialized.autocheckSessionId && previous.autocheckSessionId) {
+    serialized.autocheckSessionId = previous.autocheckSessionId;
   }
   if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
     serialized.taskCheckpoints = previous.taskCheckpoints;
