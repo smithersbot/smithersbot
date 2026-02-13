@@ -49,7 +49,7 @@ import {
 import { firstDefined } from "./bot-access.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
-import { REPO_CHAT_COMMAND_SPECS } from "./repo-chat-commands.js";
+import { REPO_CHAT_COMMAND_SPECS, registerTelegramRepoChatCommands } from "./repo-chat-commands.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 
@@ -469,6 +469,19 @@ export const registerTelegramNativeCommands = ({
           resolveTelegramGroupConfig,
           shouldSkipUpdate,
           textLimit,
+        });
+        registerTelegramRepoChatCommands({
+          bot,
+          cfg,
+          runtime,
+          accountId,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          shouldSkipUpdate,
         });
         registerGatewayRestartCommand({
           bot,

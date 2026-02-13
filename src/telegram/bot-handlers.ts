@@ -41,6 +41,7 @@ import { routeTelegramText } from "./goal-router.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
 import { readTelegramAllowFromStore, upsertTelegramPairingRequest } from "./pairing-store.js";
+import { dispatchTelegramRepoChatForInboundText } from "./repo-chat-commands.js";
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
@@ -186,6 +187,8 @@ export async function handleTelegramGoalRouting(params: {
   replyToMessageId?: number;
   runs: SerializedRun[];
   chatMode: TelegramChatMode;
+  suppressChatHelpFallback?: boolean;
+  suppressBlockedHintReply?: boolean;
   sendReply: (text: string) => Promise<void>;
   sendPlanResult: (result: GoalPlanResult) => Promise<void>;
   runHandlers: {
@@ -193,6 +196,8 @@ export async function handleTelegramGoalRouting(params: {
     answer: (runId: string, text: string) => void;
   };
 }): Promise<boolean> {
+  const suppressChatHelpFallback = params.suppressChatHelpFallback === true;
+  const suppressBlockedHintReply = params.suppressBlockedHintReply === true;
   const route = routeTelegramText({
     chatId: params.chatId,
     threadId: params.threadId,
@@ -202,6 +207,7 @@ export async function handleTelegramGoalRouting(params: {
   });
 
   if (route.kind === "CHAT_HELP") {
+    if (suppressChatHelpFallback) return false;
     await params.sendReply(GOAL_HELP_MESSAGE);
     return true;
   }
@@ -220,12 +226,13 @@ export async function handleTelegramGoalRouting(params: {
     }
 
     // Blocked-run hint (from router)
-    if (route.replyText) {
+    if (route.replyText && !suppressBlockedHintReply) {
       await params.sendReply(route.replyText);
     }
 
     // E) FALLBACK: in "help" mode, always reply with help message (never fall through to LLM)
     if (params.chatMode === "help") {
+      if (suppressChatHelpFallback) return false;
       await params.sendReply(GOAL_HELP_MESSAGE);
       return true;
     }
@@ -449,6 +456,8 @@ export const registerTelegramHandlers = ({
     threadId?: number;
   }): Promise<boolean> {
     const chatId = params.msg.chat.id;
+    const repoChatEnabled =
+      telegramCfg.repoChatBackend === "codex" || telegramCfg.repoChatBackend === "claude_code";
     const statusId = matchGoalStatusIntent(params.text);
     if (statusId) {
       await sendGoalStatusResponse({
@@ -464,13 +473,15 @@ export const registerTelegramHandlers = ({
       .reply_to_message?.message_id;
     const runs = loadRunsForChatThread(chatId, params.threadId);
 
-    return await handleTelegramGoalRouting({
+    const handledByGoalRouting = await handleTelegramGoalRouting({
       chatId,
       threadId: params.threadId,
       messageText: params.text,
       replyToMessageId,
       runs,
       chatMode: telegramCfg.chatMode ?? "help",
+      suppressChatHelpFallback: repoChatEnabled,
+      suppressBlockedHintReply: repoChatEnabled,
       sendReply: async (text) => {
         await sendGoalReply(bot, chatId, text, runtime, params.threadId);
       },
@@ -564,6 +575,18 @@ export const registerTelegramHandlers = ({
           });
         },
       },
+    });
+    if (handledByGoalRouting) return true;
+
+    return dispatchTelegramRepoChatForInboundText({
+      bot,
+      runtime,
+      telegramCfg,
+      chatId,
+      threadId: params.threadId,
+      prompt: params.text,
+      sourceMessageId: params.msg.message_id,
+      replyToMessageId,
     });
   }
 
