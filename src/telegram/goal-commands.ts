@@ -4,6 +4,7 @@ import path from "node:path";
 import { InputFile, type Bot, type Context } from "grammy";
 import type { InlineKeyboardMarkup, ReactionTypeEmoji } from "grammy/types";
 
+import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { warn } from "../globals.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
 import { JsonExitError } from "../cli/cli-utils.js";
@@ -12,8 +13,10 @@ import { goalAnswerCommand } from "../commands/goal-answer.js";
 import { goalDetailCommand } from "../commands/goal-detail.js";
 import { goalResumeCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
+import { loadConfig, type MoltbotConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
-import type { MoltbotConfig } from "../config/config.js";
+import { writeConfigFile } from "../config/io.js";
+import type { PlanAutocheckMode } from "../config/types.goal.js";
 import type {
   TelegramAccountConfig,
   TelegramGroupConfig,
@@ -25,6 +28,7 @@ import { computeCpm } from "../goal/cpm.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { formatPlanOutput } from "../goal/format-output.js";
+import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
@@ -34,7 +38,7 @@ import {
   forceReleaseGoalOpLock,
   isGoalOpLocked,
 } from "../goal/goal-lock.js";
-import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
+import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
@@ -55,6 +59,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_resume", description: "Resume a goal run (alias of /goal_approve)" },
   { command: "goal_reject", description: "Reject a goal plan" },
   { command: "goal_edit", description: "Edit a goal plan" },
+  {
+    command: "goal_plan_autocheck",
+    description: "Set plan autocheck backend: codex, claude_code, or off",
+  },
   {
     command: "goal_status",
     description: "Show concise run status (state, progress, blocker, retries)",
@@ -113,12 +121,121 @@ export type GoalPlanResult = {
   plan?: Plan;
   /** Runtime results used to show actual elapsed durations for completed steps. */
   stepResults?: ReadonlyMap<string, StepResult>;
+  /** Number of autocheck-driven replans before showing this plan to the user. */
+  autocheckRounds?: number;
+  /** Configured upper bound for autocheck-driven replans. */
+  autocheckMaxRounds?: number;
+  /** Whether autocheck hit max rounds before user review. */
+  autocheckExhausted?: boolean;
 };
 
 function serializedStepResultsToMap(
   run: SerializedRun | undefined,
 ): ReadonlyMap<string, StepResult> {
   return new Map(Object.entries(run?.stepResults ?? {}));
+}
+
+const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
+const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
+
+type PlanAutocheckDisplayInfo = {
+  rounds: number;
+  maxRounds: number;
+  exhausted: boolean;
+};
+
+function parseGoalPlanAutocheckMode(raw: string): PlanAutocheckMode | undefined {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "codex" || normalized === "claude_code" || normalized === "off") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function isPlanAutocheckBackend(
+  mode: PlanAutocheckMode | undefined,
+): mode is Exclude<PlanAutocheckMode, "off"> {
+  return mode === "codex" || mode === "claude_code";
+}
+
+function commitPlanRevision(params: {
+  run: SerializedRun;
+  revisedPlan: Plan;
+  editInstructions: string;
+  previousPlan?: Plan;
+}): number {
+  const { run, revisedPlan, editInstructions } = params;
+  const oldRevision = run.planRevision ?? 1;
+  const newRevision = oldRevision + 1;
+  const history = run.planHistory ?? [];
+  history.push({
+    revision: oldRevision,
+    plan: params.previousPlan ?? run.plan ?? revisedPlan,
+    editInstructions,
+  });
+
+  run.plan = revisedPlan;
+  run.planRevision = newRevision;
+  run.activePlanRevision = newRevision;
+  run.planHistory = history;
+  run.updatedAt = new Date().toISOString();
+  return newRevision;
+}
+
+async function runGoalPlanAutocheck(params: {
+  runId: string;
+  run: SerializedRun;
+  plan: Plan;
+  config?: MoltbotConfig;
+  existingSessionId?: string;
+  existingBackend?: SerializedRun["autocheckBackend"];
+}): Promise<{ run: SerializedRun; plan: Plan; display: PlanAutocheckDisplayInfo } | undefined> {
+  const mode = params.config?.goal?.planAutocheck;
+  if (!isPlanAutocheckBackend(mode)) return undefined;
+
+  const autocheckResult = await runPlanAutocheck({
+    plan: params.plan,
+    goalText: params.run.goal,
+    mode,
+    maxRounds: GOAL_PLAN_AUTOCHECK_MAX_ROUNDS,
+    workingDir: params.run.workingDir,
+    claudeCodeAuth: params.config?.goal?.claudeCodeAuth ?? "subscription",
+    runDir: path.join(resolveGoalsDir(), params.runId),
+    existingSessionId: params.existingSessionId,
+    existingBackend: params.existingBackend,
+    model: params.run.model,
+    commitRevision: async ({ editInstructions, previousPlan, revisedPlan }) => {
+      const latestRun = loadRun(params.runId);
+      if (!latestRun) return;
+      commitPlanRevision({
+        run: latestRun,
+        revisedPlan,
+        editInstructions,
+        previousPlan,
+      });
+      saveRun(latestRun);
+    },
+  });
+
+  const nextRun = loadRun(params.runId) ?? params.run;
+  nextRun.plan = autocheckResult.plan;
+  nextRun.autocheckRounds = autocheckResult.autocheckRounds;
+  nextRun.autocheckMaxRounds = autocheckResult.autocheckMaxRounds;
+  nextRun.autocheckBackend = autocheckResult.backend;
+  nextRun.autocheckSessionId = autocheckResult.sessionId;
+  nextRun.updatedAt = new Date().toISOString();
+  saveRun(nextRun);
+
+  return {
+    run: nextRun,
+    plan: nextRun.plan ?? autocheckResult.plan,
+    display: {
+      rounds: autocheckResult.autocheckRounds,
+      maxRounds: autocheckResult.autocheckMaxRounds,
+      exhausted: autocheckResult.exhausted,
+    },
+  };
 }
 
 function trackBlockedStatusChange(
@@ -481,11 +598,26 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
     }
 
-    // Successful plan — load plan for PNG rendering in sendGoalPlanResult
-    const savedRun = loadRun(runId);
-    if (savedRun?.scoutStatus === "skipped") {
+    // Successful plan — load run for PNG rendering in sendGoalPlanResult
+    let run = loadRun(runId);
+    let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
+    if (run?.plan) {
+      const autocheckResult = await runGoalPlanAutocheck({
+        runId,
+        run,
+        plan: run.plan,
+        config,
+        existingSessionId: undefined,
+        existingBackend: undefined,
+      });
+      if (autocheckResult) {
+        run = autocheckResult.run;
+        autocheckDisplay = autocheckResult.display;
+      }
+    }
+    if (run?.scoutStatus === "skipped") {
       parts.push(
-        `\n_Scout analysis was skipped (${savedRun.scoutSkipReason ?? "unknown"}). Plan may be less informed._`,
+        `\n_Scout analysis was skipped (${run.scoutSkipReason ?? "unknown"}). Plan may be less informed._`,
       );
     }
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
@@ -493,9 +625,12 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     return {
       text: parts.join("\n") || "No plan output.",
       runId,
-      revision: 1,
-      plan: savedRun?.plan ?? undefined,
-      stepResults: serializedStepResultsToMap(savedRun),
+      revision: run?.planRevision ?? 1,
+      plan: run?.plan ?? undefined,
+      stepResults: serializedStepResultsToMap(run),
+      autocheckRounds: autocheckDisplay?.rounds,
+      autocheckMaxRounds: autocheckDisplay?.maxRounds,
+      autocheckExhausted: autocheckDisplay?.exhausted,
     };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
@@ -897,7 +1032,7 @@ export async function handleGoalEdit(
   const resolvedId = resolveRunId(rawId.trim());
   if (!resolvedId) return { text: `Run not found: ${rawId.trim()}` };
 
-  const run = loadRun(resolvedId);
+  let run = loadRun(resolvedId);
   if (!run) return { text: `Run file missing: ${resolvedId}` };
 
   if (run.state !== "awaiting_approval") {
@@ -971,31 +1106,39 @@ export async function handleGoalEdit(
       return { text: lines.join("\n"), blocked: true };
     }
 
-    // Update run with new plan revision
-    const oldRevision = run.planRevision ?? 1;
-    const newRevision = oldRevision + 1;
-    const history = run.planHistory ?? [];
-    history.push({
-      revision: oldRevision,
-      plan: run.plan,
+    const newRevision = commitPlanRevision({
+      run,
+      revisedPlan: result,
       editInstructions: trimmedInstructions,
+      previousPlan: run.plan,
     });
-
-    run.plan = result;
-    run.planRevision = newRevision;
-    run.activePlanRevision = newRevision;
-    run.planHistory = history;
-    run.updatedAt = new Date().toISOString();
     saveRun(run);
 
+    let finalPlan = result;
+    let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
+    const autocheckResult = await runGoalPlanAutocheck({
+      runId: resolvedId,
+      run,
+      plan: finalPlan,
+      config,
+      existingSessionId: run.autocheckSessionId,
+      existingBackend: run.autocheckBackend,
+    });
+    if (autocheckResult) {
+      run = autocheckResult.run;
+      finalPlan = autocheckResult.plan;
+      autocheckDisplay = autocheckResult.display;
+    }
+
+    const finalRevision = run.planRevision ?? newRevision;
     const stepResults = serializedStepResultsToMap(run);
-    const planText = formatPlanOutput(result, {
+    const planText = formatPlanOutput(finalPlan, {
       diagram: "none",
       format: "md",
       stepResults,
     });
     const parts: string[] = [];
-    parts.push(`**Revision ${newRevision}**\n`);
+    parts.push(`**Revision ${finalRevision}**\n`);
     if (workingDirChanged) {
       parts.push(`Working dir: \`${shortenHomePath(run.workingDir)}\`\n`);
     }
@@ -1008,9 +1151,12 @@ export async function handleGoalEdit(
     return {
       text: parts.join("\n"),
       runId: resolvedId,
-      revision: newRevision,
-      plan: result,
+      revision: finalRevision,
+      plan: finalPlan,
       stepResults,
+      autocheckRounds: autocheckDisplay?.rounds,
+      autocheckMaxRounds: autocheckDisplay?.maxRounds,
+      autocheckExhausted: autocheckDisplay?.exhausted,
     };
   } catch (err) {
     if (err instanceof PlanParseError) {
@@ -1251,6 +1397,14 @@ function buildCaptionHeader(result: GoalPlanResult): string {
   const plannerFallbackLine = run ? formatPlannerFallbackLine(run) : undefined;
   if (plannerFallbackLine) {
     lines.push(plannerFallbackLine);
+  }
+  if (result.autocheckRounds != null && result.autocheckMaxRounds != null) {
+    lines.push(`Replanned: ${result.autocheckRounds}/${result.autocheckMaxRounds}`);
+    if (result.autocheckExhausted) {
+      lines.push(
+        `\u26A0\uFE0F Autocheck hit max rounds (${result.autocheckRounds}/${result.autocheckMaxRounds})`,
+      );
+    }
   }
   if (result.plan) {
     // Resolve workers from classification + planner hints, deduplicated
@@ -1568,6 +1722,7 @@ export type RegisterGoalCommandsParams = {
   bot: Bot;
   cfg: MoltbotConfig;
   runtime: RuntimeEnv;
+  accountId: string;
   telegramCfg: TelegramAccountConfig;
   allowFrom?: Array<string | number>;
   groupAllowFrom?: Array<string | number>;
@@ -1588,6 +1743,7 @@ export function registerTelegramGoalCommands({
   bot,
   cfg,
   runtime,
+  accountId,
   telegramCfg,
   allowFrom,
   groupAllowFrom,
@@ -1953,6 +2109,63 @@ export function registerTelegramGoalCommands({
         }
       },
     });
+  });
+
+  // /goal_plan_autocheck [codex|claude_code|off]
+  bot.command("goal_plan_autocheck", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+
+    const rawMode = ctx.match?.trim() ?? "";
+    if (!rawMode) {
+      const currentMode = cfg.goal?.planAutocheck ?? "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal plan autocheck mode: \`${currentMode}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+
+    const nextMode = parseGoalPlanAutocheckMode(rawMode);
+    if (!nextMode) {
+      const currentMode = cfg.goal?.planAutocheck ?? "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Invalid mode: \`${rawMode}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}\nCurrent: \`${currentMode}\``,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+
+    if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Config writes are disabled for this Telegram account.",
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+
+    const nextConfig = loadConfig();
+    nextConfig.goal ??= {};
+    nextConfig.goal.planAutocheck = nextMode;
+    await writeConfigFile(nextConfig);
+
+    cfg.goal ??= {};
+    cfg.goal.planAutocheck = nextMode;
+
+    const confirmation =
+      nextMode === "off"
+        ? "Goal plan autocheck disabled."
+        : `Goal plan autocheck set to \`${nextMode}\`.`;
+    await sendGoalReply(bot, resolved.chatId, confirmation, runtime, resolved.threadIdForSend);
   });
 
   // /goal_approve <runId>

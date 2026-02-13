@@ -461,6 +461,7 @@ export const registerTelegramNativeCommands = ({
           bot,
           cfg,
           runtime,
+          accountId,
           telegramCfg,
           allowFrom,
           groupAllowFrom,
