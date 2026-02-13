@@ -38,7 +38,7 @@ import { listRuns, loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
-import { markdownToTelegramChunks } from "./format.js";
+import { markdownToTelegramChunks, markdownToTelegramHtml } from "./format.js";
 import { buildInlineKeyboard } from "./send.js";
 import { recordSentMessage } from "./sent-message-cache.js";
 import { findRunByPlanMessageIdIndexed, indexPlanMessage } from "./goal-message-index.js";
@@ -1363,19 +1363,41 @@ export async function sendGoalPlanResult(params: {
 const TELEGRAM_CAPTION_LIMIT = 1024;
 
 function splitTelegramCaption(caption: string): { caption: string; remainder?: string } {
-  if (caption.length <= TELEGRAM_CAPTION_LIMIT) return { caption };
-  const preferred = caption.lastIndexOf("\n", TELEGRAM_CAPTION_LIMIT);
+  const fullCaptionHtml = markdownToTelegramHtml(caption);
+  if (fullCaptionHtml.length <= TELEGRAM_CAPTION_LIMIT) return { caption: fullCaptionHtml };
+
+  // Keep the split based on rendered HTML length (Telegram's parse_mode content)
+  // while preserving markdown remainder for sendGoalReply chunking.
+  let lo = 0;
+  let hi = caption.length;
+  let splitAt = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const candidate = caption.slice(0, mid);
+    const candidateHtml = markdownToTelegramHtml(candidate);
+    if (candidateHtml.length <= TELEGRAM_CAPTION_LIMIT) {
+      splitAt = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  const preferred = caption.lastIndexOf("\n", splitAt);
   const minSplit = Math.floor(TELEGRAM_CAPTION_LIMIT * 0.6);
-  const splitAt = preferred >= minSplit ? preferred : TELEGRAM_CAPTION_LIMIT;
-  const head = caption.slice(0, splitAt).trimEnd();
-  const tail = caption.slice(splitAt).trimStart();
-  if (!head) {
+  const effectiveSplitAt = preferred >= minSplit ? preferred : splitAt;
+  const headMarkdown = caption.slice(0, effectiveSplitAt).trimEnd();
+  const tailMarkdown = caption.slice(effectiveSplitAt).trimStart();
+  const headHtml = markdownToTelegramHtml(headMarkdown);
+
+  if (!headMarkdown) {
+    const fallbackHead = caption.slice(0, 1);
     return {
-      caption: caption.slice(0, TELEGRAM_CAPTION_LIMIT),
-      remainder: caption.slice(TELEGRAM_CAPTION_LIMIT).trimStart(),
+      caption: markdownToTelegramHtml(fallbackHead),
+      remainder: caption.slice(1).trimStart(),
     };
   }
-  return { caption: head, remainder: tail || undefined };
+  return { caption: headHtml, remainder: tailMarkdown || undefined };
 }
 
 async function sendDagPng(params: {
@@ -1408,6 +1430,7 @@ async function sendDagPng(params: {
     try {
       const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
         caption: split.caption,
+        parse_mode: "HTML",
         ...threadParams,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       });

@@ -469,6 +469,7 @@ describe("goal-commands telegram adapter", () => {
         expect.anything(),
         expect.objectContaining({
           caption: expect.stringContaining("Run: test-run-id-1234"),
+          parse_mode: "HTML",
         }),
       );
       expect(sendMessage).not.toHaveBeenCalled();
@@ -529,7 +530,8 @@ describe("goal-commands telegram adapter", () => {
         42,
         expect.anything(),
         expect.objectContaining({
-          caption: expect.stringContaining("Run: test-run-id-1234"),
+          caption: expect.stringContaining("<b>Steps</b>"),
+          parse_mode: "HTML",
         }),
       );
       expect(sendMessage).not.toHaveBeenCalled();
