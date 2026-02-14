@@ -51,7 +51,7 @@ export type GoalCommandOptions = {
   dryRun?: boolean;
   diagram?: DiagramMode;
   output?: OutputFormat;
-  /** Stop after planning; set state to awaiting_approval without entering the approval gate. */
+  /** Stop after planning; keep state as planning for channel-specific approval delivery. */
   planOnly?: boolean;
   /** Use this run ID instead of generating a new one. */
   runId?: string;
@@ -259,10 +259,11 @@ export async function goalCommand(
       runtime.log("");
     }
 
-    // Plan-only mode: stop after planning, leave state as awaiting_approval.
+    // Plan-only mode: stop after planning and keep run in planning state.
+    // Channel adapters transition to awaiting_approval after they deliver the plan to users.
     // Only reached when planResult is a Plan (blocked/failed paths return earlier).
     if (opts.planOnly) {
-      session.state = "awaiting_approval";
+      session.state = "planning";
       persistRun();
       return undefined;
     }

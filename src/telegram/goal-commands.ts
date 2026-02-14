@@ -238,6 +238,14 @@ async function runGoalPlanAutocheck(params: {
   };
 }
 
+function markRunAwaitingApproval(run: SerializedRun | undefined): SerializedRun | undefined {
+  if (!run || run.state === "awaiting_approval") return run;
+  run.state = "awaiting_approval";
+  run.updatedAt = new Date().toISOString();
+  saveRun(run);
+  return run;
+}
+
 function trackBlockedStatusChange(
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
 ): {
@@ -635,6 +643,9 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       parts.push(
         `\n_Scout analysis was skipped (${run.scoutSkipReason ?? "unknown"}). Plan may be less informed._`,
       );
+    }
+    if (run?.plan) {
+      run = markRunAwaitingApproval(run) ?? run;
     }
     parts.push(`\nRun ID: \`${runId.slice(0, 8)}\``);
 
@@ -1128,6 +1139,8 @@ export async function handleGoalEdit(
       editInstructions: trimmedInstructions,
       previousPlan: run.plan,
     });
+    run.state = "planning";
+    run.updatedAt = new Date().toISOString();
     saveRun(run);
 
     let finalPlan = result;
@@ -1153,6 +1166,7 @@ export async function handleGoalEdit(
       // Re-load the run in case autocheck partially modified it
       run = loadRun(resolvedId) ?? run;
     }
+    run = markRunAwaitingApproval(run) ?? run;
 
     const finalRevision = run.planRevision ?? newRevision;
     const stepResults = serializedStepResultsToMap(run);

@@ -316,7 +316,7 @@ describe("goal command — early failure persistence", () => {
     expect(outcome).toBeUndefined();
     const runs = listRuns(testGoalsDir);
     const run = loadRun(runs[0]!.runId, testGoalsDir);
-    expect(run!.state).toBe("awaiting_approval");
+    expect(run!.state).toBe("planning");
     expect(run!.scoutStatus).toBe("skipped");
     expect(run!.scoutSkipReason).toBe("--no-scout flag");
     expect(rt.logs.some((line) => line.includes("Scout skipped: --no-scout flag"))).toBe(true);

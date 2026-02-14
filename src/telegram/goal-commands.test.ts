@@ -204,6 +204,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("runs autocheck in handleGoal when enabled and persists autocheck session metadata", async () => {
+      let createdRunId = "";
       const autocheckPlan = {
         goal: "Test goal",
         summary: "Autochecked plan",
@@ -221,19 +222,23 @@ describe("goal-commands telegram adapter", () => {
 
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
-          saveRun(makeRun({ runId: opts.runId }));
+          createdRunId = opts.runId;
+          saveRun(makeRun({ runId: opts.runId, state: "planning" }));
           runtime.log("## Plan\n1. Do something");
           return undefined;
         },
       );
-      mockRunPlanAutocheck.mockResolvedValue({
-        plan: autocheckPlan,
-        autocheckRounds: 1,
-        autocheckMaxRounds: 3,
-        approved: true,
-        exhausted: false,
-        sessionId: "autocheck-session-1",
-        backend: "codex",
+      mockRunPlanAutocheck.mockImplementation(async () => {
+        expect(loadRun(createdRunId, testGoalsDir)?.state).toBe("planning");
+        return {
+          plan: autocheckPlan,
+          autocheckRounds: 1,
+          autocheckMaxRounds: 3,
+          approved: true,
+          exhausted: false,
+          sessionId: "autocheck-session-1",
+          backend: "codex",
+        };
       });
 
       const { handleGoal } = await import("./goal-commands.js");
@@ -262,12 +267,13 @@ describe("goal-commands telegram adapter", () => {
       expect(persisted?.autocheckMaxRounds).toBe(3);
       expect(persisted?.autocheckBackend).toBe("codex");
       expect(persisted?.autocheckSessionId).toBe("autocheck-session-1");
+      expect(persisted?.state).toBe("awaiting_approval");
     });
 
     it("skips autocheck in handleGoal when planAutocheck is off", async () => {
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
-          saveRun(makeRun({ runId: opts.runId }));
+          saveRun(makeRun({ runId: opts.runId, state: "planning" }));
           runtime.log("## Plan\n1. Do something");
           return undefined;
         },
@@ -280,6 +286,8 @@ describe("goal-commands telegram adapter", () => {
 
       expect(result.runId).toBeDefined();
       expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
+      const persisted = loadRun(result.runId!, testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
     });
 
     it("handles blocked-at-planning outcome", async () => {
@@ -1161,14 +1169,17 @@ describe("goal-commands telegram adapter", () => {
         ],
       };
       mockRunCliPlanRevision.mockResolvedValue({ plan: revisedPlan });
-      mockRunPlanAutocheck.mockResolvedValue({
-        plan: revisedPlan,
-        autocheckRounds: 2,
-        autocheckMaxRounds: 3,
-        approved: true,
-        exhausted: false,
-        sessionId: "session-new",
-        backend: "claude_code",
+      mockRunPlanAutocheck.mockImplementation(async () => {
+        expect(loadRun("test-run-id-1234", testGoalsDir)?.state).toBe("planning");
+        return {
+          plan: revisedPlan,
+          autocheckRounds: 2,
+          autocheckMaxRounds: 3,
+          approved: true,
+          exhausted: false,
+          sessionId: "session-new",
+          backend: "claude_code",
+        };
       });
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
@@ -1192,6 +1203,7 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.autocheckMaxRounds).toBe(3);
       expect(run?.autocheckBackend).toBe("claude_code");
       expect(run?.autocheckSessionId).toBe("session-new");
+      expect(run?.state).toBe("awaiting_approval");
     });
 
     it("skips autocheck in handleGoalEdit when planAutocheck is off", async () => {
@@ -1220,6 +1232,8 @@ describe("goal-commands telegram adapter", () => {
       } as never);
 
       expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.state).toBe("awaiting_approval");
     });
 
     it("updates run working dir from explicit edit instructions", async () => {
