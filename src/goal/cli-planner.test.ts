@@ -216,6 +216,82 @@ describe("runCliPlanning", () => {
     expect(attempt.errorClassification).toBe("needs_clarification");
   });
 
+  it("clears stale clarification artifacts before replanning the same run", async () => {
+    const runId = "run-replan-stale-clarification";
+    let planningAttempt = 0;
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      planningAttempt += 1;
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+
+      if (planningAttempt === 1) {
+        fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+        fs.writeFileSync(
+          path.join(scoutDir, "plan_needs_clarification.md"),
+          "Which deployment target should this use?",
+          "utf8",
+        );
+        return {
+          stdout: '{"blocked":true,"question":"Which deployment target should this use?"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 76,
+        };
+      }
+
+      const successPlan = {
+        summary: "Unified planning summary",
+        steps: [
+          {
+            id: "analyze-repo",
+            description: "Inspect repository files and verify with a targeted test run",
+            dependsOn: [],
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      };
+      fs.writeFileSync(String(params.stdoutPath), JSON.stringify(successPlan), "utf8");
+      writeScoutArtifacts(scoutDir, runId);
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify(successPlan, null, 2),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify(successPlan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 82,
+      };
+    });
+
+    const firstResult = await runCliPlanning({
+      runId,
+      goalText: "Deploy this change",
+      goalsDir,
+    });
+    expect(firstResult.status).toBe("blocked");
+
+    const scoutDir = path.join(goalsDir, runId, "scout");
+    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(true);
+
+    const secondResult = await runCliPlanning({
+      runId,
+      goalText: "Deploy this change",
+      goalsDir,
+    });
+
+    expect(secondResult.status).toBe("success");
+    expect(secondResult.scoutStatus).toBe("success");
+    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(false);
+  });
+
   it("throws PlanParseError when planner output is invalid and still writes diagnostics", async () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const scoutDir = path.dirname(String(params.stdoutPath));

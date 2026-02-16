@@ -252,6 +252,20 @@ function writePlannerRawOutput(scoutDir: string, rawOutput: string): void {
   }
 }
 
+function clearStalePlanningArtifacts(scoutDir: string): void {
+  const staleSingleFileArtifacts = [
+    SCOUT_NEEDS_CLARIFICATION_FILE,
+    SCOUT_PLAN_DRAFT_FILE,
+    SCOUT_REPORT_FILE,
+    EXECUTION_PLAN_FILE,
+    PLANNER_RAW_OUTPUT_FILE,
+  ];
+  for (const artifact of staleSingleFileArtifacts) {
+    fs.rmSync(path.join(scoutDir, artifact), { force: true });
+  }
+  fs.rmSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true, force: true });
+}
+
 function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
   const canonical = {
     summary: plan.summary,
@@ -451,6 +465,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   const scoutDir = resolveScoutDir(runId, goalsDir);
   fs.mkdirSync(scoutDir, { recursive: true });
+  clearStalePlanningArtifacts(scoutDir);
   if (includeScoutArtifacts) {
     fs.mkdirSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
   }
