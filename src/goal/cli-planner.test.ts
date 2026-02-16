@@ -292,6 +292,177 @@ describe("runCliPlanning", () => {
     expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(false);
   });
 
+  it("clears all stale artifact types (draft, report, node_specs, raw_output) before replanning", async () => {
+    const runId = "run-replan-all-artifacts";
+    let planningAttempt = 0;
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      planningAttempt += 1;
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+
+      if (planningAttempt === 1) {
+        // First attempt: produce all artifacts plus a clarification file
+        writeScoutArtifacts(scoutDir, runId);
+        fs.writeFileSync(
+          path.join(scoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify({ summary: "stale", steps: [] }),
+          "utf8",
+        );
+        fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+        fs.writeFileSync(
+          path.join(scoutDir, "plan_needs_clarification.md"),
+          "Which DB should we use?",
+          "utf8",
+        );
+        return {
+          stdout: '{"blocked":true,"question":"Which DB should we use?"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 70,
+        };
+      }
+
+      // Second attempt: verify stale artifacts were removed before we run
+      // If clearStalePlanningArtifacts works, these should NOT exist at this point
+      const staleFiles = [
+        "plan_needs_clarification.md",
+        "plan_draft.md",
+        "scout_report.json",
+        EXECUTION_PLAN_FILE,
+        "planning_raw_output.txt",
+      ];
+      const staleNodeSpecs = path.join(scoutDir, "node_specs");
+      const survivingStale = staleFiles.filter((f) => fs.existsSync(path.join(scoutDir, f)));
+      if (survivingStale.length > 0) {
+        throw new Error(`Stale artifacts not cleared: ${survivingStale.join(", ")}`);
+      }
+      if (fs.existsSync(staleNodeSpecs) && fs.readdirSync(staleNodeSpecs).length > 0) {
+        throw new Error("Stale node_specs/ directory was not cleared");
+      }
+
+      // Produce fresh success artifacts
+      const successPlan = {
+        summary: "Fresh plan after cleanup",
+        steps: [
+          {
+            id: "impl-step",
+            description: "Implement the feature",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      };
+      fs.writeFileSync(String(params.stdoutPath), JSON.stringify(successPlan), "utf8");
+      writeScoutArtifacts(scoutDir, runId);
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify(successPlan, null, 2),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify(successPlan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 90,
+      };
+    });
+
+    const firstResult = await runCliPlanning({ runId, goalText: "Set up DB", goalsDir });
+    expect(firstResult.status).toBe("blocked");
+
+    const secondResult = await runCliPlanning({ runId, goalText: "Set up DB", goalsDir });
+    expect(secondResult.status).toBe("success");
+    if (secondResult.status === "success") {
+      expect(secondResult.plan.summary).toBe("Fresh plan after cleanup");
+    }
+  });
+
+  it("handles triple replan: clarification → clarification → success", async () => {
+    const runId = "run-triple-replan";
+    let planningAttempt = 0;
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      planningAttempt += 1;
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+
+      if (planningAttempt <= 2) {
+        const question =
+          planningAttempt === 1 ? "Which framework should we use?" : "Which deployment target?";
+        fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+        fs.writeFileSync(path.join(scoutDir, "plan_needs_clarification.md"), question, "utf8");
+        return {
+          stdout: JSON.stringify({ blocked: true, question }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 60 + planningAttempt * 10,
+        };
+      }
+
+      // Third attempt: success
+      const successPlan = {
+        summary: "Final plan after two clarifications",
+        steps: [
+          {
+            id: "deploy",
+            description: "Deploy to production",
+            dependsOn: [],
+            durationMinutes: 20,
+            backend: "codex",
+          },
+        ],
+      };
+      fs.writeFileSync(String(params.stdoutPath), JSON.stringify(successPlan), "utf8");
+      writeScoutArtifacts(scoutDir, runId);
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify(successPlan, null, 2),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify(successPlan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 95,
+      };
+    });
+
+    // First planning attempt → blocked
+    const r1 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
+    expect(r1.status).toBe("blocked");
+    if (r1.status === "blocked") {
+      expect(r1.question).toBe("Which framework should we use?");
+    }
+
+    // Second planning attempt → blocked again (different question)
+    const r2 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
+    expect(r2.status).toBe("blocked");
+    if (r2.status === "blocked") {
+      expect(r2.question).toBe("Which deployment target?");
+    }
+
+    // Third planning attempt → success (stale clarification from r2 is cleared)
+    const r3 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
+    expect(r3.status).toBe("success");
+    if (r3.status === "success") {
+      expect(r3.plan.summary).toBe("Final plan after two clarifications");
+    }
+
+    // Verify no stale clarification file remains
+    const scoutDir = path.join(goalsDir, runId, "scout");
+    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(false);
+  });
+
   it("throws PlanParseError when planner output is invalid and still writes diagnostics", async () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const scoutDir = path.dirname(String(params.stdoutPath));
