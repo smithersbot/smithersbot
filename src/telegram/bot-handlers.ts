@@ -45,6 +45,7 @@ import { dispatchTelegramRepoChatForInboundText } from "./repo-chat-commands.js"
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
+import { buildCommandFragmentKey, normalizeCommandFragmentParams } from "./command-fragments.js";
 
 const GOAL_HELP_MESSAGE = [
   "Moltbot goal mode:",
@@ -290,6 +291,7 @@ export const registerTelegramHandlers = ({
   shouldSkipUpdate,
   processMessage,
   logger,
+  commandFragmentBuffer,
 }) => {
   const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
   const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 1500;
@@ -1098,6 +1100,18 @@ export const registerTelegramHandlers = ({
       const caption = typeof msg.caption === "string" ? msg.caption : undefined;
       const textForRouting = text ?? caption;
       const isCommandLike = (textForRouting ?? "").trim().startsWith("/");
+
+      if (!isCommandLike && text && commandFragmentBuffer) {
+        const normalized = normalizeCommandFragmentParams(msg, accountId);
+        const commandKey = buildCommandFragmentKey(normalized);
+        const consumed = commandFragmentBuffer.tryAppend(
+          commandKey,
+          msg.message_id,
+          text,
+          Date.now(),
+        );
+        if (consumed) return;
+      }
 
       // Text fragment handling - Telegram splits long pastes into multiple inbound messages (~4096 chars).
       // We buffer “near-limit” messages and append immediately-following parts.

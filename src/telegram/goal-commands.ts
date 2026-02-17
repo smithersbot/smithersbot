@@ -43,6 +43,12 @@ import { recordSentMessage } from "./sent-message-cache.js";
 import { findRunByPlanMessageIdIndexed, indexPlanMessage } from "./goal-message-index.js";
 import { resolveUserPath, shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
+import {
+  buildCommandFragmentKey,
+  COMMAND_FRAGMENT_START_THRESHOLD,
+  type CommandFragmentBuffer,
+  normalizeCommandFragmentParams,
+} from "./command-fragments.js";
 
 // ---------------------------------------------------------------------------
 // Telegram command menu entries for the goal subsystem
@@ -1830,6 +1836,7 @@ export type RegisterGoalCommandsParams = {
   ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
   textLimit: number;
+  commandFragmentBuffer?: CommandFragmentBuffer;
 };
 
 const APPROVE_EMOJIS = new Set(["\u2764", "\u2764\uFE0F", "\uD83D\uDC4D"]);
@@ -1847,6 +1854,7 @@ export function registerTelegramGoalCommands({
   resolveGroupPolicy,
   resolveTelegramGroupConfig,
   shouldSkipUpdate,
+  commandFragmentBuffer,
 }: RegisterGoalCommandsParams): void {
   // Helper: authenticate and resolve thread context
   async function authAndResolve(ctx: TelegramGoalCommandContext) {
@@ -2177,23 +2185,62 @@ export function registerTelegramGoalCommands({
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
       return;
     }
-    runGoalInBackground({
-      bot,
-      chatId: resolved.chatId,
-      threadId: resolved.threadIdForSend,
-      runtime,
-      label: "goal",
-      replyToMessageId,
-      fn: () => handleGoal(text, cfg),
-      onResult: async (result) => {
-        if (result == null) return;
-        if (typeof result === "string") {
-          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
-        } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
-        }
-      },
-    });
+
+    const runGoal = (goalText: string) => {
+      runGoalInBackground({
+        bot,
+        chatId: resolved.chatId,
+        threadId: resolved.threadIdForSend,
+        runtime,
+        label: "goal",
+        replyToMessageId,
+        fn: () => handleGoal(goalText, cfg),
+        onResult: async (result) => {
+          if (result == null) return;
+          if (typeof result === "string") {
+            await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+          } else {
+            await sendPlanResult(
+              resolved.chatId,
+              result,
+              resolved.threadIdForSend,
+              replyToMessageId,
+            );
+          }
+        },
+      });
+    };
+
+    const msg = ctx.message;
+    if (msg && commandFragmentBuffer && text.length >= COMMAND_FRAGMENT_START_THRESHOLD) {
+      const normalized = normalizeCommandFragmentParams(msg, accountId);
+      const key = buildCommandFragmentKey(normalized);
+      if (commandFragmentBuffer.hasPending(key)) {
+        await commandFragmentBuffer.cancelAndFlush(key);
+      }
+      const rawCommand = (msg.text ?? "").trim().slice(1).split(/\s+/, 1)[0] ?? "";
+      const commandName = rawCommand.split("@")[0] || "new_goal";
+      commandFragmentBuffer.bufferCommand(key, {
+        commandName,
+        text,
+        firstMessageId: msg.message_id,
+        receivedAtMs: Date.now(),
+        dispatch: {
+          chatId: resolved.chatId,
+          threadIdForSend: resolved.threadIdForSend,
+          senderId: normalized.senderId,
+          replyToMessageId,
+          sourceMessageId: msg.message_id,
+          accountId,
+        },
+        flushCallback: (combinedText) => {
+          runGoal(combinedText);
+        },
+      });
+      return;
+    }
+
+    runGoal(text);
   });
 
   // /goal_plan_autocheck [codex|claude_code|off]

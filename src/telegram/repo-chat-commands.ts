@@ -23,6 +23,12 @@ import type { RepoChatBackend, RepoChatSession } from "../repo-chat/types.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
+import {
+  buildCommandFragmentKey,
+  COMMAND_FRAGMENT_START_THRESHOLD,
+  type CommandFragmentBuffer,
+  normalizeCommandFragmentParams,
+} from "./command-fragments.js";
 import { markdownToTelegramChunks } from "./format.js";
 import { withChatAction } from "./goal-commands.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
@@ -59,6 +65,7 @@ type RegisterRepoChatCommandsParams = {
     messageThreadId?: number,
   ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
+  commandFragmentBuffer?: CommandFragmentBuffer;
 };
 
 type StartRepoChatResult =
@@ -345,6 +352,7 @@ export function registerTelegramRepoChatCommands({
   resolveGroupPolicy,
   resolveTelegramGroupConfig,
   shouldSkipUpdate,
+  commandFragmentBuffer,
 }: RegisterRepoChatCommandsParams): void {
   async function authAndResolve(ctx: TelegramRepoChatCommandContext) {
     const msg = ctx.message;
@@ -390,28 +398,63 @@ export function registerTelegramRepoChatCommands({
       });
       return;
     }
-    const result = startRepoChat({
-      bot,
-      runtime,
-      telegramCfg,
-      chatId: resolved.chatId,
-      threadId: resolved.threadIdForSend,
-      sourceMessageId: resolved.sourceMessageId,
-      prompt,
-      replyToMessageId: resolved.replyToMessageId,
-      allowNewSessionWhenReplyMissing: true,
-      claudeCodeAuth: cfg.goal?.claudeCodeAuth,
-    });
-    if (!result.started && result.reason === "disabled") {
-      await sendRepoChatReply({
+
+    const runRepoChat = (textPrompt: string) => {
+      const result = startRepoChat({
         bot,
         runtime,
+        telegramCfg,
         chatId: resolved.chatId,
         threadId: resolved.threadIdForSend,
-        text: REPO_CHAT_DISABLED_MESSAGE,
-        replyToMessageId: resolved.sourceMessageId,
+        sourceMessageId: resolved.sourceMessageId,
+        prompt: textPrompt,
+        replyToMessageId: resolved.replyToMessageId,
+        allowNewSessionWhenReplyMissing: true,
+        claudeCodeAuth: cfg.goal?.claudeCodeAuth,
       });
+      if (!result.started && result.reason === "disabled") {
+        return sendRepoChatReply({
+          bot,
+          runtime,
+          chatId: resolved.chatId,
+          threadId: resolved.threadIdForSend,
+          text: REPO_CHAT_DISABLED_MESSAGE,
+          replyToMessageId: resolved.sourceMessageId,
+        });
+      }
+      return undefined;
+    };
+
+    const msg = ctx.message;
+    if (msg && commandFragmentBuffer && prompt.length >= COMMAND_FRAGMENT_START_THRESHOLD) {
+      const normalized = normalizeCommandFragmentParams(msg, accountId);
+      const key = buildCommandFragmentKey(normalized);
+      if (commandFragmentBuffer.hasPending(key)) {
+        await commandFragmentBuffer.cancelAndFlush(key);
+      }
+      const rawCommand = (msg.text ?? "").trim().slice(1).split(/\s+/, 1)[0] ?? "";
+      const commandName = rawCommand.split("@")[0] || "repo_chat";
+      commandFragmentBuffer.bufferCommand(key, {
+        commandName,
+        text: prompt,
+        firstMessageId: msg.message_id,
+        receivedAtMs: Date.now(),
+        dispatch: {
+          chatId: resolved.chatId,
+          threadIdForSend: resolved.threadIdForSend,
+          senderId: normalized.senderId,
+          replyToMessageId: resolved.replyToMessageId,
+          sourceMessageId: resolved.sourceMessageId,
+          accountId,
+        },
+        flushCallback: async (combinedText) => {
+          await runRepoChat(combinedText);
+        },
+      });
+      return;
     }
+
+    await runRepoChat(prompt);
   });
 
   bot.command("chat_backend", async (ctx: TelegramRepoChatCommandContext) => {

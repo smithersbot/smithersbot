@@ -7,7 +7,7 @@ const useSpy = vi.fn();
 const middlewareUseSpy = vi.fn();
 const onSpy = vi.fn();
 const stopSpy = vi.fn();
-const sendChatActionSpy = vi.fn();
+const sendChatActionSpy = vi.fn(async () => true);
 const cacheStickerSpy = vi.fn();
 const getCachedStickerSpy = vi.fn();
 const describeStickerImageSpy = vi.fn();
@@ -119,7 +119,7 @@ describe("telegram inbound media", () => {
 
       onSpy.mockReset();
       replySpy.mockReset();
-      sendChatActionSpy.mockReset();
+      sendChatActionSpy.mockClear();
 
       const runtimeLog = vi.fn();
       const runtimeError = vi.fn();
@@ -435,7 +435,7 @@ describe("telegram stickers", () => {
 
       onSpy.mockReset();
       replySpy.mockReset();
-      sendChatActionSpy.mockReset();
+      sendChatActionSpy.mockClear();
 
       const runtimeLog = vi.fn();
       const runtimeError = vi.fn();
@@ -508,7 +508,7 @@ describe("telegram stickers", () => {
 
       onSpy.mockReset();
       replySpy.mockReset();
-      sendChatActionSpy.mockReset();
+      sendChatActionSpy.mockClear();
 
       getCachedStickerSpy.mockReturnValue({
         fileId: "old_file_id",

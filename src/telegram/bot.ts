@@ -46,6 +46,7 @@ import {
 } from "./bot-updates.js";
 import { resolveTelegramFetch } from "./fetch.js";
 import { wasSentByBot } from "./sent-message-cache.js";
+import { CommandFragmentBuffer } from "./command-fragments.js";
 
 export type TelegramBotOptions = {
   token: string;
@@ -367,6 +368,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     opts,
     resolveBotTopicsEnabled,
   });
+  const commandFragmentBuffer = new CommandFragmentBuffer();
 
   registerTelegramNativeCommands({
     bot,
@@ -386,6 +388,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     resolveTelegramGroupConfig,
     shouldSkipUpdate,
     opts,
+    commandFragmentBuffer,
   });
 
   // Handle emoji reactions to messages
@@ -489,6 +492,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     shouldSkipUpdate,
     processMessage,
     logger,
+    commandFragmentBuffer,
   });
 
   return bot;

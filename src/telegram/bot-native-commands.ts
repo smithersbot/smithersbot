@@ -50,6 +50,7 @@ import { firstDefined } from "./bot-access.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
 import { REPO_CHAT_COMMAND_SPECS, registerTelegramRepoChatCommands } from "./repo-chat-commands.js";
+import type { CommandFragmentBuffer } from "./command-fragments.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 
@@ -76,6 +77,7 @@ type RegisterTelegramNativeCommandsParams = {
   ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
   opts: { token: string };
+  commandFragmentBuffer?: CommandFragmentBuffer;
 };
 
 export const registerTelegramNativeCommands = ({
@@ -96,6 +98,7 @@ export const registerTelegramNativeCommands = ({
   resolveTelegramGroupConfig,
   shouldSkipUpdate,
   opts,
+  commandFragmentBuffer,
 }: RegisterTelegramNativeCommandsParams) => {
   const skillCommands =
     nativeEnabled && nativeSkillsEnabled ? listSkillCommandsForAgents({ cfg }) : [];
@@ -470,6 +473,7 @@ export const registerTelegramNativeCommands = ({
           resolveTelegramGroupConfig,
           shouldSkipUpdate,
           textLimit,
+          commandFragmentBuffer,
         });
         registerTelegramRepoChatCommands({
           bot,
@@ -483,6 +487,7 @@ export const registerTelegramNativeCommands = ({
           resolveGroupPolicy,
           resolveTelegramGroupConfig,
           shouldSkipUpdate,
+          commandFragmentBuffer,
         });
         registerGatewayRestartCommand({
           bot,
