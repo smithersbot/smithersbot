@@ -39,8 +39,29 @@ export async function onboardCommand(opts: OnboardOptions, runtime: RuntimeEnv =
     normalizedAuthChoice === opts.authChoice && flow === opts.flow
       ? opts
       : { ...opts, authChoice: normalizedAuthChoice, flow };
+  const hasTelegramToken = normalizedOpts.telegramToken != null;
+  const telegramToken = normalizedOpts.telegramToken?.trim();
+  if (hasTelegramToken && !telegramToken) {
+    runtime.error("Invalid --telegram-token: value cannot be empty.");
+    runtime.exit(1);
+    return;
+  }
 
-  if (normalizedOpts.nonInteractive && normalizedOpts.acceptRisk !== true) {
+  let validatedOpts: OnboardOptions =
+    hasTelegramToken && telegramToken ? { ...normalizedOpts, telegramToken } : normalizedOpts;
+  const usesRemoteMode =
+    validatedOpts.mode === "remote" || Boolean(validatedOpts.remoteUrl?.trim());
+  if (validatedOpts.telegramToken && usesRemoteMode) {
+    runtime.error("--telegram-token is not supported in remote mode.");
+    runtime.exit(1);
+    return;
+  }
+  if (validatedOpts.telegramToken && !validatedOpts.nonInteractive) {
+    runtime.log("Warning: --telegram-token only works with --non-interactive; ignoring it.");
+    validatedOpts = { ...validatedOpts, telegramToken: undefined };
+  }
+
+  if (validatedOpts.nonInteractive && validatedOpts.acceptRisk !== true) {
     runtime.error(
       [
         "Non-interactive onboarding requires explicit risk acknowledgement.",
@@ -52,11 +73,11 @@ export async function onboardCommand(opts: OnboardOptions, runtime: RuntimeEnv =
     return;
   }
 
-  if (normalizedOpts.reset) {
+  if (validatedOpts.reset) {
     const snapshot = await readConfigFileSnapshot();
     const baseConfig = snapshot.valid ? snapshot.config : {};
     const workspaceDefault =
-      normalizedOpts.workspace ?? baseConfig.agents?.defaults?.workspace ?? DEFAULT_WORKSPACE;
+      validatedOpts.workspace ?? baseConfig.agents?.defaults?.workspace ?? DEFAULT_WORKSPACE;
     await handleReset("full", resolveUserPath(workspaceDefault), runtime);
   }
 
@@ -70,12 +91,12 @@ export async function onboardCommand(opts: OnboardOptions, runtime: RuntimeEnv =
     );
   }
 
-  if (normalizedOpts.nonInteractive) {
-    await runNonInteractiveOnboarding(normalizedOpts, runtime);
+  if (validatedOpts.nonInteractive) {
+    await runNonInteractiveOnboarding(validatedOpts, runtime);
     return;
   }
 
-  await runInteractiveOnboarding(normalizedOpts, runtime);
+  await runInteractiveOnboarding(validatedOpts, runtime);
 }
 
 export type { OnboardOptions } from "./onboard-types.js";

@@ -1,9 +1,12 @@
+import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { MoltbotConfig } from "../../config/config.js";
 import { resolveGatewayPort, writeConfigFile } from "../../config/config.js";
 import { logConfigUpdated } from "../../config/logging.js";
+import { enablePluginInConfig } from "../../plugins/enable.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { formatCliCommand } from "../../cli/command-format.js";
 import { DEFAULT_GATEWAY_DAEMON_RUNTIME } from "../daemon-runtime.js";
+import { applyChannelAccountConfig } from "../channels/add-mutators.js";
 import { healthCommand } from "../health.js";
 import {
   applyWizardMetadata,
@@ -13,6 +16,8 @@ import {
   waitForGatewayReachable,
 } from "../onboard-helpers.js";
 import type { OnboardOptions } from "../onboard-types.js";
+import { getChannelOnboardingAdapter } from "../onboarding/registry.js";
+import { reloadOnboardingPluginRegistry } from "../onboarding/plugin-install.js";
 
 import { applyNonInteractiveAuthChoice } from "./local/auth-choice.js";
 import { installGatewayDaemonNonInteractive } from "./local/daemon-install.js";
@@ -74,6 +79,49 @@ export async function runNonInteractiveOnboardingLocal(params: {
   nextConfig = applyNonInteractiveSkillsConfig({ nextConfig, opts, runtime });
 
   nextConfig = applyWizardMetadata(nextConfig, { command: "onboard", mode });
+  if (opts.telegramToken) {
+    const enableResult = enablePluginInConfig(nextConfig, "telegram");
+    nextConfig = enableResult.config;
+    if (!enableResult.enabled) {
+      runtime.error(`Failed to enable Telegram plugin: ${enableResult.reason ?? "unknown error"}.`);
+      runtime.exit(1);
+      return;
+    }
+
+    reloadOnboardingPluginRegistry({
+      cfg: nextConfig,
+      runtime,
+      workspaceDir,
+    });
+    if (!getChannelPlugin("telegram")) {
+      runtime.error("Failed to load Telegram plugin. Ensure the telegram extension is installed.");
+      runtime.exit(1);
+      return;
+    }
+
+    nextConfig = applyChannelAccountConfig({
+      cfg: nextConfig,
+      channel: "telegram",
+      accountId: "default",
+      token: opts.telegramToken,
+    });
+
+    const telegramOnboardingAdapter = getChannelOnboardingAdapter("telegram");
+    if (telegramOnboardingAdapter?.dmPolicy?.setPolicy) {
+      nextConfig = telegramOnboardingAdapter.dmPolicy.setPolicy(nextConfig, "pairing");
+    } else {
+      nextConfig = {
+        ...nextConfig,
+        channels: {
+          ...nextConfig.channels,
+          telegram: {
+            ...nextConfig.channels?.telegram,
+            dmPolicy: "pairing",
+          },
+        },
+      };
+    }
+  }
   await writeConfigFile(nextConfig);
   logConfigUpdated(runtime);
 

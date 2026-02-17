@@ -56,6 +56,8 @@ export type OnboardOptions = {
   tokenProvider?: string;
   /** Used when `authChoice=token` in non-interactive mode. */
   token?: string;
+  /** Used for non-interactive Telegram channel setup. */
+  telegramToken?: string;
   /** Used when `authChoice=token` in non-interactive mode. */
   tokenProfileId?: string;
   /** Used when `authChoice=token` in non-interactive mode. */

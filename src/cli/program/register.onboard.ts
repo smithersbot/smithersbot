@@ -59,6 +59,7 @@ export function registerOnboardCommand(program: Command) {
       "Token provider id (non-interactive; used with --auth-choice token)",
     )
     .option("--token <token>", "Token value (non-interactive; used with --auth-choice token)")
+    .option("--telegram-token <token>", "Telegram bot token for non-interactive channel setup")
     .option(
       "--token-profile-id <id>",
       "Auth profile id (non-interactive; default: <provider>:manual)",
@@ -113,6 +114,7 @@ export function registerOnboardCommand(program: Command) {
             authChoice: opts.authChoice as AuthChoice | undefined,
             tokenProvider: opts.tokenProvider as string | undefined,
             token: opts.token as string | undefined,
+            telegramToken: opts.telegramToken as string | undefined,
             tokenProfileId: opts.tokenProfileId as string | undefined,
             tokenExpiresIn: opts.tokenExpiresIn as string | undefined,
             anthropicApiKey: opts.anthropicApiKey as string | undefined,
