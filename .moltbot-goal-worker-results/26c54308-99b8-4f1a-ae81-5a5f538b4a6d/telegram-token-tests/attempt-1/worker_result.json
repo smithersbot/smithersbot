@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Added targeted onboarding Telegram token tests: new non-interactive coverage for happy path, single writeConfigFile call, and config preservation, plus onboardCommand guard tests for empty token validation and warning/ignore behavior without --non-interactive. Verified with pnpm vitest run on relevant files (all passed) and pnpm build (passed)."}
