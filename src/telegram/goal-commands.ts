@@ -508,6 +508,7 @@ export function runGoalInBackground(params: {
   runtime: RuntimeEnv;
   label?: string;
   preface?: string;
+  replyToMessageId?: number;
   /** When set, called in `finally` to release per-runId file lock. */
   releaseGoalLock?: () => void;
   /** When set, called in `finally` to release planning lock. */
@@ -517,15 +518,21 @@ export function runGoalInBackground(params: {
 }): void {
   const { bot, chatId, threadId, runtime, label, fn, onResult } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+  const replyParams =
+    params.replyToMessageId != null
+      ? { reply_parameters: { message_id: params.replyToMessageId } }
+      : {};
   const tag = label ? `${label} ` : "";
   const preface = params.preface ?? PLANNING_PREFACE;
 
   // Immediate ack
-  void bot.api.sendMessage(chatId, preface, threadParams).catch((err: unknown) => {
-    logTyping(
-      `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  });
+  void bot.api
+    .sendMessage(chatId, preface, { ...threadParams, ...replyParams })
+    .catch((err: unknown) => {
+      logTyping(
+        `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
   const loop = startTypingLoop({ bot, chatId, threadId, label });
   void (async () => {
@@ -1214,20 +1221,28 @@ export async function sendGoalReply(
   markdown: string,
   runtime: RuntimeEnv,
   threadId?: number,
+  replyToMessageId?: number,
 ): Promise<number | undefined> {
   if (!markdown.trim()) {
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    const replyParams =
+      replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
     const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
-      fn: () => bot.api.sendMessage(chatId, "No output.", threadParams),
+      fn: () => bot.api.sendMessage(chatId, "No output.", { ...threadParams, ...replyParams }),
     });
     return sent?.message_id;
   }
   let lastMessageId: number | undefined;
   const chunks = markdownToTelegramChunks(markdown, 4000);
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    const replyParams =
+      replyToMessageId != null && i === 0
+        ? { reply_parameters: { message_id: replyToMessageId } }
+        : {};
     const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
@@ -1237,11 +1252,13 @@ export async function sendGoalReply(
             parse_mode: "HTML",
             link_preview_options: { is_disabled: true },
             ...threadParams,
+            ...replyParams,
           })
           .catch(() =>
             bot.api.sendMessage(chatId, chunk.text, {
               link_preview_options: { is_disabled: true },
               ...threadParams,
+              ...replyParams,
             }),
           ),
     });
@@ -1261,8 +1278,10 @@ async function sendGoalPlanMessage(params: {
   runIdPrefix: string;
   revision: number;
   threadId?: number;
+  replyToMessageId?: number;
 }): Promise<number | undefined> {
-  const { bot, chatId, markdown, runtime, runIdPrefix, revision, threadId } = params;
+  const { bot, chatId, markdown, runtime, runIdPrefix, revision, threadId, replyToMessageId } =
+    params;
   if (!markdown.trim()) return undefined;
 
   const chunks = markdownToTelegramChunks(markdown, 4000);
@@ -1274,11 +1293,16 @@ async function sendGoalPlanMessage(params: {
     const isLast = i === chunks.length - 1;
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
     const keyboardParams = isLast && replyMarkup ? { reply_markup: replyMarkup } : {};
+    const replyParams =
+      replyToMessageId != null && i === 0
+        ? { reply_parameters: { message_id: replyToMessageId } }
+        : {};
 
     try {
       const sent = await bot.api.sendMessage(chatId, chunk.html, {
         parse_mode: "HTML",
         ...threadParams,
+        ...replyParams,
         ...keyboardParams,
       });
       lastMessageId = sent.message_id;
@@ -1286,6 +1310,7 @@ async function sendGoalPlanMessage(params: {
       try {
         const sent = await bot.api.sendMessage(chatId, chunk.text, {
           ...threadParams,
+          ...replyParams,
           ...keyboardParams,
         });
         lastMessageId = sent.message_id;
@@ -1462,8 +1487,9 @@ export async function sendGoalPlanResult(params: {
   runtime: RuntimeEnv;
   result: GoalPlanResult;
   threadId?: number;
+  replyToMessageId?: number;
 }): Promise<void> {
-  const { bot, chatId, runtime, result, threadId } = params;
+  const { bot, chatId, runtime, result, threadId, replyToMessageId } = params;
   if (result.runId && result.revision) {
     const runIdPrefix = result.runId.slice(0, 8);
     const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);
@@ -1484,6 +1510,7 @@ export async function sendGoalPlanResult(params: {
           stepResults: result.stepResults,
           caption: captionHeader,
           replyMarkup,
+          replyToMessageId,
         });
         if (pngId != null) {
           // Single-message success: photo with keyboard is the plan message
@@ -1522,6 +1549,7 @@ export async function sendGoalPlanResult(params: {
         runIdPrefix,
         revision: result.revision,
         threadId,
+        replyToMessageId,
       });
       if (sentId != null) {
         persistTelegramPlanMessage({
@@ -1541,16 +1569,25 @@ export async function sendGoalPlanResult(params: {
     // All delivery attempts failed — send a minimal fallback so the user is not left hanging
     warn(`[goal] plan delivery failed for ${runIdPrefix}; sending minimal fallback`);
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    const replyParams =
+      replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
     await bot.api
       .sendMessage(
         chatId,
         `Plan ready for review (Goal ID: ${runIdPrefix}). Use /goal_detail ${runIdPrefix} to view.`,
-        { ...threadParams, reply_markup: replyMarkup },
+        { ...threadParams, ...replyParams, reply_markup: replyMarkup },
       )
       .catch(() => {});
   } else if (result.runId && result.blocked) {
     // Question/clarification message — track for reply-to-answer routing
-    const sentId = await sendGoalReply(bot, chatId, result.text, runtime, threadId);
+    const sentId = await sendGoalReply(
+      bot,
+      chatId,
+      result.text,
+      runtime,
+      threadId,
+      replyToMessageId,
+    );
     if (sentId != null) {
       const run = loadRun(result.runId);
       persistTelegramQuestionMessage({
@@ -1562,7 +1599,7 @@ export async function sendGoalPlanResult(params: {
       });
     }
   } else {
-    await sendGoalReply(bot, chatId, result.text, runtime, threadId);
+    await sendGoalReply(bot, chatId, result.text, runtime, threadId, replyToMessageId);
   }
 }
 
@@ -1620,9 +1657,23 @@ async function sendDagPng(params: {
   stepResults?: ReadonlyMap<string, StepResult>;
   caption: string;
   replyMarkup?: InlineKeyboardMarkup;
+  replyToMessageId?: number;
 }): Promise<number | undefined> {
-  const { bot, chatId, threadId, runtime, plan, steps, stepResults, caption, replyMarkup } = params;
+  const {
+    bot,
+    chatId,
+    threadId,
+    runtime,
+    plan,
+    steps,
+    stepResults,
+    caption,
+    replyMarkup,
+    replyToMessageId,
+  } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+  const replyParams =
+    replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
 
   const displayStatuses = computeDisplayStatuses(steps);
   let cpm: ReturnType<typeof computeCpm> | undefined;
@@ -1642,6 +1693,7 @@ async function sendDagPng(params: {
         caption: split.caption,
         parse_mode: "HTML",
         ...threadParams,
+        ...replyParams,
         ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       });
       if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
@@ -1663,6 +1715,7 @@ async function sendDagPng(params: {
     `${caption}\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``,
     runtime,
     threadId,
+    replyToMessageId,
   );
 }
 
@@ -1839,8 +1892,9 @@ export function registerTelegramGoalCommands({
     chatId: number,
     result: GoalPlanResult,
     threadId?: number,
+    replyToMessageId?: number,
   ): Promise<void> {
-    await sendGoalPlanResult({ bot, chatId, runtime, result, threadId });
+    await sendGoalPlanResult({ bot, chatId, runtime, result, threadId, replyToMessageId });
   }
 
   async function sendGoalBackgroundResult(
@@ -2129,10 +2183,11 @@ export function registerTelegramGoalCommands({
   bot.command(["new_goal", "goal"], async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const text = ctx.match?.trim() ?? "";
     if (!text) {
       const result = await handleGoal("", cfg);
-      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+      await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
       return;
     }
     const planLock = acquireFilePlanningLock(
@@ -2154,6 +2209,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal",
+      replyToMessageId,
       releasePlanningLock: planLock.release,
       fn: () => handleGoal(text, cfg),
       onResult: async (result) => {
@@ -2161,7 +2217,7 @@ export function registerTelegramGoalCommands({
         if (typeof result === "string") {
           await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
         } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
         }
       },
     });

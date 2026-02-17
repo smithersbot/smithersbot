@@ -833,6 +833,141 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("Replanned: 3/3");
       expect(options.caption).toContain("Autocheck hit max rounds (3/3)");
     });
+
+    it("threads reply parameters when PNG plan delivery succeeds", async () => {
+      const plan = makeRun().plan!;
+      saveRun(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 301 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 302 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 77,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        reply_parameters?: { message_id: number };
+      };
+      expect(options.reply_parameters).toEqual({ message_id: 77 });
+    });
+
+    it("threads reply parameters when DAG send falls back to text", async () => {
+      const plan = makeRun().plan!;
+      saveRun(makeRun({ plan }));
+      mockRenderMermaidToPng.mockReturnValueOnce(undefined);
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 401 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 402 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 78,
+        result: {
+          text: "ignored when text fallback succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalled();
+      const options = sendMessage.mock.calls[0]?.[2] as {
+        reply_parameters?: { message_id: number };
+      };
+      expect(options.reply_parameters).toEqual({ message_id: 78 });
+    });
+
+    it("threads reply parameters when sendGoalPlanMessage fallback is used", async () => {
+      const plan = makeRun().plan!;
+      saveRun(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockRejectedValue(new Error("photo failed"));
+      const sendMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce({ message_id: 502 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 79,
+        result: {
+          text: "ignored when sendGoalPlanMessage fallback succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      const options = sendMessage.mock.calls[1]?.[2] as {
+        reply_parameters?: { message_id: number };
+      };
+      expect(options.reply_parameters).toEqual({ message_id: 79 });
+    });
+
+    it("threads reply parameters when plan delivery reaches minimal fallback", async () => {
+      const plan = makeRun().plan!;
+      saveRun(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockRejectedValue(new Error("photo failed"));
+      const sendMessage = vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error("html failed"))
+        .mockRejectedValueOnce(new Error("text failed"))
+        .mockResolvedValueOnce({ message_id: 603 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 80,
+        result: {
+          text: "ignored when minimal fallback is used",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const finalCall = sendMessage.mock.calls.at(-1);
+      expect(finalCall?.[1]).toContain("Plan ready for review");
+      const options = finalCall?.[2] as {
+        reply_parameters?: { message_id: number };
+        reply_markup?: unknown;
+      };
+      expect(options.reply_parameters).toEqual({ message_id: 80 });
+      expect(options.reply_markup).toBeDefined();
+    });
   });
 
   describe("handleGoalAnswer", () => {
@@ -1858,6 +1993,46 @@ describe("goal-commands telegram adapter", () => {
       await done;
       expect(sendMessage).toHaveBeenCalledWith(42, RESUME_PREFACE, {});
       expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(fn.mock.invocationCallOrder[0]);
+    });
+
+    it("threads reply parameters into the preface acknowledgement", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const mockBot = {
+        api: { sendMessage, sendChatAction },
+      } as unknown as import("grammy").Bot;
+
+      const fn = vi.fn(async () => "ok");
+      let resolveDone: (() => void) | undefined;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      const onResult = vi.fn(async () => {
+        resolveDone?.();
+      });
+
+      const { runGoalInBackground, START_PREFACE } = await import("./goal-commands.js");
+      runGoalInBackground({
+        bot: mockBot,
+        chatId: 42,
+        runtime: {
+          log: vi.fn(),
+          error: vi.fn(),
+          exit: ((_: number) => {
+            throw new Error("exit called");
+          }) as never,
+        },
+        label: "reply-param-test",
+        preface: START_PREFACE,
+        replyToMessageId: 55,
+        fn,
+        onResult,
+      });
+
+      await done;
+      expect(sendMessage).toHaveBeenCalledWith(42, START_PREFACE, {
+        reply_parameters: { message_id: 55 },
+      });
     });
   });
 
