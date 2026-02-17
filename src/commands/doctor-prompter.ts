@@ -12,6 +12,7 @@ export type DoctorOptions = {
   repair?: boolean;
   force?: boolean;
   generateGatewayToken?: boolean;
+  customerCheck?: boolean;
 };
 
 export type DoctorPrompter = {

@@ -24,6 +24,7 @@ export function registerMaintenanceCommands(program: Command) {
     .option("--force", "Apply aggressive repairs (overwrites custom service config)", false)
     .option("--non-interactive", "Run without prompts (safe migrations only)", false)
     .option("--generate-gateway-token", "Generate and configure a gateway token", false)
+    .option("--customer-check", "Run customer setup verification checks", false)
     .option("--deep", "Scan system services for extra gateway installs", false)
     .action(async (opts) => {
       await runCommandWithRuntime(defaultRuntime, async () => {
@@ -34,6 +35,7 @@ export function registerMaintenanceCommands(program: Command) {
           force: Boolean(opts.force),
           nonInteractive: Boolean(opts.nonInteractive),
           generateGatewayToken: Boolean(opts.generateGatewayToken),
+          customerCheck: Boolean(opts.customerCheck),
           deep: Boolean(opts.deep),
         });
       });

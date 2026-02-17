@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 import { intro as clackIntro, outro as clackOutro } from "@clack/prompts";
+import { readClaudeCliCredentials } from "../agents/cli-credentials.js";
 import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { loadModelCatalog } from "../agents/model-catalog.js";
@@ -13,6 +15,7 @@ import { formatCliCommand } from "../cli/command-format.js";
 import type { MoltbotConfig } from "../config/config.js";
 import { CONFIG_PATH, readConfigFileSnapshot, writeConfigFile } from "../config/config.js";
 import { logConfigUpdated } from "../config/logging.js";
+import { resolveGatewaySystemdServiceName } from "../daemon/constants.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
 import { buildGatewayConnectionDetails } from "../gateway/call.js";
@@ -21,6 +24,9 @@ import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
 import { note } from "../terminal/note.js";
 import { stylePromptTitle } from "../terminal/prompt-style.js";
+import { theme } from "../terminal/theme.js";
+import { resolveTelegramAccount } from "../telegram/accounts.js";
+import { probeTelegram } from "../telegram/probe.js";
 import { shortenHomePath } from "../utils.js";
 import {
   maybeRemoveDeprecatedCliAuthProfiles,
@@ -62,10 +68,207 @@ function resolveMode(cfg: MoltbotConfig): "local" | "remote" {
   return cfg.gateway?.mode === "remote" ? "remote" : "local";
 }
 
+type CustomerCheckResult = {
+  pass: boolean;
+  name: string;
+  details: string;
+};
+
+function logCustomerCheckResult(runtime: RuntimeEnv, result: CustomerCheckResult): void {
+  const prefix = result.pass ? theme.success("[PASS]") : theme.error("[FAIL]");
+  runtime.log(`${prefix} ${theme.heading(result.name)} ${theme.muted("-")} ${result.details}`);
+}
+
+function formatClaudeVersionOutput(output: string): string {
+  const firstLine = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  return firstLine ?? "version unknown";
+}
+
+async function runCustomerSetupChecks(runtime: RuntimeEnv): Promise<void> {
+  runtime.log(theme.heading("Customer setup checks"));
+  runtime.log(theme.muted("Running gateway, Telegram, and Claude verification checks..."));
+
+  const snapshot = await readConfigFileSnapshot();
+  const cfg = snapshot.config;
+  const results: CustomerCheckResult[] = [];
+
+  try {
+    const { healthOk } = await checkGatewayHealth({
+      runtime,
+      cfg,
+      timeoutMs: 5000,
+    });
+    if (healthOk) {
+      results.push({
+        pass: true,
+        name: "Gateway health",
+        details: "Gateway is running and healthy.",
+      });
+    } else {
+      const serviceName = resolveGatewaySystemdServiceName(process.env.CLAWDBOT_PROFILE);
+      const details =
+        cfg.gateway?.mode === "remote"
+          ? `Gateway health check failed in remote mode. Verify remote URL connectivity (${cfg.gateway?.remote?.url?.trim() || "gateway.remote.url"}) and that the remote gateway is running.`
+          : `Gateway health check failed. Run: systemctl --user restart ${serviceName}.service`;
+      results.push({
+        pass: false,
+        name: "Gateway health",
+        details,
+      });
+    }
+  } catch (err) {
+    results.push({
+      pass: false,
+      name: "Gateway health",
+      details: `Gateway health check errored: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const account = resolveTelegramAccount({ cfg });
+    if (account.tokenSource === "none") {
+      results.push({
+        pass: false,
+        name: "Telegram channel",
+        details:
+          "No Telegram bot token configured. Run: moltbot channels add --channel telegram --token <token>",
+      });
+    } else if (!account.enabled) {
+      results.push({
+        pass: false,
+        name: "Telegram channel",
+        details:
+          "Telegram channel is configured but not enabled. Run: moltbot config set channels.telegram.enabled true",
+      });
+    } else {
+      const probe = await probeTelegram(account.token, 5000);
+      if (!probe.ok) {
+        const status = typeof probe.status === "number" ? `status ${probe.status}` : "no status";
+        const error = probe.error?.trim() || "unknown error";
+        results.push({
+          pass: false,
+          name: "Telegram channel",
+          details: `Telegram token probe failed (${status}): ${error}`,
+        });
+      } else {
+        const username = probe.bot?.username?.trim();
+        results.push({
+          pass: true,
+          name: "Telegram channel",
+          details: username
+            ? `Configured and token is valid (@${username}).`
+            : "Configured and token is valid.",
+        });
+      }
+    }
+  } catch (err) {
+    results.push({
+      pass: false,
+      name: "Telegram channel",
+      details: `Telegram verification errored: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const versionResult = spawnSync("claude", ["--version"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (versionResult.status === 0) {
+      const combinedOutput = `${versionResult.stdout ?? ""}\n${versionResult.stderr ?? ""}`.trim();
+      const version = formatClaudeVersionOutput(combinedOutput);
+      results.push({
+        pass: true,
+        name: "Claude Code CLI",
+        details: `Installed (${version}).`,
+      });
+    } else {
+      const errorSuffix =
+        versionResult.error instanceof Error ? ` (${versionResult.error.message})` : "";
+      results.push({
+        pass: false,
+        name: "Claude Code CLI",
+        details: `Claude Code CLI is not available${errorSuffix}. Install Claude Code: npm i -g @anthropic-ai/claude-code`,
+      });
+    }
+  } catch (err) {
+    results.push({
+      pass: false,
+      name: "Claude Code CLI",
+      details: `Claude CLI check errored: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  try {
+    const credential = readClaudeCliCredentials({
+      allowKeychainPrompt: false,
+      platform: process.platform,
+    });
+    if (!credential) {
+      results.push({
+        pass: false,
+        name: "Claude authentication",
+        details: "Claude Code is not authenticated. Run: claude login",
+      });
+    } else if (!Number.isFinite(credential.expires) || credential.expires < Date.now()) {
+      results.push({
+        pass: false,
+        name: "Claude authentication",
+        details: "Claude auth expired. Run: claude login",
+      });
+    } else if (credential.type === "oauth" && credential.access.trim().length === 0) {
+      results.push({
+        pass: false,
+        name: "Claude authentication",
+        details: "Claude OAuth credential is incomplete. Run: claude login",
+      });
+    } else if (credential.type === "token" && credential.token.trim().length === 0) {
+      results.push({
+        pass: false,
+        name: "Claude authentication",
+        details: "Claude token credential is incomplete. Run: claude login",
+      });
+    } else {
+      results.push({
+        pass: true,
+        name: "Claude authentication",
+        details: `Authenticated (${credential.type}, expires ${new Date(credential.expires).toISOString()}).`,
+      });
+    }
+  } catch (err) {
+    results.push({
+      pass: false,
+      name: "Claude authentication",
+      details: `Claude auth check errored: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+
+  for (const result of results) {
+    logCustomerCheckResult(runtime, result);
+  }
+
+  const passed = results.filter((result) => result.pass).length;
+  const summary = `${passed}/4 checks passed`;
+  if (passed < 4) {
+    runtime.log(theme.warn(summary));
+    process.exitCode = 1;
+    return;
+  }
+  runtime.log(theme.success(summary));
+}
+
 export async function doctorCommand(
   runtime: RuntimeEnv = defaultRuntime,
   options: DoctorOptions = {},
 ) {
+  if (options.customerCheck === true) {
+    await runCustomerSetupChecks(runtime);
+    return;
+  }
+
   const prompter = createDoctorPrompter({ runtime, options });
   printWizardHeader(runtime);
   intro("Moltbot doctor");
