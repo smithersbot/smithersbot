@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Updated goal-stop to allow stopping planning runs without --force, refreshed stale comments, added planning/awaiting_approval/blocked behavior tests in goal-stop.test.ts, and verified with pnpm vitest plus local CLI runtime checks for planning stop and guidance states."}

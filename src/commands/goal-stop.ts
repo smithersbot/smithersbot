@@ -13,7 +13,7 @@ export type GoalStopOptions = {
  * Transitions the goal state to 'cancelled' and marks any in-progress steps
  * as blocked so they can be resumed later if needed.
  *
- * Only works on goals in 'executing' state. For goals in other states:
+ * Works on goals in 'executing' and 'planning' states. For goals in other states:
  * - awaiting_approval: use goal_reject instead
  * - done/cancelled: already terminal
  */
@@ -66,8 +66,8 @@ export async function goalStopCommand(
     return;
   }
 
-  // For non-executing states, provide guidance
-  if (run.state !== "executing" && !force) {
+  // For states other than executing/planning, provide guidance.
+  if (run.state !== "executing" && run.state !== "planning" && !force) {
     const stateGuidance: Record<string, string> = {
       planning: "Goal is still planning. It will complete or block soon.",
       awaiting_approval:

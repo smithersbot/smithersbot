@@ -115,6 +115,23 @@ describe("goal-stop command", () => {
     expect(rt.logs.join("\n")).toContain("Goal exec-run stopped");
   });
 
+  it("stops a planning goal without --force", async () => {
+    const run = makeRun({
+      runId: "planrun1",
+      state: "planning",
+      plan: samplePlan,
+    });
+    saveRun(run);
+
+    const { goalStopCommand } = await import("./goal-stop.js");
+    const rt = mockRuntime();
+    await goalStopCommand("planrun1", {}, rt);
+
+    const updated = loadRun("planrun1");
+    expect(updated?.state).toBe("cancelled");
+    expect(rt.logs.join("\n")).toContain("Goal planrun1 stopped");
+  });
+
   it("successfully stops a goal with mixed step statuses", async () => {
     // Note: in_progress steps will be migrated to pending when loadRun is called
     // (this is a crash recovery feature). The real scenario where in_progress steps
@@ -204,9 +221,39 @@ describe("goal-stop command", () => {
     await goalStopCommand("approval-run", {}, rt);
 
     expect(rt.errors.join("\n")).toContain('Cannot stop: goal is in "awaiting_approval" state');
+    expect(rt.logs.join("\n")).toContain(
+      "Goal is waiting for approval. Use /goal_reject to decline or /goal_approve to continue.",
+    );
     expect(rt.logs.join("\n")).toContain("Use --force to cancel anyway");
     const updated = loadRun("approval-run");
     expect(updated?.state).toBe("awaiting_approval");
+  });
+
+  it("refuses to stop blocked without --force and shows guidance", async () => {
+    saveRun(
+      makeRun({
+        runId: "blocked-guidance-run",
+        state: "blocked",
+        plan: samplePlan,
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "task:task-1:input",
+        },
+      }),
+    );
+
+    const { goalStopCommand } = await import("./goal-stop.js");
+    const rt = mockRuntime();
+    await goalStopCommand("blocked-guidance-run", {}, rt);
+
+    expect(rt.errors.join("\n")).toContain('Cannot stop: goal is in "blocked" state');
+    expect(rt.logs.join("\n")).toContain(
+      "Goal is blocked waiting for input. Use /goal_answer to continue or /goal_reject.",
+    );
+    expect(rt.logs.join("\n")).toContain("Use --force to cancel anyway");
+    const updated = loadRun("blocked-guidance-run");
+    expect(updated?.state).toBe("blocked");
   });
 
   it("allows force-stop of awaiting_approval state", async () => {
