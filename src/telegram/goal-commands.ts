@@ -32,12 +32,7 @@ import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import {
-  acquireGoalOpLock,
-  acquirePlanningLock as acquireFilePlanningLock,
-  forceReleaseGoalOpLock,
-  isGoalOpLocked,
-} from "../goal/goal-lock.js";
+import { acquireGoalOpLock, forceReleaseGoalOpLock, isGoalOpLocked } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -328,11 +323,6 @@ export function getGoalLockLabel(runId: string): string | undefined {
   return isGoalOpLocked(runId).label;
 }
 
-/** Build a planning scope key from Telegram chatId + optional threadId. */
-function planningKey(chatId: number, threadId?: number): string {
-  return threadId != null ? `${chatId}-${threadId}` : String(chatId);
-}
-
 // ---------------------------------------------------------------------------
 // Planning feedback: preface message + delayed typing
 // ---------------------------------------------------------------------------
@@ -511,8 +501,6 @@ export function runGoalInBackground(params: {
   replyToMessageId?: number;
   /** When set, called in `finally` to release per-runId file lock. */
   releaseGoalLock?: () => void;
-  /** When set, called in `finally` to release planning lock. */
-  releasePlanningLock?: () => void;
   fn: () => Promise<GoalPlanResult | string | undefined>;
   onResult: (result: GoalPlanResult | string | undefined) => Promise<void>;
 }): void {
@@ -567,7 +555,6 @@ export function runGoalInBackground(params: {
     } finally {
       loop.stop();
       params.releaseGoalLock?.();
-      params.releasePlanningLock?.();
     }
   })();
 }
@@ -2190,19 +2177,6 @@ export function registerTelegramGoalCommands({
       await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
       return;
     }
-    const planLock = acquireFilePlanningLock(
-      planningKey(resolved.chatId, resolved.threadIdForSend),
-    );
-    if (!planLock.acquired) {
-      await sendGoalReply(
-        bot,
-        resolved.chatId,
-        "Already planning a goal in this chat. Please wait for it to finish.",
-        runtime,
-        resolved.threadIdForSend,
-      );
-      return;
-    }
     runGoalInBackground({
       bot,
       chatId: resolved.chatId,
@@ -2210,7 +2184,6 @@ export function registerTelegramGoalCommands({
       runtime,
       label: "goal",
       replyToMessageId,
-      releasePlanningLock: planLock.release,
       fn: () => handleGoal(text, cfg),
       onResult: async (result) => {
         if (result == null) return;

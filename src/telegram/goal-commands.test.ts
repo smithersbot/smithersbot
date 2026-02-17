@@ -1590,6 +1590,148 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("registerTelegramGoalCommands /new_goal", () => {
+    function makeCommandHarness(cfg: Record<string, unknown> = {}): {
+      handlers: Record<string, (ctx: unknown) => Promise<void>>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      sendPhoto: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+    } {
+      const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 100 });
+      const sendChatAction = vi.fn().mockResolvedValue(true);
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto,
+          sendChatAction,
+          answerCallbackQuery: vi.fn(),
+          setMessageReaction: vi.fn(),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) handlers[entry] = handler;
+            return;
+          }
+          handlers[name] = handler;
+        },
+        on: vi.fn(),
+      } as unknown as import("grammy").Bot;
+
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: cfg as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+
+      return { handlers, sendMessage, sendPhoto, register };
+    }
+
+    function makeCommandCtx(match: string, messageId: number): Record<string, unknown> {
+      return {
+        match,
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: messageId,
+          date: 123_456,
+        },
+      };
+    }
+
+    async function waitForAssertion(assertion: () => void, timeoutMs = 1500): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (true) {
+        try {
+          assertion();
+          return;
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    }
+
+    it("allows concurrent planning requests in the same chat", async () => {
+      const pendingResolvers: Array<() => void> = [];
+      const planningPreface = "Right away, sir.";
+      const alreadyPlanningMessage =
+        "Already planning a goal in this chat. Please wait for it to finish.";
+
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          await new Promise<void>((resolve) => {
+            pendingResolvers.push(() => {
+              saveRun(makeRun({ runId: opts.runId, state: "planning" }));
+              runtime.log("## Plan\n1. Do something");
+              resolve();
+            });
+          });
+        },
+      );
+
+      const harness = makeCommandHarness();
+      await harness.register();
+
+      const newGoalHandler = harness.handlers.new_goal;
+      expect(newGoalHandler).toBeDefined();
+
+      await Promise.all([
+        newGoalHandler!(makeCommandCtx("first goal", 1001)),
+        newGoalHandler!(makeCommandCtx("second goal", 1002)),
+      ]);
+
+      await waitForAssertion(() => {
+        expect(mockGoalCommand).toHaveBeenCalledTimes(2);
+      });
+      await waitForAssertion(() => {
+        const prefaceCalls = harness.sendMessage.mock.calls.filter(
+          (call) => call[1] === planningPreface,
+        );
+        expect(prefaceCalls).toHaveLength(2);
+      });
+      expect(
+        harness.sendMessage.mock.calls.some((call) => call[1] === alreadyPlanningMessage),
+      ).toBe(false);
+
+      await waitForAssertion(() => {
+        expect(pendingResolvers).toHaveLength(2);
+      });
+      pendingResolvers.forEach((resolve) => resolve());
+      await waitForAssertion(() => {
+        expect(harness.sendPhoto).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
   describe("registerTelegramGoalCommands /goal_plan_autocheck", () => {
     function makeCommandHarness(cfg: Record<string, unknown> = {}): {
       handlers: Record<string, (ctx: unknown) => Promise<void>>;
