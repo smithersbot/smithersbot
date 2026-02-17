@@ -865,6 +865,13 @@
         ]
       },
       {
+        "group": "Customer Onboarding",
+        "pages": [
+          "customer-guide",
+          "setup-call-checklist"
+        ]
+      },
+      {
         "group": "CLI",
         "pages": [
           "cli/index",
