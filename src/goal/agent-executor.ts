@@ -74,6 +74,7 @@ function rewriteStepBackendsForDegradedPlanner(step: PlanStep): void {
 export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
+  | { type: "plan_revised"; revision: number; summary: string; steps: PlanStep[] }
   | { type: "all_done"; steps: PlanStep[]; summary: string; manualTests?: ManualTestSuggestion[] };
 
 export type ExecuteGoalParams = {

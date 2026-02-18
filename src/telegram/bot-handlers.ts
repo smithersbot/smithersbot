@@ -654,7 +654,16 @@ export const registerTelegramHandlers = ({
             runtime,
             label: "goal-router:feedback",
             releaseGoalLock: feedbackLock.release,
-            fn: () => handleGoalFeedback(runId, text, cfg),
+            fn: () => {
+              const statusCb = buildOnStatusChange({
+                bot,
+                chatId,
+                threadId: params.threadId,
+                runtime,
+                runId,
+              });
+              return handleGoalFeedback(runId, text, cfg, statusCb);
+            },
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {

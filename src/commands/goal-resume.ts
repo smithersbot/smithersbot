@@ -32,6 +32,8 @@ export type GoalResumeOptions = {
   output?: OutputFormat;
   quiet?: boolean;
   replan?: boolean;
+  /** Allow /goal feedback flow to resume a run even if persisted state is done. */
+  allowDoneStateResume?: boolean;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
 };
 
@@ -342,8 +344,8 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  // Terminal: done is not resumable
-  if (run.state === "done") {
+  // Terminal: done is not resumable (except explicit feedback re-execution path).
+  if (run.state === "done" && !opts.allowDoneStateResume) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: "Run already completed." }));
       throw new JsonExitError(1);

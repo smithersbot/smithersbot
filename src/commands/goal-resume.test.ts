@@ -152,6 +152,43 @@ describe("goal-resume command", () => {
     expect(rt.errors).toContain("Run already completed.");
   });
 
+  it("allows resuming a done run when explicitly enabled for feedback", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-done-feedback-ws-"));
+    saveRun(
+      makeRun({
+        runId: "done-feedback-run",
+        state: "done",
+        plan: {
+          goal: "Test goal",
+          summary: "Feedback re-run plan",
+          steps: [
+            {
+              id: "1",
+              description: "Run follow-up fix",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(
+      "done-feedback-run",
+      { allowDoneStateResume: true, quiet: true },
+      rt,
+    );
+
+    expect(result?.status).toBe("done");
+    const persisted = loadRun("done-feedback-run", testGoalsDir);
+    expect(persisted?.state).toBe("done");
+    expect(rt.errors).not.toContain("Run already completed.");
+  });
+
   it("prints blocked details and exits without re-planning", async () => {
     saveRun(
       makeRun({

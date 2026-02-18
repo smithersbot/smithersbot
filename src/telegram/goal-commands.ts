@@ -23,11 +23,17 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
 import { computeCpm } from "../goal/cpm.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
+import {
+  buildFeedbackRevisionInstructions,
+  mergeRevisedPlanWithDoneSteps,
+} from "../goal/feedback.js";
 import { formatPlanOutput } from "../goal/format-output.js";
+import { generateManualTests } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
@@ -336,6 +342,22 @@ function formatManualTestDetails(
     if (index < tests.length - 1) lines.push("");
   });
   return lines.join("\n");
+}
+
+function buildDoneSummaryWithManualTests(run: SerializedRun): string {
+  return formatCompactGoalCompletionSummary({
+    title: run.goal,
+    steps:
+      run.plan?.steps.map((step) => ({
+        id: step.id,
+        description: step.description,
+        summary: step.taskSummary,
+        status: step.status,
+        turnsUsed: step.turnsUsed,
+      })) ?? [],
+    channel: "telegram",
+    manualTests: run.manualTests,
+  }).text;
 }
 
 // ---------------------------------------------------------------------------
@@ -1042,7 +1064,8 @@ export async function handleGoalAnswer(
 export async function handleGoalFeedback(
   rawId: string,
   feedbackText: string,
-  _config?: MoltbotConfig,
+  config?: MoltbotConfig,
+  onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
 ): Promise<string | GoalPlanResult | undefined> {
   if (!rawId.trim() || !feedbackText.trim()) {
     return "Usage: /goal_feedback <runId> <feedback>";
@@ -1056,11 +1079,147 @@ export async function handleGoalFeedback(
   if (run.state !== "done") {
     return `Cannot incorporate feedback: run is in "${run.state}" state (expected "done").`;
   }
+  if (!run.plan) {
+    return "Run has no plan to revise.";
+  }
 
-  return (
-    `Feedback received for ${resolvedId.slice(0, 8)}. ` +
-    "Incorporate-feedback execution will run automatically once enabled."
-  );
+  const prefix = resolvedId.slice(0, 8);
+  const trimmedFeedback = feedbackText.trim();
+  const currentPlan = run.plan;
+  const revisionInstructions = buildFeedbackRevisionInstructions(trimmedFeedback);
+  const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
+  let resumeCapture: ReturnType<typeof createCaptureRuntime> | undefined;
+
+  try {
+    const revisionResult = await runCliPlanRevision({
+      runId: resolvedId,
+      goalText: run.goal,
+      currentPlan,
+      editInstructions: revisionInstructions,
+      cwd: run.workingDir,
+      model: run.model,
+      claudeCodeAuth: authMode,
+    });
+
+    if (revisionResult.plannerBackendUsed) {
+      run.plannerBackendUsed = revisionResult.plannerBackendUsed;
+    } else {
+      delete run.plannerBackendUsed;
+    }
+    if (revisionResult.plannerDegradedReason) {
+      run.plannerDegradedReason = revisionResult.plannerDegradedReason;
+    } else {
+      delete run.plannerDegradedReason;
+    }
+    if (revisionResult.plannerDegradedResetHint) {
+      run.plannerDegradedResetHint = revisionResult.plannerDegradedResetHint;
+    } else {
+      delete run.plannerDegradedResetHint;
+    }
+
+    if ("blocked" in revisionResult.plan) {
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+      return `Feedback replan blocked: ${revisionResult.plan.question}`;
+    }
+
+    const mergedPlan = mergeRevisedPlanWithDoneSteps({
+      originalPlan: currentPlan,
+      revisedPlan: revisionResult.plan,
+    });
+
+    const revisionNumber = commitPlanRevision({
+      run,
+      revisedPlan: mergedPlan,
+      editInstructions: `Incorporate feedback: ${trimmedFeedback}`,
+      previousPlan: currentPlan,
+    });
+    run.blocked = null;
+    run.lastError = undefined;
+    run.state = "executing";
+    delete run.manualTests;
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+
+    if (onStatusChange) {
+      await onStatusChange({
+        type: "plan_revised",
+        revision: revisionNumber,
+        summary: `Feedback incorporated for ${prefix}. Auto-executing new fix steps.`,
+        steps: [...mergedPlan.steps],
+      });
+    }
+
+    const pendingSteps = mergedPlan.steps.filter(
+      (step) => step.status === "pending" || step.status === "blocked",
+    );
+    if (pendingSteps.length === 0) {
+      try {
+        run.manualTests = await generateManualTests({
+          goal: run.goal,
+          steps: mergedPlan.steps,
+        });
+      } catch {
+        delete run.manualTests;
+      }
+      run.state = "done";
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+
+      const summary = buildDoneSummaryWithManualTests(run);
+      if (onStatusChange) {
+        await onStatusChange({
+          type: "all_done",
+          steps: [...mergedPlan.steps],
+          summary,
+          ...(run.manualTests && run.manualTests.length > 0
+            ? { manualTests: run.manualTests }
+            : {}),
+        });
+        return undefined;
+      }
+
+      return `No new execution steps were required for ${prefix}.`;
+    }
+
+    const cap = createCaptureRuntime();
+    resumeCapture = cap;
+    const trackedStatus = trackBlockedStatusChange(onStatusChange);
+    const outcome = await goalResumeCommand(
+      resolvedId,
+      {
+        yes: true,
+        quiet: true,
+        allowDoneStateResume: true,
+        onStatusChange: trackedStatus.onStatusChange,
+      },
+      cap.runtime,
+    );
+
+    const errors = cap.getErrors();
+    if (errors) return errors;
+
+    if (outcome?.status === "blocked") {
+      if (trackedStatus.didSendFullyBlocked()) return undefined;
+      return `Run blocked: ${outcome.question ?? "Unknown reason"}`;
+    }
+    if (outcome?.status === "cancelled") {
+      return "Run cancelled.";
+    }
+    if (trackedStatus.onStatusChange && outcome?.status === "done") {
+      return undefined;
+    }
+
+    return `Incorporating feedback: ${prefix} (${pendingSteps.length} step(s)).`;
+  } catch (err) {
+    if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+      return resumeCapture?.getErrors() || "Feedback command failed.";
+    }
+    if (err instanceof PlanParseError) {
+      persistRawPlanResponse(resolvedId, err.rawResponse);
+    }
+    return formatGoalError(err, resolvedId);
+  }
 }
 
 const GOAL_LIST_LIMIT = 15;
@@ -1468,6 +1627,19 @@ function persistTelegramDoneMessage(params: {
     messageId: params.messageId,
     threadId: params.threadId,
   };
+  saveRun(run);
+}
+
+/** Persist manual test suggestions on a run. */
+function persistManualTests(runId: string, manualTests: ManualTestSuggestion[] | undefined): void {
+  const run = loadRun(runId);
+  if (!run) return;
+  if (manualTests && manualTests.length > 0) {
+    run.manualTests = manualTests;
+  } else {
+    delete run.manualTests;
+  }
+  run.updatedAt = new Date().toISOString();
   saveRun(run);
 }
 
@@ -1905,7 +2077,19 @@ export function buildOnStatusChange(params: {
           requiredInputKey,
         });
       }
+    } else if (event.type === "plan_revised") {
+      await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        plan,
+        steps: event.steps,
+        stepResults,
+        caption: event.summary,
+      });
     } else if (event.type === "all_done") {
+      persistManualTests(runId, event.manualTests);
       const sentId = await sendDagPng({
         bot,
         chatId,
@@ -2722,7 +2906,16 @@ export function registerTelegramGoalCommands({
       runtime,
       label: "goal_feedback",
       releaseGoalLock: feedbackLock.release,
-      fn: () => handleGoalFeedback(feedbackRunIdRaw, feedbackText, cfg),
+      fn: () => {
+        const statusCb = buildOnStatusChange({
+          bot,
+          chatId: resolved.chatId,
+          threadId: resolved.threadIdForSend,
+          runtime,
+          runId: feedbackRunId,
+        });
+        return handleGoalFeedback(feedbackRunIdRaw, feedbackText, cfg, statusCb);
+      },
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {

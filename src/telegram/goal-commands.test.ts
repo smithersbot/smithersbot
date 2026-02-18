@@ -761,6 +761,60 @@ describe("goal-commands telegram adapter", () => {
         ],
       });
     });
+
+    it("persists manual tests when all_done includes suggestions", async () => {
+      saveRun(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            summary: "Done plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 21 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 22 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Test goal",
+        manualTests: [
+          {
+            description: "Run smoke test",
+            criticality: 8,
+            detail: "Confirm main flow succeeds.",
+          },
+        ],
+      });
+
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.manualTests?.[0]?.description).toBe("Run smoke test");
+      expect(run?.telegramDoneMessage?.messageId).toBe(21);
+    });
   });
 
   describe("sendGoalPlanResult", () => {
@@ -1244,6 +1298,107 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalList } = await import("./goal-commands.js");
       const result = await handleGoalList();
       expect(result).toContain("No goal runs found.");
+    });
+  });
+
+  describe("handleGoalFeedback", () => {
+    it("replans a done run, preserves completed steps, transitions to executing, and auto-resumes", async () => {
+      saveRun(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            summary: "Completed plan",
+            steps: [
+              {
+                id: "1",
+                description: "Initial implementation",
+                dependsOn: [],
+                status: "done",
+              },
+              {
+                id: "2",
+                description: "Ship release",
+                dependsOn: ["1"],
+                status: "done",
+              },
+            ],
+          },
+          stepResults: {
+            "1": { stepId: "1", success: true, output: "done", durationMs: 1000 },
+            "2": { stepId: "2", success: true, output: "done", durationMs: 2000 },
+          },
+        }),
+      );
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          summary: "Feedback revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Planner changed description",
+              dependsOn: [],
+              status: "pending",
+            },
+            {
+              id: "3",
+              description: "Fix regression from manual test",
+              dependsOn: ["2", "missing"],
+              status: "pending",
+            },
+          ],
+        },
+      });
+
+      mockGoalResumeCommand.mockImplementation(
+        async (runId: string, opts: Record<string, unknown>) => {
+          const runAtResume = loadRun(runId, testGoalsDir);
+          expect(runAtResume?.state).toBe("executing");
+          expect(runAtResume?.plan?.steps.map((step) => step.id)).toEqual(["1", "2", "3"]);
+          expect(runAtResume?.plan?.steps.find((step) => step.id === "1")?.description).toBe(
+            "Initial implementation",
+          );
+          expect(runAtResume?.plan?.steps.find((step) => step.id === "3")?.dependsOn).toEqual([
+            "2",
+          ]);
+          expect(runAtResume?.stepResults["1"]?.success).toBe(true);
+          expect(runAtResume?.stepResults["2"]?.success).toBe(true);
+          expect(opts.allowDoneStateResume).toBe(true);
+          expect(typeof opts.onStatusChange).toBe("function");
+          return { status: "done", summary: "Done after feedback" };
+        },
+      );
+
+      const { handleGoalFeedback } = await import("./goal-commands.js");
+      const statusCb = vi.fn(async () => undefined);
+      const result = await handleGoalFeedback(
+        "test-run",
+        "Manual test failed on release build",
+        {},
+        statusCb,
+      );
+
+      expect(result).toBeUndefined();
+      expect(mockRunCliPlanRevision).toHaveBeenCalledOnce();
+      expect(mockRunCliPlanRevision.mock.calls[0]?.[0]).toMatchObject({
+        runId: "test-run-id-1234",
+        goalText: "Test goal",
+        cwd: "/tmp/ws",
+      });
+      expect(String(mockRunCliPlanRevision.mock.calls[0]?.[0]?.editInstructions ?? "")).toContain(
+        "Manual test failed on release build",
+      );
+      expect(statusCb).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "plan_revised",
+        }),
+      );
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.planRevision).toBe(2);
+      expect(updated?.activePlanRevision).toBe(2);
+      expect(updated?.planHistory).toHaveLength(1);
     });
   });
 
