@@ -404,11 +404,11 @@ function buildCodexReviewerArgs(params: {
     args.push("resume", params.sessionId);
   }
   if (!params.sessionId) {
-    args.push("--json");
+    args.push("--json", "--color", "never", "--sandbox", "read-only");
+    args.push("--cd", params.workingDir);
   }
 
-  args.push("--color", "never", "--sandbox", "read-only", "--skip-git-repo-check");
-  args.push("--cd", params.workingDir);
+  args.push("--skip-git-repo-check");
 
   if (params.model) {
     args.push("--model", params.model);

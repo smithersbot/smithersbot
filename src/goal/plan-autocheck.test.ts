@@ -361,6 +361,9 @@ describe("runPlanAutocheck", () => {
     expect(firstArgs).toContain("--json");
     expect(secondArgs).toEqual(expect.arrayContaining(["exec", "resume", "codex-session-1"]));
     expect(secondArgs).not.toContain("--json");
+    expect(secondArgs).not.toContain("--color");
+    expect(secondArgs).not.toContain("--sandbox");
+    expect(secondArgs).not.toContain("--cd");
   });
 
   it("converts malformed reviewer output into edit instructions instead of crashing", async () => {

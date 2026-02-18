@@ -116,8 +116,8 @@ describe("cleanupSuspendedCliProcesses", () => {
     runExecMock
       .mockResolvedValueOnce({
         stdout: [
-          "  50 T  codex exec resume thread-99 --color never --sandbox read-only",
-          "  51 T  codex exec resume other --color never --sandbox read-only",
+          "  50 T  codex exec resume thread-99 --skip-git-repo-check",
+          "  51 T  codex exec resume other --skip-git-repo-check",
         ].join("\n"),
         stderr: "",
       })
@@ -126,7 +126,7 @@ describe("cleanupSuspendedCliProcesses", () => {
     await cleanupSuspendedCliProcesses(
       {
         command: "codex",
-        resumeArgs: ["exec", "resume", "{sessionId}", "--color", "never", "--sandbox", "read-only"],
+        resumeArgs: ["exec", "resume", "{sessionId}", "--skip-git-repo-check"],
       } as CliBackendConfig,
       1,
     );
