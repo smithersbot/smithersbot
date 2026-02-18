@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { RATE_LIMIT_RE } from "./error-patterns.js";
 import { resolveRunDir } from "./run-store.js";
 
 // ---------------------------------------------------------------------------
@@ -59,8 +60,6 @@ const DEFAULT_NODE_COUNT_MAX = 10;
 // ---------------------------------------------------------------------------
 
 const TIMEOUT_RE = /ETIMEDOUT|timed?\s*out|timeout|SIGTERM/i;
-const RATE_LIMIT_RE =
-  /rate.?limit|429|too many requests|overloaded|usage limit|you(?:'|’)?ve hit your limit|you have hit your limit|resets?\s+\d/i;
 
 /** Classify a scout execution error message into a machine-readable kind. */
 export function classifyScoutError(errorMessage: string): ScoutErrorKind {

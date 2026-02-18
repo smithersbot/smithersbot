@@ -5,6 +5,7 @@ import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import { RATE_LIMIT_RE } from "./error-patterns.js";
 import {
   PLAN_SYSTEM_PROMPT,
   PlanParseError,
@@ -40,8 +41,6 @@ const PLANNER_RAW_OUTPUT_FILE = "planning_raw_output.txt";
 export const EXECUTION_PLAN_FILE = "execution_plan.json";
 
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash,Write";
-const ANTHROPIC_RATE_LIMIT_RE =
-  /rate.?limit|429|too many requests|overloaded|resource has been exhausted|quota exceeded/i;
 const ANTHROPIC_USAGE_LIMIT_RE =
   /(?:you(?:'|’)?ve|you have)\s+hit\s+your\s+(?:chatgpt\s+)?(?:usage\s+)?limit|usage\s+limit|resets?\s+\d/i;
 
@@ -134,7 +133,7 @@ const PLAN_REVISION_PROMPT_FILE_RE = /^revision_prompt_r(\d+)\.txt$/;
 function detectAnthropicDegradedReason(errorMessage: string): PlannerDegradedReason | undefined {
   if (!errorMessage) return undefined;
   if (ANTHROPIC_USAGE_LIMIT_RE.test(errorMessage)) return "anthropic_usage_limit";
-  if (ANTHROPIC_RATE_LIMIT_RE.test(errorMessage)) return "anthropic_rate_limit";
+  if (RATE_LIMIT_RE.test(errorMessage)) return "anthropic_rate_limit";
   return undefined;
 }
 
