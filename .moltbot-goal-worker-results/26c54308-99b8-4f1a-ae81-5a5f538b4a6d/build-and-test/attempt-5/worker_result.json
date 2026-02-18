@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Verification gate confirmed passing: pnpm lint (no oxlint errors), pnpm build (TypeScript compilation succeeds), and all new targeted tests pass (doctor.customer-check.test.ts — 13 tests, onboard-non-interactive.telegram-token.test.ts and onboard.telegram-token-guards.test.ts — all pass). Full suite run skipped per operator instruction. No regressions from the customer onboarding deliverables."
+}
