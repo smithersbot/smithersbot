@@ -30,6 +30,7 @@ import { findLegacyConfigIssues } from "./legacy.js";
 import { normalizeConfigPaths } from "./normalize-paths.js";
 import { resolveConfigPath, resolveDefaultConfigCandidates, resolveStateDir } from "./paths.js";
 import { applyConfigOverrides } from "./runtime-overrides.js";
+import { clearConfigCache, getCachedConfig, setCachedConfig } from "./config-cache.js";
 import type { MoltbotConfig, ConfigFileSnapshot, LegacyConfigIssue } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 import { compareMoltbotVersions } from "./version.js";
@@ -529,52 +530,18 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
 // NOTE: These wrappers intentionally do *not* cache the resolved config path at
 // module scope. `CLAWDBOT_CONFIG_PATH` (and friends) are expected to work even
 // when set after the module has been imported (tests, one-off scripts, etc.).
-const DEFAULT_CONFIG_CACHE_MS = 200;
-let configCache: {
-  configPath: string;
-  expiresAt: number;
-  config: MoltbotConfig;
-} | null = null;
-
-function resolveConfigCacheMs(env: NodeJS.ProcessEnv): number {
-  const raw = env.CLAWDBOT_CONFIG_CACHE_MS?.trim();
-  if (raw === "" || raw === "0") return 0;
-  if (!raw) return DEFAULT_CONFIG_CACHE_MS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_CONFIG_CACHE_MS;
-  return Math.max(0, parsed);
-}
-
-function shouldUseConfigCache(env: NodeJS.ProcessEnv): boolean {
-  if (env.CLAWDBOT_DISABLE_CONFIG_CACHE?.trim()) return false;
-  return resolveConfigCacheMs(env) > 0;
-}
-
-function clearConfigCache(): void {
-  configCache = null;
-}
-
 export function loadConfig(): MoltbotConfig {
   const io = createConfigIO();
-  const configPath = io.configPath;
-  const now = Date.now();
-  if (shouldUseConfigCache(process.env)) {
-    const cached = configCache;
-    if (cached && cached.configPath === configPath && cached.expiresAt > now) {
-      return cached.config;
-    }
+  const cached = getCachedConfig({
+    configPath: io.configPath,
+    env: process.env,
+  });
+  if (cached) {
+    return cached;
   }
+
   const config = io.loadConfig();
-  if (shouldUseConfigCache(process.env)) {
-    const cacheMs = resolveConfigCacheMs(process.env);
-    if (cacheMs > 0) {
-      configCache = {
-        configPath,
-        expiresAt: now + cacheMs,
-        config,
-      };
-    }
-  }
+  setCachedConfig({ configPath: io.configPath, config, env: process.env });
   return config;
 }
 
@@ -585,4 +552,8 @@ export async function readConfigFileSnapshot(): Promise<ConfigFileSnapshot> {
 export async function writeConfigFile(cfg: MoltbotConfig): Promise<void> {
   clearConfigCache();
   await createConfigIO().writeConfigFile(cfg);
+}
+
+export function clearConfigCacheForTest(): void {
+  clearConfigCache();
 }
