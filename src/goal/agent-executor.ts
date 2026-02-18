@@ -576,7 +576,9 @@ function shouldRetry(result: TaskRunnerResult, backend: GoalBackendId, workerDir
   const attempts = loadAttemptBundles(workerDir);
   const latest = attempts.at(-1);
   if (!latest) return false;
-  return latest.outcome === "timeout" || latest.outcome === "crash";
+  return (
+    latest.outcome === "timeout" || latest.outcome === "crash" || latest.outcome === "rate_limit"
+  );
 }
 
 function recordTaskResult(

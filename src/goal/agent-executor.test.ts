@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalSession, Plan, PlanStep, SerializedRun } from "./types.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
+import type { AttemptBundle } from "./attempt-bundle.js";
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
 const mockPiExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
+const mockLoadAttemptBundles = vi.fn<(dir: string) => AttemptBundle[]>();
 
 class MockCliTaskRunner {
   constructor(_params: unknown) {}
@@ -44,7 +46,7 @@ vi.mock("./backend-availability.js", () => ({
 }));
 
 vi.mock("./attempt-bundle.js", () => ({
-  loadAttemptBundles: () => [],
+  loadAttemptBundles: (dir: string) => mockLoadAttemptBundles(dir),
   resolveWorkerDir: () => "/tmp/moltbot-goal-test/worker",
   formatAttemptBundleSummary: () => "previous attempt",
 }));
@@ -87,6 +89,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRunStore.clear();
+    mockLoadAttemptBundles.mockImplementation(() => []);
     availability = [
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -177,6 +180,71 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(outcome.status).toBe("done");
     expect(step.status).toBe("done");
     expect(mockPiExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries CLI backend when latest attempt outcome is rate_limit", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const rateLimitAttempt: AttemptBundle = {
+      attemptNumber: 1,
+      backend: "codex",
+      outcome: "rate_limit",
+      durationMs: 500,
+    };
+    const completeAttempt: AttemptBundle = {
+      attemptNumber: 2,
+      backend: "codex",
+      outcome: "complete",
+      durationMs: 400,
+    };
+
+    let loadCalls = 0;
+    mockLoadAttemptBundles.mockImplementation(() => {
+      loadCalls += 1;
+      switch (loadCalls) {
+        case 1:
+          return [];
+        case 2:
+        case 3:
+        case 4:
+          return [rateLimitAttempt];
+        default:
+          return [completeAttempt];
+      }
+    });
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "failed",
+        question: "Rate limited",
+        turnsUsed: 1,
+        failedDetail: {
+          reason: "usage limit",
+          whatTried: "waited",
+          errorType: "rate_limit",
+          suggestedNext: "retry",
+          needsRevert: false,
+        },
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered after rate limit",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-cli-rate-limit-retry",
+      workingDir: "/tmp/moltbot-goal-test",
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(mockCliExecute).toHaveBeenCalledTimes(2);
   });
 
   it("blocks when the selected backend is unavailable", async () => {

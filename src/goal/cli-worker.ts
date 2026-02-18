@@ -763,6 +763,9 @@ function classifyAttemptOutcome(
   if (output.status === "failed" && output.errorType === "timeout") {
     return "timeout";
   }
+  if (output.status === "failed" && output.errorType === "rate_limit") {
+    return "rate_limit";
+  }
   if (timedOut) return "timeout";
   if (
     output.status === "failed" &&

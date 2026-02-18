@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { canRunGit, isGitRepo } from "./git-checkpoint.js";
 import { resolveRunDir } from "./run-store.js";
 
-export type AttemptOutcome = "complete" | "blocked" | "failed" | "timeout" | "crash";
+export type AttemptOutcome = "complete" | "blocked" | "failed" | "timeout" | "crash" | "rate_limit";
 
 export type AttemptBundle = {
   attemptNumber: number;
