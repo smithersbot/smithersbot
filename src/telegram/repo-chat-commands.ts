@@ -139,13 +139,19 @@ function appendMessageRef(
   return [...refs, next].slice(-MAX_SESSION_MESSAGE_REFS);
 }
 
+function appendMessageRefs(
+  refs: RepoChatSession["messageRefs"],
+  nextRefs: RepoChatSession["messageRefs"],
+): RepoChatSession["messageRefs"] {
+  return nextRefs.reduce((acc, entry) => appendMessageRef(acc, entry), refs);
+}
+
 function buildNextRepoChatSession(params: {
   existingSession?: RepoChatSession;
   backend: RepoChatBackend;
   workingDir: string;
   cliSessionId?: string;
-  chatId: number;
-  responseMessageId: number;
+  messageRefs: RepoChatSession["messageRefs"];
 }): RepoChatSession {
   const now = new Date().toISOString();
   const existing = params.existingSession;
@@ -156,10 +162,7 @@ function buildNextRepoChatSession(params: {
     cliSessionId: params.cliSessionId ?? existing?.cliSessionId,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-    messageRefs: appendMessageRef(existing?.messageRefs ?? [], {
-      chatId: params.chatId,
-      messageId: params.responseMessageId,
-    }),
+    messageRefs: appendMessageRefs(existing?.messageRefs ?? [], params.messageRefs),
   };
 }
 
@@ -170,10 +173,10 @@ async function sendRepoChatReply(params: {
   text: string;
   threadId?: number;
   replyToMessageId: number;
-}): Promise<number | undefined> {
+}): Promise<number[]> {
   const markdown = params.text.trim() ? params.text : "No output.";
   const chunks = markdownToTelegramChunks(markdown, 4000);
-  let lastMessageId: number | undefined;
+  const messageIds: number[] = [];
   for (const chunk of chunks) {
     const threadParams = params.threadId != null ? { message_thread_id: params.threadId } : {};
     const sendParams = {
@@ -196,10 +199,10 @@ async function sendRepoChatReply(params: {
           .catch(() => params.bot.api.sendMessage(params.chatId, chunk.text, fallbackParams)),
     }).catch(() => undefined);
     if (sent?.message_id != null) {
-      lastMessageId = sent.message_id;
+      messageIds.push(sent.message_id);
     }
   }
-  return lastMessageId;
+  return messageIds;
 }
 
 function runRepoChatInBackground(params: {
@@ -232,7 +235,7 @@ function runRepoChatInBackground(params: {
             claudeCodeAuth: params.claudeCodeAuth,
           }),
       });
-      const sentMessageId = await sendRepoChatReply({
+      const sentMessageIds = await sendRepoChatReply({
         bot: params.bot,
         runtime: params.runtime,
         chatId: params.chatId,
@@ -240,14 +243,19 @@ function runRepoChatInBackground(params: {
         threadId: params.threadId,
         replyToMessageId: params.sourceMessageId,
       });
-      if (sentMessageId == null) return;
+      const sessionMessageRefs: RepoChatSession["messageRefs"] = [
+        { chatId: params.chatId, messageId: params.sourceMessageId },
+        ...sentMessageIds.map((messageId) => ({
+          chatId: params.chatId,
+          messageId,
+        })),
+      ];
       const nextSession = buildNextRepoChatSession({
         existingSession: params.existingSession,
         backend: params.backend,
         workingDir,
         cliSessionId: workerResult.cliSessionId,
-        chatId: params.chatId,
-        responseMessageId: sentMessageId,
+        messageRefs: sessionMessageRefs,
       });
       saveRepoChatSession(nextSession);
     } catch (err) {
