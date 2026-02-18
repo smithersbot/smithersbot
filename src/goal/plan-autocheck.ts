@@ -811,6 +811,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
       goalText: params.goalText,
       currentPlan,
       editInstructions: result.decision.editInstructions,
+      priorFeedback: feedbackHistory.slice(0, -1),
       cwd: params.workingDir,
       model: params.model,
       claudeCodeAuth: params.claudeCodeAuth,

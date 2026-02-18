@@ -747,6 +747,119 @@ describe("runCliPlanning", () => {
     expect(procCall.cwd).toBe(process.cwd());
   });
 
+  it("includes a deduplicated prior corrections checklist in revision prompts", async () => {
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Revised summary",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    const repeatedCorrection =
+      "loadConfigFile does not exist; use readConfigFileSnapshot from src/config/index.ts.";
+    await runCliPlanRevision({
+      runId: "run-revision-prior-feedback",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Add explicit verification details for the updated plan.",
+      priorFeedback: [
+        repeatedCorrection,
+        "Step IDs must map to existing scout nodes.",
+        repeatedCorrection,
+      ],
+      goalsDir,
+    });
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(procCall.stdin).toContain("Prior corrections checklist:");
+    expect(procCall.stdin).toContain(
+      "1. loadConfigFile does not exist; use readConfigFileSnapshot",
+    );
+    expect(procCall.stdin).toContain("2. Step IDs must map to existing scout nodes.");
+    expect(procCall.stdin.split(repeatedCorrection).length - 1).toBe(1);
+
+    const promptArtifact = path.join(
+      goalsDir,
+      "run-revision-prior-feedback",
+      "replan",
+      "revision_prompt_r1.txt",
+    );
+    expect(fs.existsSync(promptArtifact)).toBe(true);
+    expect(fs.readFileSync(promptArtifact, "utf8")).toContain("Prior corrections checklist:");
+  });
+
+  it("omits prior corrections checklist on first revision with no prior feedback", async () => {
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Revised summary",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    await runCliPlanRevision({
+      runId: "run-revision-first-round",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Tighten validation logic",
+      goalsDir,
+    });
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(procCall.stdin).not.toContain("Prior corrections checklist:");
+  });
+
   it("falls back to codex for plan revision on Anthropic limits and rewrites claude_code steps", async () => {
     mockRunCliProcess
       .mockResolvedValueOnce({

@@ -108,6 +108,7 @@ export type CliPlanRevisionParams = {
   goalText: string;
   currentPlan: Plan;
   editInstructions: string;
+  priorFeedback?: string[];
   goalsDir?: string;
   timeoutMs?: number;
   /** Working directory for revision CLI execution (defaults to process.cwd()). */
@@ -128,6 +129,7 @@ const PLAN_REVISION_DIR = "replan";
 const PLAN_REVISION_STDOUT_FILE = "revision_stdout.txt";
 const PLAN_REVISION_STDERR_FILE = "revision_stderr.txt";
 const PLAN_REVISION_RAW_OUTPUT_FILE = "revision_raw_output.txt";
+const PLAN_REVISION_PROMPT_FILE_RE = /^revision_prompt_r(\d+)\.txt$/;
 
 function detectAnthropicDegradedReason(errorMessage: string): PlannerDegradedReason | undefined {
   if (!errorMessage) return undefined;
@@ -311,8 +313,9 @@ function buildPlanRevisionPrompt(params: {
   goalText: string;
   currentPlan: Plan;
   editInstructions: string;
+  priorFeedback?: string[];
 }): string {
-  const { goalText, currentPlan, editInstructions } = params;
+  const { goalText, currentPlan, editInstructions, priorFeedback } = params;
   const currentPlanJson = JSON.stringify(
     {
       summary: currentPlan.summary,
@@ -328,6 +331,17 @@ function buildPlanRevisionPrompt(params: {
     2,
   );
 
+  const uniquePriorFeedback = [...new Set((priorFeedback ?? []).filter(Boolean))];
+  const priorChecklistSection =
+    uniquePriorFeedback.length > 0
+      ? [
+          "Prior corrections checklist:",
+          "Before returning the revised plan, confirm each checklist item is still addressed and no prior fixes regress.",
+          ...uniquePriorFeedback.map((feedback, index) => `${index + 1}. ${feedback}`),
+          "",
+        ]
+      : [];
+
   return [
     PLAN_SYSTEM_PROMPT,
     "",
@@ -336,6 +350,7 @@ function buildPlanRevisionPrompt(params: {
     "Current plan:",
     currentPlanJson,
     "",
+    ...priorChecklistSection,
     `Revision instructions: ${editInstructions}`,
     "",
     "Generate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.",
@@ -343,11 +358,37 @@ function buildPlanRevisionPrompt(params: {
   ].join("\n");
 }
 
+function resolveNextRevisionPromptRound(revisionDir: string): number {
+  try {
+    const entries = fs.readdirSync(revisionDir, { withFileTypes: true });
+    let maxRound = 0;
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const match = PLAN_REVISION_PROMPT_FILE_RE.exec(entry.name);
+      if (!match?.[1]) continue;
+      const round = Number.parseInt(match[1], 10);
+      if (Number.isNaN(round)) continue;
+      maxRound = Math.max(maxRound, round);
+    }
+    return maxRound + 1;
+  } catch {
+    return 1;
+  }
+}
+
 export async function runCliPlanRevision(
   params: CliPlanRevisionParams,
 ): Promise<CliPlanRevisionResult> {
-  const { runId, goalText, currentPlan, editInstructions, goalsDir, model, claudeCodeAuth } =
-    params;
+  const {
+    runId,
+    goalText,
+    currentPlan,
+    editInstructions,
+    priorFeedback,
+    goalsDir,
+    model,
+    claudeCodeAuth,
+  } = params;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
   const plannerCwd = params.cwd ?? process.cwd();
 
@@ -359,6 +400,7 @@ export async function runCliPlanRevision(
   const runDir = resolveRunDir(runId, goalsDir);
   const revisionDir = path.join(runDir, PLAN_REVISION_DIR);
   fs.mkdirSync(revisionDir, { recursive: true });
+  const revisionRound = resolveNextRevisionPromptRound(revisionDir);
 
   const authMode = claudeCodeAuth ?? "subscription";
   const revisionEnv = buildClaudeCodeEnv(authMode);
@@ -368,7 +410,17 @@ export async function runCliPlanRevision(
     goalText,
     currentPlan,
     editInstructions,
+    priorFeedback,
   });
+  try {
+    fs.writeFileSync(
+      path.join(revisionDir, `revision_prompt_r${revisionRound}.txt`),
+      prompt,
+      "utf8",
+    );
+  } catch {
+    // Best-effort diagnostics.
+  }
 
   let plannerBackendUsed: PlannerBackendId | undefined;
   let plannerDegradedReason: PlannerDegradedReason | undefined;

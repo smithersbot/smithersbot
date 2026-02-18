@@ -206,6 +206,59 @@ describe("runPlanAutocheck", () => {
     expect(secondCall.args).toContain("session-resume");
   });
 
+  it("forwards only earlier rounds as priorFeedback when revising", async () => {
+    const plan1 = makePlan("Plan 1", "1", "claude_code");
+    const plan2 = makePlan("Plan 2", "2", "claude_code");
+    const plan3 = makePlan("Plan 3", "3", "claude_code");
+
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: claudeStdout({
+            decision: {
+              approved: false,
+              editInstructions: "Fix missing config helper references.",
+            },
+            sessionId: "session-prior-feedback",
+          }),
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: claudeStdout({
+            decision: {
+              approved: false,
+              editInstructions: "Correct scout node IDs in dependsOn.",
+            },
+          }),
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: claudeStdout({ decision: { approved: true } }),
+        }),
+      );
+
+    mockRunCliPlanRevision
+      .mockResolvedValueOnce({ plan: plan2 })
+      .mockResolvedValueOnce({ plan: plan3 });
+
+    await runPlanAutocheck({
+      plan: plan1,
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-prior-feedback"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(2);
+    const firstCall = mockRunCliPlanRevision.mock.calls[0]?.[0] as { priorFeedback?: string[] };
+    const secondCall = mockRunCliPlanRevision.mock.calls[1]?.[0] as { priorFeedback?: string[] };
+    expect(firstCall.priorFeedback).toEqual([]);
+    expect(secondCall.priorFeedback).toEqual(["Fix missing config helper references."]);
+  });
+
   it("returns exhausted after hitting max autocheck rounds (3/3)", async () => {
     const plan1 = makePlan("Plan 1", "1", "claude_code");
     const plan2 = makePlan("Plan 2", "2", "claude_code");
