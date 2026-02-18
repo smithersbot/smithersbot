@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Ran full verification suite successfully: pnpm vitest run src/goal/cli-worker.test.ts src/goal/agent-executor.test.ts src/goal/scout.test.ts src/goal/cli-planner.test.ts src/goal/compact-output.test.ts (90 passed), pnpm lint (0 warnings/errors), and pnpm build (success). Runtime verification executed with writable state dir via HOME=/tmp CLAWDBOT_STATE_DIR=/tmp/.moltbot CLAWDBOT_CONFIG_PATH=/tmp/.moltbot/moltbot.json node scripts/run-node.mjs goal \"say hello\" --backend codex --no-git-checkpoints --yes, producing runId 71befe9b-3f2d-4721-83b6-c8645b45bddf. Verified /tmp/.moltbot/goals/71befe9b-3f2d-4721-83b6-c8645b45bddf/run.json records a structured failure message (Not logged in · Please run /login) and contains no missing_result marker." 
+}
