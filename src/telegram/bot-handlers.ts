@@ -29,6 +29,7 @@ import {
   buildOnStatusChange,
   handleGoalAnswer,
   handleGoalEdit,
+  handleGoalFeedback,
   handleGoalList,
   handleGoalStatus,
   runGoalInBackground,
@@ -55,6 +56,7 @@ const GOAL_HELP_MESSAGE = [
   "• Reject: use 👎 button, react 👎, or /goal_reject <id>",
   "• Edit: reply to the plan message with instructions",
   "• Answer: reply to a question message, or /goal_answer <id> <answer>",
+  "• Feedback: reply to the feedback prompt, or /goal_feedback <id> <feedback>",
   "",
   'Ask about goals: "list goals", "status", /goal_list, /goal_status <id>',
 ].join("\n");
@@ -203,6 +205,7 @@ export async function handleTelegramGoalRouting(params: {
   runHandlers: {
     edit: (runId: string, text: string) => void;
     answer: (runId: string, text: string) => void;
+    feedback?: (runId: string, text: string) => void;
   };
 }): Promise<boolean> {
   const suppressChatHelpFallback = params.suppressChatHelpFallback === true;
@@ -257,6 +260,11 @@ export async function handleTelegramGoalRouting(params: {
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
     params.runHandlers.answer(route.runId, params.messageText);
+    return true;
+  }
+
+  if (route.kind === "GOAL_FEEDBACK" && route.runId) {
+    params.runHandlers.feedback?.(route.runId, params.messageText);
     return true;
   }
 
@@ -398,6 +406,15 @@ export const registerTelegramHandlers = ({
       .filter((run) => {
         if (matchesChatThread(run.telegramPlanMessage, chatId, threadId)) return true;
         if (run.telegramQuestionMessages?.some((qm) => matchesChatThread(qm, chatId, threadId))) {
+          return true;
+        }
+        if (run.telegramEditPromptMessages?.some((ep) => matchesChatThread(ep, chatId, threadId))) {
+          return true;
+        }
+        if (matchesChatThread(run.telegramDoneMessage, chatId, threadId)) return true;
+        if (
+          run.telegramFeedbackPromptMessages?.some((fp) => matchesChatThread(fp, chatId, threadId))
+        ) {
           return true;
         }
         return false;
@@ -602,6 +619,42 @@ export const registerTelegramHandlers = ({
             label: "goal-router:answer",
             releaseGoalLock: answerLock.release,
             fn: () => handleGoalAnswer(runId, text, statusCb),
+            onResult: async (result) => {
+              if (result == null) return;
+              if (typeof result === "string") {
+                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+              } else {
+                await sendGoalPlanResult({
+                  bot,
+                  chatId,
+                  runtime,
+                  result,
+                  threadId: params.threadId,
+                });
+              }
+            },
+          });
+        },
+        feedback: (runId, text) => {
+          const feedbackLock = acquireGoalOpLock(runId, "feedback");
+          if (!feedbackLock.acquired) {
+            void sendGoalReply(
+              bot,
+              chatId,
+              `Goal \`${runId.slice(0, 8)}\` is already being processed (${feedbackLock.existingLabel ?? "unknown"}).`,
+              runtime,
+              params.threadId,
+            );
+            return;
+          }
+          runGoalInBackground({
+            bot,
+            chatId,
+            threadId: params.threadId,
+            runtime,
+            label: "goal-router:feedback",
+            releaseGoalLock: feedbackLock.release,
+            fn: () => handleGoalFeedback(runId, text, cfg),
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {

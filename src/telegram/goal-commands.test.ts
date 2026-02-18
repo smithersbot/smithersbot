@@ -128,6 +128,8 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
     dryRun: false,
     createdAt: "2026-01-30T00:00:00.000Z",
     updatedAt: "2026-01-30T00:00:00.000Z",
+    telegramDoneMessage: overrides.telegramDoneMessage,
+    telegramFeedbackPromptMessages: overrides.telegramFeedbackPromptMessages,
     ...overrides,
   };
 }
@@ -732,9 +734,32 @@ describe("goal-commands telegram adapter", () => {
       });
 
       expect(sendPhoto).toHaveBeenCalledOnce();
-      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        caption?: string;
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
       expect(options.caption).toContain("✅ Done: Test goal");
       expect(options.caption).not.toContain("DONE (test-run)");
+      expect(options.reply_markup?.inline_keyboard).toEqual([
+        [{ text: "🔍 Test Detail", callback_data: "gTD:test-run" }],
+        [{ text: "🔄 Incorporate Feedback", callback_data: "gIF:test-run" }],
+      ]);
+      const updatedRun = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updatedRun?.telegramDoneMessage).toEqual({
+        chatId: 42,
+        messageId: 10,
+        threadId: undefined,
+      });
+    });
+
+    it("builds done-message inline keyboard callbacks", async () => {
+      const { buildGoalDoneInlineKeyboard } = await import("./goal-commands.js");
+      expect(buildGoalDoneInlineKeyboard("abc12345")).toEqual({
+        inline_keyboard: [
+          [{ text: "🔍 Test Detail", callback_data: "gTD:abc12345" }],
+          [{ text: "🔄 Incorporate Feedback", callback_data: "gIF:abc12345" }],
+        ],
+      });
     });
   });
 
@@ -1864,6 +1889,143 @@ describe("goal-commands telegram adapter", () => {
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Config writes are disabled");
+    });
+  });
+
+  describe("registerTelegramGoalCommands done callbacks", () => {
+    function makeCallbackHarness(): {
+      callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      answerCallbackQuery: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+    } {
+      let callbackHandler:
+        | ((ctx: unknown, next?: () => Promise<void>) => Promise<void>)
+        | undefined;
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 700 });
+      const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto: vi.fn().mockResolvedValue({ message_id: 701 }),
+          sendChatAction: vi.fn().mockResolvedValue(true),
+          answerCallbackQuery,
+          setMessageReaction: vi.fn().mockResolvedValue(true),
+        },
+        command: vi.fn(),
+        on: (
+          event: string,
+          handler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>,
+        ) => {
+          if (event === "callback_query:data") callbackHandler = handler;
+        },
+      } as unknown as import("grammy").Bot;
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: {} as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+      return {
+        get callbackHandler() {
+          if (!callbackHandler) throw new Error("callback handler not registered");
+          return callbackHandler;
+        },
+        sendMessage,
+        answerCallbackQuery,
+        register,
+      };
+    }
+
+    function makeCallbackCtx(data: string, messageId = 500): Record<string, unknown> {
+      return {
+        callbackQuery: {
+          id: "cb-1",
+          data,
+          message: {
+            chat: { id: 42, type: "private" },
+            message_id: messageId,
+          },
+        },
+      };
+    }
+
+    it("routes gTD callback to manual test detail message", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRun(
+        makeRun({
+          runId,
+          state: "done",
+          manualTests: [
+            {
+              description: "Check login flow",
+              criticality: 8,
+              detail: "Run login with valid + invalid credentials.",
+            },
+          ],
+        }),
+      );
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gTD:abcdef12"));
+
+      expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Manual test details for abcdef12");
+      expect(sentText).toContain("Check login flow");
+      expect(sentText).toContain("8/10 Critical");
+    });
+
+    it("routes gIF callback to force-reply prompt and persists prompt tracking", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRun(makeRun({ runId, state: "done" }));
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockResolvedValue({ message_id: 777 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gIF:abcdef12", 501));
+
+      expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      expect(harness.sendMessage).toHaveBeenCalledWith(
+        42,
+        "Reply with feedback from your manual tests.",
+        expect.objectContaining({
+          reply_parameters: { message_id: 501 },
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+      const run = loadRun(runId, testGoalsDir);
+      expect(run?.telegramFeedbackPromptMessages?.[0]).toEqual({
+        chatId: 42,
+        messageId: 777,
+        threadId: undefined,
+      });
     });
   });
 

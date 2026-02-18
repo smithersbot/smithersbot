@@ -7,9 +7,15 @@ import type { SerializedRun } from "../goal/types.js";
 // They are handled by dedicated Grammy middleware registered in registerTelegramGoalCommands()
 // (called from registerTelegramNativeCommands, bot.ts:348) which runs before registerTelegramHandlers
 // (bot.ts:454) where the text router lives.
-export type RouteKind = "GOAL_EDIT" | "GOAL_ANSWER" | "CHAT" | "CHAT_HELP" | "DISAMBIGUATE";
+export type RouteKind =
+  | "GOAL_EDIT"
+  | "GOAL_ANSWER"
+  | "GOAL_FEEDBACK"
+  | "CHAT"
+  | "CHAT_HELP"
+  | "DISAMBIGUATE";
 
-export type RouterDecision = "GOAL_EDIT" | "GOAL_ANSWER" | "CHAT";
+export type RouterDecision = "GOAL_EDIT" | "GOAL_ANSWER" | "GOAL_FEEDBACK" | "CHAT";
 
 export type RouteResult = {
   kind: RouteKind;
@@ -127,6 +133,10 @@ function filterRunsForChatThread(params: {
     if (run.telegramEditPromptMessages?.some((ep) => matchesChatThread(ep, chatId, threadId))) {
       return true;
     }
+    if (matchesChatThread(run.telegramDoneMessage, chatId, threadId)) return true;
+    if (run.telegramFeedbackPromptMessages?.some((fp) => matchesChatThread(fp, chatId, threadId))) {
+      return true;
+    }
     return false;
   });
 }
@@ -170,10 +180,11 @@ function findRunByQuestionMessageId(
  *   2. Non-reply greeting → CHAT
  *   3. Reply to latest plan message → GOAL_EDIT
  *   4. Reply to edit-prompt message (ForceReply from "Request changes" button) → GOAL_EDIT
- *   5. Reply to question message (blocked run) → GOAL_ANSWER
- *   6. Reply to older plan revision → DISAMBIGUATE
- *   7. Help intent → CHAT_HELP
- *   8. Default → CHAT (with replyText hint if blocked runs exist)
+ *   5. Reply to feedback prompt message (ForceReply from "Incorporate Feedback") → GOAL_FEEDBACK
+ *   6. Reply to question message (blocked run) → GOAL_ANSWER
+ *   7. Reply to older plan revision → DISAMBIGUATE
+ *   8. Help intent → CHAT_HELP
+ *   9. Default → CHAT (with replyText hint if blocked runs exist)
  */
 export function routeTelegramText(input: RouteInput): RouteResult {
   const { chatId, threadId, messageText, replyToMessageId } = input;
@@ -210,6 +221,16 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     );
     if (editPromptMatch) {
       return { kind: "GOAL_EDIT", runId: editPromptMatch.runId };
+    }
+
+    // GOAL_FEEDBACK: reply to a feedback-prompt message (sent via the done message button).
+    const feedbackPromptMatch = scopedRuns.find((run) =>
+      run.telegramFeedbackPromptMessages?.some(
+        (fp) => fp.messageId === replyToMessageId && matchesChatThread(fp, chatId, threadId),
+      ),
+    );
+    if (feedbackPromptMatch) {
+      return { kind: "GOAL_FEEDBACK", runId: feedbackPromptMatch.runId };
     }
 
     // GOAL_ANSWER: reply to a question/clarification message from a blocked run.

@@ -34,7 +34,13 @@ import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { acquireGoalOpLock, forceReleaseGoalOpLock, isGoalOpLocked } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
-import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
+import type {
+  ManualTestSuggestion,
+  Plan,
+  PlanStep,
+  SerializedRun,
+  StepResult,
+} from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks, markdownToTelegramHtml } from "./format.js";
@@ -73,6 +79,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
     description: "Show detailed run status (includes all steps)",
   },
   { command: "goal_answer", description: "Answer a goal's clarification question" },
+  {
+    command: "goal_feedback",
+    description: "Incorporate manual-test feedback into a completed run",
+  },
   { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
 ];
@@ -296,6 +306,36 @@ function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
       { text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` },
     ],
   ]);
+}
+
+/** Inline keyboard for done goal messages: test details + feedback loop. */
+export function buildGoalDoneInlineKeyboard(runIdPrefix: string) {
+  return buildInlineKeyboard([
+    [{ text: "🔍 Test Detail", callback_data: `gTD:${runIdPrefix}` }],
+    [{ text: "🔄 Incorporate Feedback", callback_data: `gIF:${runIdPrefix}` }],
+  ]);
+}
+
+function clampCriticality(value: number): number {
+  return Math.max(1, Math.min(10, Math.round(value)));
+}
+
+function formatManualTestDetails(
+  runIdPrefix: string,
+  tests: ManualTestSuggestion[] | undefined,
+): string {
+  if (!tests || tests.length === 0) {
+    return `No manual test details found for run ${runIdPrefix}.`;
+  }
+  const lines = [`Manual test details for ${runIdPrefix}:`, ""];
+  tests.forEach((test, index) => {
+    lines.push(
+      `${index + 1}. ${test.description} [${clampCriticality(test.criticality)}/10 Critical]`,
+    );
+    lines.push(test.detail || "No additional detail provided.");
+    if (index < tests.length - 1) lines.push("");
+  });
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1038,31 @@ export async function handleGoalAnswer(
   }
 }
 
+/** /goal_feedback <runId> <feedback> -- incorporate feedback from manual tests. */
+export async function handleGoalFeedback(
+  rawId: string,
+  feedbackText: string,
+  _config?: MoltbotConfig,
+): Promise<string | GoalPlanResult | undefined> {
+  if (!rawId.trim() || !feedbackText.trim()) {
+    return "Usage: /goal_feedback <runId> <feedback>";
+  }
+
+  const resolvedId = resolveRunId(rawId.trim());
+  if (!resolvedId) return `Run not found: ${rawId.trim()}`;
+
+  const run = loadRun(resolvedId);
+  if (!run) return `Run file missing: ${resolvedId}`;
+  if (run.state !== "done") {
+    return `Cannot incorporate feedback: run is in "${run.state}" state (expected "done").`;
+  }
+
+  return (
+    `Feedback received for ${resolvedId.slice(0, 8)}. ` +
+    "Incorporate-feedback execution will run automatically once enabled."
+  );
+}
+
 const GOAL_LIST_LIMIT = 15;
 
 /** /goal_list -- list recent goal runs (Telegram-formatted code block). */
@@ -1386,6 +1451,47 @@ function persistEditPromptMessage(params: {
   };
   const existing = run.telegramEditPromptMessages ?? [];
   run.telegramEditPromptMessages = [entry, ...existing].slice(0, TELEGRAM_EDIT_PROMPT_MESSAGE_CAP);
+  saveRun(run);
+}
+
+/** Persist Telegram done message tracking on a run. */
+function persistTelegramDoneMessage(params: {
+  runId: string;
+  chatId: number;
+  messageId: number;
+  threadId?: number;
+}): void {
+  const run = loadRun(params.runId);
+  if (!run) return;
+  run.telegramDoneMessage = {
+    chatId: params.chatId,
+    messageId: params.messageId,
+    threadId: params.threadId,
+  };
+  saveRun(run);
+}
+
+const TELEGRAM_FEEDBACK_PROMPT_MESSAGE_CAP = 5;
+
+/** Persist Telegram feedback-prompt message tracking on a run (for ForceReply routing). */
+function persistFeedbackPromptMessage(params: {
+  runId: string;
+  chatId: number;
+  messageId: number;
+  threadId?: number;
+}): void {
+  const run = loadRun(params.runId);
+  if (!run) return;
+  const entry = {
+    chatId: params.chatId,
+    messageId: params.messageId,
+    threadId: params.threadId,
+  };
+  const existing = run.telegramFeedbackPromptMessages ?? [];
+  run.telegramFeedbackPromptMessages = [entry, ...existing].slice(
+    0,
+    TELEGRAM_FEEDBACK_PROMPT_MESSAGE_CAP,
+  );
   saveRun(run);
 }
 
@@ -1800,7 +1906,7 @@ export function buildOnStatusChange(params: {
         });
       }
     } else if (event.type === "all_done") {
-      await sendDagPng({
+      const sentId = await sendDagPng({
         bot,
         chatId,
         threadId,
@@ -1809,7 +1915,16 @@ export function buildOnStatusChange(params: {
         steps: event.steps,
         stepResults,
         caption: event.summary,
+        replyMarkup: buildGoalDoneInlineKeyboard(prefix),
       });
+      if (sentId != null) {
+        persistTelegramDoneMessage({
+          runId,
+          chatId,
+          messageId: sentId,
+          threadId,
+        });
+      }
     }
   };
 }
@@ -2035,6 +2150,57 @@ export function registerTelegramGoalCommands({
       } else if (action === "gr") {
         const reply = await handleGoalReject(resolvedId);
         await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      }
+      return;
+    }
+
+    // --- Done buttons: gTD/gIF:<runIdPrefix> ---
+    const doneMatch = /^(gTD|gIF):([a-f0-9-]+)$/.exec(data);
+    if (doneMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      const [, action, runIdPrefix] = doneMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        return;
+      }
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+        return;
+      }
+
+      if (action === "gTD") {
+        const detailText = formatManualTestDetails(resolvedId.slice(0, 8), run.manualTests);
+        await sendGoalReply(bot, chatId, detailText, runtime, threadId, messageId);
+        return;
+      }
+
+      const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+      const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
+      const sent = await bot.api
+        .sendMessage(chatId, "Reply with feedback from your manual tests.", {
+          ...threadParams,
+          ...replyParams,
+          reply_markup: {
+            force_reply: true,
+            input_field_placeholder: "Describe what failed and what you expected...",
+          },
+        })
+        .catch(() => undefined);
+      if (sent?.message_id) {
+        persistFeedbackPromptMessage({
+          runId: resolvedId,
+          chatId,
+          messageId: sent.message_id,
+          threadId,
+        });
       }
       return;
     }
@@ -2498,6 +2664,65 @@ export function registerTelegramGoalCommands({
       label: "goal_answer",
       releaseGoalLock: answerLock.release,
       fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb),
+      onResult: async (result) => {
+        if (result == null) return;
+        if (typeof result === "string") {
+          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+        } else {
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+        }
+      },
+    });
+  });
+
+  // /goal_feedback <runId> <feedback>
+  bot.command("goal_feedback", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const raw = ctx.match?.trim() ?? "";
+    const spaceIdx = raw.indexOf(" ");
+    if (spaceIdx === -1) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Usage: /goal_feedback <runId> <feedback>",
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const feedbackRunIdRaw = raw.slice(0, spaceIdx);
+    const feedbackText = raw.slice(spaceIdx + 1).trim();
+    const feedbackRunId = resolveRunId(feedbackRunIdRaw);
+    if (!feedbackRunId) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Run not found: ${feedbackRunIdRaw}`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    const feedbackLock = acquireGoalOpLock(feedbackRunId, "feedback");
+    if (!feedbackLock.acquired) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal \`${feedbackRunId.slice(0, 8)}\` is already being processed (${feedbackLock.existingLabel ?? "unknown"}).`,
+        runtime,
+        resolved.threadIdForSend,
+      );
+      return;
+    }
+    runGoalInBackground({
+      bot,
+      chatId: resolved.chatId,
+      threadId: resolved.threadIdForSend,
+      runtime,
+      label: "goal_feedback",
+      releaseGoalLock: feedbackLock.release,
+      fn: () => handleGoalFeedback(feedbackRunIdRaw, feedbackText, cfg),
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {

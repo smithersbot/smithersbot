@@ -504,6 +504,8 @@ describe("session serialization", () => {
       planHistory: [{ revision: 1, plan: { goal: "Meta", steps: [], summary: "meta" } }],
       telegramPlanMessage: { chatId: 1, messageId: 2 },
       telegramQuestionMessages: [{ chatId: 1, messageId: 3, requiredInputKey: "task:1:input" }],
+      telegramDoneMessage: { chatId: 1, messageId: 4 },
+      telegramFeedbackPromptMessages: [{ chatId: 1, messageId: 5 }],
       agentSessionFile: "/tmp/session.jsonl",
       agentSessionId: "agent-1",
       agentMaxTurnsPerTask: 7,
@@ -531,6 +533,8 @@ describe("session serialization", () => {
     expect(serialized.planHistory).toHaveLength(1);
     expect(serialized.telegramPlanMessage?.messageId).toBe(2);
     expect(serialized.telegramQuestionMessages?.[0]?.messageId).toBe(3);
+    expect(serialized.telegramDoneMessage?.messageId).toBe(4);
+    expect(serialized.telegramFeedbackPromptMessages?.[0]?.messageId).toBe(5);
     expect(serialized.agentSessionFile).toBe("/tmp/session.jsonl");
     expect(serialized.agentSessionId).toBe("agent-1");
     expect(serialized.agentMaxTurnsPerTask).toBe(7);

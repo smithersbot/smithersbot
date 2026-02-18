@@ -22,6 +22,8 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     telegramPlanMessage: partial.telegramPlanMessage,
     telegramQuestionMessages: partial.telegramQuestionMessages,
     telegramEditPromptMessages: partial.telegramEditPromptMessages,
+    telegramDoneMessage: partial.telegramDoneMessage,
+    telegramFeedbackPromptMessages: partial.telegramFeedbackPromptMessages,
   };
 }
 
@@ -108,6 +110,26 @@ describe("routeTelegramText", () => {
     expect(route.runId).toBe("r1");
   });
 
+  it("routes reply to feedback-prompt message to GOAL_FEEDBACK", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        telegramDoneMessage: { chatId: 1, messageId: 60 },
+        telegramFeedbackPromptMessages: [{ chatId: 1, messageId: 61 }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "Test 2 failed with a crash",
+      replyToMessageId: 61,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_FEEDBACK");
+    expect(route.runId).toBe("r1");
+  });
+
   it("does not match edit-prompt message from wrong chatId", () => {
     const runs = [
       makeRun({
@@ -121,6 +143,25 @@ describe("routeTelegramText", () => {
       threadId: undefined,
       messageText: "change it",
       replyToMessageId: 50,
+      runs,
+    });
+    expect(route.kind).toBe("CHAT");
+  });
+
+  it("does not match feedback-prompt message from wrong chatId", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        telegramDoneMessage: { chatId: 1, messageId: 60 },
+        telegramFeedbackPromptMessages: [{ chatId: 999, messageId: 61 }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "failed",
+      replyToMessageId: 61,
       runs,
     });
     expect(route.kind).toBe("CHAT");

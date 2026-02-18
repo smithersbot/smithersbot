@@ -187,6 +187,18 @@ export type SerializedRun = {
     messageId: number;
     threadId?: number;
   }>;
+  /** Telegram done message that includes manual test suggestions and action buttons. */
+  telegramDoneMessage?: {
+    chatId: number;
+    messageId: number;
+    threadId?: number;
+  };
+  /** Telegram feedback-prompt ForceReply messages sent via "Incorporate Feedback". */
+  telegramFeedbackPromptMessages?: Array<{
+    chatId: number;
+    messageId: number;
+    threadId?: number;
+  }>;
   /** PI agent session file path (JSONL transcript). */
   agentSessionFile?: string;
   /** Stable session ID for the PI agent. */

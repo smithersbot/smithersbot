@@ -283,6 +283,8 @@ export function sessionToSerialized(params: {
   autocheckBackend?: SerializedRun["autocheckBackend"];
   autocheckSessionId?: SerializedRun["autocheckSessionId"];
   manualTests?: SerializedRun["manualTests"];
+  telegramDoneMessage?: SerializedRun["telegramDoneMessage"];
+  telegramFeedbackPromptMessages?: SerializedRun["telegramFeedbackPromptMessages"];
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -318,6 +320,12 @@ export function sessionToSerialized(params: {
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
     ...(params.manualTests != null ? { manualTests: params.manualTests } : {}),
+    ...(params.telegramDoneMessage != null
+      ? { telegramDoneMessage: params.telegramDoneMessage }
+      : {}),
+    ...(params.telegramFeedbackPromptMessages != null
+      ? { telegramFeedbackPromptMessages: params.telegramFeedbackPromptMessages }
+      : {}),
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
   };
   const previous = params.previousRun;
@@ -330,6 +338,15 @@ export function sessionToSerialized(params: {
   if (previous.telegramPlanMessage) serialized.telegramPlanMessage = previous.telegramPlanMessage;
   if (previous.telegramQuestionMessages) {
     serialized.telegramQuestionMessages = previous.telegramQuestionMessages;
+  }
+  if (previous.telegramEditPromptMessages) {
+    serialized.telegramEditPromptMessages = previous.telegramEditPromptMessages;
+  }
+  if (!serialized.telegramDoneMessage && previous.telegramDoneMessage) {
+    serialized.telegramDoneMessage = previous.telegramDoneMessage;
+  }
+  if (!serialized.telegramFeedbackPromptMessages && previous.telegramFeedbackPromptMessages) {
+    serialized.telegramFeedbackPromptMessages = previous.telegramFeedbackPromptMessages;
   }
   if (!serialized.agentSessionFile && previous.agentSessionFile) {
     serialized.agentSessionFile = previous.agentSessionFile;
