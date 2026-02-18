@@ -692,7 +692,7 @@ function buildGoalSummary(params: {
     resolveStepAttemptsUsed: (stepId) =>
       loadAttemptBundles(resolveWorkerDir(params.runId, stepId)).length,
     manualTests: params.manualTests,
-    channel: "cli",
+    channel: "telegram",
   }).text;
 }
 

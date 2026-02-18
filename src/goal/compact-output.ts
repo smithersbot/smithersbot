@@ -119,12 +119,12 @@ const DEFAULT_MAX_LINES_BY_CHANNEL: Record<GoalOutputChannel, number> = {
 
 const DEFAULT_STEP_TEXT_CHARS_BY_CHANNEL: Record<GoalOutputChannel, number> = {
   cli: 100,
-  telegram: 72,
+  telegram: 120,
 };
 
 const DEFAULT_TITLE_CHARS_BY_CHANNEL: Record<GoalOutputChannel, number> = {
   cli: 70,
-  telegram: 52,
+  telegram: 100,
 };
 
 const STATE_INDICATORS: Record<KnownGoalState, { emoji: string; text: string }> = {
@@ -245,10 +245,10 @@ function formatStepLine(
   const stepText = normalizedSuffix
     ? (() => {
         const suffixText = ` ${normalizedSuffix}`;
-        if (suffixText.length >= maxStepTextChars) {
-          return truncateSingleLine(`${step.text}${suffixText}`, maxStepTextChars);
-        }
-        return `${truncateSingleLine(step.text, maxStepTextChars - suffixText.length)}${suffixText}`;
+        // Reserve width for suffixes like "[8/10 Critical]" so the criticality marker is always visible.
+        const textBudget = Math.max(0, maxStepTextChars - suffixText.length);
+        const truncatedText = truncateSingleLine(step.text, textBudget);
+        return truncatedText ? `${truncatedText}${suffixText}` : normalizedSuffix;
       })()
     : truncateSingleLine(step.text, maxStepTextChars);
   const decoratedText = `${stepText}${badge ? ` ${badge}` : ""}`;

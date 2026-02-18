@@ -188,6 +188,12 @@ describe("formatCompactGoalOutput", () => {
     expect(full.mode).toBe("full");
     expect(Number.isFinite(full.maxSteps)).toBe(false);
   });
+
+  it("uses expanded Telegram truncation budgets", () => {
+    const telegram = resolveCompactGoalRenderOptions({ channel: "telegram" });
+    expect(telegram.maxTitleChars).toBe(100);
+    expect(telegram.maxStepTextChars).toBe(120);
+  });
 });
 
 describe("buildGoalRetrySummary", () => {
@@ -295,6 +301,27 @@ describe("formatCompactGoalCompletionSummary", () => {
     expect(numbered).toHaveLength(2);
     expect(numbered[0]).toContain("[9/10 Critical]");
     expect(numbered[1]).toContain("[8/10 Critical]");
+  });
+
+  it("preserves manual test criticality suffixes when descriptions are truncated", () => {
+    const result = formatCompactGoalCompletionSummary({
+      title: "Release verification",
+      maxStepTextChars: 30,
+      steps: [{ id: "1", description: "Ship release", status: "done" }],
+      manualTests: [
+        {
+          description:
+            "Walk through the longest possible end-to-end flow so the description must truncate",
+          criticality: 10,
+          detail: "Validate all checkpoints.",
+        },
+      ],
+    });
+
+    const numbered = getNumberedLines(result.lines);
+    expect(numbered).toHaveLength(1);
+    expect(numbered[0]).toContain("[10/10 Critical]");
+    expect(numbered[0]).not.toContain("[10/10 Critica…");
   });
 
   it("keeps completion summaries within Telegram's default line budget", () => {
