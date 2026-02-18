@@ -26,6 +26,7 @@ import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
 import { computeCpm } from "../goal/cpm.js";
+import { AUTH_RE } from "../goal/error-patterns.js";
 import { formatGoalError } from "../goal/errors.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import {
@@ -1087,19 +1088,41 @@ export async function handleGoalFeedback(
   const trimmedFeedback = feedbackText.trim();
   const currentPlan = run.plan;
   const revisionInstructions = buildFeedbackRevisionInstructions(trimmedFeedback);
-  const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
+  const preferredAuthMode = config?.goal?.claudeCodeAuth ?? "subscription";
   let resumeCapture: ReturnType<typeof createCaptureRuntime> | undefined;
 
   try {
-    const revisionResult = await runCliPlanRevision({
-      runId: resolvedId,
-      goalText: run.goal,
-      currentPlan,
-      editInstructions: revisionInstructions,
-      cwd: run.workingDir,
-      model: run.model,
-      claudeCodeAuth: authMode,
-    });
+    const authModesToTry =
+      preferredAuthMode === "api_key"
+        ? (["api_key", "subscription"] as const)
+        : [preferredAuthMode];
+    let revisionResult: Awaited<ReturnType<typeof runCliPlanRevision>> | undefined;
+
+    for (const authMode of authModesToTry) {
+      try {
+        revisionResult = await runCliPlanRevision({
+          runId: resolvedId,
+          goalText: run.goal,
+          currentPlan,
+          editInstructions: revisionInstructions,
+          cwd: run.workingDir,
+          model: run.model,
+          claudeCodeAuth: authMode,
+        });
+        break;
+      } catch (err) {
+        const errText = err instanceof Error ? err.message : String(err);
+        const shouldRetryWithSubscription =
+          authMode === "api_key" && authModesToTry.length > 1 && AUTH_RE.test(errText);
+        if (!shouldRetryWithSubscription) throw err;
+        warn(
+          `[goal] feedback revision auth failed for ${prefix} in api_key mode; retrying with subscription auth`,
+        );
+      }
+    }
+    if (!revisionResult) {
+      throw new Error("Plan revision failed for unknown reason.");
+    }
 
     if (revisionResult.plannerBackendUsed) {
       run.plannerBackendUsed = revisionResult.plannerBackendUsed;
@@ -2367,7 +2390,10 @@ export function registerTelegramGoalCommands({
       }
 
       const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-      const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
+      const replyToMessageId = messageId ?? run.telegramDoneMessage?.messageId;
+      const replyParams = replyToMessageId
+        ? { reply_parameters: { message_id: replyToMessageId } }
+        : {};
       const sent = await bot.api
         .sendMessage(chatId, "Reply with feedback from your manual tests.", {
           ...threadParams,

@@ -1400,6 +1400,60 @@ describe("goal-commands telegram adapter", () => {
       expect(updated?.activePlanRevision).toBe(2);
       expect(updated?.planHistory).toHaveLength(1);
     });
+
+    it("retries feedback replanning with subscription auth after api_key auth failure", async () => {
+      saveRun(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            summary: "Completed plan",
+            steps: [
+              {
+                id: "1",
+                description: "Initial implementation",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+          stepResults: {
+            "1": { stepId: "1", success: true, output: "done", durationMs: 1000 },
+          },
+        }),
+      );
+
+      mockRunCliPlanRevision
+        .mockRejectedValueOnce(new Error("HTTP 401: authentication_error: invalid x-api-key"))
+        .mockResolvedValueOnce({
+          plan: {
+            goal: "Test goal",
+            summary: "Feedback revised plan",
+            steps: [
+              {
+                id: "1",
+                description: "Planner changed description",
+                dependsOn: [],
+                status: "pending",
+              },
+            ],
+          },
+        });
+
+      const { handleGoalFeedback } = await import("./goal-commands.js");
+      const result = await handleGoalFeedback("test-run", "Fix the manual test failure", {
+        goal: { claudeCodeAuth: "api_key" },
+      } as never);
+
+      expect(result).toBe("No new execution steps were required for test-run.");
+      expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(2);
+      expect(mockRunCliPlanRevision.mock.calls[0]?.[0]).toMatchObject({
+        claudeCodeAuth: "api_key",
+      });
+      expect(mockRunCliPlanRevision.mock.calls[1]?.[0]).toMatchObject({
+        claudeCodeAuth: "subscription",
+      });
+    });
   });
 
   describe("handleGoalEdit", () => {
@@ -2117,14 +2171,17 @@ describe("goal-commands telegram adapter", () => {
       };
     }
 
-    function makeCallbackCtx(data: string, messageId = 500): Record<string, unknown> {
+    function makeCallbackCtx(
+      data: string,
+      messageId: number | null = 500,
+    ): Record<string, unknown> {
       return {
         callbackQuery: {
           id: "cb-1",
           data,
           message: {
             chat: { id: 42, type: "private" },
-            message_id: messageId,
+            ...(messageId != null ? { message_id: messageId } : {}),
           },
         },
       };
@@ -2181,6 +2238,31 @@ describe("goal-commands telegram adapter", () => {
         messageId: 777,
         threadId: undefined,
       });
+    });
+
+    it("falls back to persisted done-message id when callback message_id is missing", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRun(
+        makeRun({
+          runId,
+          state: "done",
+          telegramDoneMessage: { chatId: 42, messageId: 612 },
+        }),
+      );
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockResolvedValue({ message_id: 778 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gIF:abcdef12", null));
+
+      expect(harness.sendMessage).toHaveBeenCalledWith(
+        42,
+        "Reply with feedback from your manual tests.",
+        expect.objectContaining({
+          reply_parameters: { message_id: 612 },
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
     });
   });
 

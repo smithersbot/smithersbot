@@ -130,6 +130,25 @@ describe("routeTelegramText", () => {
     expect(route.runId).toBe("r1");
   });
 
+  it("routes reply to done message to GOAL_FEEDBACK", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        telegramDoneMessage: { chatId: 1, messageId: 60 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "Test 2 failed with a crash",
+      replyToMessageId: 60,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_FEEDBACK");
+    expect(route.runId).toBe("r1");
+  });
+
   it("does not match edit-prompt message from wrong chatId", () => {
     const runs = [
       makeRun({

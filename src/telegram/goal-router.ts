@@ -180,11 +180,12 @@ function findRunByQuestionMessageId(
  *   2. Non-reply greeting → CHAT
  *   3. Reply to latest plan message → GOAL_EDIT
  *   4. Reply to edit-prompt message (ForceReply from "Request changes" button) → GOAL_EDIT
- *   5. Reply to feedback prompt message (ForceReply from "Incorporate Feedback") → GOAL_FEEDBACK
- *   6. Reply to question message (blocked run) → GOAL_ANSWER
- *   7. Reply to older plan revision → DISAMBIGUATE
- *   8. Help intent → CHAT_HELP
- *   9. Default → CHAT (with replyText hint if blocked runs exist)
+ *   5. Reply to done message (done buttons message) → GOAL_FEEDBACK
+ *   6. Reply to feedback prompt message (ForceReply from "Incorporate Feedback") → GOAL_FEEDBACK
+ *   7. Reply to question message (blocked run) → GOAL_ANSWER
+ *   8. Reply to older plan revision → DISAMBIGUATE
+ *   9. Help intent → CHAT_HELP
+ *   10. Default → CHAT (with replyText hint if blocked runs exist)
  */
 export function routeTelegramText(input: RouteInput): RouteResult {
   const { chatId, threadId, messageText, replyToMessageId } = input;
@@ -221,6 +222,16 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     );
     if (editPromptMatch) {
       return { kind: "GOAL_EDIT", runId: editPromptMatch.runId };
+    }
+
+    // GOAL_FEEDBACK: reply directly to the done message (button host message).
+    const doneMessageMatch = scopedRuns.find(
+      (run) =>
+        run.telegramDoneMessage?.messageId === replyToMessageId &&
+        matchesChatThread(run.telegramDoneMessage, chatId, threadId),
+    );
+    if (doneMessageMatch) {
+      return { kind: "GOAL_FEEDBACK", runId: doneMessageMatch.runId };
     }
 
     // GOAL_FEEDBACK: reply to a feedback-prompt message (sent via the done message button).

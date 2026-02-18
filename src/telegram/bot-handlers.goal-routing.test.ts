@@ -21,6 +21,7 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     updatedAt: now,
     telegramPlanMessage: partial.telegramPlanMessage,
     telegramQuestionMessages: partial.telegramQuestionMessages,
+    telegramDoneMessage: partial.telegramDoneMessage,
     telegramFeedbackPromptMessages: partial.telegramFeedbackPromptMessages,
   };
 }
@@ -267,6 +268,37 @@ describe("handleTelegramGoalRouting", () => {
       threadId: undefined,
       messageText: "Manual test failed on step 2",
       replyToMessageId: 30,
+      runs,
+      chatMode: "chat",
+      sendReply: vi.fn(async () => {}),
+      sendPlanResult: vi.fn(async () => {}),
+      runHandlers: {
+        edit: vi.fn(),
+        answer: vi.fn(),
+        feedback,
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(feedback).toHaveBeenCalledWith("r1", "Manual test failed on step 2");
+  });
+
+  it("routes reply to done message to GOAL_FEEDBACK", async () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        telegramDoneMessage: { chatId: 9, messageId: 35 },
+      }),
+    ];
+
+    const feedback = vi.fn();
+
+    const handled = await handleTelegramGoalRouting({
+      chatId: 9,
+      threadId: undefined,
+      messageText: "Manual test failed on step 2",
+      replyToMessageId: 35,
       runs,
       chatMode: "chat",
       sendReply: vi.fn(async () => {}),
