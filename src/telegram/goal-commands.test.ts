@@ -815,6 +815,55 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.manualTests?.[0]?.description).toBe("Run smoke test");
       expect(run?.telegramDoneMessage?.messageId).toBe(21);
     });
+
+    it("persists manual-test generation errors when suggestions are unavailable", async () => {
+      saveRun(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            summary: "Done plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 23 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 24 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Test goal",
+        manualTestsError: "HTTP 401: invalid x-api-key",
+      });
+
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.manualTests).toBeUndefined();
+      expect(run?.manualTestsError).toBe("HTTP 401: invalid x-api-key");
+      expect(run?.telegramDoneMessage?.messageId).toBe(23);
+    });
   });
 
   describe("sendGoalPlanResult", () => {
@@ -2212,6 +2261,26 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain("Manual test details for abcdef12");
       expect(sentText).toContain("Check login flow");
       expect(sentText).toContain("8/10 Critical");
+    });
+
+    it("routes gTD callback to a useful fallback when manual tests are unavailable", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRun(
+        makeRun({
+          runId,
+          state: "done",
+          manualTestsError: "HTTP 401: invalid x-api-key",
+        }),
+      );
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gTD:abcdef12"));
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Manual test details are unavailable for run abcdef12.");
+      expect(sentText).toContain("Reason: HTTP 401: invalid x-api-key");
+      expect(sentText).toContain("Incorporate Feedback");
     });
 
     it("routes gIF callback to force-reply prompt and persists prompt tracking", async () => {

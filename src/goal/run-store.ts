@@ -283,6 +283,7 @@ export function sessionToSerialized(params: {
   autocheckBackend?: SerializedRun["autocheckBackend"];
   autocheckSessionId?: SerializedRun["autocheckSessionId"];
   manualTests?: SerializedRun["manualTests"];
+  manualTestsError?: SerializedRun["manualTestsError"];
   telegramDoneMessage?: SerializedRun["telegramDoneMessage"];
   telegramFeedbackPromptMessages?: SerializedRun["telegramFeedbackPromptMessages"];
   previousRun?: SerializedRun;
@@ -320,6 +321,7 @@ export function sessionToSerialized(params: {
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
     ...(params.manualTests != null ? { manualTests: params.manualTests } : {}),
+    ...(params.manualTestsError ? { manualTestsError: params.manualTestsError } : {}),
     ...(params.telegramDoneMessage != null
       ? { telegramDoneMessage: params.telegramDoneMessage }
       : {}),
@@ -387,6 +389,9 @@ export function sessionToSerialized(params: {
   }
   if (!serialized.manualTests && previous.manualTests) {
     serialized.manualTests = previous.manualTests;
+  }
+  if (!serialized.manualTestsError && previous.manualTestsError) {
+    serialized.manualTestsError = previous.manualTestsError;
   }
   if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
     serialized.taskCheckpoints = previous.taskCheckpoints;

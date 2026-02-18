@@ -330,9 +330,19 @@ function clampCriticality(value: number): number {
 function formatManualTestDetails(
   runIdPrefix: string,
   tests: ManualTestSuggestion[] | undefined,
+  manualTestsError?: string,
 ): string {
   if (!tests || tests.length === 0) {
-    return `No manual test details found for run ${runIdPrefix}.`;
+    const lines = [`Manual test details are unavailable for run ${runIdPrefix}.`];
+    if (manualTestsError?.trim()) {
+      lines.push(`Reason: ${manualTestsError.trim()}`);
+    } else {
+      lines.push(
+        "Manual test generation did not return suggestions. This can happen when model auth fails or no valid response is produced.",
+      );
+    }
+    lines.push('Use "Incorporate Feedback" to share what failed and what you expected.');
+    return lines.join("\n");
   }
   const lines = [`Manual test details for ${runIdPrefix}:`, ""];
   tests.forEach((test, index) => {
@@ -1161,6 +1171,7 @@ export async function handleGoalFeedback(
     run.lastError = undefined;
     run.state = "executing";
     delete run.manualTests;
+    delete run.manualTestsError;
     run.updatedAt = new Date().toISOString();
     saveRun(run);
 
@@ -1182,8 +1193,10 @@ export async function handleGoalFeedback(
           goal: run.goal,
           steps: mergedPlan.steps,
         });
-      } catch {
+        delete run.manualTestsError;
+      } catch (err) {
         delete run.manualTests;
+        run.manualTestsError = err instanceof Error ? err.message : String(err);
       }
       run.state = "done";
       run.updatedAt = new Date().toISOString();
@@ -1198,6 +1211,7 @@ export async function handleGoalFeedback(
           ...(run.manualTests && run.manualTests.length > 0
             ? { manualTests: run.manualTests }
             : {}),
+          ...(run.manualTestsError ? { manualTestsError: run.manualTestsError } : {}),
         });
         return undefined;
       }
@@ -1654,13 +1668,23 @@ function persistTelegramDoneMessage(params: {
 }
 
 /** Persist manual test suggestions on a run. */
-function persistManualTests(runId: string, manualTests: ManualTestSuggestion[] | undefined): void {
+function persistManualTests(
+  runId: string,
+  manualTests: ManualTestSuggestion[] | undefined,
+  manualTestsError?: string,
+): void {
   const run = loadRun(runId);
   if (!run) return;
   if (manualTests && manualTests.length > 0) {
     run.manualTests = manualTests;
+    delete run.manualTestsError;
   } else {
     delete run.manualTests;
+    if (manualTestsError?.trim()) {
+      run.manualTestsError = manualTestsError.trim();
+    } else {
+      delete run.manualTestsError;
+    }
   }
   run.updatedAt = new Date().toISOString();
   saveRun(run);
@@ -2112,7 +2136,7 @@ export function buildOnStatusChange(params: {
         caption: event.summary,
       });
     } else if (event.type === "all_done") {
-      persistManualTests(runId, event.manualTests);
+      persistManualTests(runId, event.manualTests, event.manualTestsError);
       const sentId = await sendDagPng({
         bot,
         chatId,
@@ -2384,7 +2408,11 @@ export function registerTelegramGoalCommands({
       }
 
       if (action === "gTD") {
-        const detailText = formatManualTestDetails(resolvedId.slice(0, 8), run.manualTests);
+        const detailText = formatManualTestDetails(
+          resolvedId.slice(0, 8),
+          run.manualTests,
+          run.manualTestsError,
+        );
         await sendGoalReply(bot, chatId, detailText, runtime, threadId, messageId);
         return;
       }

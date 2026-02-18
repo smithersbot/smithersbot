@@ -75,7 +75,13 @@ export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
   | { type: "plan_revised"; revision: number; summary: string; steps: PlanStep[] }
-  | { type: "all_done"; steps: PlanStep[]; summary: string; manualTests?: ManualTestSuggestion[] };
+  | {
+      type: "all_done";
+      steps: PlanStep[];
+      summary: string;
+      manualTests?: ManualTestSuggestion[];
+      manualTestsError?: string;
+    };
 
 export type ExecuteGoalParams = {
   session: GoalSession;
@@ -476,15 +482,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   if (allDone) {
     session.state = "done";
     let manualTests: ManualTestSuggestion[] | undefined;
+    let manualTestsError: string | undefined;
     try {
       manualTests = await generateManualTests({
         goal: session.goal,
         steps: orderedSteps,
         client: params.manualTestsClient,
       });
-    } catch {
+    } catch (err) {
       // Fail-open: completion should still emit even when manual test generation fails.
       manualTests = undefined;
+      manualTestsError = err instanceof Error ? err.message : String(err);
     }
     const summary = buildGoalSummary({
       goal: session.goal,
@@ -499,6 +507,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         steps: [...orderedSteps],
         summary,
         ...(manualTests && manualTests.length > 0 ? { manualTests } : {}),
+        ...(manualTestsError ? { manualTestsError } : {}),
       });
     }
     return { status: "done", summary };

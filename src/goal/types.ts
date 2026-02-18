@@ -166,6 +166,8 @@ export type SerializedRun = {
   autocheckSessionId?: string;
   /** Suggested manual verification tests shown after completion. */
   manualTests?: ManualTestSuggestion[];
+  /** Why manual test generation failed when suggestions are unavailable. */
+  manualTestsError?: string;
   /** Telegram plan message tracking for reply-to-plan and reaction detection. */
   telegramPlanMessage?: {
     chatId: number;
