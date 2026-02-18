@@ -28,12 +28,15 @@ import {
   computeCriticalPathScores,
   type CriticalPathScores,
 } from "./plan-order.js";
+import { generateManualTests } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import { loadRun, resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
 import type {
   GitCheckpointConfig,
+  GoalLlmClient,
   GoalOutcome,
   GoalSession,
+  ManualTestSuggestion,
   PlanStep,
   RetryConfig,
   SerializedRun,
@@ -71,7 +74,7 @@ function rewriteStepBackendsForDegradedPlanner(step: PlanStep): void {
 export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
-  | { type: "all_done"; steps: PlanStep[]; summary: string };
+  | { type: "all_done"; steps: PlanStep[]; summary: string; manualTests?: ManualTestSuggestion[] };
 
 export type ExecuteGoalParams = {
   session: GoalSession;
@@ -93,6 +96,8 @@ export type ExecuteGoalParams = {
   serializedRun?: SerializedRun;
   /** How Claude Code workers authenticate: subscription (default) or api_key. */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /** Optional LLM client for generating manual test suggestions on completion. */
+  manualTestsClient?: GoalLlmClient;
 };
 
 /** Append a summary line to the top-level WORKING.md for this goal run. */
@@ -469,14 +474,31 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const allDone = orderedSteps.every((s) => s.status === "done");
   if (allDone) {
     session.state = "done";
+    let manualTests: ManualTestSuggestion[] | undefined;
+    try {
+      manualTests = await generateManualTests({
+        goal: session.goal,
+        steps: orderedSteps,
+        client: params.manualTestsClient,
+      });
+    } catch {
+      // Fail-open: completion should still emit even when manual test generation fails.
+      manualTests = undefined;
+    }
     const summary = buildGoalSummary({
       goal: session.goal,
       runId,
       steps: orderedSteps,
       maxTurnsPerTask,
+      manualTests,
     });
     if (onStatusChange) {
-      await onStatusChange({ type: "all_done", steps: [...orderedSteps], summary });
+      await onStatusChange({
+        type: "all_done",
+        steps: [...orderedSteps],
+        summary,
+        ...(manualTests && manualTests.length > 0 ? { manualTests } : {}),
+      });
     }
     return { status: "done", summary };
   }
@@ -654,6 +676,7 @@ function buildGoalSummary(params: {
   runId: string;
   steps: PlanStep[];
   maxTurnsPerTask?: number;
+  manualTests?: ManualTestSuggestion[];
 }): string {
   return formatCompactGoalCompletionSummary({
     title: params.goal,
@@ -667,6 +690,7 @@ function buildGoalSummary(params: {
     attemptsTotal: params.maxTurnsPerTask,
     resolveStepAttemptsUsed: (stepId) =>
       loadAttemptBundles(resolveWorkerDir(params.runId, stepId)).length,
+    manualTests: params.manualTests,
     channel: "telegram",
   }).text;
 }

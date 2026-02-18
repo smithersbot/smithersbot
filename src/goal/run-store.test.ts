@@ -507,6 +507,13 @@ describe("session serialization", () => {
       agentSessionFile: "/tmp/session.jsonl",
       agentSessionId: "agent-1",
       agentMaxTurnsPerTask: 7,
+      manualTests: [
+        {
+          description: "Run smoke test",
+          criticality: 8,
+          detail: "Verify login and settings flows still work.",
+        },
+      ],
     };
 
     const serialized = sessionToSerialized({
@@ -527,5 +534,6 @@ describe("session serialization", () => {
     expect(serialized.agentSessionFile).toBe("/tmp/session.jsonl");
     expect(serialized.agentSessionId).toBe("agent-1");
     expect(serialized.agentMaxTurnsPerTask).toBe(7);
+    expect(serialized.manualTests?.[0]?.description).toBe("Run smoke test");
   });
 });

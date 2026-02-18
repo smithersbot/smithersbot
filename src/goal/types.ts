@@ -81,6 +81,12 @@ export type StepResult = {
   durationMs: number;
 };
 
+export type ManualTestSuggestion = {
+  description: string;
+  criticality: number;
+  detail: string;
+};
+
 export type GoalLlmResponse = {
   text: string;
   usage?: { inputTokens: number; outputTokens: number };
@@ -158,6 +164,8 @@ export type SerializedRun = {
   autocheckBackend?: "codex" | "claude_code";
   /** Stable CLI session ID for autocheck reviewer resume. */
   autocheckSessionId?: string;
+  /** Suggested manual verification tests shown after completion. */
+  manualTests?: ManualTestSuggestion[];
   /** Telegram plan message tracking for reply-to-plan and reaction detection. */
   telegramPlanMessage?: {
     chatId: number;

@@ -1,4 +1,4 @@
-import type { GoalState } from "./types.js";
+import type { GoalState, ManualTestSuggestion } from "./types.js";
 
 export type GoalOutputMode = "concise" | "verbose" | "full";
 export type GoalOutputChannel = "cli" | "telegram";
@@ -35,7 +35,10 @@ export type CompactGoalStep = {
   text: string;
   attempt?: AttemptBadgeInput;
   state?: string;
+  suffix?: string;
 };
+
+export type CompactGoalStepLineStyle = "bullet" | "numbered";
 
 export type CompactGoalRenderInput = {
   state: string;
@@ -52,6 +55,7 @@ export type CompactGoalRenderInput = {
   textFormat?: GoalOutputTextFormat;
   stateIndicatorStyle?: GoalStateIndicatorStyle;
   stepsTitle?: string;
+  stepLineStyle?: CompactGoalStepLineStyle;
   maxSteps?: number;
   maxLines?: number;
   maxStepTextChars?: number;
@@ -89,6 +93,7 @@ export type CompactGoalCompletionStep = {
 export type CompactGoalCompletionInput = {
   title: string;
   steps: CompactGoalCompletionStep[];
+  manualTests?: ManualTestSuggestion[] | null;
   attemptsTotal?: number | null;
   resolveStepAttemptsUsed?: (stepId: string) => number | undefined;
   mode?: GoalOutputMode;
@@ -228,12 +233,30 @@ export function resolveCompactGoalRenderOptions(
   };
 }
 
-function formatStepLine(step: CompactGoalStep, maxStepTextChars: number): string {
-  const id = truncateSingleLine(step.id, 20) || "?";
+function formatStepLine(
+  step: CompactGoalStep,
+  index: number,
+  maxStepTextChars: number,
+  style: CompactGoalStepLineStyle,
+): string {
   const statePrefix = step.state ? `${truncateSingleLine(step.state, 18)} ` : "";
-  const stepText = truncateSingleLine(step.text, maxStepTextChars);
   const badge = formatAttemptBadge(step.attempt);
-  return `- ${id}. ${statePrefix}${stepText}${badge ? ` ${badge}` : ""}`;
+  const normalizedSuffix = step.suffix?.trim();
+  const stepText = normalizedSuffix
+    ? (() => {
+        const suffixText = ` ${normalizedSuffix}`;
+        if (suffixText.length >= maxStepTextChars) {
+          return truncateSingleLine(`${step.text}${suffixText}`, maxStepTextChars);
+        }
+        return `${truncateSingleLine(step.text, maxStepTextChars - suffixText.length)}${suffixText}`;
+      })()
+    : truncateSingleLine(step.text, maxStepTextChars);
+  const decoratedText = `${stepText}${badge ? ` ${badge}` : ""}`;
+  if (style === "numbered") {
+    return `${index + 1}. ${statePrefix}${decoratedText}`;
+  }
+  const id = truncateSingleLine(step.id, 20) || "?";
+  return `- ${id}. ${statePrefix}${decoratedText}`;
 }
 
 function fitStepLinesToBudget(params: {
@@ -303,8 +326,11 @@ export function formatCompactGoalOutput(input: CompactGoalRenderInput): CompactG
     const availableLines = Number.isFinite(options.maxLines)
       ? Math.max(0, options.maxLines - baseLineCount)
       : Number.POSITIVE_INFINITY;
+    const stepLineStyle = input.stepLineStyle ?? "bullet";
 
-    const stepLines = steps.map((step) => formatStepLine(step, options.maxStepTextChars));
+    const stepLines = steps.map((step, index) =>
+      formatStepLine(step, index, options.maxStepTextChars, stepLineStyle),
+    );
     const fitted = fitStepLinesToBudget({
       stepLines,
       originalStepCount: steps.length,
@@ -378,6 +404,20 @@ export function formatCompactGoalCompletionSummary(
   input: CompactGoalCompletionInput,
 ): CompactGoalRenderResult {
   const doneSteps = input.steps.filter((step) => (step.status ?? "done") === "done");
+  const manualTests = (input.manualTests ?? [])
+    .map((test) => {
+      const description = test.description.trim();
+      if (!description) return undefined;
+      const criticality = Number.isFinite(test.criticality)
+        ? Math.min(10, Math.max(1, Math.round(test.criticality)))
+        : 5;
+      return {
+        description,
+        criticality,
+      };
+    })
+    .filter((test): test is { description: string; criticality: number } => Boolean(test))
+    .slice(0, 5);
   const retrySummary = buildGoalRetrySummary({
     steps: input.steps.map((step) => ({ id: step.id, turnsUsed: step.turnsUsed })),
     attemptsTotal: input.attemptsTotal,
@@ -392,11 +432,19 @@ export function formatCompactGoalCompletionSummary(
       total: input.steps.length,
     },
     retrySummary: retrySummary.text,
-    steps: doneSteps.map((step) => ({
-      id: step.id,
-      text: step.summary?.trim() ? step.summary : step.description,
-      attempt: retrySummary.attemptsByStepId.get(step.id),
-    })),
+    steps:
+      manualTests.length > 0
+        ? manualTests.map((test) => ({
+            id: "",
+            text: test.description,
+            suffix: `[${test.criticality}/10 Critical]`,
+          }))
+        : doneSteps.map((step) => ({
+            id: step.id,
+            text: step.summary?.trim() ? step.summary : step.description,
+            attempt: retrySummary.attemptsByStepId.get(step.id),
+          })),
+    ...(manualTests.length > 0 ? { stepsTitle: "Manual Tests", stepLineStyle: "numbered" } : {}),
     mode: input.mode,
     channel: input.channel ?? "telegram",
     textFormat: input.textFormat ?? "markdown",

@@ -282,6 +282,7 @@ export function sessionToSerialized(params: {
   autocheckMaxRounds?: SerializedRun["autocheckMaxRounds"];
   autocheckBackend?: SerializedRun["autocheckBackend"];
   autocheckSessionId?: SerializedRun["autocheckSessionId"];
+  manualTests?: SerializedRun["manualTests"];
   previousRun?: SerializedRun;
 }): SerializedRun {
   const { session, runId, workingDir, model, dryRun, createdAt } = params;
@@ -316,6 +317,7 @@ export function sessionToSerialized(params: {
     ...(params.autocheckMaxRounds != null ? { autocheckMaxRounds: params.autocheckMaxRounds } : {}),
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
+    ...(params.manualTests != null ? { manualTests: params.manualTests } : {}),
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
   };
   const previous = params.previousRun;
@@ -365,6 +367,9 @@ export function sessionToSerialized(params: {
   }
   if (!serialized.autocheckSessionId && previous.autocheckSessionId) {
     serialized.autocheckSessionId = previous.autocheckSessionId;
+  }
+  if (!serialized.manualTests && previous.manualTests) {
+    serialized.manualTests = previous.manualTests;
   }
   if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
     serialized.taskCheckpoints = previous.taskCheckpoints;

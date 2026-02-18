@@ -19,6 +19,10 @@ function getStepLines(lines: string[]): string[] {
   return lines.filter((line) => line.startsWith("- "));
 }
 
+function getNumberedLines(lines: string[]): string[] {
+  return lines.filter((line) => /^\d+\.\s/.test(line));
+}
+
 describe("formatAttemptBadge", () => {
   it("hides zero-attempt and 1/1 badges", () => {
     expect(formatAttemptBadge({ attemptsUsed: 0, attemptsTotal: 3 })).toBe("");
@@ -257,6 +261,40 @@ describe("formatCompactGoalCompletionSummary", () => {
     expect(result.lines).toContain("+ 1 more steps not shown");
     expect(result.lines.find((line) => line.includes("2."))).toContain("[2/4]");
     expect(getStepLines(result.lines)).toHaveLength(5);
+  });
+
+  it("renders manual tests as numbered lines with criticality labels", () => {
+    const result = formatCompactGoalCompletionSummary({
+      title: "Ship the release rollout and confirm all environments are healthy",
+      steps: [
+        {
+          id: "1",
+          description: "Prepare schema",
+          summary: "Created migration files",
+          status: "done",
+        },
+      ],
+      manualTests: [
+        {
+          description: "Run the release flow end-to-end from staging to production",
+          criticality: 9,
+          detail: "Validate staging + production deployment paths and confirm health checks.",
+        },
+        {
+          description: "Verify rollback restores the prior version cleanly",
+          criticality: 8,
+          detail: "Trigger rollback and confirm traffic and metrics recover.",
+        },
+      ],
+    });
+
+    expect(findLineIndex(result.lines, "**Manual Tests**")).toBeGreaterThan(-1);
+    expect(findLineIndex(result.lines, "**Top Steps**")).toBe(-1);
+    expect(getStepLines(result.lines)).toHaveLength(0);
+    const numbered = getNumberedLines(result.lines);
+    expect(numbered).toHaveLength(2);
+    expect(numbered[0]).toContain("[9/10 Critical]");
+    expect(numbered[1]).toContain("[8/10 Critical]");
   });
 
   it("keeps completion summaries within Telegram's default line budget", () => {
