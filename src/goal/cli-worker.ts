@@ -649,9 +649,9 @@ export type StreamError = {
 };
 
 /**
- * Scan Claude Code JSONL stdout/stderr for structured error info.
- * Looks for `{"type":"result", "is_error":true}` and preceding
- * `{"type":"assistant", ... "error": {...}}` messages.
+ * Scan CLI JSONL stdout/stderr for structured error info.
+ * Handles Claude Code `result` errors plus Codex `error` and
+ * `turn.failed` events.
  */
 export function parseClaudeCodeStreamError(stdout: string, stderr: string): StreamError | null {
   return parseStreamLines(stdout) ?? parseStreamLines(stderr);
@@ -679,6 +679,21 @@ function parseStreamLines(text: string): StreamError | null {
       const assistantError = findPrecedingAssistantError(lines, i);
 
       return classifyStreamError(resultText, assistantError);
+    }
+
+    if (parsed.type === "error" && typeof parsed.message === "string") {
+      return classifyStreamError(parsed.message, null);
+    }
+
+    if (
+      parsed.type === "turn.failed" &&
+      typeof parsed.error === "object" &&
+      parsed.error !== null
+    ) {
+      const errorObject = parsed.error as Record<string, unknown>;
+      if (typeof errorObject.message === "string") {
+        return classifyStreamError(errorObject.message, null);
+      }
     }
   }
   return null;

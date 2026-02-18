@@ -278,6 +278,41 @@ describe("cli-worker", () => {
       expect(result!.errorType).toBe("rate_limit");
     });
 
+    it("detects rate limit from codex error event", () => {
+      const stdout =
+        '{"type":"error","message":"You\'ve hit your usage limit. To get more access now, send a request to your admin or try again at 4:59 PM."}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("rate_limit");
+    });
+
+    it("detects rate limit from codex turn.failed event", () => {
+      const stdout = '{"type":"turn.failed","error":{"message":"429 too many requests"}}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("rate_limit");
+    });
+
+    it("detects auth error from codex error event", () => {
+      const stdout = '{"type":"error","message":"unauthorized"}\n';
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("auth");
+    });
+
+    it("extracts error from full codex stream", () => {
+      const stdout = [
+        '{"type":"thread.started","thread_id":"thread_123"}',
+        '{"type":"turn.started","turn_id":"turn_456"}',
+        '{"type":"error","message":"You\'ve hit your usage limit. To get more access now, send a request to your admin or try again at 4:59 PM."}',
+        '{"type":"turn.failed","error":{"message":"429 too many requests"}}',
+      ].join("\n");
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("rate_limit");
+      expect(result!.message).toBe("429 too many requests");
+    });
+
     it("detects network error from result text", () => {
       const stdout = '{"type":"result","is_error":true,"result":"fetch failed ECONNREFUSED"}\n';
       const result = parseClaudeCodeStreamError(stdout, "");
