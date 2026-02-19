@@ -160,43 +160,48 @@ export async function generateManualTests(
   const doneSteps = params.steps.filter((step) => (step.status ?? "done") === "done");
   if (doneSteps.length === 0) return [];
 
-  const client = resolveClient(params.client);
-  const response = await client.complete({
-    systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
-    userMessage: buildManualTestsUserPrompt(params.goal, doneSteps),
-    maxTokens: 900,
-  });
+  try {
+    const client = resolveClient(params.client);
+    const response = await client.complete({
+      systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
+      userMessage: buildManualTestsUserPrompt(params.goal, doneSteps),
+      maxTokens: 900,
+    });
 
-  const parsed = extractJsonObject(response.text);
-  const rawTests = Array.isArray(parsed.tests)
-    ? parsed.tests
-    : Array.isArray(parsed.manualTests)
-      ? parsed.manualTests
-      : undefined;
-  if (!rawTests) {
-    throw new Error("Manual test response must contain a tests array.");
+    const parsed = extractJsonObject(response.text);
+    const rawTests = Array.isArray(parsed.tests)
+      ? parsed.tests
+      : Array.isArray(parsed.manualTests)
+        ? parsed.manualTests
+        : undefined;
+    if (!rawTests) {
+      throw new Error("Manual test response must contain a tests array.");
+    }
+
+    const suggestions: ManualTestSuggestion[] = [];
+    const seen = new Set<string>();
+    for (const entry of rawTests) {
+      const normalized = normalizeManualTest(entry);
+      if (!normalized) continue;
+      const key = normalized.description.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      suggestions.push(normalized);
+      if (suggestions.length >= maxTests) break;
+    }
+
+    if (suggestions.length < minTests) {
+      const fallback = buildFallbackTests(doneSteps, minTests - suggestions.length, seen);
+      suggestions.push(...fallback);
+    }
+
+    if (suggestions.length === 0) {
+      throw new Error("Manual test generation returned no usable suggestions.");
+    }
+
+    return suggestions.slice(0, maxTests);
+  } catch {
+    const fallback = buildFallbackTests(doneSteps, minTests, new Set<string>());
+    return fallback.slice(0, maxTests);
   }
-
-  const suggestions: ManualTestSuggestion[] = [];
-  const seen = new Set<string>();
-  for (const entry of rawTests) {
-    const normalized = normalizeManualTest(entry);
-    if (!normalized) continue;
-    const key = normalized.description.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    suggestions.push(normalized);
-    if (suggestions.length >= maxTests) break;
-  }
-
-  if (suggestions.length < minTests) {
-    const fallback = buildFallbackTests(doneSteps, minTests - suggestions.length, seen);
-    suggestions.push(...fallback);
-  }
-
-  if (suggestions.length === 0) {
-    throw new Error("Manual test generation returned no usable suggestions.");
-  }
-
-  return suggestions.slice(0, maxTests);
 }

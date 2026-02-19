@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GoalSession, Plan, PlanStep, SerializedRun } from "./types.js";
+import type { GoalLlmClient, GoalSession, Plan, PlanStep, SerializedRun } from "./types.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
@@ -124,6 +124,58 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       expect(outcome.summary).toContain("**Progress** 1/1");
       expect(outcome.summary).toContain("**Retries** 0 retries");
     }
+  });
+
+  it("emits fallback manual tests and omits manualTestsError when manual-test auth fails", async () => {
+    const step = makeStep({ backend: "codex", description: "Implement login validation" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const manualTestsClient: GoalLlmClient = {
+      complete: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+          ),
+        ),
+    };
+    const statusEvents: unknown[] = [];
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-cli-fallback-manual-tests",
+      workingDir: "/tmp/moltbot-goal-test",
+      manualTestsClient,
+      onStatusChange: (event) => {
+        statusEvents.push(event);
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    const allDoneEvent = statusEvents.find(
+      (event): event is { type: "all_done"; manualTests?: unknown[]; manualTestsError?: string } =>
+        typeof event === "object" &&
+        event !== null &&
+        (event as { type?: string }).type === "all_done",
+    );
+    expect(allDoneEvent).toBeDefined();
+    expect(allDoneEvent?.manualTests).toEqual([
+      {
+        description: "Validate: Implement login validation",
+        criticality: 7,
+        detail:
+          'Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
+      },
+    ]);
+    expect(allDoneEvent?.manualTestsError).toBeUndefined();
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {

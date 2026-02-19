@@ -2474,6 +2474,34 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain("8/10 Critical");
     });
 
+    it("routes gTD callback to fallback manual test details when available", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRun(
+        makeRun({
+          runId,
+          state: "done",
+          manualTests: [
+            {
+              description: "Validate: Implement login validation",
+              criticality: 7,
+              detail:
+                'Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
+            },
+          ],
+        }),
+      );
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gTD:abcdef12"));
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Manual test details for abcdef12");
+      expect(sentText).toContain("Validate: Implement login validation");
+      expect(sentText).not.toContain("unavailable");
+      expect(sentText).not.toContain("Reason:");
+    });
+
     it("routes gTD callback to a useful fallback when manual tests are unavailable", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRun(

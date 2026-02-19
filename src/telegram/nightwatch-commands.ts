@@ -112,7 +112,7 @@ function patchNightwatchConfig(
 ): NightwatchConfig {
   nextConfig.cron ??= {};
   const nextNightwatch = {
-    ...(nextConfig.cron.nightwatch ?? {}),
+    ...nextConfig.cron.nightwatch,
     ...patch,
   };
   nextConfig.cron.nightwatch = nextNightwatch;
