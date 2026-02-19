@@ -38,6 +38,7 @@ import { generateManualTests } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
+import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { acquireGoalOpLock, forceReleaseGoalOpLock, isGoalOpLocked } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
@@ -229,12 +230,16 @@ async function runGoalPlanAutocheck(params: {
     commitRevision: async ({ editInstructions, previousPlan, revisedPlan }) => {
       const latestRun = loadRun(params.runId);
       if (!latestRun) return;
+      const workingDirBeforeRevision = latestRun.workingDir;
       commitPlanRevision({
         run: latestRun,
         revisedPlan,
         editInstructions,
         previousPlan,
       });
+      if (latestRun.workingDir !== workingDirBeforeRevision) {
+        ensureWorkingDir(latestRun.workingDir);
+      }
       saveRun(latestRun);
     },
   });
@@ -473,17 +478,16 @@ function resolveWorkingDirInstructionPath(
   currentWorkingDir: string,
 ): string | undefined {
   if (!value) return undefined;
+  if (value.startsWith("~") || path.isAbsolute(value)) {
+    return resolveUserPath(value);
+  }
 
   const candidates = new Set<string>();
-  if (value.startsWith("~") || path.isAbsolute(value)) {
-    candidates.add(resolveUserPath(value));
-  } else {
-    candidates.add(path.resolve(currentWorkingDir, value));
-    candidates.add(path.resolve(process.cwd(), value));
-    candidates.add(path.resolve(path.dirname(currentWorkingDir), value));
-    candidates.add(path.resolve(path.dirname(process.cwd()), value));
-    candidates.add(path.resolve(os.homedir(), value));
-  }
+  candidates.add(path.resolve(currentWorkingDir, value));
+  candidates.add(path.resolve(process.cwd(), value));
+  candidates.add(path.resolve(path.dirname(currentWorkingDir), value));
+  candidates.add(path.resolve(path.dirname(process.cwd()), value));
+  candidates.add(path.resolve(os.homedir(), value));
 
   for (const candidate of candidates) {
     try {
@@ -1170,6 +1174,9 @@ export async function handleGoalFeedback(
       editInstructions: `Incorporate feedback: ${trimmedFeedback}`,
       previousPlan: currentPlan,
     });
+    if (run.workingDir !== currentPlan.workingDir) {
+      ensureWorkingDir(run.workingDir);
+    }
     run.blocked = null;
     run.lastError = undefined;
     run.state = "executing";
@@ -1332,18 +1339,19 @@ export async function handleGoalEdit(
   if (!run.plan) {
     return { text: "Run has no plan to edit." };
   }
+  const originalWorkingDir = run.workingDir;
   const trimmedInstructions = instructions.trim();
   const workingDirHint = parseWorkingDirInstruction(trimmedInstructions, run.workingDir);
   if (workingDirHint && !workingDirHint.resolvedPath) {
     return {
       text:
         `Could not resolve working directory: "${workingDirHint.requestedPath}". ` +
-        "Please provide an existing directory path.",
+        "Please provide an absolute path, ~/path, or an existing relative directory.",
     };
   }
   const nextWorkingDir = workingDirHint?.resolvedPath;
-  const workingDirChanged = Boolean(nextWorkingDir && nextWorkingDir !== run.workingDir);
   if (nextWorkingDir && nextWorkingDir !== run.workingDir) {
+    ensureWorkingDir(nextWorkingDir);
     run.workingDir = nextWorkingDir;
     run.updatedAt = new Date().toISOString();
     saveRun(run);
@@ -1387,7 +1395,7 @@ export async function handleGoalEdit(
       run.updatedAt = new Date().toISOString();
       saveRun(run);
       const lines: string[] = [];
-      if (workingDirChanged) {
+      if (run.workingDir !== originalWorkingDir) {
         lines.push(`Working dir updated: ${shortenHomePath(run.workingDir)}`);
       }
       if (plannerFallbackNotice) {
@@ -1397,12 +1405,16 @@ export async function handleGoalEdit(
       return { text: lines.join("\n"), blocked: true };
     }
 
+    const workingDirBeforeRevision = run.workingDir;
     const newRevision = commitPlanRevision({
       run,
       revisedPlan: result,
       editInstructions: trimmedInstructions,
       previousPlan: run.plan,
     });
+    if (run.workingDir !== workingDirBeforeRevision) {
+      ensureWorkingDir(run.workingDir);
+    }
     run.state = "planning";
     run.updatedAt = new Date().toISOString();
     saveRun(run);
@@ -1441,7 +1453,7 @@ export async function handleGoalEdit(
     });
     const parts: string[] = [];
     parts.push(`**Revision ${finalRevision}**\n`);
-    if (workingDirChanged) {
+    if (run.workingDir !== originalWorkingDir) {
       parts.push(`Working dir: \`${shortenHomePath(run.workingDir)}\`\n`);
     }
     if (plannerFallbackNotice) {

@@ -59,6 +59,15 @@ vi.mock("../goal/plan-autocheck.js", () => ({
   runPlanAutocheck: (...args: unknown[]) => mockRunPlanAutocheck(...args),
 }));
 
+const mockEnsureWorkingDir = vi.fn();
+vi.mock("../goal/git-checkpoint.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/git-checkpoint.js")>();
+  return {
+    ...actual,
+    ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
+  };
+});
+
 class MockPlanParseError extends Error {
   readonly rawResponse: string;
   constructor(message: string, rawResponse: string) {
@@ -1514,6 +1523,72 @@ describe("goal-commands telegram adapter", () => {
         claudeCodeAuth: "subscription",
       });
     });
+
+    it("syncs workingDir from feedback revisions and ensures new directories", async () => {
+      const originalWorkingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-feedback-wd-old-"));
+      const revisedWorkingDir = path.join(
+        os.tmpdir(),
+        `goal-feedback-wd-new-${Date.now().toString(36)}`,
+      );
+      fs.rmSync(revisedWorkingDir, { recursive: true, force: true });
+      saveRun(
+        makeRun({
+          state: "done",
+          workingDir: originalWorkingDir,
+          plan: {
+            goal: "Test goal",
+            workingDir: originalWorkingDir,
+            summary: "Completed plan",
+            steps: [
+              {
+                id: "1",
+                description: "Initial implementation",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+          stepResults: {
+            "1": { stepId: "1", success: true, output: "done", durationMs: 1000 },
+          },
+        }),
+      );
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          workingDir: revisedWorkingDir,
+          summary: "Feedback revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Initial implementation",
+              dependsOn: [],
+              status: "pending",
+            },
+            {
+              id: "2",
+              description: "Fix reported issue",
+              dependsOn: ["1"],
+              status: "pending",
+            },
+          ],
+        },
+      });
+      mockGoalResumeCommand.mockResolvedValue({
+        status: "done",
+        summary: "Done after feedback",
+      });
+
+      const { handleGoalFeedback } = await import("./goal-commands.js");
+      const result = await handleGoalFeedback("test-run", "Address manual test feedback");
+
+      expect(result).toContain("Incorporating feedback:");
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(revisedWorkingDir);
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(revisedWorkingDir);
+      expect(updated?.plan?.workingDir).toBe(revisedWorkingDir);
+    });
   });
 
   describe("handleGoalEdit", () => {
@@ -1607,6 +1682,7 @@ describe("goal-commands telegram adapter", () => {
           cwd: originalWorkingDir,
         }),
       );
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(revisedWorkingDir);
       const updatedRun = loadRun("test-run-id-1234", testGoalsDir);
       expect(updatedRun?.workingDir).toBe(revisedWorkingDir);
       expect(updatedRun?.plan?.workingDir).toBe(revisedWorkingDir);
@@ -1737,9 +1813,54 @@ describe("goal-commands telegram adapter", () => {
           cwd: newDir,
         }),
       );
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(newDir);
 
       const updated = loadRun("test-run-id-1234", testGoalsDir);
       expect(updated?.workingDir).toBe(newDir);
+    });
+
+    it("accepts ~/ working dir instructions even when the directory does not exist yet", async () => {
+      const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-home-old-"));
+      const requestedPath = `~/goal-edit-workingdir-${Date.now().toString(36)}`;
+      const resolvedPath = path.join(os.homedir(), requestedPath.slice(2));
+      fs.rmSync(resolvedPath, { recursive: true, force: true });
+      saveRun(makeRun({ workingDir: originalDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          workingDir: resolvedPath,
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit(
+        "test-run",
+        `working directory should be ${requestedPath}`,
+      );
+
+      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain(requestedPath);
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: resolvedPath,
+        }),
+      );
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(resolvedPath);
+
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(resolvedPath);
     });
 
     it("updates run working dir from conversational correction phrasing", async () => {
@@ -1828,12 +1949,16 @@ describe("goal-commands telegram adapter", () => {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     });
 
-    it("returns an error when working dir instruction cannot be resolved", async () => {
+    it("returns an error when relative working dir instruction cannot be resolved", async () => {
       const existingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-existing-"));
       saveRun(makeRun({ workingDir: existingDir }));
+      const missingRelativePath = `never/exists/${Date.now().toString(36)}`;
 
       const { handleGoalEdit } = await import("./goal-commands.js");
-      const result = await handleGoalEdit("test-run", "working directory should be /missing/path");
+      const result = await handleGoalEdit(
+        "test-run",
+        `working directory should be ${missingRelativePath}`,
+      );
 
       expect(result.text).toContain("Could not resolve working directory");
       expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
