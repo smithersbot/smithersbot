@@ -892,6 +892,57 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.telegramDoneMessage?.messageId).toBe(21);
     });
 
+    it("persists an empty manual test array when all_done includes manualTests: []", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          manualTestsError: "old auth error",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Done plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 31 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 32 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Test goal",
+        manualTests: [],
+      });
+
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.manualTests).toEqual([]);
+      expect(run?.manualTestsError).toBeUndefined();
+      expect(run?.telegramDoneMessage?.messageId).toBe(31);
+    });
+
     it("persists manual-test generation errors when suggestions are unavailable", async () => {
       saveRunFixture(
         makeRun({
@@ -2803,6 +2854,7 @@ describe("goal-commands telegram adapter", () => {
             {
               description: "Check login flow",
               criticality: 8,
+              reason: "Requires real user interaction in Telegram",
               detail: "Run login with valid + invalid credentials.",
             },
           ],
@@ -2816,9 +2868,9 @@ describe("goal-commands telegram adapter", () => {
       expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
-      expect(sentText).toContain("<b>Test 1 [8/10 Critical]</b>");
-      expect(sentText).toContain("• Description: Check login flow");
-      expect(sentText).toContain("• Run login with valid + invalid credentials.");
+      expect(sentText).toContain("<b>Test 1: Check login flow [8/10 Critical]</b>");
+      expect(sentText).toContain("<i>Reason: Requires real user interaction in Telegram</i>");
+      expect(sentText).toContain("Run login with valid + invalid credentials.");
     });
 
     it("routes gTD callback to fallback manual test details when available", async () => {
@@ -2829,10 +2881,10 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           manualTests: [
             {
-              description: "Validate: Implement login validation",
-              criticality: 7,
+              description: "Test signup flow",
+              criticality: 6,
               detail:
-                'Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
+                "Step 1. Open signup\nStep 2. Submit invalid email\nStep 3. Confirm inline error",
             },
           ],
         }),
@@ -2844,13 +2896,12 @@ describe("goal-commands telegram adapter", () => {
 
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
-      expect(sentText).toContain("<b>Test 1 [7/10 Critical]</b>");
-      expect(sentText).toContain("• Description: Validate: Implement login validation");
-      expect(sentText).toContain(
-        '• Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
-      );
+      expect(sentText).toContain("<b>Test 1: Test signup flow [6/10 Critical]</b>");
+      expect(sentText).toContain("Step 1. Open signup");
+      expect(sentText).toContain("Step 2. Submit invalid email");
+      expect(sentText).toContain("Step 3. Confirm inline error");
       expect(sentText).not.toContain("unavailable");
-      expect(sentText).not.toContain("Reason:");
+      expect(sentText).not.toContain("<i>Reason:");
     });
 
     it("routes gTD callback to a useful fallback when manual tests are unavailable", async () => {
@@ -2871,6 +2922,27 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain("Manual test details are unavailable for run abcdef12.");
       expect(sentText).toContain("Reason: HTTP 401: invalid x-api-key");
       expect(sentText).toContain("Incorporate Feedback");
+    });
+
+    it("routes gTD callback to no-tests-needed details when manualTests is an empty array", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "done",
+          manualTests: [],
+        }),
+      );
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gTD:abcdef12"));
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain(
+        "No manual tests needed — all functionality was verified automatically.",
+      );
+      expect(sentText).toContain('Use "Incorporate Feedback" if you notice any issues.');
     });
 
     it("routes gIF callback to force-reply prompt and persists prompt tracking", async () => {

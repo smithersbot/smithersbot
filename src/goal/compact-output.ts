@@ -56,6 +56,7 @@ export type CompactGoalRenderInput = {
   stateIndicatorStyle?: GoalStateIndicatorStyle;
   stepsTitle?: string;
   stepLineStyle?: CompactGoalStepLineStyle;
+  numberedStepLabel?: string;
   maxSteps?: number;
   maxLines?: number;
   maxStepTextChars?: number;
@@ -238,6 +239,7 @@ function formatStepLine(
   index: number,
   maxStepTextChars: number,
   style: CompactGoalStepLineStyle,
+  numberedStepLabel?: string,
 ): string {
   const statePrefix = step.state ? `${truncateSingleLine(step.state, 18)} ` : "";
   const badge = formatAttemptBadge(step.attempt);
@@ -253,6 +255,10 @@ function formatStepLine(
     : truncateSingleLine(step.text, maxStepTextChars);
   const decoratedText = `${stepText}${badge ? ` ${badge}` : ""}`;
   if (style === "numbered") {
+    const normalizedLabel = numberedStepLabel?.trim();
+    if (normalizedLabel) {
+      return `${normalizedLabel} ${index + 1}: ${statePrefix}${decoratedText}`;
+    }
     return `${index + 1}. ${statePrefix}${decoratedText}`;
   }
   const id = truncateSingleLine(step.id, 20) || "?";
@@ -329,7 +335,7 @@ export function formatCompactGoalOutput(input: CompactGoalRenderInput): CompactG
     const stepLineStyle = input.stepLineStyle ?? "bullet";
 
     const stepLines = steps.map((step, index) =>
-      formatStepLine(step, index, options.maxStepTextChars, stepLineStyle),
+      formatStepLine(step, index, options.maxStepTextChars, stepLineStyle, input.numberedStepLabel),
     );
     const fitted = fitStepLinesToBudget({
       stepLines,
@@ -404,20 +410,25 @@ export function formatCompactGoalCompletionSummary(
   input: CompactGoalCompletionInput,
 ): CompactGoalRenderResult {
   const doneSteps = input.steps.filter((step) => (step.status ?? "done") === "done");
-  const manualTests = (input.manualTests ?? [])
-    .map((test) => {
-      const description = test.description.trim();
-      if (!description) return undefined;
-      const criticality = Number.isFinite(test.criticality)
-        ? Math.min(10, Math.max(1, Math.round(test.criticality)))
-        : 5;
-      return {
-        description,
-        criticality,
-      };
-    })
-    .filter((test): test is { description: string; criticality: number } => Boolean(test))
-    .slice(0, 5);
+  const manualTestsInput = input.manualTests;
+  const hasManualTests = manualTestsInput !== undefined && manualTestsInput !== null;
+  let manualTests: Array<{ description: string; criticality: number }> = [];
+  if (hasManualTests) {
+    manualTests = manualTestsInput
+      .map((test) => {
+        const description = test.description.trim();
+        if (!description) return undefined;
+        const criticality = Number.isFinite(test.criticality)
+          ? Math.min(10, Math.max(1, Math.round(test.criticality)))
+          : 5;
+        return {
+          description,
+          criticality,
+        };
+      })
+      .filter((test): test is { description: string; criticality: number } => Boolean(test))
+      .slice(0, 5);
+  }
   const retrySummary = buildGoalRetrySummary({
     steps: input.steps.map((step) => ({ id: step.id, turnsUsed: step.turnsUsed })),
     attemptsTotal: input.attemptsTotal,
@@ -432,19 +443,22 @@ export function formatCompactGoalCompletionSummary(
       total: input.steps.length,
     },
     retrySummary: retrySummary.text,
-    steps:
-      manualTests.length > 0
+    steps: hasManualTests
+      ? manualTests.length > 0
         ? manualTests.map((test) => ({
             id: "",
             text: test.description,
             suffix: `[${test.criticality}/10 Critical]`,
           }))
-        : doneSteps.map((step) => ({
-            id: step.id,
-            text: step.summary?.trim() ? step.summary : step.description,
-            attempt: retrySummary.attemptsByStepId.get(step.id),
-          })),
-    ...(manualTests.length > 0 ? { stepsTitle: "Manual Tests", stepLineStyle: "numbered" } : {}),
+        : [{ id: "", text: "No manual tests needed", suffix: "" }]
+      : doneSteps.map((step) => ({
+          id: step.id,
+          text: step.summary?.trim() ? step.summary : step.description,
+          attempt: retrySummary.attemptsByStepId.get(step.id),
+        })),
+    ...(hasManualTests
+      ? { stepsTitle: "Manual Tests", stepLineStyle: "numbered", numberedStepLabel: "Test" }
+      : {}),
     mode: input.mode,
     channel: input.channel ?? "telegram",
     textFormat: input.textFormat ?? "markdown",

@@ -20,7 +20,7 @@ function getStepLines(lines: string[]): string[] {
 }
 
 function getNumberedLines(lines: string[]): string[] {
-  return lines.filter((line) => /^\d+\.\s/.test(line));
+  return lines.filter((line) => /^(?:\d+\.\s|Test \d+:\s)/.test(line));
 }
 
 describe("formatAttemptBadge", () => {
@@ -299,8 +299,22 @@ describe("formatCompactGoalCompletionSummary", () => {
     expect(getStepLines(result.lines)).toHaveLength(0);
     const numbered = getNumberedLines(result.lines);
     expect(numbered).toHaveLength(2);
+    expect(numbered[0]).toMatch(/^Test 1:/);
+    expect(numbered[1]).toMatch(/^Test 2:/);
     expect(numbered[0]).toContain("[9/10 Critical]");
     expect(numbered[1]).toContain("[8/10 Critical]");
+  });
+
+  it("renders a no-tests-needed manual-test section when manualTests is an empty array", () => {
+    const result = formatCompactGoalCompletionSummary({
+      title: "Release verification",
+      steps: [{ id: "1", description: "Ship release", status: "done" }],
+      manualTests: [],
+    });
+
+    expect(findLineIndex(result.lines, "**Manual Tests**")).toBeGreaterThan(-1);
+    expect(findLineIndex(result.lines, "**Top Steps**")).toBe(-1);
+    expect(result.lines.some((line) => line.includes("No manual tests needed"))).toBe(true);
   });
 
   it("preserves manual test criticality suffixes when descriptions are truncated", () => {
@@ -320,6 +334,7 @@ describe("formatCompactGoalCompletionSummary", () => {
 
     const numbered = getNumberedLines(result.lines);
     expect(numbered).toHaveLength(1);
+    expect(numbered[0]).toMatch(/^Test 1:/);
     expect(numbered[0]).toContain("[10/10 Critical]");
     expect(numbered[0]).not.toContain("[10/10 Critica…");
   });

@@ -373,10 +373,17 @@ function formatTaskDetailSections(plan: Plan): string {
 
 function formatManualTestDetails(
   runIdPrefix: string,
-  tests: ManualTestSuggestion[] | undefined,
+  tests: ManualTestSuggestion[] | null | undefined,
   manualTestsError?: string,
 ): string {
-  if (!tests || tests.length === 0) {
+  if (Array.isArray(tests) && tests.length === 0) {
+    return [
+      "No manual tests needed — all functionality was verified automatically.",
+      "",
+      'Use "Incorporate Feedback" if you notice any issues.',
+    ].join("\n");
+  }
+  if (!tests) {
     const lines = [`Manual test details are unavailable for run ${runIdPrefix}.`];
     if (manualTestsError?.trim()) {
       lines.push(`Reason: ${manualTestsError.trim()}`);
@@ -390,18 +397,17 @@ function formatManualTestDetails(
   }
   const lines = [`Manual test details for ${runIdPrefix}:`, ""];
   tests.forEach((test, index) => {
-    lines.push(`**Test ${index + 1} [${clampCriticality(test.criticality)}/10 Critical]**`);
-    const bullets: string[] = [];
-    if (test.description.trim()) {
-      bullets.push(`Description: ${test.description.trim()}`);
+    const description = test.description.trim() || "Manual test";
+    lines.push(
+      `**Test ${index + 1}: ${description} [${clampCriticality(test.criticality)}/10 Critical]**`,
+    );
+    const reason = test.reason?.trim();
+    if (reason) {
+      lines.push(`_Reason: ${reason}_`);
     }
-    bullets.push(...splitStructuredDetailLines(test.detail));
-    if (bullets.length === 0) {
-      bullets.push("No additional detail provided.");
-    }
-    for (const bullet of bullets) {
-      lines.push(`• ${bullet}`);
-    }
+    const detail = test.detail.replace(/\r\n/g, "\n").trim();
+    lines.push("");
+    lines.push(detail || "No additional detail provided.");
     if (index < tests.length - 1) lines.push("");
   });
   return lines.join("\n");
@@ -1286,9 +1292,7 @@ export async function handleGoalFeedback(
           type: "all_done",
           steps: [...mergedPlan.steps],
           summary,
-          ...(run.manualTests && run.manualTests.length > 0
-            ? { manualTests: run.manualTests }
-            : {}),
+          ...(run.manualTests !== undefined ? { manualTests: run.manualTests } : {}),
           ...(run.manualTestsError ? { manualTestsError: run.manualTestsError } : {}),
         });
         return undefined;
@@ -1753,12 +1757,12 @@ function persistTelegramDoneMessage(params: {
 /** Persist manual test suggestions on a run. */
 function persistManualTests(
   runId: string,
-  manualTests: ManualTestSuggestion[] | undefined,
+  manualTests: ManualTestSuggestion[] | null | undefined,
   manualTestsError?: string,
 ): void {
   const run = loadRun(runId);
   if (!run) return;
-  if (manualTests && manualTests.length > 0) {
+  if (manualTests !== undefined && manualTests !== null) {
     run.manualTests = manualTests;
     delete run.manualTestsError;
   } else {

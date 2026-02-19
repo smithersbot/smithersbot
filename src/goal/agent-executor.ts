@@ -510,7 +510,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         type: "all_done",
         steps: [...orderedSteps],
         summary,
-        ...(manualTests && manualTests.length > 0 ? { manualTests } : {}),
+        ...(manualTests !== undefined ? { manualTests } : {}),
         ...(manualTestsError ? { manualTestsError } : {}),
       });
     }
