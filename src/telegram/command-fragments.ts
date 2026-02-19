@@ -4,9 +4,11 @@ import type { TelegramMessage } from "./bot/types.js";
 // Telegram splits at 4096 chars, but command prefixes reduce ctx.match length.
 // Start buffering earlier so split command chunks are still combined reliably.
 export const COMMAND_FRAGMENT_START_THRESHOLD = 3800;
-export const COMMAND_FRAGMENT_MAX_GAP_MS = 1500;
+// Wait up to 3s for the next chunk. Telegram delivery can exceed 1500ms
+// when bot replies cause message ID interleaving.
+export const COMMAND_FRAGMENT_MAX_GAP_MS = 3000;
 // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
-// The 1500ms time gap is the primary guard against false matches.
+// The 3000ms time gap is the primary guard against false matches.
 export const COMMAND_FRAGMENT_MAX_ID_GAP = 5;
 export const COMMAND_FRAGMENT_MAX_PARTS = 12;
 export const COMMAND_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
@@ -49,6 +51,10 @@ type CommandFragmentState = {
   flushCallback: (combinedText: string) => void | Promise<void>;
 };
 
+type CommandFragmentDebugLogger = {
+  debug?: (...args: unknown[]) => void;
+};
+
 export function buildCommandFragmentKey(params: CommandFragmentKeyParams): string {
   return `cmd:${params.chatId}:${params.resolvedThreadId ?? "main"}:${params.senderId}`;
 }
@@ -76,6 +82,8 @@ export function normalizeCommandFragmentParams(
 export class CommandFragmentBuffer {
   private readonly entries = new Map<string, CommandFragmentState>();
 
+  constructor(private readonly logger?: CommandFragmentDebugLogger) {}
+
   hasPending(key: string): boolean {
     return this.entries.has(key);
   }
@@ -101,25 +109,56 @@ export class CommandFragmentBuffer {
     };
 
     this.entries.set(key, state);
+    this.logDebug("telegram command fragment buffer created", {
+      key,
+      commandName: entry.commandName,
+      messageId: entry.firstMessageId,
+      textLength: entry.text.length,
+      replacedExisting: Boolean(existing),
+    });
     this.scheduleFlush(key, state);
   }
 
   tryAppend(key: string, messageId: number, text: string, receivedAtMs: number): boolean {
     const entry = this.entries.get(key);
-    if (!entry) return false;
+    if (!entry) {
+      this.logDebug("telegram command fragment append failed", {
+        key,
+        messageId,
+        reason: "no entry",
+      });
+      return false;
+    }
 
     if (text.trimStart().startsWith("/")) {
+      this.logDebug("telegram command fragment append failed", {
+        key,
+        messageId,
+        reason: "starts with /",
+      });
       return false;
     }
 
     const idGap = messageId - entry.lastMessageId;
     const timeGapMs = receivedAtMs - entry.lastReceivedAtMs;
-    if (
-      idGap <= 0 ||
-      idGap > COMMAND_FRAGMENT_MAX_ID_GAP ||
-      timeGapMs < 0 ||
-      timeGapMs > COMMAND_FRAGMENT_MAX_GAP_MS
-    ) {
+    if (idGap <= 0 || idGap > COMMAND_FRAGMENT_MAX_ID_GAP) {
+      this.logDebug("telegram command fragment append failed", {
+        key,
+        messageId,
+        reason: "id gap exceeded",
+        idGap,
+        maxIdGap: COMMAND_FRAGMENT_MAX_ID_GAP,
+      });
+      return false;
+    }
+    if (timeGapMs < 0 || timeGapMs > COMMAND_FRAGMENT_MAX_GAP_MS) {
+      this.logDebug("telegram command fragment append failed", {
+        key,
+        messageId,
+        reason: "time gap exceeded",
+        timeGapMs,
+        maxGapMs: COMMAND_FRAGMENT_MAX_GAP_MS,
+      });
       return false;
     }
 
@@ -129,6 +168,15 @@ export class CommandFragmentBuffer {
       nextPartCount > COMMAND_FRAGMENT_MAX_PARTS ||
       nextTotalChars > COMMAND_FRAGMENT_MAX_TOTAL_CHARS
     ) {
+      this.logDebug("telegram command fragment append failed", {
+        key,
+        messageId,
+        reason: "limits exceeded",
+        nextPartCount,
+        maxParts: COMMAND_FRAGMENT_MAX_PARTS,
+        nextTotalChars,
+        maxTotalChars: COMMAND_FRAGMENT_MAX_TOTAL_CHARS,
+      });
       return false;
     }
 
@@ -136,6 +184,12 @@ export class CommandFragmentBuffer {
     entry.totalChars = nextTotalChars;
     entry.lastMessageId = messageId;
     entry.lastReceivedAtMs = receivedAtMs;
+    this.logDebug("telegram command fragment append succeeded", {
+      key,
+      messageId,
+      idGap,
+      timeGapMs,
+    });
     this.scheduleFlush(key, entry);
     return true;
   }
@@ -146,6 +200,11 @@ export class CommandFragmentBuffer {
 
     clearTimeout(entry.timer);
     this.entries.delete(key);
+    this.logDebug("telegram command fragment flushing", {
+      key,
+      parts: entry.textParts.length,
+      totalChars: entry.totalChars,
+    });
 
     const combinedText = entry.textParts.join("");
     await entry.flushCallback(combinedText);
@@ -160,5 +219,9 @@ export class CommandFragmentBuffer {
     entry.timer = setTimeout(() => {
       void this.flush(key).catch(() => undefined);
     }, COMMAND_FRAGMENT_MAX_GAP_MS);
+  }
+
+  private logDebug(message: string, fields: Record<string, unknown>): void {
+    this.logger?.debug?.(fields, message);
   }
 }

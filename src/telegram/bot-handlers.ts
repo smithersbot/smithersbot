@@ -302,9 +302,11 @@ export const registerTelegramHandlers = ({
   commandFragmentBuffer,
 }) => {
   const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 1500;
+  // Wait up to 3s for the next chunk. Telegram delivery can exceed 1500ms
+  // when bot replies cause message ID interleaving.
+  const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 3000;
   // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
-  // The 1500ms time gap is the primary guard against false matches.
+  // The 3000ms time gap is the primary guard against false matches.
   const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 5;
   const TELEGRAM_TEXT_FRAGMENT_MAX_PARTS = 12;
   const TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
@@ -320,6 +322,9 @@ export const registerTelegramHandlers = ({
   const textFragmentBuffer = new Map<string, TextFragmentEntry>();
   let textFragmentProcessing: Promise<void> = Promise.resolve();
   const goalRouterEnabled = telegramCfg.goalRouter !== false;
+  const logTextFragmentDebug = (message: string, fields: Record<string, unknown>) => {
+    logger.debug?.(fields, message);
+  };
 
   const debounceMs = resolveInboundDebounceMs({ cfg, channel: "telegram" });
   type TelegramDebounceEntry = {
@@ -738,6 +743,11 @@ export const registerTelegramHandlers = ({
       if (!first || !last) return;
 
       const combinedText = entry.messages.map((m) => m.msg.text ?? "").join("");
+      logTextFragmentDebug("telegram text fragment flushing", {
+        key: entry.key,
+        parts: entry.messages.length,
+        totalChars: combinedText.length,
+      });
       if (!combinedText.trim()) return;
 
       const syntheticMessage: TelegramMessage = {
@@ -1208,9 +1218,37 @@ export const registerTelegramHandlers = ({
               nextTotalChars <= TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS
             ) {
               existing.messages.push({ msg, ctx, receivedAtMs: nowMs });
+              logTextFragmentDebug("telegram text fragment append succeeded", {
+                key,
+                messageId: msg.message_id,
+                idGap,
+                timeGapMs,
+              });
               scheduleTextFragmentFlush(existing);
               return;
             }
+            logTextFragmentDebug("telegram text fragment append failed", {
+              key,
+              messageId: msg.message_id,
+              reason: "limits exceeded",
+              nextPartCount: existing.messages.length + 1,
+              maxParts: TELEGRAM_TEXT_FRAGMENT_MAX_PARTS,
+              nextTotalChars,
+              maxTotalChars: TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS,
+            });
+          } else {
+            logTextFragmentDebug("telegram text fragment append failed", {
+              key,
+              messageId: msg.message_id,
+              reason:
+                idGap <= 0 || idGap > TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP
+                  ? "id gap exceeded"
+                  : "time gap exceeded",
+              idGap,
+              maxIdGap: TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP,
+              timeGapMs,
+              maxGapMs: TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS,
+            });
           }
 
           // Not appendable (or limits exceeded): flush buffered entry first, then continue normally.
@@ -1232,6 +1270,11 @@ export const registerTelegramHandlers = ({
             timer: setTimeout(() => {}, TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS),
           };
           textFragmentBuffer.set(key, entry);
+          logTextFragmentDebug("telegram text fragment buffer created", {
+            key,
+            messageId: msg.message_id,
+            textLength: text.length,
+          });
           scheduleTextFragmentFlush(entry);
           return;
         }

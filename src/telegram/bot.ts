@@ -368,7 +368,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     opts,
     resolveBotTopicsEnabled,
   });
-  const commandFragmentBuffer = new CommandFragmentBuffer();
+  const commandFragmentBuffer = new CommandFragmentBuffer(logger);
 
   registerTelegramNativeCommands({
     bot,

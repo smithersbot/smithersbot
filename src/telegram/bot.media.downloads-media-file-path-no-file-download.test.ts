@@ -711,7 +711,7 @@ describe("telegram text fragments", () => {
   });
 
   const TEXT_FRAGMENT_TEST_TIMEOUT_MS = process.platform === "win32" ? 45_000 : 20_000;
-  const TEXT_FRAGMENT_FLUSH_MS = 1600;
+  const TEXT_FRAGMENT_FLUSH_MS = 3100;
 
   it(
     "buffers near-limit text and processes sequential parts as one message",
