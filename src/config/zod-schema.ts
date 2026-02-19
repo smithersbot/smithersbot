@@ -228,6 +228,18 @@ export const MoltbotSchema = z
         enabled: z.boolean().optional(),
         store: z.string().optional(),
         maxConcurrentRuns: z.number().int().positive().optional(),
+        nightwatch: z
+          .object({
+            enabled: z.boolean().optional(),
+            cronExpr: z.string().optional(),
+            repoPath: z.string().optional(),
+            timezone: z.string().optional(),
+            telegramChatId: z.union([z.string(), z.number()]).optional(),
+            telegramAccountId: z.string().optional(),
+            telegramThreadId: z.number().optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

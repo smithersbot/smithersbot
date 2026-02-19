@@ -3,6 +3,7 @@ import type { CliDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
 import { resolveAgentMainSessionKey } from "../config/sessions.js";
 import { runCronIsolatedAgentTurn } from "../cron/isolated-agent.js";
+import { registerNightwatchJob, runNightwatch } from "../cron/nightwatch.js";
 import { appendCronRunLog, resolveCronRunLogPath } from "../cron/run-log.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronStorePath } from "../cron/store.js";
@@ -65,6 +66,17 @@ export function buildGatewayCronService(params: {
     },
     runIsolatedAgentJob: async ({ job, message }) => {
       const { agentId, cfg: runtimeConfig } = resolveCronAgent(job.agentId);
+      if (job.name === "nightwatch-daily") {
+        const result = await runNightwatch({
+          cfg: runtimeConfig,
+          nightwatchCfg: runtimeConfig.cron?.nightwatch,
+          lastRunAtMs: job.state?.lastRunAtMs,
+        });
+        if (result.status === "error") {
+          return { status: "error", summary: result.summary, error: result.error };
+        }
+        return result;
+      }
       return await runCronIsolatedAgentTurn({
         cfg: runtimeConfig,
         deps: params.deps,
@@ -98,6 +110,10 @@ export function buildGatewayCronService(params: {
         });
       }
     },
+  });
+
+  void registerNightwatchJob(cron, params.cfg.cron?.nightwatch).catch((err) => {
+    cronLogger.warn({ err: String(err) }, "cron: failed to register nightwatch job");
   });
 
   return { cron, storePath, cronEnabled };
