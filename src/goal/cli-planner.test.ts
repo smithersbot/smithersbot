@@ -120,6 +120,7 @@ describe("runCliPlanning", () => {
         JSON.stringify(
           {
             summary: "Unified planning summary",
+            workingDir: "/tmp/test-wd",
             steps: [
               {
                 id: "analyze-repo",
@@ -137,7 +138,7 @@ describe("runCliPlanning", () => {
       );
       return {
         stdout:
-          '{"summary":"Unified planning summary","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"codex"}]}',
+          '{"summary":"Unified planning summary","workingDir":"/tmp/test-wd","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"codex"}]}',
         stderr: "",
         timedOut: false,
         exitCode: 0,
@@ -244,6 +245,7 @@ describe("runCliPlanning", () => {
 
       const successPlan = {
         summary: "Unified planning summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "analyze-repo",
@@ -306,7 +308,7 @@ describe("runCliPlanning", () => {
         writeScoutArtifacts(scoutDir, runId);
         fs.writeFileSync(
           path.join(scoutDir, EXECUTION_PLAN_FILE),
-          JSON.stringify({ summary: "stale", steps: [] }),
+          JSON.stringify({ summary: "stale", workingDir: "/tmp/test-wd", steps: [] }),
           "utf8",
         );
         fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
@@ -346,6 +348,7 @@ describe("runCliPlanning", () => {
       // Produce fresh success artifacts
       const successPlan = {
         summary: "Fresh plan after cleanup",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "impl-step",
@@ -410,6 +413,7 @@ describe("runCliPlanning", () => {
       // Third attempt: success
       const successPlan = {
         summary: "Final plan after two clarifications",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "deploy",
@@ -503,6 +507,7 @@ describe("runCliPlanning", () => {
   it("throws validation errors for invalid plan JSON shape and still writes diagnostics", async () => {
     const invalidPlanJson = JSON.stringify({
       summary: "Missing backend field",
+      workingDir: "/tmp/test-wd",
       steps: [
         {
           id: "analyze-repo",
@@ -570,6 +575,7 @@ describe("runCliPlanning", () => {
           JSON.stringify(
             {
               summary: "Fallback planning summary",
+              workingDir: "/tmp/test-wd",
               steps: [
                 {
                   id: "analyze-repo",
@@ -587,7 +593,7 @@ describe("runCliPlanning", () => {
         );
         return {
           stdout:
-            '{"summary":"Fallback planning summary","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"claude_code"}]}',
+            '{"summary":"Fallback planning summary","workingDir":"/tmp/test-wd","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"claude_code"}]}',
           stderr: "",
           timedOut: false,
           exitCode: 0,
@@ -642,6 +648,7 @@ describe("runCliPlanning", () => {
           JSON.stringify(
             {
               summary: "Codex copied artifacts",
+              workingDir: "/tmp/test-wd",
               steps: [
                 {
                   id: "analyze-repo",
@@ -659,7 +666,7 @@ describe("runCliPlanning", () => {
         );
         return {
           stdout:
-            '{"summary":"Codex copied artifacts","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"codex"}]}',
+            '{"summary":"Codex copied artifacts","workingDir":"/tmp/test-wd","steps":[{"id":"analyze-repo","description":"Inspect repository files and verify with a targeted test run","dependsOn":[],"durationMinutes":45,"backend":"codex"}]}',
           stderr: "",
           timedOut: false,
           exitCode: 0,
@@ -688,6 +695,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
         summary: "Revised summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "refine-auth",
@@ -711,6 +719,7 @@ describe("runCliPlanning", () => {
       currentPlan: {
         goal: "Refine auth flow",
         summary: "Original summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "step-1",
@@ -751,6 +760,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
         summary: "Revised summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "refine-auth",
@@ -776,6 +786,7 @@ describe("runCliPlanning", () => {
       currentPlan: {
         goal: "Refine auth flow",
         summary: "Original summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "step-1",
@@ -818,6 +829,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
         summary: "Revised summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "refine-auth",
@@ -841,6 +853,7 @@ describe("runCliPlanning", () => {
       currentPlan: {
         goal: "Refine auth flow",
         summary: "Original summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "step-1",
@@ -873,6 +886,7 @@ describe("runCliPlanning", () => {
       .mockResolvedValueOnce({
         stdout: JSON.stringify({
           summary: "Revised summary from fallback",
+          workingDir: "/tmp/test-wd",
           steps: [
             {
               id: "refine-auth",
@@ -896,6 +910,7 @@ describe("runCliPlanning", () => {
       currentPlan: {
         goal: "Refine auth flow",
         summary: "Original summary",
+        workingDir: "/tmp/test-wd",
         steps: [
           {
             id: "step-1",
@@ -932,6 +947,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
         summary: "Custom cwd",
+        workingDir: workDir,
         steps: [
           {
             id: "step-1",
@@ -965,6 +981,7 @@ describe("runCliPlanning", () => {
       currentPlan: {
         goal: "Test cwd",
         summary: "Initial",
+        workingDir: workDir,
         steps: [
           {
             id: "step-1",
