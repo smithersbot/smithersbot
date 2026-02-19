@@ -55,17 +55,41 @@ export async function checkGitChanges(
   return { hasChanges: summary.length > 0, summary };
 }
 
-export function buildNightwatchPrompt(gitSummary: string): string {
-  const normalizedSummary = gitSummary.trim() || "(no git changes summarized)";
-  return [
-    "Nightwatch daily review for the Moltbot repository.",
-    "First map out how the goal process works.",
-    "Identify any important bugs that need to be solved and create a plan to fix and test them.",
-    "Send the plan to the user over Telegram in the normal /new_goal approval flow so they can approve or reject it when they wake up.",
-    "",
-    "Git changes since the last nightwatch run:",
-    normalizedSummary,
-  ].join("\n");
+export function buildNightwatchPrompt(): string {
+  return `Nightwatch nightly review for the Moltbot repository.
+
+Perform a thorough analysis of the current codebase focusing on these areas:
+
+## 1. The /new_goal workflow (end-to-end)
+Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
+Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/commands/goal.ts, src/telegram/goal-commands.ts.
+Look for:
+- Bugs or logic errors in the happy path
+- Edge cases in blocked/failed/cancelled states and transitions between them
+- Problems with /goal_answer, /goal_feedback, /goal_edit after a plan has been approved or executed
+- Race conditions or lock issues (goal op locks, concurrent runs)
+- Error handling gaps where failures could leave runs in a broken state
+
+## 2. Telegram UX integration
+Review how goal commands are wired up in Telegram: command registration, message formatting, button callbacks, thread handling.
+Key files: src/telegram/goal-commands.ts, src/telegram/bot-native-commands.ts, src/telegram/nightwatch-commands.ts.
+Look for:
+- Commands that are missing or not properly registered
+- Inconsistent or confusing user-facing messages
+- Missing error feedback (silent failures the user would never see)
+- Obvious UX improvements (e.g. missing confirmation, unclear status messages, long messages that should be truncated or paginated)
+
+## 3. Architecture simplification opportunities
+Look across the goal system and Telegram integration for:
+- Dead code or unused exports
+- Overly complex abstractions that could be flattened
+- Duplicated logic that could be consolidated
+- Indirection that makes the code harder to follow without adding real value
+
+## Output
+Produce a goal plan with concrete, actionable steps that fix real bugs and make high-value improvements.
+Prioritize correctness bugs over style issues. Do not propose changes unless you have read the actual code and confirmed the problem exists.
+Each step should include both the fix and its test.`;
 }
 
 export async function runNightwatch(params: {
@@ -109,7 +133,7 @@ export async function runNightwatch(params: {
       return { status: "skipped", summary: "No git changes since last run" };
     }
 
-    const goalPlanResult = await handleGoal(buildNightwatchPrompt(gitChanges.summary), cfg);
+    const goalPlanResult = await handleGoal(buildNightwatchPrompt(), cfg);
     const bot = new Bot(account.token);
     await sendGoalPlanResult({
       bot,

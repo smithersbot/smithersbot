@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Refactored src/cron/nightwatch.ts: buildNightwatchPrompt now takes no arguments and uses the new codebase-analysis prompt text; runNightwatch still gates on git changes but now calls handleGoal(buildNightwatchPrompt(), cfg). Verified with pnpm build."}
