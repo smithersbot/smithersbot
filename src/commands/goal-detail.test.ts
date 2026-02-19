@@ -147,6 +147,45 @@ describe("goal-detail command", () => {
     expect(output).toContain("Run ID: detail-full-steps");
   });
 
+  it("uses plan and step shortSummary values when present", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "detail-short-summary",
+      plan: {
+        ...sampleRun.plan!,
+        shortSummary: "Ship the widget flow",
+        steps: [
+          {
+            id: "1",
+            description: "Very long setup description that should not be shown in the step line",
+            shortSummary: "Set up project scaffold",
+            dependsOn: [],
+            status: "done",
+          },
+          {
+            id: "2",
+            description: "Another verbose description that should be replaced by shortSummary",
+            shortSummary: "Wire API handlers",
+            dependsOn: ["1"],
+            status: "done",
+          },
+        ],
+      },
+      stepResults: {},
+    });
+
+    const { goalDetailCommand } = await import("./goal-detail.js");
+    const rt = mockRuntime();
+    await goalDetailCommand("detail-short-summary", {}, rt);
+    const output = rt.logs.join("\n");
+
+    expect(output).toContain("✅ Done: Ship the widget flow");
+    expect(output).toContain("- 1. done Set up project scaffold");
+    expect(output).toContain("- 2. done Wire API handlers");
+    expect(output).not.toContain("Very long setup description");
+    expect(output).not.toContain("Another verbose description");
+  });
+
   it("does not cap telegram detail output to the concise line budget", async () => {
     saveRun({
       ...sampleRun,

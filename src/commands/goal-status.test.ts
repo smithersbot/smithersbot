@@ -111,6 +111,23 @@ describe("goal-status command", () => {
     expect(runIdIndex).toBeGreaterThan(retriesIndex);
   });
 
+  it("uses plan shortSummary for the status headline when present", async () => {
+    saveRun({
+      ...sampleRun,
+      runId: "status-short-summary",
+      plan: {
+        ...sampleRun.plan!,
+        shortSummary: "Ship the widget flow",
+      },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("status-short-summary", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("✅ Done: Ship the widget flow");
+    expect(output).not.toContain("✅ Done: Build a widget");
+  });
+
   it("renders in-progress Mermaid class when run lock is active", async () => {
     const runId = "status-inprog";
     saveRun({

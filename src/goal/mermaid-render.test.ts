@@ -212,6 +212,22 @@ describe("renderMermaid", () => {
     expect(out).not.toContain(longDescription);
   });
 
+  it("prefers shortSummary over description for node labels", () => {
+    const plan = makePlan([
+      {
+        id: "1",
+        description: "Verbose description that should not be used in the node label",
+        shortSummary: "Readable task label",
+        dependsOn: [],
+        status: "pending",
+      },
+    ]);
+
+    const out = renderMermaid(plan);
+    expect(out).toContain('1["1. Readable task label"]');
+    expect(out).not.toContain("Verbose description that should not be used in the node label");
+  });
+
   it("renders independent roots with no edges", () => {
     const plan = makePlan([
       {

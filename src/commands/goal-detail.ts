@@ -103,11 +103,16 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
   return undefined;
 }
 
+function resolveGoalTitle(run: SerializedRun): string {
+  const shortSummary = run.plan?.shortSummary?.trim();
+  return shortSummary && shortSummary.length > 0 ? shortSummary : run.goal;
+}
+
 function buildSteps(run: SerializedRun, retrySummary: GoalRetrySummaryResult): CompactGoalStep[] {
   const planSteps = run.plan?.steps ?? [];
   return planSteps.map((step) => ({
     id: step.id,
-    text: step.description,
+    text: step.shortSummary?.trim() || step.description,
     state: step.status,
     attempt: retrySummary.attemptsByStepId.get(step.id),
   }));
@@ -120,7 +125,7 @@ function renderDetailSummary(run: SerializedRun, opts: GoalDetailOptions): strin
 
   const compact = formatCompactGoalOutput({
     state: run.state,
-    title: run.goal,
+    title: resolveGoalTitle(run),
     progress: buildProgress(run),
     blockerSummary: buildBlockerSummary(run),
     retrySummary: retrySummary.text,

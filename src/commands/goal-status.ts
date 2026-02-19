@@ -115,6 +115,11 @@ function fitLinesToBudget(lines: string[], maxLines: number): string[] {
   return kept;
 }
 
+function resolveGoalTitle(run: SerializedRun): string {
+  const shortSummary = run.plan?.shortSummary?.trim();
+  return shortSummary && shortSummary.length > 0 ? shortSummary : run.goal;
+}
+
 function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): string {
   const channel = resolveChannel(opts);
   const mode = resolveMode(opts);
@@ -126,7 +131,7 @@ function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): strin
 
   const compact = formatCompactGoalOutput({
     state: run.state,
-    title: run.goal,
+    title: resolveGoalTitle(run),
     progress: buildProgress(run),
     blockerSummary: buildBlockerSummary(run),
     retrySummary,

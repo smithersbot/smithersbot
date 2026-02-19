@@ -103,6 +103,14 @@ function truncateLabel(text: string, maxChars: number): string {
   return `${text.slice(0, keep).trimEnd()}...`;
 }
 
+function resolveNodeSummary(step: Plan["steps"][number]): string {
+  const shortSummary = step.shortSummary?.trim().replace(/\s+/g, " ");
+  if (shortSummary) {
+    return truncateLabel(shortSummary, MAX_NODE_LABEL_CHARS);
+  }
+  return truncateLabel(normalizeLabel(step.description), MAX_NODE_LABEL_CHARS);
+}
+
 /**
  * Strip LLM-generated noise from step descriptions to produce short labels.
  *
@@ -184,7 +192,7 @@ export function renderMermaid(
     const emoji = displayStatuses ? STATUS_EMOJI[status] : "";
     const prefix = emoji ? `${emoji} ` : "";
     const num = orderNum.get(step.id) ?? 0;
-    const shortDesc = truncateLabel(normalizeLabel(step.description), MAX_NODE_LABEL_CHARS);
+    const shortDesc = resolveNodeSummary(step);
     const dur = nodeDurationLabel(step, status, cpm, stepResults);
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;
     lines.push(`  ${step.id}["${label}"]`);
