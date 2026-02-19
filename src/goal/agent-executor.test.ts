@@ -126,7 +126,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
-  it("emits fallback manual tests and omits manualTestsError when manual-test auth fails", async () => {
+  it("omits manualTests and emits manualTestsError when manual-test auth fails", async () => {
     const step = makeStep({ backend: "codex", description: "Implement login validation" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -167,15 +167,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         (event as { type?: string }).type === "all_done",
     );
     expect(allDoneEvent).toBeDefined();
-    expect(allDoneEvent?.manualTests).toEqual([
-      {
-        description: "Validate: Implement login validation",
-        criticality: 7,
-        detail:
-          'Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
-      },
-    ]);
-    expect(allDoneEvent?.manualTestsError).toBeUndefined();
+    expect(allDoneEvent?.manualTests).toBeUndefined();
+    expect(allDoneEvent?.manualTestsError).toContain("authentication_error");
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {

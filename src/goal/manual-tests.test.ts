@@ -48,6 +48,7 @@ describe("generateManualTests", () => {
           {
             description: "Verify timeout warning and renewal",
             criticality: "8",
+            reason: "Needs a real browser idle session",
             detail:
               "Stay idle until timeout warning appears, then renew and confirm session persists.",
           },
@@ -75,10 +76,11 @@ describe("generateManualTests", () => {
         "Attempt login with a bad password and confirm inline error appears without crashing.",
     });
     expect(tests[1]?.criticality).toBe(8);
+    expect(tests[1]?.reason).toBe("Needs a real browser idle session");
     expect(tests[2]?.criticality).toBe(7);
   });
 
-  it("falls back to step-derived tests when model call fails with auth error", async () => {
+  it("throws when model call fails with auth error", async () => {
     const client: GoalLlmClient = {
       complete: vi
         .fn()
@@ -89,36 +91,16 @@ describe("generateManualTests", () => {
         ),
     };
 
-    const manualTests = await generateManualTests({
-      goal: "Improve authentication reliability",
-      steps: makeDoneSteps(),
-      client,
-    });
-
-    expect(manualTests).toHaveLength(3);
-    expect(manualTests).toEqual([
-      {
-        description: "Validate: Implement login validation",
-        criticality: 7,
-        detail:
-          'Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
-      },
-      {
-        description: "Validate: Add session timeout handling",
-        criticality: 7,
-        detail:
-          'Manually exercise the behavior changed by "Add session timeout handling". Confirm expected output and no regressions in related flows.',
-      },
-      {
-        description: "Validate: Cover auth edge cases in tests",
-        criticality: 7,
-        detail:
-          'Manually exercise the behavior changed by "Cover auth edge cases in tests". Confirm expected output and no regressions in related flows.',
-      },
-    ]);
+    await expect(
+      generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+        client,
+      }),
+    ).rejects.toThrow(/authentication_error/i);
   });
 
-  it("falls back to step-derived tests when ANTHROPIC_API_KEY is missing and no client is injected", async () => {
+  it("throws when ANTHROPIC_API_KEY is missing and no client is injected", async () => {
     const originalApiKey = process.env.ANTHROPIC_API_KEY;
     const originalVitest = process.env.VITEST;
     const originalPoolId = process.env.VITEST_POOL_ID;
@@ -132,15 +114,12 @@ describe("generateManualTests", () => {
     process.env.NODE_ENV = "development";
 
     try {
-      const manualTests = await generateManualTests({
-        goal: "Improve authentication reliability",
-        steps: makeDoneSteps(),
-      });
-
-      expect(manualTests).toHaveLength(3);
-      expect(manualTests[0]?.description).toBe("Validate: Implement login validation");
-      expect(manualTests[1]?.description).toBe("Validate: Add session timeout handling");
-      expect(manualTests[2]?.description).toBe("Validate: Cover auth edge cases in tests");
+      await expect(
+        generateManualTests({
+          goal: "Improve authentication reliability",
+          steps: makeDoneSteps(),
+        }),
+      ).rejects.toThrow("ANTHROPIC_API_KEY is required to generate manual tests.");
     } finally {
       if (originalApiKey == null) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = originalApiKey;
@@ -153,5 +132,59 @@ describe("generateManualTests", () => {
       if (originalNodeEnv == null) delete process.env.NODE_ENV;
       else process.env.NODE_ENV = originalNodeEnv;
     }
+  });
+
+  it("returns an empty array when the model explicitly returns tests: []", async () => {
+    const client = makeClient(
+      JSON.stringify({
+        tests: [],
+        message: "All functionality was verified automatically",
+      }),
+    );
+
+    const manualTests = await generateManualTests({
+      goal: "Improve authentication reliability",
+      steps: makeDoneSteps(),
+      client,
+    });
+
+    expect(manualTests).toEqual([]);
+  });
+
+  it("tops up with fallback tests when the model returns fewer tests than required", async () => {
+    const client = makeClient(
+      JSON.stringify({
+        tests: [
+          {
+            description: "Test real login error banner",
+            criticality: 7,
+            reason: "Requires browser interaction",
+            detail:
+              "Step 1. Submit invalid credentials in the live UI.\nStep 2. Confirm the error banner appears.",
+          },
+        ],
+      }),
+    );
+
+    const manualTests = await generateManualTests({
+      goal: "Improve authentication reliability",
+      steps: makeDoneSteps(),
+      client,
+      minTests: 3,
+    });
+
+    expect(manualTests).toHaveLength(3);
+    expect(manualTests[1]).toMatchObject({
+      description: "Test login validation",
+      criticality: 6,
+      reason: "Automated test generation returned fewer suggestions than expected.",
+    });
+    expect(manualTests[2]).toMatchObject({
+      description: "Test session timeout handling",
+      criticality: 5,
+      reason: "Automated test generation returned fewer suggestions than expected.",
+    });
+    expect(manualTests[1]?.description.startsWith("Validate:")).toBe(false);
+    expect(manualTests[2]?.description.startsWith("Validate:")).toBe(false);
   });
 });
