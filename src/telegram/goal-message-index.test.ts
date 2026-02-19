@@ -29,7 +29,7 @@ function createTestRun(
     state: "awaiting_approval",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    plan: { summary: "test", steps: [] },
+    plan: { goal: "test goal", workingDir: "/tmp", summary: "test", steps: [] },
     stepResults: {},
     answers: {},
   };

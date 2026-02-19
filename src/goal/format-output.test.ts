@@ -4,6 +4,7 @@ import type { Plan, StepResult } from "./types.js";
 
 const samplePlan: Plan = {
   goal: "Create a landing page",
+  workingDir: "/tmp/workspace",
   summary: "Build a simple landing page",
   steps: [
     {
@@ -33,6 +34,7 @@ const samplePlan: Plan = {
 // Branching: A -> B, A -> C
 const branchingPlan: Plan = {
   goal: "Branch test",
+  workingDir: "/tmp/workspace",
   summary: "Branching DAG",
   steps: [
     {
@@ -62,6 +64,7 @@ const branchingPlan: Plan = {
 // Fan-in: B -> D, C -> D (with root A -> B, A -> C)
 const fanInPlan: Plan = {
   goal: "Fan-in test",
+  workingDir: "/tmp/workspace",
   summary: "Fan-in DAG",
   steps: [
     {
@@ -97,6 +100,7 @@ const fanInPlan: Plan = {
 
 const doneSingleStepPlan: Plan = {
   goal: "Done duration test",
+  workingDir: "/tmp/workspace",
   summary: "Single completed step",
   steps: [
     {
@@ -284,6 +288,7 @@ describe("formatPlanOutput", () => {
     it("shows actual durations for multiple done steps in a chain", () => {
       const multiDonePlan: Plan = {
         goal: "Multi done",
+        workingDir: "/tmp/workspace",
         summary: "Multiple completed steps",
         steps: [
           {

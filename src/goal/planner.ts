@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { GoalLlmError, classifyGoalError } from "./errors.js";
 import type { ScoutResult } from "./scout.js";
@@ -35,6 +36,7 @@ Step schema:
 
 Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
 {
+  "workingDir": "/absolute/path/or/~/path",
   "summary": "Brief description of the plan",
   "steps": [
     {
@@ -46,6 +48,11 @@ Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your 
     }
   ]
 }
+
+workingDir is the directory where the goal's work should happen.
+- Use the current workspace path if the goal modifies an existing repo.
+- Use a new path (for example ~/project-name) if the goal creates a new project or writes files outside the current workspace.
+- Use ~ for home directory prefix.
 
 If you cannot create a plan because you need more information, respond with:
 { "blocked": true, "question": "The specific question you need answered" }`;
@@ -79,12 +86,16 @@ export function persistRawPlanResponse(runId: string, rawText: string): string |
 }
 
 /** Build the user message for the planner, optionally enriched with scout data. */
-export function buildPlannerUserMessage(goal: string, scoutData?: ScoutResult): string {
+export function buildPlannerUserMessage(
+  goal: string,
+  cwd: string,
+  scoutData?: ScoutResult,
+): string {
   if (!scoutData || scoutData.status !== "success") {
-    return `Goal: ${goal}`;
+    return [`Goal: ${goal}`, `Current workspace path: ${cwd}`].join("\n");
   }
 
-  const lines: string[] = [`Goal: ${goal}`];
+  const lines: string[] = [`Goal: ${goal}`, `Current workspace path: ${cwd}`];
   lines.push("");
   lines.push("--- Scout Report (pre-analysis by Claude Code) ---");
   lines.push(JSON.stringify(scoutData.report, null, 2));
@@ -104,13 +115,14 @@ export function buildPlannerUserMessage(goal: string, scoutData?: ScoutResult): 
 export async function generatePlan(
   client: GoalLlmClient,
   goal: string,
+  cwd: string,
   scoutData?: ScoutResult,
 ): Promise<PlanResult> {
   let response;
   try {
     response = await client.complete({
       systemPrompt: PLAN_SYSTEM_PROMPT,
-      userMessage: buildPlannerUserMessage(goal, scoutData),
+      userMessage: buildPlannerUserMessage(goal, cwd, scoutData),
       maxTokens: 8192,
     });
   } catch (err) {
@@ -192,6 +204,16 @@ function parseBackend(raw: unknown): GoalBackendId | undefined {
 
 function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   const summary = typeof raw.summary === "string" ? raw.summary : goal;
+  const rawWorkingDir = typeof raw.workingDir === "string" ? raw.workingDir.trim() : "";
+  if (!rawWorkingDir) {
+    throw new Error("Plan must include a non-empty workingDir");
+  }
+  const workingDir =
+    rawWorkingDir === "~"
+      ? os.homedir()
+      : rawWorkingDir.startsWith("~/")
+        ? path.join(os.homedir(), rawWorkingDir.slice(2))
+        : rawWorkingDir;
   if (!Array.isArray(raw.steps) || raw.steps.length === 0) {
     throw new Error("Plan must contain at least one step");
   }
@@ -247,7 +269,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   // Detect cycles via Kahn's algorithm
   detectCycles(steps);
 
-  return { goal, steps, summary };
+  return { goal, workingDir, steps, summary };
 }
 
 /**
@@ -257,11 +279,13 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
 export async function generatePlanRevision(
   client: GoalLlmClient,
   goal: string,
+  cwd: string,
   currentPlan: Plan,
   editInstructions: string,
 ): Promise<PlanResult> {
   const currentPlanJson = JSON.stringify(
     {
+      workingDir: currentPlan.workingDir,
       summary: currentPlan.summary,
       steps: currentPlan.steps.map((s) => ({
         id: s.id,
@@ -279,7 +303,7 @@ export async function generatePlanRevision(
   try {
     response = await client.complete({
       systemPrompt: PLAN_SYSTEM_PROMPT,
-      userMessage: `Goal: ${goal}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
+      userMessage: `Goal: ${goal}\nCurrent workspace path: ${cwd}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
       maxTokens: 8192,
     });
   } catch (err) {

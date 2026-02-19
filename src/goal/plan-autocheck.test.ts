@@ -32,6 +32,7 @@ vi.mock("./backend-availability.js", () => ({
 function makePlan(summary: string, suffix = "1", backend: "codex" | "claude_code" = "codex"): Plan {
   return {
     goal: "Ship feature",
+    workingDir: "/tmp/workspace",
     summary,
     steps: [
       {

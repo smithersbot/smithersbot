@@ -30,6 +30,7 @@ describe("run-store", () => {
     state: "done",
     plan: {
       goal: "Build something",
+      workingDir: "/tmp/workspace",
       summary: "A test plan",
       steps: [
         {
@@ -114,6 +115,7 @@ describe("run-store", () => {
         runId: "status-progress-run",
         plan: {
           goal: "Test",
+          workingDir: "/tmp/workspace",
           summary: "Progress test",
           steps: [
             {
@@ -187,6 +189,7 @@ describe("run-store", () => {
       state: "done",
       plan: {
         goal: "Disk round-trip",
+        workingDir: "/tmp",
         summary: "Single step",
         steps: [{ id: "s1", description: "Step", dependsOn: [], status: "done" }],
       },
@@ -219,6 +222,7 @@ describe("run-store", () => {
         state: "executing",
         plan: {
           goal: "Recover crashed run",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
         },
@@ -254,6 +258,7 @@ describe("run-store", () => {
         state: "executing",
         plan: {
           goal: "Running goal",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
         },
@@ -291,6 +296,7 @@ describe("run-store", () => {
         state: "executing",
         plan: {
           goal: "Finish run on crash",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [{ id: "1", description: "Step", dependsOn: [], status: "done" }],
         },
@@ -325,6 +331,7 @@ describe("run-store", () => {
         state: "executing",
         plan: {
           goal: "Pending run",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [{ id: "1", description: "Step", dependsOn: [], status: "pending" }],
         },
@@ -353,6 +360,7 @@ describe("session serialization", () => {
       state: "executing",
       plan: {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "A plan",
         steps: [
           {
@@ -402,6 +410,7 @@ describe("session serialization", () => {
       state: "done",
       plan: {
         goal: "Duration round-trip",
+        workingDir: "/tmp/ws",
         summary: "Multi-step durations",
         steps: [
           { id: "1", description: "Fast step", dependsOn: [], status: "done" },
@@ -501,7 +510,9 @@ describe("session serialization", () => {
       updatedAt: "2026-01-30T00:00:00.000Z",
       planRevision: 2,
       activePlanRevision: 2,
-      planHistory: [{ revision: 1, plan: { goal: "Meta", steps: [], summary: "meta" } }],
+      planHistory: [
+        { revision: 1, plan: { goal: "Meta", workingDir: "/tmp", steps: [], summary: "meta" } },
+      ],
       telegramPlanMessage: { chatId: 1, messageId: 2 },
       telegramQuestionMessages: [{ chatId: 1, messageId: 3, requiredInputKey: "task:1:input" }],
       telegramDoneMessage: { chatId: 1, messageId: 4 },

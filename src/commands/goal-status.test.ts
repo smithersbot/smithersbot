@@ -65,6 +65,7 @@ const sampleRun: SerializedRun = {
   state: "done",
   plan: {
     goal: "Build a widget",
+    workingDir: "/tmp",
     summary: "Widget plan",
     steps: [
       {
@@ -118,6 +119,7 @@ describe("goal-status command", () => {
       state: "executing",
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Widget plan",
         steps: [
           {
@@ -280,6 +282,7 @@ describe("goal-status command", () => {
       agentMaxTurnsPerTask: 4,
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Retry-heavy plan",
         steps: [
           { id: "1", description: "Prepare schema", dependsOn: [], status: "done", turnsUsed: 2 },
@@ -335,6 +338,7 @@ describe("goal-status command", () => {
       state: "awaiting_approval",
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Long plan",
         steps: Array.from({ length: 25 }, (_, index) => ({
           id: String(index + 1),

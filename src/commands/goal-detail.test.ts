@@ -69,6 +69,7 @@ const sampleRun: SerializedRun = {
   state: "done",
   plan: {
     goal: "Build a widget",
+    workingDir: "/tmp",
     summary: "Widget plan",
     steps: [
       {
@@ -108,6 +109,7 @@ describe("goal-detail command", () => {
       agentMaxTurnsPerTask: 4,
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Long plan",
         steps: [
           { id: "1", description: "Prepare schema", dependsOn: [], status: "done" },
@@ -152,6 +154,7 @@ describe("goal-detail command", () => {
       state: "awaiting_approval",
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Long plan",
         steps: Array.from({ length: 20 }, (_, index) => ({
           id: String(index + 1),
@@ -194,6 +197,7 @@ describe("goal-detail command", () => {
       state: "executing",
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Stateful plan",
         steps: [
           { id: "1", description: "Create dir", dependsOn: [], status: "done" },
@@ -235,6 +239,7 @@ describe("goal-detail command", () => {
       blocked: { blockedAt: "execution", prompt: "Need creds", requiredInputKey: "db_password" },
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Blocked plan",
         steps: [
           { id: "1", description: "Prepare schema", dependsOn: [], status: "done" },
@@ -269,6 +274,7 @@ describe("goal-detail command", () => {
       },
       plan: {
         goal: "Build a widget",
+        workingDir: "/tmp",
         summary: "Interrupted plan",
         steps: [{ id: "1", description: "Continue", dependsOn: [], status: "pending" }],
       },

@@ -91,6 +91,8 @@ describe("goal command — early failure persistence", () => {
     mockRunCliPlanning.mockResolvedValue({
       status: "success",
       plan: {
+        goal: "Test goal",
+        workingDir: "/tmp/planner-work",
         summary: "Test plan",
         steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
       },
@@ -292,6 +294,8 @@ describe("goal command — early failure persistence", () => {
     mockRunCliPlanning.mockResolvedValue({
       status: "success",
       plan: {
+        goal: "Build a thing",
+        workingDir: "/tmp/planner-work",
         summary: "Test plan",
         steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
       },
@@ -326,6 +330,8 @@ describe("goal command — early failure persistence", () => {
     mockRunCliPlanning.mockResolvedValueOnce({
       status: "success",
       plan: {
+        goal: "Trigger degraded planner fallback",
+        workingDir: "/tmp/planner-work",
         summary: "Degraded plan",
         steps: [
           {
@@ -377,6 +383,8 @@ describe("goal command — early failure persistence", () => {
     mockRunCliPlanning.mockResolvedValueOnce({
       status: "success",
       plan: {
+        goal: "Force claude backend after degraded plan",
+        workingDir: "/tmp/planner-work",
         summary: "Degraded plan",
         steps: [
           {

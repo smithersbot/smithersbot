@@ -444,6 +444,7 @@ function summarizeFeedback(history: string[]): string {
 function buildPlanSnapshot(plan: Plan): string {
   return JSON.stringify(
     {
+      workingDir: plan.workingDir,
       summary: plan.summary,
       steps: plan.steps.map((step) => ({
         id: step.id,

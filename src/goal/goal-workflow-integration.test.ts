@@ -90,7 +90,12 @@ function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
 }
 
 function makePlan(steps: PlanStep[]): Plan {
-  return { goal: "Test goal", summary: "Test plan", steps };
+  return {
+    goal: "Test goal",
+    workingDir: "/tmp/moltbot-goal-integration-test",
+    summary: "Test plan",
+    steps,
+  };
 }
 
 function makeSession(plan: Plan): GoalSession {
@@ -385,6 +390,7 @@ describe("goal workflow integration tests", () => {
       // Create an "executing" run
       const plan: Plan = {
         goal: "Build website",
+        workingDir: "/tmp/moltbot-goal-integration-test",
         summary: "A plan",
         steps: [
           makeStep({ id: "1", status: "done" }),
@@ -1008,6 +1014,7 @@ describe("goal workflow integration tests", () => {
         state: "executing",
         plan: {
           goal: "Crashed goal",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [
             { id: "1", description: "Step 1", dependsOn: [], status: "done" },
@@ -1043,6 +1050,7 @@ describe("goal workflow integration tests", () => {
         state: "failed",
         plan: {
           goal: "Failed goal",
+          workingDir: "/tmp",
           summary: "Plan",
           steps: [{ id: "1", description: "Step 1", dependsOn: [], status: "failed" }],
         },

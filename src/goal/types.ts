@@ -69,6 +69,7 @@ export type PlanStep = {
 
 export type Plan = {
   goal: string;
+  workingDir: string;
   steps: PlanStep[];
   summary: string;
 };

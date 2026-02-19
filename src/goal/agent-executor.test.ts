@@ -71,7 +71,7 @@ function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
 }
 
 function makePlan(steps: PlanStep[]): Plan {
-  return { goal: "Test goal", summary: "Test plan", steps };
+  return { goal: "Test goal", workingDir: "/tmp/moltbot-goal-test", summary: "Test plan", steps };
 }
 
 function makeSession(plan: Plan): GoalSession {

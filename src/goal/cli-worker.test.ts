@@ -33,6 +33,7 @@ function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
 function makePlan(): Plan {
   return {
     goal: "Build auth",
+    workingDir: "/tmp/workspace",
     steps: [makeStep()],
     summary: "Build auth system",
   };

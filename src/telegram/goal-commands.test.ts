@@ -109,6 +109,7 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
     state: "awaiting_approval",
     plan: {
       goal: "Test goal",
+      workingDir: "/tmp/ws",
       summary: "A test plan",
       steps: [
         {
@@ -209,6 +210,7 @@ describe("goal-commands telegram adapter", () => {
       let createdRunId = "";
       const autocheckPlan = {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "Autochecked plan",
         steps: [
           {
@@ -696,6 +698,7 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Done plan",
             steps: [
               {
@@ -768,6 +771,7 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Done plan",
             steps: [
               {
@@ -822,6 +826,7 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Done plan",
             steps: [
               {
@@ -870,6 +875,7 @@ describe("goal-commands telegram adapter", () => {
     it("includes planner fallback notice with reset hint in plan caption", async () => {
       const degradedPlan = {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "A degraded test plan",
         steps: [
           {
@@ -920,6 +926,7 @@ describe("goal-commands telegram adapter", () => {
     it("shows replanned count and max-round warning in plan caption", async () => {
       const plan = {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "Plan with autocheck loops",
         steps: [
           {
@@ -1357,6 +1364,7 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Completed plan",
             steps: [
               {
@@ -1383,6 +1391,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Feedback revised plan",
           steps: [
             {
@@ -1456,6 +1465,7 @@ describe("goal-commands telegram adapter", () => {
           state: "done",
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Completed plan",
             steps: [
               {
@@ -1477,6 +1487,7 @@ describe("goal-commands telegram adapter", () => {
         .mockResolvedValueOnce({
           plan: {
             goal: "Test goal",
+            workingDir: "/tmp/ws",
             summary: "Feedback revised plan",
             steps: [
               {
@@ -1517,6 +1528,7 @@ describe("goal-commands telegram adapter", () => {
 
       const revisedPlan = {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "Revised plan",
         steps: [
           {
@@ -1574,6 +1586,7 @@ describe("goal-commands telegram adapter", () => {
 
       const revisedPlan = {
         goal: "Test goal",
+        workingDir: "/tmp/ws",
         summary: "Revised plan",
         steps: [
           {
@@ -1630,6 +1643,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Revised plan",
           steps: [
             {
@@ -1662,6 +1676,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Revised plan",
           steps: [
             {
@@ -1702,6 +1717,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Revised plan",
           steps: [
             {
@@ -1746,6 +1762,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Revised plan",
           steps: [
             {
@@ -1808,6 +1825,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
+          workingDir: "/tmp/ws",
           summary: "Revised with fallback",
           steps: [
             {

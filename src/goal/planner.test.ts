@@ -12,11 +12,14 @@ function mockClient(response: string): GoalLlmClient {
   };
 }
 
+const TEST_CWD = "/tmp/moltbot-planner-cwd";
+
 describe("planner", () => {
   describe("generatePlan", () => {
     it("generates a valid task-based plan from LLM response", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Fix tests and write report",
           steps: [
             {
@@ -44,7 +47,7 @@ describe("planner", () => {
         }),
       );
 
-      const plan = await generatePlan(client, "Fix tests and write report");
+      const plan = await generatePlan(client, "Fix tests and write report", TEST_CWD);
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
         expect(plan.steps).toHaveLength(3);
@@ -55,12 +58,14 @@ describe("planner", () => {
         expect(plan.steps[2].durationMinutes).toBe(1);
         expect(plan.summary).toBe("Fix tests and write report");
         expect(plan.goal).toBe("Fix tests and write report");
+        expect(plan.workingDir).toBe("/tmp/moltbot");
       }
     });
 
     it("allows shell commands like pnpm test in step descriptions", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Run tests",
           steps: [
             {
@@ -74,7 +79,7 @@ describe("planner", () => {
         }),
       );
 
-      const plan = await generatePlan(client, "Run tests");
+      const plan = await generatePlan(client, "Run tests", TEST_CWD);
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
         expect(plan.steps[0].description).toContain("pnpm test");
@@ -89,7 +94,7 @@ describe("planner", () => {
         }),
       );
 
-      const result = await generatePlan(client, "Build a web app");
+      const result = await generatePlan(client, "Build a web app", TEST_CWD);
       expect("blocked" in result && result.blocked).toBe(true);
       if ("blocked" in result) {
         expect(result.question).toBe("What framework should I use?");
@@ -99,6 +104,7 @@ describe("planner", () => {
     it("rejects circular dependencies", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Circular",
           steps: [
             {
@@ -119,12 +125,13 @@ describe("planner", () => {
         }),
       );
 
-      await expect(generatePlan(client, "Circular")).rejects.toThrow(/cycle/i);
+      await expect(generatePlan(client, "Circular", TEST_CWD)).rejects.toThrow(/cycle/i);
     });
 
     it("rejects duplicate step IDs", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Dupes",
           steps: [
             { id: "1", description: "Step A", dependsOn: [], durationMinutes: 1, backend: "codex" },
@@ -139,12 +146,13 @@ describe("planner", () => {
         }),
       );
 
-      await expect(generatePlan(client, "Dupes")).rejects.toThrow(/duplicate step id/i);
+      await expect(generatePlan(client, "Dupes", TEST_CWD)).rejects.toThrow(/duplicate step id/i);
     });
 
     it("rejects dependency on nonexistent step", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Bad dep",
           steps: [
             {
@@ -158,29 +166,35 @@ describe("planner", () => {
         }),
       );
 
-      await expect(generatePlan(client, "Bad dep")).rejects.toThrow(/unknown step/i);
+      await expect(generatePlan(client, "Bad dep", TEST_CWD)).rejects.toThrow(/unknown step/i);
     });
 
     it("rejects missing backend selection", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Missing backend",
           steps: [{ id: "1", description: "Step A", dependsOn: [] }],
         }),
       );
 
-      await expect(generatePlan(client, "Missing backend")).rejects.toThrow(/backend is required/i);
+      await expect(generatePlan(client, "Missing backend", TEST_CWD)).rejects.toThrow(
+        /backend is required/i,
+      );
     });
 
     it("rejects empty steps array", async () => {
-      const client = mockClient(JSON.stringify({ summary: "Empty", steps: [] }));
+      const client = mockClient(
+        JSON.stringify({ workingDir: "/tmp/moltbot", summary: "Empty", steps: [] }),
+      );
 
-      await expect(generatePlan(client, "Empty")).rejects.toThrow(/at least one step/i);
+      await expect(generatePlan(client, "Empty", TEST_CWD)).rejects.toThrow(/at least one step/i);
     });
 
     it("defaults durationMinutes to undefined when not provided", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "No duration",
           steps: [
             {
@@ -193,7 +207,7 @@ describe("planner", () => {
         }),
       );
 
-      const plan = await generatePlan(client, "No duration");
+      const plan = await generatePlan(client, "No duration", TEST_CWD);
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
         expect(plan.steps[0].durationMinutes).toBeUndefined();
@@ -203,6 +217,7 @@ describe("planner", () => {
     it("rounds fractional durationMinutes", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Fractional duration",
           steps: [
             {
@@ -216,7 +231,7 @@ describe("planner", () => {
         }),
       );
 
-      const plan = await generatePlan(client, "Fractional duration");
+      const plan = await generatePlan(client, "Fractional duration", TEST_CWD);
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
         expect(plan.steps[0].durationMinutes).toBe(3);
@@ -226,6 +241,7 @@ describe("planner", () => {
     it("coerces numeric step IDs to strings", async () => {
       const client = mockClient(
         JSON.stringify({
+          workingDir: "/tmp/moltbot",
           summary: "Numeric IDs",
           steps: [
             {
@@ -246,11 +262,77 @@ describe("planner", () => {
         }),
       );
 
-      const plan = await generatePlan(client, "Numeric IDs");
+      const plan = await generatePlan(client, "Numeric IDs", TEST_CWD);
       expect("blocked" in plan).toBe(false);
       if (!("blocked" in plan)) {
         expect(plan.steps[0].id).toBe("1");
         expect(plan.steps[1].id).toBe("2");
+      }
+    });
+
+    it("rejects missing workingDir", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          summary: "Missing working dir",
+          steps: [
+            {
+              id: "1",
+              description: "Do thing",
+              dependsOn: [],
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      await expect(generatePlan(client, "Missing working dir", TEST_CWD)).rejects.toThrow(
+        /workingDir/i,
+      );
+    });
+
+    it("resolves ~/ workingDir to the current home directory", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "~/planner-workingdir-test",
+          summary: "Home path",
+          steps: [
+            {
+              id: "1",
+              description: "Do thing",
+              dependsOn: [],
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Home path", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.workingDir).toBe(path.join(os.homedir(), "planner-workingdir-test"));
+      }
+    });
+
+    it("preserves valid non-home workingDir values", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/custom-workspace",
+          summary: "Custom path",
+          steps: [
+            {
+              id: "1",
+              description: "Do thing",
+              dependsOn: [],
+              backend: "claude_code",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Custom path", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.workingDir).toBe("/tmp/custom-workspace");
       }
     });
   });
@@ -301,20 +383,20 @@ describe("planner", () => {
 
   describe("buildPlannerUserMessage", () => {
     it("returns simple goal message without scout data", () => {
-      const msg = buildPlannerUserMessage("Fix tests");
-      expect(msg).toBe("Goal: Fix tests");
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD);
+      expect(msg).toBe(`Goal: Fix tests\nCurrent workspace path: ${TEST_CWD}`);
     });
 
     it("returns simple goal message when scout errored", () => {
       const scout: ScoutResult = { status: "error", error: "timeout" };
-      const msg = buildPlannerUserMessage("Fix tests", scout);
-      expect(msg).toBe("Goal: Fix tests");
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout);
+      expect(msg).toBe(`Goal: Fix tests\nCurrent workspace path: ${TEST_CWD}`);
     });
 
     it("returns simple goal message when scout was skipped", () => {
       const scout: ScoutResult = { status: "skipped", reason: "no binary" };
-      const msg = buildPlannerUserMessage("Fix tests", scout);
-      expect(msg).toBe("Goal: Fix tests");
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout);
+      expect(msg).toBe(`Goal: Fix tests\nCurrent workspace path: ${TEST_CWD}`);
     });
 
     it("includes scout report and plan draft when scout succeeded", () => {
@@ -337,8 +419,9 @@ describe("planner", () => {
         },
         planDraft: "BEGIN_PLAN_DRAFT\nGOAL_ID: abc-123\ngraph TD\nEND_PLAN_DRAFT",
       };
-      const msg = buildPlannerUserMessage("Fix tests", scout);
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout);
       expect(msg).toContain("Goal: Fix tests");
+      expect(msg).toContain(`Current workspace path: ${TEST_CWD}`);
       expect(msg).toContain("Scout Report");
       expect(msg).toContain("BEGIN_PLAN_DRAFT");
       expect(msg).toContain('"n1"');

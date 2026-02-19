@@ -63,7 +63,8 @@ Additional requirements:
 
 const PLAN_ONLY_PROMPT = `${PLAN_SYSTEM_PROMPT}
 
-Goal: {{GOAL_TEXT}}`;
+Goal: {{GOAL_TEXT}}
+Current workspace path: {{CURRENT_WORKSPACE_PATH}}`;
 
 export type CliPlanningParams = {
   runId: string;
@@ -221,12 +222,16 @@ function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string 
 function buildPlanningPrompt(params: {
   runId: string;
   goalText: string;
+  cwd: string;
   scoutDir: string;
   includeScoutArtifacts: boolean;
 }): string {
-  const { runId, goalText, scoutDir, includeScoutArtifacts } = params;
+  const { runId, goalText, cwd, scoutDir, includeScoutArtifacts } = params;
   if (!includeScoutArtifacts) {
-    return PLAN_ONLY_PROMPT.replace("{{GOAL_TEXT}}", goalText);
+    return PLAN_ONLY_PROMPT.replace("{{GOAL_TEXT}}", goalText).replace(
+      "{{CURRENT_WORKSPACE_PATH}}",
+      cwd,
+    );
   }
 
   const templatePath = resolveScoutTemplatePath();
@@ -242,7 +247,13 @@ function buildPlanningPrompt(params: {
     outputDir: scoutDir,
   });
 
-  return scoutBrief + "\n\n" + PLAN_AND_SCOUT_APPENDIX.replaceAll("{{OUTPUT_DIR}}", scoutDir);
+  return [
+    `Current workspace path: ${cwd}`,
+    "",
+    scoutBrief,
+    "",
+    PLAN_AND_SCOUT_APPENDIX.replaceAll("{{OUTPUT_DIR}}", scoutDir),
+  ].join("\n");
 }
 
 function writePlannerRawOutput(scoutDir: string, rawOutput: string): void {
@@ -269,6 +280,7 @@ function clearStalePlanningArtifacts(scoutDir: string): void {
 
 function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
   const canonical = {
+    workingDir: plan.workingDir,
     summary: plan.summary,
     steps: plan.steps.map((step) => ({
       id: step.id,
@@ -311,12 +323,14 @@ function parsePlanWithFallback(goalText: string, scoutDir: string, stdout: strin
 function buildPlanRevisionPrompt(params: {
   goalText: string;
   currentPlan: Plan;
+  cwd: string;
   editInstructions: string;
   priorFeedback?: string[];
 }): string {
-  const { goalText, currentPlan, editInstructions, priorFeedback } = params;
+  const { goalText, currentPlan, cwd, editInstructions, priorFeedback } = params;
   const currentPlanJson = JSON.stringify(
     {
+      workingDir: currentPlan.workingDir,
       summary: currentPlan.summary,
       steps: currentPlan.steps.map((step) => ({
         id: step.id,
@@ -345,6 +359,7 @@ function buildPlanRevisionPrompt(params: {
     PLAN_SYSTEM_PROMPT,
     "",
     `Goal: ${goalText}`,
+    `Current workspace path: ${cwd}`,
     "",
     "Current plan:",
     currentPlanJson,
@@ -408,6 +423,7 @@ export async function runCliPlanRevision(
   const prompt = buildPlanRevisionPrompt({
     goalText,
     currentPlan,
+    cwd: plannerCwd,
     editInstructions,
     priorFeedback,
   });
@@ -529,6 +545,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const claudePrompt = buildPlanningPrompt({
     runId,
     goalText,
+    cwd: plannerCwd,
     scoutDir,
     includeScoutArtifacts,
   });
@@ -538,6 +555,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       : buildPlanningPrompt({
           runId,
           goalText,
+          cwd: plannerCwd,
           scoutDir: codexScoutDir,
           includeScoutArtifacts,
         });

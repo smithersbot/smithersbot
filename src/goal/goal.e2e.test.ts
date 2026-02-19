@@ -8,12 +8,17 @@ describe.skipIf(!process.env.CLAWDBOT_LIVE_TEST)("goal e2e (live LLM)", () => {
     if (!apiKey) throw new Error("ANTHROPIC_API_KEY required for live test");
 
     const client = createGoalLlmClient({ apiKey });
-    const result = await generatePlan(client, "Create a hello-world index.html file");
+    const result = await generatePlan(
+      client,
+      "Create a hello-world index.html file",
+      process.cwd(),
+    );
 
     expect("blocked" in result).toBe(false);
     if (!("blocked" in result)) {
       expect(result.steps.length).toBeGreaterThan(0);
       expect(result.summary).toBeTruthy();
+      expect(result.workingDir).toBeTruthy();
       // All steps should have valid structure
       for (const step of result.steps) {
         expect(step.id).toBeTruthy();
