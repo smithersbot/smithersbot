@@ -39,7 +39,7 @@ export type PlanStep = {
   id: string;
   description: string;
   /** Concise human-readable task headline for compact UI surfaces. */
-  shortSummary?: string;
+  shortSummary: string;
   dependsOn: string[];
   status: "pending" | "in_progress" | "done" | "blocked";
   durationMinutes?: number;
@@ -75,7 +75,7 @@ export type Plan = {
   steps: PlanStep[];
   summary: string;
   /** Concise human-readable goal headline for compact UI surfaces. */
-  shortSummary?: string;
+  shortSummary: string;
 };
 
 export type StepResult = {

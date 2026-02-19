@@ -59,6 +59,23 @@ function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
   };
 }
 
+function saveRunFixture(run: SerializedRun): void {
+  if (!run.plan) {
+    saveRun(run);
+    return;
+  }
+
+  const normalizedPlan = {
+    ...run.plan,
+    shortSummary: run.plan.shortSummary || run.plan.summary || run.goal,
+    steps: run.plan.steps.map((step) => ({
+      ...step,
+      shortSummary: step.shortSummary || step.description || step.id,
+    })),
+  };
+  saveRun({ ...run, plan: normalizedPlan });
+}
+
 const sampleRun: SerializedRun = {
   runId: "status-test-aaaa",
   goal: "Build a widget",
@@ -96,12 +113,12 @@ describe("goal-status command", () => {
   });
 
   it("shows run details in text mode", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", {}, rt);
     const lines = outputLines(rt.logs.join("\n"));
-    const headlineIndex = findLineIndex(lines, "✅ Done: Build a widget");
+    const headlineIndex = findLineIndex(lines, "✅ Done: Widget plan");
     const progressIndex = findLineIndex(lines, "**Progress** 1/1");
     const retriesIndex = findLineIndex(lines, "**Retries** 0 retries");
     const runIdIndex = findLineIndex(lines, "Run ID: status-test-aaaa");
@@ -112,7 +129,7 @@ describe("goal-status command", () => {
   });
 
   it("uses plan shortSummary for the status headline when present", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "status-short-summary",
       plan: {
@@ -130,7 +147,7 @@ describe("goal-status command", () => {
 
   it("renders in-progress Mermaid class when run lock is active", async () => {
     const runId = "status-inprog";
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId,
       state: "executing",
@@ -165,7 +182,7 @@ describe("goal-status command", () => {
   });
 
   it("--json outputs strict JSON object", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", { json: true }, rt);
@@ -177,7 +194,7 @@ describe("goal-status command", () => {
   });
 
   it("--output json outputs strict JSON object", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", { output: "json" }, rt);
@@ -188,12 +205,12 @@ describe("goal-status command", () => {
   });
 
   it("--output md with --json true uses md (output wins)", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-test-aaaa", { json: true, output: "md" }, rt);
     const output = rt.logs.join("\n");
-    expect(output).toContain("✅ Done: Build a widget");
+    expect(output).toContain("✅ Done: Widget plan");
     expect(output).toContain("**Progress**");
   });
 
@@ -215,7 +232,7 @@ describe("goal-status command", () => {
   });
 
   it("resolves partial run IDs", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("status-t", {}, rt);
@@ -224,7 +241,7 @@ describe("goal-status command", () => {
   });
 
   it("text mode shows lastError for incomplete runs", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "failed-status-run",
       state: "planning",
@@ -239,7 +256,7 @@ describe("goal-status command", () => {
   });
 
   it("JSON mode includes lastError for incomplete runs", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "failed-json-status",
       state: "planning",
@@ -255,7 +272,7 @@ describe("goal-status command", () => {
   });
 
   it("text mode shows blocked details with answer hint", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "blocked-detail-run",
       state: "blocked",
@@ -271,7 +288,7 @@ describe("goal-status command", () => {
   });
 
   it("text mode shows resume hint for auto-retry execution blocks", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "blocked-resume-run",
       state: "blocked",
@@ -292,7 +309,7 @@ describe("goal-status command", () => {
 
   it("shows retry summary without top steps output", async () => {
     const runId = "retry-status-run";
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId,
       state: "executing",
@@ -349,7 +366,7 @@ describe("goal-status command", () => {
 
   it("uses Telegram line budget when channel is telegram", async () => {
     const runId = "telegram-status-run";
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId,
       state: "awaiting_approval",
@@ -372,7 +389,7 @@ describe("goal-status command", () => {
     await goalStatusCommand(runId, { channel: "telegram" }, rt);
     const lines = outputLines(rt.logs.join("\n"));
     expect(lines.length).toBeLessThanOrEqual(15);
-    expect(findLineIndex(lines, "✅ Awaiting Approval: Build a widget")).toBe(0);
+    expect(findLineIndex(lines, "✅ Awaiting Approval: Long plan")).toBe(0);
     expect(findLineIndex(lines, "**Progress** 1/25")).toBe(1);
     expect(findLineIndex(lines, "**Retries** 0 retries")).toBe(2);
     expect(findLineIndex(lines, "**Top Steps**")).toBe(-1);
@@ -383,7 +400,7 @@ describe("goal-status command", () => {
   });
 
   it("JSON mode includes blocked object with prompt and requiredInputKey", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "blocked-json-detail",
       state: "blocked",

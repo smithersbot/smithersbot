@@ -104,7 +104,8 @@ function truncateLabel(text: string, maxChars: number): string {
 }
 
 function resolveNodeSummary(step: Plan["steps"][number]): string {
-  const shortSummary = step.shortSummary?.trim().replace(/\s+/g, " ");
+  const shortSummary =
+    typeof step.shortSummary === "string" ? step.shortSummary.trim().replace(/\s+/g, " ") : "";
   if (shortSummary) {
     return truncateLabel(shortSummary, MAX_NODE_LABEL_CHARS);
   }

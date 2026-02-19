@@ -104,7 +104,9 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
 }
 
 function resolveGoalTitle(run: SerializedRun): string {
-  const shortSummary = run.plan?.shortSummary?.trim();
+  if (!run.plan) return run.goal;
+  const shortSummary =
+    typeof run.plan.shortSummary === "string" ? run.plan.shortSummary.trim() : "";
   return shortSummary && shortSummary.length > 0 ? shortSummary : run.goal;
 }
 
@@ -112,7 +114,8 @@ function buildSteps(run: SerializedRun, retrySummary: GoalRetrySummaryResult): C
   const planSteps = run.plan?.steps ?? [];
   return planSteps.map((step) => ({
     id: step.id,
-    text: step.shortSummary?.trim() || step.description,
+    text:
+      (typeof step.shortSummary === "string" ? step.shortSummary.trim() : "") || step.description,
     state: step.status,
     attempt: retrySummary.attemptsByStepId.get(step.id),
   }));

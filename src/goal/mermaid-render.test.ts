@@ -6,15 +6,29 @@ import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan
 import type { Plan, PlanStep, StepResult } from "./types.js";
 
 function makePlan(steps: Plan["steps"]): Plan {
-  return { goal: "test", summary: "Test plan", steps };
+  return {
+    goal: "test",
+    workingDir: "/tmp/workspace",
+    summary: "Test plan",
+    shortSummary: "Test plan",
+    steps: steps.map((item) => ({
+      ...item,
+      shortSummary: item.shortSummary ?? normalizeLabel(item.description),
+    })),
+  };
 }
 
 function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
-  return {
+  const baseStep: PlanStep = {
+    id: overrides.id,
     description: `Step ${overrides.id}`,
     dependsOn: [],
     status: "pending",
     ...overrides,
+  };
+  return {
+    ...baseStep,
+    shortSummary: overrides.shortSummary ?? normalizeLabel(baseStep.description),
   };
 }
 

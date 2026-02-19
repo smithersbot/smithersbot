@@ -362,7 +362,8 @@ function formatTaskDetailSections(plan: Plan): string {
   const lines: string[] = ["", "**Tasks**", ""];
 
   plan.steps.forEach((step, index) => {
-    const taskTitle = step.shortSummary?.trim() || step.id;
+    const taskTitle =
+      (typeof step.shortSummary === "string" ? step.shortSummary.trim() : "") || step.id;
     lines.push(`**Task ${index + 1}: ${taskTitle}**`);
     const descriptionBullets = splitStructuredDetailLines(step.description);
     if (descriptionBullets.length > 0) {
@@ -423,7 +424,10 @@ function appendGoalIdFooter(summary: string, runId: string): string {
 
 function buildDoneSummaryWithManualTests(run: SerializedRun): string {
   const summary = formatCompactGoalCompletionSummary({
-    title: run.plan?.shortSummary?.trim() || run.goal,
+    title:
+      run.plan && typeof run.plan.shortSummary === "string"
+        ? run.plan.shortSummary.trim() || run.goal
+        : run.goal,
     steps:
       run.plan?.steps.map((step) => ({
         id: step.id,
@@ -1890,7 +1894,13 @@ function buildCaptionHeader(result: GoalPlanResult): string {
       workers.add(resolveStepWorker(step));
     }
     lines.push(formatCaptionLabel("Workers", [...workers].join(", ")));
-    lines.push(formatCaptionLabel("Plan", result.plan.shortSummary?.trim() || result.plan.summary));
+    lines.push(
+      formatCaptionLabel(
+        "Plan",
+        (typeof result.plan.shortSummary === "string" ? result.plan.shortSummary.trim() : "") ||
+          result.plan.summary,
+      ),
+    );
   }
   return lines.join("\n");
 }

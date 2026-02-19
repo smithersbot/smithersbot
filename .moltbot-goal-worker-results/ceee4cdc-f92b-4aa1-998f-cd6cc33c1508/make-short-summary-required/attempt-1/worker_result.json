@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Made Plan.shortSummary and PlanStep.shortSummary required, updated goal runtime/display paths and feedback merge handling, normalized affected test fixtures/mocks, and verified with pnpm build, pnpm lint, the requested vitest command, and live CLI goal status/detail runs via node scripts/run-node.mjs."}

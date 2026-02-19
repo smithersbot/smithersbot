@@ -1,8 +1,35 @@
 import type { Plan, PlanStep } from "./types.js";
 
+const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
+const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
+
+function collapseWhitespace(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateSummary(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const keep = Math.max(0, maxChars - 3);
+  return `${value.slice(0, keep).trimEnd()}...`;
+}
+
+function ensureShortSummary(raw: unknown, fallback: unknown, maxChars: number): string {
+  const normalized = collapseWhitespace(raw);
+  if (normalized.length > 0) {
+    return truncateSummary(normalized, maxChars);
+  }
+  return truncateSummary(collapseWhitespace(fallback), maxChars);
+}
+
 function cloneStep(step: PlanStep): PlanStep {
   return {
     ...step,
+    shortSummary: ensureShortSummary(
+      step.shortSummary,
+      step.description || step.id,
+      STEP_SHORT_SUMMARY_MAX_CHARS,
+    ),
     dependsOn: [...step.dependsOn],
     ...(step.failedDetail ? { failedDetail: { ...step.failedDetail } } : {}),
   };
@@ -84,7 +111,11 @@ export function mergeRevisedPlanWithDoneSteps(params: {
     goal: originalPlan.goal,
     workingDir: revisedPlan.workingDir,
     summary: revisedPlan.summary,
-    shortSummary: revisedPlan.shortSummary,
+    shortSummary: ensureShortSummary(
+      revisedPlan.shortSummary,
+      revisedPlan.summary || originalPlan.summary,
+      PLAN_SHORT_SUMMARY_MAX_CHARS,
+    ),
     steps: mergedSteps,
   };
 }

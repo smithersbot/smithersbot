@@ -111,8 +111,27 @@ vi.mock("./telegram-auth.js", () => ({
   resolveTelegramCommandAuth: (...args: unknown[]) => mockResolveTelegramCommandAuth(...args),
 }));
 
-function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
+function normalizeRunShortSummaries(run: SerializedRun): SerializedRun {
+  if (!run.plan) return run;
   return {
+    ...run,
+    plan: {
+      ...run.plan,
+      shortSummary: run.plan.shortSummary || run.plan.summary || run.goal,
+      steps: run.plan.steps.map((step) => ({
+        ...step,
+        shortSummary: step.shortSummary || step.description || step.id,
+      })),
+    },
+  };
+}
+
+function saveRunFixture(run: SerializedRun): void {
+  saveRun(normalizeRunShortSummaries(run));
+}
+
+function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
+  return normalizeRunShortSummaries({
     runId: "test-run-id-1234",
     goal: "Test goal",
     state: "awaiting_approval",
@@ -120,10 +139,12 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
       goal: "Test goal",
       workingDir: "/tmp/ws",
       summary: "A test plan",
+      shortSummary: "A test plan",
       steps: [
         {
           id: "1",
           description: "Step one",
+          shortSummary: "Step one",
           dependsOn: [],
           status: "pending",
           durationMinutes: 1,
@@ -141,7 +162,7 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
     telegramDoneMessage: overrides.telegramDoneMessage,
     telegramFeedbackPromptMessages: overrides.telegramFeedbackPromptMessages,
     ...overrides,
-  };
+  });
 }
 
 describe("goal-commands telegram adapter", () => {
@@ -236,7 +257,7 @@ describe("goal-commands telegram adapter", () => {
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
           createdRunId = opts.runId;
-          saveRun(makeRun({ runId: opts.runId, state: "planning" }));
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
           runtime.log("## Plan\n1. Do something");
           return undefined;
         },
@@ -286,7 +307,7 @@ describe("goal-commands telegram adapter", () => {
     it("skips autocheck in handleGoal when planAutocheck is off", async () => {
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
-          saveRun(makeRun({ runId: opts.runId, state: "planning" }));
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
           runtime.log("## Plan\n1. Do something");
           return undefined;
         },
@@ -346,7 +367,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("executes an approved run and returns short ack (quiet mode)", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "done", summary: "All steps completed." };
@@ -366,7 +387,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("surfaces blocked outcome to user instead of swallowing it", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, _runtime: unknown) => {
           return { status: "blocked", question: "Need credentials", requiredInputKey: "creds" };
@@ -381,7 +402,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns no-op for already done run", async () => {
-      saveRun(makeRun({ state: "done" }));
+      saveRunFixture(makeRun({ state: "done" }));
 
       const { handleGoalApprove } = await import("./goal-commands.js");
       const result = await handleGoalApprove("test-run");
@@ -390,7 +411,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("attempts resume for executing runs", async () => {
-      saveRun(makeRun({ state: "executing" }));
+      saveRunFixture(makeRun({ state: "executing" }));
       mockGoalResumeCommand.mockResolvedValue({
         status: "blocked",
         question: "Need credentials",
@@ -404,7 +425,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns undefined when onStatusChange is provided (no stray message)", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
 
       const { handleGoalApprove } = await import("./goal-commands.js");
@@ -418,7 +439,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns undefined when blocked update was already sent via onStatusChange", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
         const onStatusChange = (opts as { onStatusChange?: (event: unknown) => Promise<void> })
           .onStatusChange;
@@ -443,7 +464,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns blocked message when no blocked status update was sent", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockResolvedValue({
         status: "blocked",
         question: "Out of credits",
@@ -460,7 +481,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns cancelled message when onStatusChange is provided", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalResumeCommand.mockResolvedValue({ status: "cancelled" });
 
       const { handleGoalApprove } = await import("./goal-commands.js");
@@ -486,7 +507,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("cancels an awaiting_approval run", async () => {
-      saveRun(makeRun({ state: "awaiting_approval" }));
+      saveRunFixture(makeRun({ state: "awaiting_approval" }));
 
       const { handleGoalReject } = await import("./goal-commands.js");
       const result = await handleGoalReject("test-run");
@@ -498,7 +519,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("refuses to reject a non-awaiting_approval run", async () => {
-      saveRun(makeRun({ state: "done" }));
+      saveRunFixture(makeRun({ state: "done" }));
 
       const { handleGoalReject } = await import("./goal-commands.js");
       const result = await handleGoalReject("test-run");
@@ -507,7 +528,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns no-op for already cancelled run", async () => {
-      saveRun(makeRun({ state: "cancelled" }));
+      saveRunFixture(makeRun({ state: "cancelled" }));
 
       const { handleGoalReject } = await import("./goal-commands.js");
       const result = await handleGoalReject("test-run");
@@ -576,7 +597,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("appends structured task detail sections using short summaries", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId: "abc12345-0000-0000-0000-000000000000",
           plan: {
@@ -614,14 +635,14 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("**Task 1: Harden login**");
       expect(result).toContain("• Validate credential checks.");
       expect(result).toContain("• Prevent blank passwords.");
-      expect(result).toContain("**Task 2: step-release**");
+      expect(result).toContain("**Task 2: Ship release candidate**");
       expect(result).toContain("• Depends on: step-login");
     });
   });
 
   describe("sendGoalStatusResponse", () => {
     it("sends status as a DAG PNG when the run has a plan", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalStatusCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log("Run: test-run-id-1234");
@@ -655,7 +676,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("falls back to text when the run has no plan", async () => {
-      saveRun(makeRun({ plan: null }));
+      saveRunFixture(makeRun({ plan: null }));
       mockGoalStatusCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log("Run: test-run-id-1234");
@@ -682,7 +703,7 @@ describe("goal-commands telegram adapter", () => {
 
   describe("sendGoalDetailResponse", () => {
     it("sends detail as a DAG PNG when the run has a plan", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockGoalDetailCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log("Run: test-run-id-1234");
@@ -717,7 +738,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("falls back to text when the run has no plan", async () => {
-      saveRun(makeRun({ plan: null }));
+      saveRunFixture(makeRun({ plan: null }));
       mockGoalDetailCommand.mockImplementation(
         async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
           runtime.log("Run: test-run-id-1234");
@@ -745,7 +766,7 @@ describe("goal-commands telegram adapter", () => {
 
   describe("buildOnStatusChange", () => {
     it("sends compact all_done captions without redundant DONE prefix", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           plan: {
@@ -818,7 +839,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("persists manual tests when all_done includes suggestions", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           plan: {
@@ -873,7 +894,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("persists manual-test generation errors when suggestions are unavailable", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           plan: {
@@ -942,7 +963,7 @@ describe("goal-commands telegram adapter", () => {
         ],
       } as const;
 
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 88 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 89 });
@@ -988,7 +1009,7 @@ describe("goal-commands telegram adapter", () => {
         ],
       } as const;
 
-      saveRun(
+      saveRunFixture(
         makeRun({
           plan: degradedPlan,
           plannerBackendUsed: "codex",
@@ -1039,7 +1060,7 @@ describe("goal-commands telegram adapter", () => {
         ],
       } as const;
 
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 201 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 202 });
@@ -1070,7 +1091,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("threads reply parameters when PNG plan delivery succeeds", async () => {
       const plan = makeRun().plan!;
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 301 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 302 });
@@ -1100,7 +1121,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("threads reply parameters when DAG send falls back to text", async () => {
       const plan = makeRun().plan!;
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
       mockRenderMermaidToPng.mockReturnValueOnce(undefined);
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 401 });
@@ -1132,7 +1153,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("threads reply parameters when sendGoalPlanMessage fallback is used", async () => {
       const plan = makeRun().plan!;
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
 
       const sendPhoto = vi.fn().mockRejectedValue(new Error("photo failed"));
       const sendMessage = vi
@@ -1166,7 +1187,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("threads reply parameters when plan delivery reaches minimal fallback", async () => {
       const plan = makeRun().plan!;
-      saveRun(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan }));
 
       const sendPhoto = vi.fn().mockRejectedValue(new Error("photo failed"));
       const sendMessage = vi
@@ -1212,7 +1233,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("auto-resolves key, passes quiet:true, and returns short ack", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "blocked",
           blocked: {
@@ -1244,7 +1265,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns error for non-blocked run", async () => {
-      saveRun(makeRun({ state: "done", blocked: null }));
+      saveRunFixture(makeRun({ state: "done", blocked: null }));
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "val");
@@ -1252,7 +1273,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("treats non-blocked 'resume' answers as an explicit resume request", async () => {
-      saveRun(makeRun({ state: "cancelled", blocked: null }));
+      saveRunFixture(makeRun({ state: "cancelled", blocked: null }));
       mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "All steps completed." });
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
@@ -1270,7 +1291,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("auto-resumes execution after answering a blocked run (short ack)", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "blocked",
           blocked: {
@@ -1297,7 +1318,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns short ack when auto-resume results in blocked again", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "blocked",
           blocked: {
@@ -1328,7 +1349,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns GoalPlanResult with runId and blocked when replanning still needs info", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "blocked",
           blocked: {
@@ -1360,7 +1381,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns undefined when onStatusChange is provided (blocked path, no stray message)", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "blocked",
           blocked: {
@@ -1383,7 +1404,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("suppresses duplicate blocked reply when resume emitted fully_blocked event", async () => {
-      saveRun(makeRun({ state: "executing" }));
+      saveRunFixture(makeRun({ state: "executing" }));
       mockGoalResumeCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
         const onStatusChange = (opts as { onStatusChange?: (event: unknown) => Promise<void> })
           .onStatusChange;
@@ -1408,7 +1429,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns blocked reply when resume blocks before status callback emits", async () => {
-      saveRun(makeRun({ state: "executing" }));
+      saveRunFixture(makeRun({ state: "executing" }));
       mockGoalResumeCommand.mockResolvedValue({
         status: "blocked",
         question: "Need credentials",
@@ -1433,7 +1454,7 @@ describe("goal-commands telegram adapter", () => {
 
   describe("handleGoalList", () => {
     it("returns formatted code block with runs", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId: "abc12345-dead-beef-0000-000000000000",
           goal: "Build website",
@@ -1458,7 +1479,7 @@ describe("goal-commands telegram adapter", () => {
 
   describe("handleGoalFeedback", () => {
     it("replans a done run, preserves completed steps, transitions to executing, and auto-resumes", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           plan: {
@@ -1559,7 +1580,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("retries feedback replanning with subscription auth after api_key auth failure", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           plan: {
@@ -1615,7 +1636,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("emits all_done summary with short headline and Goal ID footer when no new steps are needed", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           goal: "Very long goal that should not be used as the compact done headline",
           state: "done",
@@ -1683,7 +1704,7 @@ describe("goal-commands telegram adapter", () => {
         `goal-feedback-wd-new-${Date.now().toString(36)}`,
       );
       fs.rmSync(revisedWorkingDir, { recursive: true, force: true });
-      saveRun(
+      saveRunFixture(
         makeRun({
           state: "done",
           workingDir: originalWorkingDir,
@@ -1751,7 +1772,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("creates a revision", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
 
       const revisedPlan = {
         goal: "Test goal",
@@ -1806,7 +1827,7 @@ describe("goal-commands telegram adapter", () => {
     it("syncs run workingDir when revised plan changes it", async () => {
       const originalWorkingDir = "/tmp/original-working-dir";
       const revisedWorkingDir = "/tmp/revised-working-dir";
-      saveRun(makeRun({ workingDir: originalWorkingDir }));
+      saveRunFixture(makeRun({ workingDir: originalWorkingDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -1841,7 +1862,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("runs autocheck in handleGoalEdit and persists updated session metadata", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           autocheckSessionId: "session-old",
           autocheckBackend: "codex",
@@ -1902,7 +1923,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("skips autocheck in handleGoalEdit when planAutocheck is off", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -1935,7 +1956,7 @@ describe("goal-commands telegram adapter", () => {
     it("updates run working dir from explicit edit instructions", async () => {
       const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-old-"));
       const newDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-new-"));
-      saveRun(makeRun({ workingDir: originalDir }));
+      saveRunFixture(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -1977,7 +1998,7 @@ describe("goal-commands telegram adapter", () => {
     ): Promise<void> {
       const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-home-old-"));
       fs.rmSync(resolvedPath, { recursive: true, force: true });
-      saveRun(makeRun({ workingDir: originalDir }));
+      saveRunFixture(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -2053,7 +2074,7 @@ describe("goal-commands telegram adapter", () => {
       const newDir = path.join(workspaceRoot, "earnlayer-marketing");
       fs.mkdirSync(originalDir, { recursive: true });
       fs.mkdirSync(newDir, { recursive: true });
-      saveRun(makeRun({ workingDir: originalDir }));
+      saveRunFixture(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -2098,7 +2119,7 @@ describe("goal-commands telegram adapter", () => {
       const newDir = path.join(workspaceRoot, "earnlayer-marketing");
       fs.mkdirSync(originalDir, { recursive: true });
       fs.mkdirSync(newDir, { recursive: true });
-      saveRun(makeRun({ workingDir: originalDir }));
+      saveRunFixture(makeRun({ workingDir: originalDir }));
 
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
@@ -2135,7 +2156,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("rejects unresolvable relative directory", async () => {
       const existingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-existing-"));
-      saveRun(makeRun({ workingDir: existingDir }));
+      saveRunFixture(makeRun({ workingDir: existingDir }));
       const missingRelativePath = `never/exists/${Date.now().toString(36)}`;
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -2149,7 +2170,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("refuses non-awaiting_approval run", async () => {
-      saveRun(makeRun({ state: "done" }));
+      saveRunFixture(makeRun({ state: "done" }));
 
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "change it");
@@ -2158,7 +2179,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("refuses run without plan", async () => {
-      saveRun(makeRun({ plan: null }));
+      saveRunFixture(makeRun({ plan: null }));
 
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "change it");
@@ -2166,7 +2187,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("shows fallback notice and persists degraded planner metadata on revision fallback", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
@@ -2204,7 +2225,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns auth error when revision CLI reports auth failure", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockRunCliPlanRevision.mockRejectedValue(new Error("authentication failed"));
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -2220,7 +2241,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("handles blocked revision", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           blocked: true,
@@ -2336,7 +2357,7 @@ describe("goal-commands telegram adapter", () => {
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
           await new Promise<void>((resolve) => {
             pendingResolvers.push(() => {
-              saveRun(makeRun({ runId: opts.runId, state: "planning" }));
+              saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
               runtime.log("## Plan\n1. Do something");
               resolve();
             });
@@ -2601,7 +2622,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("routes gTD callback to manual test detail message", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId,
           state: "done",
@@ -2629,7 +2650,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("routes gTD callback to fallback manual test details when available", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId,
           state: "done",
@@ -2662,7 +2683,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("routes gTD callback to a useful fallback when manual tests are unavailable", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId,
           state: "done",
@@ -2682,7 +2703,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("routes gIF callback to force-reply prompt and persists prompt tracking", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
-      saveRun(makeRun({ runId, state: "done" }));
+      saveRunFixture(makeRun({ runId, state: "done" }));
       const harness = makeCallbackHarness();
       harness.sendMessage.mockResolvedValue({ message_id: 777 });
       await harness.register();
@@ -2708,7 +2729,7 @@ describe("goal-commands telegram adapter", () => {
 
     it("falls back to persisted done-message id when callback message_id is missing", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
-      saveRun(
+      saveRunFixture(
         makeRun({
           runId,
           state: "done",
@@ -3178,7 +3199,7 @@ describe("goal-commands telegram adapter", () => {
 
   describe("findRunByPlanMessageId", () => {
     it("matches latest messageId", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           telegramPlanMessage: { chatId: 123, messageId: 456 },
         }),
@@ -3191,7 +3212,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("matches history messageId", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           telegramPlanMessage: { chatId: 123, messageId: 789, messageHistory: [456] },
         }),
@@ -3204,7 +3225,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns undefined for non-goal messages", async () => {
-      saveRun(
+      saveRunFixture(
         makeRun({
           telegramPlanMessage: { chatId: 123, messageId: 456 },
         }),
@@ -3216,7 +3237,7 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("returns undefined when no runs have telegramPlanMessage", async () => {
-      saveRun(makeRun());
+      saveRunFixture(makeRun());
 
       const { findRunByPlanMessageId } = await import("./goal-commands.js");
       expect(findRunByPlanMessageId(123, 456)).toBeUndefined();

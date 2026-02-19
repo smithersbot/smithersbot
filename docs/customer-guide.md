@@ -58,13 +58,14 @@ Once a goal completes, it will tell you it's completed.
 
 ## Blocked Tasks
 Sometimes the agent really can't continue on a task without your input. In this case it will set the task to blocked and won't continue executing that task or any tasks dependant on it until you give the input it requires.
+
 **Examples of reasons a task would block:** 
 - It takes longer than 2x its expected time to complete. 
 - You run out of Claude or OpenAI usage. 
-- You made edits to its code and broke something.
+- There are edits to its code that broke something.
 
 **How to Unblock Tasks:**
-If it's a simple fix you need to make such as waiting until your OpenAI usage resets, just click "▶️ Resume Task"
+If it's a simple fix you need to make such as waiting until your OpenAI usage resets, just click "▶️ Resume Task" when you want it to resume.
 If you need to provide input (i.e. it's trying to do something out of scope such as running a massive set of tests that's taking too long), reply to the "BLOCKED TASK" message and tell it what to do differently and it will take your feedback and resume.
 
 **Note:** If you're unsure how to unblock a task, use Repo Chat for clarity on why the task is blocked and what you should do. (See section below "Repo Chat" for more).
@@ -126,12 +127,12 @@ I want to build something that sends me a report every week about developments i
 For example, send this message that's not responding to any other message:
 ```text
 The goal c8ee4cdc is currently executing but it's taking way longer than its time estimate. Please check what it's doing now and whether it's hung and report back to me with why it's taking so long and if I should stop it.
-``` 
+```
 
 ## Your Bot Limits
 
 - Your bot uses your Claude subscription usage limits.
-- It can draft content, summarize information, and help with research.
+- It can draft content, summarize information, build automations and help with research.
 - It can make mistakes, so review important outputs before using them.
 - It does not automatically access your private systems unless you explicitly set that up.
 - Large or complex tasks may take longer.

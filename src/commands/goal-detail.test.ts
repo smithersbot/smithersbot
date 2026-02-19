@@ -63,6 +63,23 @@ function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
   };
 }
 
+function saveRunFixture(run: SerializedRun): void {
+  if (!run.plan) {
+    saveRun(run);
+    return;
+  }
+
+  const normalizedPlan = {
+    ...run.plan,
+    shortSummary: run.plan.shortSummary || run.plan.summary || run.goal,
+    steps: run.plan.steps.map((step) => ({
+      ...step,
+      shortSummary: step.shortSummary || step.description || step.id,
+    })),
+  };
+  saveRun({ ...run, plan: normalizedPlan });
+}
+
 const sampleRun: SerializedRun = {
   runId: "detail-test-aaaa",
   goal: "Build a widget",
@@ -102,7 +119,7 @@ describe("goal-detail command", () => {
   it("shows all steps with full text and no truncation", async () => {
     const longDescription =
       "This is a very long step description with an explicit tail marker END-OF-LONG-DESCRIPTION-MARKER";
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "detail-full-steps",
       state: "executing",
@@ -148,7 +165,7 @@ describe("goal-detail command", () => {
   });
 
   it("uses plan and step shortSummary values when present", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "detail-short-summary",
       plan: {
@@ -187,7 +204,7 @@ describe("goal-detail command", () => {
   });
 
   it("does not cap telegram detail output to the concise line budget", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "detail-telegram-full",
       state: "awaiting_approval",
@@ -217,7 +234,7 @@ describe("goal-detail command", () => {
   });
 
   it("--json outputs strict JSON object", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalDetailCommand } = await import("./goal-detail.js");
     const rt = mockRuntime();
     await goalDetailCommand("detail-test-aaaa", { json: true }, rt);
@@ -230,7 +247,7 @@ describe("goal-detail command", () => {
 
   it("renders step states for each step", async () => {
     const runId = "detail-step-states";
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId,
       state: "executing",
@@ -271,7 +288,7 @@ describe("goal-detail command", () => {
   });
 
   it("shows blocked details and answer hint while retaining full steps", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "detail-blocked-run",
       state: "blocked",
@@ -302,7 +319,7 @@ describe("goal-detail command", () => {
   });
 
   it("shows resume hint for auto-retry execution blocks", async () => {
-    saveRun({
+    saveRunFixture({
       ...sampleRun,
       runId: "detail-resume-blocked",
       state: "blocked",
@@ -331,7 +348,7 @@ describe("goal-detail command", () => {
   });
 
   it("--output json outputs strict JSON object", async () => {
-    saveRun(sampleRun);
+    saveRunFixture(sampleRun);
     const { goalDetailCommand } = await import("./goal-detail.js");
     const rt = mockRuntime();
     await goalDetailCommand("detail-test-aaaa", { output: "json" }, rt);

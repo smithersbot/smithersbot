@@ -2,7 +2,28 @@ import { describe, expect, it } from "vitest";
 import { formatPlanOutput } from "./format-output.js";
 import type { Plan, StepResult } from "./types.js";
 
-const samplePlan: Plan = {
+type PlanStepInput = Omit<Plan["steps"][number], "shortSummary"> & { shortSummary?: string };
+
+function makePlan(input: {
+  goal: string;
+  workingDir: string;
+  summary: string;
+  shortSummary?: string;
+  steps: PlanStepInput[];
+}): Plan {
+  return {
+    goal: input.goal,
+    workingDir: input.workingDir,
+    summary: input.summary,
+    shortSummary: input.shortSummary ?? input.summary,
+    steps: input.steps.map((step) => ({
+      ...step,
+      shortSummary: step.shortSummary ?? step.description,
+    })),
+  };
+}
+
+const samplePlan: Plan = makePlan({
   goal: "Create a landing page",
   workingDir: "/tmp/workspace",
   summary: "Build a simple landing page",
@@ -29,10 +50,10 @@ const samplePlan: Plan = {
       durationMinutes: 1,
     },
   ],
-};
+});
 
 // Branching: A -> B, A -> C
-const branchingPlan: Plan = {
+const branchingPlan: Plan = makePlan({
   goal: "Branch test",
   workingDir: "/tmp/workspace",
   summary: "Branching DAG",
@@ -59,10 +80,10 @@ const branchingPlan: Plan = {
       durationMinutes: 1,
     },
   ],
-};
+});
 
 // Fan-in: B -> D, C -> D (with root A -> B, A -> C)
-const fanInPlan: Plan = {
+const fanInPlan: Plan = makePlan({
   goal: "Fan-in test",
   workingDir: "/tmp/workspace",
   summary: "Fan-in DAG",
@@ -96,9 +117,9 @@ const fanInPlan: Plan = {
       durationMinutes: 1,
     },
   ],
-};
+});
 
-const doneSingleStepPlan: Plan = {
+const doneSingleStepPlan: Plan = makePlan({
   goal: "Done duration test",
   workingDir: "/tmp/workspace",
   summary: "Single completed step",
@@ -111,7 +132,7 @@ const doneSingleStepPlan: Plan = {
       durationMinutes: 10,
     },
   ],
-};
+});
 
 /** Runtime legend tokens that must NOT appear in static plan output. */
 const RUNTIME_LEGEND_TOKENS = ["[x]", "[>]", "[!]", "[-]"];

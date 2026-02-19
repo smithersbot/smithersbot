@@ -34,10 +34,12 @@ function makePlan(summary: string, suffix = "1", backend: "codex" | "claude_code
     goal: "Ship feature",
     workingDir: "/tmp/workspace",
     summary,
+    shortSummary: summary,
     steps: [
       {
         id: `step-${suffix}`,
         description: `Implement ${summary}`,
+        shortSummary: `Implement ${summary}`,
         dependsOn: [],
         status: "pending",
         durationMinutes: 15,

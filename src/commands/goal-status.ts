@@ -116,7 +116,9 @@ function fitLinesToBudget(lines: string[], maxLines: number): string[] {
 }
 
 function resolveGoalTitle(run: SerializedRun): string {
-  const shortSummary = run.plan?.shortSummary?.trim();
+  if (!run.plan) return run.goal;
+  const shortSummary =
+    typeof run.plan.shortSummary === "string" ? run.plan.shortSummary.trim() : "";
   return shortSummary && shortSummary.length > 0 ? shortSummary : run.goal;
 }
 

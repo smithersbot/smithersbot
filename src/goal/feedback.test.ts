@@ -13,6 +13,7 @@ describe("goal feedback planning helpers", () => {
   it("preserves done steps, re-inserts omitted done steps, and strips dangling dependencies", () => {
     const originalPlan: Plan = {
       goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
       summary: "Original",
       shortSummary: "Ship signup flow",
       steps: [
@@ -42,6 +43,7 @@ describe("goal feedback planning helpers", () => {
 
     const revisedPlan: Plan = {
       goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
       summary: "Revised from feedback",
       shortSummary: "Fix Safari signup issue",
       steps: [
@@ -85,19 +87,47 @@ describe("goal feedback planning helpers", () => {
   it("preserves all completed steps across iterative feedback rounds", () => {
     const baseDonePlan: Plan = {
       goal: "Fix release",
+      workingDir: "/tmp/workspace",
       summary: "Done",
+      shortSummary: "Fix release",
       steps: [
-        { id: "1", description: "Initial fix", dependsOn: [], status: "done" },
-        { id: "2", description: "Regression test", dependsOn: ["1"], status: "done" },
+        {
+          id: "1",
+          description: "Initial fix",
+          shortSummary: "Initial fix",
+          dependsOn: [],
+          status: "done",
+        },
+        {
+          id: "2",
+          description: "Regression test",
+          shortSummary: "Regression test",
+          dependsOn: ["1"],
+          status: "done",
+        },
       ],
     };
 
     const firstRevision: Plan = {
       goal: "Fix release",
+      workingDir: "/tmp/workspace",
       summary: "First feedback revision",
+      shortSummary: "First feedback revision",
       steps: [
-        { id: "1", description: "Initial fix", dependsOn: [], status: "pending" },
-        { id: "3", description: "Fix crash in Safari", dependsOn: ["1"], status: "pending" },
+        {
+          id: "1",
+          description: "Initial fix",
+          shortSummary: "Initial fix",
+          dependsOn: [],
+          status: "pending",
+        },
+        {
+          id: "3",
+          description: "Fix crash in Safari",
+          shortSummary: "Fix crash in Safari",
+          dependsOn: ["1"],
+          status: "pending",
+        },
       ],
     };
     const firstMerged = mergeRevisedPlanWithDoneSteps({
@@ -113,10 +143,24 @@ describe("goal feedback planning helpers", () => {
 
     const secondRevision: Plan = {
       goal: "Fix release",
+      workingDir: "/tmp/workspace",
       summary: "Second feedback revision",
+      shortSummary: "Second feedback revision",
       steps: [
-        { id: "1", description: "Initial fix", dependsOn: [], status: "pending" },
-        { id: "4", description: "Fix iOS rendering bug", dependsOn: ["3"], status: "pending" },
+        {
+          id: "1",
+          description: "Initial fix",
+          shortSummary: "Initial fix",
+          dependsOn: [],
+          status: "pending",
+        },
+        {
+          id: "4",
+          description: "Fix iOS rendering bug",
+          shortSummary: "Fix iOS rendering bug",
+          dependsOn: ["3"],
+          status: "pending",
+        },
       ],
     };
 
