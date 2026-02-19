@@ -54,6 +54,10 @@ vi.mock("./attempt-bundle.js", () => ({
   formatAttemptBundleSummary: () => "previous attempt",
 }));
 
+vi.mock("./manual-tests.js", () => ({
+  generateManualTests: () => Promise.resolve([]),
+}));
+
 // --- Real run-store backed by temp directory ---
 
 let testGoalsDir: string;

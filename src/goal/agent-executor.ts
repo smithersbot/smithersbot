@@ -11,7 +11,7 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import type { GoalBackendId } from "./backend-types.js";
-import { formatCompactGoalCompletionSummary } from "./compact-output.js";
+import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
@@ -105,6 +105,8 @@ export type ExecuteGoalParams = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Optional LLM client for generating manual test suggestions on completion. */
   manualTestsClient?: GoalLlmClient;
+  /** Output channel for formatting the completion summary. */
+  channel?: GoalOutputChannel;
 };
 
 /** Append a summary line to the top-level WORKING.md for this goal run. */
@@ -500,6 +502,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       steps: orderedSteps,
       maxTurnsPerTask,
       manualTests,
+      channel: params.channel,
     });
     if (onStatusChange) {
       await onStatusChange({
@@ -689,6 +692,7 @@ function buildGoalSummary(params: {
   steps: PlanStep[];
   maxTurnsPerTask?: number;
   manualTests?: ManualTestSuggestion[];
+  channel?: GoalOutputChannel;
 }): string {
   return formatCompactGoalCompletionSummary({
     title: params.goal,
@@ -703,7 +707,7 @@ function buildGoalSummary(params: {
     resolveStepAttemptsUsed: (stepId) =>
       loadAttemptBundles(resolveWorkerDir(params.runId, stepId)).length,
     manualTests: params.manualTests,
-    channel: "telegram",
+    channel: params.channel ?? "cli",
   }).text;
 }
 
