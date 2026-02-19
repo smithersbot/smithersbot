@@ -1,7 +1,9 @@
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 import type { TelegramMessage } from "./bot/types.js";
 
-export const COMMAND_FRAGMENT_START_THRESHOLD = 4000;
+// Telegram splits at 4096 chars, but command prefixes reduce ctx.match length.
+// Start buffering earlier so split command chunks are still combined reliably.
+export const COMMAND_FRAGMENT_START_THRESHOLD = 3800;
 export const COMMAND_FRAGMENT_MAX_GAP_MS = 1500;
 export const COMMAND_FRAGMENT_MAX_ID_GAP = 1;
 export const COMMAND_FRAGMENT_MAX_PARTS = 12;

@@ -453,14 +453,15 @@ describe("command-fragments", () => {
   });
 
   describe("integration", () => {
-    it("short /new_goal (<4000 chars) is not buffered", async () => {
+    it("short /new_goal (500-char full message) is not buffered", async () => {
       const { createTelegramBot } = await import("./bot.js");
       createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
 
       const messageHandler = getOnHandler("message");
       const newGoalHandler = getCommandHandler("new_goal");
 
-      const shortPrompt = "build a hello world";
+      const shortPrompt = "s".repeat(490);
+      expect(`/new_goal ${shortPrompt}`.length).toBe(500);
       await newGoalHandler({
         match: shortPrompt,
         message: makeTelegramMessage({
@@ -497,7 +498,7 @@ describe("command-fragments", () => {
       );
     });
 
-    it("consumes split /new_goal continuation and does not route it to repo chat", async () => {
+    it("buffers /new_goal when prompt is 3894 chars but full message is 3904", async () => {
       vi.useFakeTimers();
       const { createTelegramBot } = await import("./bot.js");
       createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
@@ -505,8 +506,9 @@ describe("command-fragments", () => {
       const messageHandler = getOnHandler("message");
       const newGoalHandler = getCommandHandler("new_goal");
 
-      const part1 = "A".repeat(4050);
-      const part2 = "B".repeat(120);
+      const part1 = "A".repeat(3894);
+      const part2 = "B".repeat(2752);
+      expect(`/new_goal ${part1}`.length).toBe(3904);
 
       await newGoalHandler({
         match: part1,
@@ -515,6 +517,8 @@ describe("command-fragments", () => {
           text: `/new_goal ${part1}`,
         }),
       });
+
+      expect(goalCommandMock).not.toHaveBeenCalled();
 
       await messageHandler({
         message: makeTelegramMessage({
@@ -592,8 +596,9 @@ describe("command-fragments", () => {
       const messageHandler = getOnHandler("message");
       const repoChatHandler = getCommandHandler("repo_chat");
 
-      const part1 = "R".repeat(4050);
-      const part2 = "S".repeat(75);
+      const part1 = "R".repeat(3890);
+      const part2 = "S".repeat(2752);
+      expect(`/repo_chat ${part1}`.length).toBe(3901);
 
       await repoChatHandler({
         match: part1,
@@ -603,6 +608,8 @@ describe("command-fragments", () => {
         }),
       });
 
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
       await messageHandler({
         message: makeTelegramMessage({
           messageId: 201,
@@ -611,6 +618,8 @@ describe("command-fragments", () => {
         me: { username: "moltbot_bot" },
         getFile: async () => ({}),
       });
+
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
 

@@ -2795,7 +2795,11 @@ export function registerTelegramGoalCommands({
     };
 
     const msg = ctx.message;
-    if (msg && commandFragmentBuffer && text.length >= COMMAND_FRAGMENT_START_THRESHOLD) {
+    if (
+      msg &&
+      commandFragmentBuffer &&
+      (msg.text ?? "").length >= COMMAND_FRAGMENT_START_THRESHOLD
+    ) {
       const normalized = normalizeCommandFragmentParams(msg, accountId);
       const key = buildCommandFragmentKey(normalized);
       if (commandFragmentBuffer.hasPending(key)) {
