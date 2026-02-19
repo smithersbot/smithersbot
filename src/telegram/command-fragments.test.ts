@@ -301,7 +301,7 @@ describe("command-fragments", () => {
       expect(buffer.hasPending(key)).toBe(false);
     });
 
-    it("rejects non-consecutive message IDs", () => {
+    it("allows append when message IDs have an intervening gap of 3", () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();
       const key = "cmd:42:main:7";
@@ -320,7 +320,29 @@ describe("command-fragments", () => {
         flushCallback: vi.fn(),
       });
 
-      expect(buffer.tryAppend(key, 102, "second", 20)).toBe(false);
+      expect(buffer.tryAppend(key, 103, "second", 20)).toBe(true);
+    });
+
+    it("rejects message IDs when gap exceeds 5", () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+
+      buffer.bufferCommand(key, {
+        commandName: "new_goal",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.tryAppend(key, 106, "second", 20)).toBe(false);
     });
 
     it("rejects append when time gap is too large", () => {

@@ -303,7 +303,9 @@ export const registerTelegramHandlers = ({
 }) => {
   const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
   const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 1500;
-  const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 1;
+  // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
+  // The 1500ms time gap is the primary guard against false matches.
+  const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 5;
   const TELEGRAM_TEXT_FRAGMENT_MAX_PARTS = 12;
   const TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
 

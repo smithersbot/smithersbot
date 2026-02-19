@@ -764,4 +764,114 @@ describe("telegram text fragments", () => {
     },
     TEXT_FRAGMENT_TEST_TIMEOUT_MS,
   );
+
+  it(
+    "appends near-limit text fragments with an ID gap of 3",
+    async () => {
+      const { createTelegramBot } = await import("./bot.js");
+      const replyModule = await import("../auto-reply/reply.js");
+      const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
+
+      onSpy.mockReset();
+      replySpy.mockReset();
+
+      createTelegramBot({ token: "tok" });
+      const handler = onSpy.mock.calls.find((call) => call[0] === "message")?.[1] as (
+        ctx: Record<string, unknown>,
+      ) => Promise<void>;
+      expect(handler).toBeDefined();
+
+      const part1 = "A".repeat(4050);
+      const part2 = "B".repeat(50);
+
+      await handler({
+        message: {
+          chat: { id: 42, type: "private" },
+          message_id: 20,
+          date: 1736380800,
+          text: part1,
+        },
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      await handler({
+        message: {
+          chat: { id: 42, type: "private" },
+          message_id: 23,
+          date: 1736380801,
+          text: part2,
+        },
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      expect(replySpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(TEXT_FRAGMENT_FLUSH_MS);
+
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      const payload = replySpy.mock.calls[0][0] as { RawBody?: string; Body?: string };
+      expect(payload.RawBody).toContain(part1.slice(0, 32));
+      expect(payload.RawBody).toContain(part2.slice(0, 32));
+    },
+    TEXT_FRAGMENT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "does not append near-limit text fragments when ID gap exceeds 5",
+    async () => {
+      const { createTelegramBot } = await import("./bot.js");
+      const replyModule = await import("../auto-reply/reply.js");
+      const replySpy = replyModule.__replySpy as unknown as ReturnType<typeof vi.fn>;
+
+      onSpy.mockReset();
+      replySpy.mockReset();
+
+      createTelegramBot({ token: "tok" });
+      const handler = onSpy.mock.calls.find((call) => call[0] === "message")?.[1] as (
+        ctx: Record<string, unknown>,
+      ) => Promise<void>;
+      expect(handler).toBeDefined();
+
+      const part1 = "A".repeat(4050);
+      const part2 = "B".repeat(4050);
+
+      await handler({
+        message: {
+          chat: { id: 42, type: "private" },
+          message_id: 30,
+          date: 1736380800,
+          text: part1,
+        },
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      await handler({
+        message: {
+          chat: { id: 42, type: "private" },
+          message_id: 36,
+          date: 1736380801,
+          text: part2,
+        },
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(replySpy).toHaveBeenCalledTimes(1);
+      const firstPayload = replySpy.mock.calls[0][0] as { RawBody?: string; Body?: string };
+      expect(firstPayload.RawBody).toContain(part1.slice(0, 32));
+      expect(firstPayload.RawBody).not.toContain(part2.slice(0, 32));
+
+      await vi.advanceTimersByTimeAsync(TEXT_FRAGMENT_FLUSH_MS);
+
+      expect(replySpy).toHaveBeenCalledTimes(2);
+      const secondPayload = replySpy.mock.calls[1][0] as { RawBody?: string; Body?: string };
+      expect(secondPayload.RawBody).toContain(part2.slice(0, 32));
+      expect(secondPayload.RawBody).not.toContain(part1.slice(0, 32));
+    },
+    TEXT_FRAGMENT_TEST_TIMEOUT_MS,
+  );
 });
