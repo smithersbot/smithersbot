@@ -162,11 +162,11 @@ describe("nightwatch cron", () => {
 
   describe("buildNightwatchPrompt", () => {
     it("contains required planning instructions", () => {
-      const prompt = buildNightwatchPrompt("abc123 update goal runner");
-      expect(prompt).toContain("map out how the goal process works");
-      expect(prompt).toContain("important bugs");
-      expect(prompt).toContain("plan to fix and test them");
-      expect(prompt).toContain("abc123 update goal runner");
+      const prompt = buildNightwatchPrompt();
+      expect(prompt).toContain("Nightwatch nightly review");
+      expect(prompt).toContain("/new_goal workflow");
+      expect(prompt).toContain("Telegram UX integration");
+      expect(prompt).toContain("Architecture simplification");
     });
   });
 
@@ -394,7 +394,10 @@ describe("nightwatch cron", () => {
         expect.any(Function),
       );
       expect(mockHandleGoal).toHaveBeenCalledTimes(1);
-      expect(mockHandleGoal).toHaveBeenCalledWith(expect.stringContaining("abc123 init"), cfg);
+      expect(mockHandleGoal).toHaveBeenCalledWith(
+        expect.stringContaining("Nightwatch nightly review"),
+        cfg,
+      );
       expect(mockBotCtor).toHaveBeenCalledWith("night-token");
       expect(mockSendGoalPlanResult).toHaveBeenCalledWith(
         expect.objectContaining({
