@@ -55,7 +55,7 @@ vi.mock("./attempt-bundle.js", () => ({
 }));
 
 vi.mock("./manual-tests.js", () => ({
-  generateManualTests: () => Promise.resolve([]),
+  generateManualTests: () => Promise.reject(new Error("mock: no client in integration tests")),
 }));
 
 // --- Real run-store backed by temp directory ---
