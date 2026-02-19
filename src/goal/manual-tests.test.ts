@@ -1,6 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
-import { generateManualTests } from "./manual-tests.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalLlmClient, PlanStep } from "./types.js";
+
+const runCliProcessMock = vi.fn();
+const resolveClaudeBinaryMock = vi.fn();
+const buildClaudeCodeEnvMock = vi.fn();
+
+vi.mock("./cli-process.js", () => ({
+  runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
+}));
+
+vi.mock("./scout.js", () => ({
+  resolveClaudeBinary: (...args: unknown[]) => resolveClaudeBinaryMock(...args),
+}));
+
+vi.mock("./claude-code-env.js", () => ({
+  buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
+}));
+
+import { generateManualTests } from "./manual-tests.js";
 
 function makeClient(response: string): GoalLlmClient {
   return {
@@ -34,7 +51,53 @@ function makeDoneSteps(): PlanStep[] {
   ];
 }
 
+function makeCliResultOutput(text: string): string {
+  return JSON.stringify({
+    result: [
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text }],
+        },
+      },
+    ],
+  });
+}
+
+async function withNonTestEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const originalVitest = process.env.VITEST;
+  const originalPoolId = process.env.VITEST_POOL_ID;
+  const originalWorkerId = process.env.VITEST_WORKER_ID;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  delete process.env.VITEST;
+  delete process.env.VITEST_POOL_ID;
+  delete process.env.VITEST_WORKER_ID;
+  process.env.NODE_ENV = "development";
+
+  try {
+    return await fn();
+  } finally {
+    if (originalVitest == null) delete process.env.VITEST;
+    else process.env.VITEST = originalVitest;
+    if (originalPoolId == null) delete process.env.VITEST_POOL_ID;
+    else process.env.VITEST_POOL_ID = originalPoolId;
+    if (originalWorkerId == null) delete process.env.VITEST_WORKER_ID;
+    else process.env.VITEST_WORKER_ID = originalWorkerId;
+    if (originalNodeEnv == null) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+  }
+}
+
 describe("generateManualTests", () => {
+  beforeEach(() => {
+    runCliProcessMock.mockReset();
+    resolveClaudeBinaryMock.mockReset();
+    buildClaudeCodeEnvMock.mockReset();
+    resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
+    buildClaudeCodeEnvMock.mockReturnValue({ CLAUDE_AUTH: "subscription" });
+  });
+
   it("parses model suggestions and formats criticality in range", async () => {
     const client = makeClient(
       JSON.stringify({
@@ -100,38 +163,17 @@ describe("generateManualTests", () => {
     ).rejects.toThrow(/authentication_error/i);
   });
 
-  it("throws when ANTHROPIC_API_KEY is missing and no client is injected", async () => {
-    const originalApiKey = process.env.ANTHROPIC_API_KEY;
-    const originalVitest = process.env.VITEST;
-    const originalPoolId = process.env.VITEST_POOL_ID;
-    const originalWorkerId = process.env.VITEST_WORKER_ID;
-    const originalNodeEnv = process.env.NODE_ENV;
+  it("throws when the claude binary cannot be resolved and no client is injected", async () => {
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
 
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.VITEST;
-    delete process.env.VITEST_POOL_ID;
-    delete process.env.VITEST_WORKER_ID;
-    process.env.NODE_ENV = "development";
-
-    try {
-      await expect(
+    await expect(
+      withNonTestEnv(() =>
         generateManualTests({
           goal: "Improve authentication reliability",
           steps: makeDoneSteps(),
         }),
-      ).rejects.toThrow("ANTHROPIC_API_KEY is required to generate manual tests.");
-    } finally {
-      if (originalApiKey == null) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = originalApiKey;
-      if (originalVitest == null) delete process.env.VITEST;
-      else process.env.VITEST = originalVitest;
-      if (originalPoolId == null) delete process.env.VITEST_POOL_ID;
-      else process.env.VITEST_POOL_ID = originalPoolId;
-      if (originalWorkerId == null) delete process.env.VITEST_WORKER_ID;
-      else process.env.VITEST_WORKER_ID = originalWorkerId;
-      if (originalNodeEnv == null) delete process.env.NODE_ENV;
-      else process.env.NODE_ENV = originalNodeEnv;
-    }
+      ),
+    ).rejects.toThrow("claude binary not found on PATH");
   });
 
   it("returns an empty array when the model explicitly returns tests: []", async () => {
@@ -186,5 +228,129 @@ describe("generateManualTests", () => {
     });
     expect(manualTests[1]?.description.startsWith("Validate:")).toBe(false);
     expect(manualTests[2]?.description.startsWith("Validate:")).toBe(false);
+  });
+
+  it("runs Claude CLI with subscription auth when no client is injected", async () => {
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: makeCliResultOutput(JSON.stringify({ tests: [] })),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 42,
+    });
+
+    await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(resolveClaudeBinaryMock).toHaveBeenCalledTimes(1);
+    expect(buildClaudeCodeEnvMock).toHaveBeenCalledWith("subscription");
+
+    const call = runCliProcessMock.mock.calls[0]?.[0] as {
+      command: string;
+      args: string[];
+      cwd: string;
+      timeoutMs: number;
+      stdin: string;
+      env: Record<string, string>;
+    };
+    expect(call.command).toBe("/usr/bin/claude");
+    expect(call.args).toEqual(["-p", "--output-format", "json", "--max-turns", "1"]);
+    expect(call.cwd).toBe(process.cwd());
+    expect(call.timeoutMs).toBe(120_000);
+    expect(call.env).toEqual({ CLAUDE_AUTH: "subscription" });
+    expect(call.stdin).toContain("## System Prompt");
+    expect(call.stdin).toContain("You are a QA assistant");
+    expect(call.stdin).toContain("## User Message");
+    expect(call.stdin).toContain("Goal: Improve authentication reliability");
+  });
+
+  it("parses manual test suggestions from Claude CLI JSON output", async () => {
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: makeCliResultOutput(
+        JSON.stringify({
+          tests: [
+            {
+              description: "Test Telegram message splitting",
+              criticality: 6,
+              reason: "Requires a real Telegram client",
+              detail:
+                "Step 1. Send a long /new_goal message in Telegram.\nStep 2. Confirm the full prompt is preserved.",
+            },
+          ],
+        }),
+      ),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 33,
+    });
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([
+      {
+        description: "Test Telegram message splitting",
+        criticality: 6,
+        reason: "Requires a real Telegram client",
+        detail:
+          "Step 1. Send a long /new_goal message in Telegram.\nStep 2. Confirm the full prompt is preserved.",
+      },
+    ]);
+  });
+
+  it("returns [] when Claude CLI returns an explicit empty tests array", async () => {
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: makeCliResultOutput(
+        JSON.stringify({
+          tests: [],
+          message: "All functionality was verified automatically",
+        }),
+      ),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 29,
+    });
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([]);
+  });
+
+  it("throws when the Claude CLI subprocess fails", async () => {
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "permission denied",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 19,
+    });
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Improve authentication reliability",
+          steps: makeDoneSteps(),
+        }),
+      ),
+    ).rejects.toThrow("Manual test generation failed: permission denied");
   });
 });

@@ -1,4 +1,6 @@
-import { createGoalLlmClient } from "./llm-client.js";
+import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { runCliProcess } from "./cli-process.js";
+import { resolveClaudeBinary } from "./scout.js";
 import type { GoalLlmClient, ManualTestSuggestion, PlanStep } from "./types.js";
 
 const MANUAL_TESTS_SYSTEM_PROMPT = `You are a QA assistant that suggests only necessary MANUAL verification tests after an automated coding goal finishes.
@@ -59,6 +61,7 @@ Bad example (do NOT generate tests like these):
 
 const DEFAULT_MIN_TESTS = 0;
 const DEFAULT_MAX_TESTS = 5;
+const MANUAL_TESTS_TIMEOUT_MS = 120_000;
 
 export type GenerateManualTestsParams = {
   goal: string;
@@ -67,6 +70,10 @@ export type GenerateManualTestsParams = {
   minTests?: number;
   maxTests?: number;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
 
 function extractJsonObject(text: string): Record<string, unknown> {
   const trimmed = text.trim();
@@ -98,6 +105,111 @@ function extractJsonObject(text: string): Record<string, unknown> {
   }
 
   throw new Error("Failed to parse manual test JSON from model response.");
+}
+
+function collectText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
+  if (!isRecord(value)) return "";
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.content === "string") return value.content;
+  if (Array.isArray(value.content))
+    return value.content.map((entry) => collectText(entry)).join("");
+  if (isRecord(value.message)) return collectText(value.message);
+  if (isRecord(value.delta)) return collectText(value.delta);
+  if (isRecord(value.item)) return collectText(value.item);
+  return "";
+}
+
+function isTestEnv(): boolean {
+  return (
+    process.env.VITEST === "true" ||
+    process.env.VITEST_POOL_ID != null ||
+    process.env.VITEST_WORKER_ID != null ||
+    process.env.NODE_ENV === "test"
+  );
+}
+
+function buildCombinedManualTestsPrompt(userMessage: string): string {
+  return ["## System Prompt", MANUAL_TESTS_SYSTEM_PROMPT, "", "## User Message", userMessage].join(
+    "\n",
+  );
+}
+
+function extractAssistantTextFromCliResult(rawStdout: string): string {
+  const parsed = extractJsonObject(rawStdout);
+  const result = parsed.result;
+
+  if (Array.isArray(result)) {
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      const entry = result[i];
+      if (!isRecord(entry)) continue;
+      const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+      const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+      if (type.includes("assistant") || role === "assistant") {
+        const assistantText =
+          collectText(entry.message).trim() ||
+          collectText(entry.content).trim() ||
+          collectText(entry).trim();
+        if (assistantText) return assistantText;
+      }
+    }
+
+    for (let i = result.length - 1; i >= 0; i -= 1) {
+      const text = collectText(result[i]).trim();
+      if (text) return text;
+    }
+  }
+
+  if (typeof result === "string" && result.trim()) return result.trim();
+  if (result != null) {
+    const text = collectText(result).trim();
+    if (text) return text;
+  }
+
+  const fallbackText =
+    collectText(parsed.message).trim() ||
+    collectText(parsed.content).trim() ||
+    collectText(parsed).trim();
+  if (fallbackText) return fallbackText;
+
+  throw new Error("Manual test CLI response did not include assistant text.");
+}
+
+async function generateManualTestsViaCli(userMessage: string): Promise<string> {
+  const claudeBin = resolveClaudeBinary();
+  if (!claudeBin) {
+    throw new Error("claude binary not found on PATH");
+  }
+
+  const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
+  const procResult = await runCliProcess({
+    command: claudeBin,
+    args: ["-p", "--output-format", "json", "--max-turns", "1"],
+    cwd: process.cwd(),
+    timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
+    stdin: combinedPrompt,
+    env: buildClaudeCodeEnv("subscription"),
+  });
+
+  if (procResult.timedOut) {
+    throw new Error(
+      `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.`,
+    );
+  }
+
+  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+    const detail =
+      procResult.stderr.trim() ||
+      procResult.stdout.trim() ||
+      (procResult.signal
+        ? `Manual test generation process terminated by ${procResult.signal}.`
+        : "Manual test generation process failed.");
+    throw new Error(`Manual test generation failed: ${detail}`);
+  }
+
+  return extractAssistantTextFromCliResult(procResult.stdout);
 }
 
 function clampCriticality(raw: unknown): number {
@@ -190,23 +302,6 @@ function buildFallbackTests(
   return fallback;
 }
 
-function resolveClient(client: GoalLlmClient | undefined): GoalLlmClient {
-  if (client) return client;
-  const isTestEnv =
-    process.env.VITEST === "true" ||
-    process.env.VITEST_POOL_ID != null ||
-    process.env.VITEST_WORKER_ID != null ||
-    process.env.NODE_ENV === "test";
-  if (isTestEnv) {
-    throw new Error("Manual test generation requires an injected client in tests.");
-  }
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("ANTHROPIC_API_KEY is required to generate manual tests.");
-  }
-  return createGoalLlmClient({ apiKey });
-}
-
 function buildManualTestsUserPrompt(goal: string, doneSteps: PlanStep[]): string {
   const lines: string[] = [`Goal: ${goal}`, "", "Completed steps:"];
   for (const step of doneSteps.slice(0, 10)) {
@@ -284,14 +379,24 @@ export async function generateManualTests(
   const doneSteps = params.steps.filter((step) => (step.status ?? "done") === "done");
   if (doneSteps.length === 0) return [];
 
-  const client = resolveClient(params.client);
-  const response = await client.complete({
-    systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
-    userMessage: buildManualTestsUserPrompt(params.goal, doneSteps),
-    maxTokens: 900,
-  });
+  const userMessage = buildManualTestsUserPrompt(params.goal, doneSteps);
+  let modelResponseText: string;
 
-  const parsed = extractJsonObject(response.text);
+  if (params.client) {
+    const response = await params.client.complete({
+      systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
+      userMessage,
+      maxTokens: 900,
+    });
+    modelResponseText = response.text;
+  } else {
+    if (isTestEnv()) {
+      throw new Error("Manual test generation requires an injected client in tests.");
+    }
+    modelResponseText = await generateManualTestsViaCli(userMessage);
+  }
+
+  const parsed = extractJsonObject(modelResponseText);
   const rawTests = Array.isArray(parsed.tests)
     ? parsed.tests
     : Array.isArray(parsed.manualTests)
