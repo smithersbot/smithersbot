@@ -40,7 +40,7 @@ Examples:
 ```
 
 ```text
-/new_goal Draft a follow up email to leads who have not responded in 7 days.
+/new_goal Draft a follow up email sequence to leads who have not responded.
 ```
 
 ```text
@@ -49,27 +49,66 @@ Examples:
 
 Tip: write tasks in plain language. The more specific you are, the better the output.
 
+## How it works
+After you give your bot a `/new_goal` command it will create a plan for you to approve.
+You can approve, reject or request edits to the goal plan.
+Once the goal plan is approved, it executes its tasks in its optimal order.
+If a task gets blocked (i.e. 
+
 ## How To Check On A Task
 
-Use `/goal_status` in the same chat.
+To check the status of all goals, simply send `/goal_list` in the same chat.
 
-Example:
+To check the status of a single goal, send `/goal_status <Goal ID>` in the same chat.
+Note: you can get your Goal ID from the `/goal_list` or from messages the bot sends after you call `/new_goal`
 
-```text
-/goal_status
+
+Examples:
+
+```
+/goal_list 
 ```
 
-The bot will show progress or the latest result.
+
+```
+/goal_status c8ee4cdc
+```
+
+## Repo Chat
+If you have a question you'd like to ask but you don't want to change anything use repo chat. 
+**How to use repo chat:**
+Send a message that isn't responding to any other messages and doesn't have any slash commands (i.e. `/new_goal` or `/goal_list`).
+You will get a response from the bot asking any question you have about previous goal runs, or any work you've produced in the past.
+You can also reply to messages the bot sends to keep the conversation going and it will remember what was said earlier on this reply chain.
+
+For example, if a goal has recently completed and its instructions on how to test are unclear to you, simply send a message like this that's not responding to any messages:
+```
+The goal c8ee4cdc was recently completed but its instructions for Test 1 are unclear to me. Can you please break that down step by step so someone who isn't a professional developer can execute them? 
+```
+
+Also if you want to do something with SmithersBot and aren't sure how, it has access to all the code so it knows how SmithersBot works and can tell you how to achieve what you want. I.e.:
+```
+My goal completed and when I tried testing it the test failed:
+<insert output of test that failed>
+What do I do now, how do I fix this?
+```
+**Note:** The answer to this question is to click the "🔄 Incorporate Feedback" button on the done task telling it about the failed test and it will update the plan and fix the bug.
+
+
+It's also a great soundboard. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command.
 
 ## What To Do If It Stops Responding
 
-1. Wait 30 to 60 seconds and try again.
-2. Send a simple message: `ping`.
-3. If there is still no reply, run your restart command if you have server access:
+1. Planning and execution can take time, 10-30 minutes of planning isn't abnormal. The vision for SmithersBot is a bot that keeps working in the background and only messages you when it truly needs input or to let you know it's finsihed its task.
+2. If you want to know the status of a goal, look at the section "How To Check On A Task" above.
+3. If you want even more detail (i.e. if a task is taking 2x longer than its estimated time in its flow chart), you can use repo chat to ask what the bot is currently doing and if it's hung.
 
-```bash
-systemctl --user restart moltbot-gateway.service
+For example, send this message that's not responding to any other message:
+
 ```
+The goal c8ee4cdc is currently executing but it's taking way longer than its time estimate. Please check what it's doing now and whether it's hung and report back to me with why it's taking so long and if I should stop it.
+``` 
+
 
 4. If you do not manage the server directly, contact your support provider.
 
