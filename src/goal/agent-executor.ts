@@ -498,6 +498,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
     const summary = buildGoalSummary({
       goal: session.goal,
+      goalHeadline: plan.shortSummary,
       runId,
       steps: orderedSteps,
       maxTurnsPerTask,
@@ -688,14 +689,15 @@ function findRunnableTasks(
 
 function buildGoalSummary(params: {
   goal: string;
+  goalHeadline?: string;
   runId: string;
   steps: PlanStep[];
   maxTurnsPerTask?: number;
   manualTests?: ManualTestSuggestion[];
   channel?: GoalOutputChannel;
 }): string {
-  return formatCompactGoalCompletionSummary({
-    title: params.goal,
+  const summary = formatCompactGoalCompletionSummary({
+    title: params.goalHeadline?.trim() || params.goal,
     steps: params.steps.map((step) => ({
       id: step.id,
       description: step.description,
@@ -709,6 +711,7 @@ function buildGoalSummary(params: {
     manualTests: params.manualTests,
     channel: params.channel ?? "cli",
   }).text;
+  return `${summary.trimEnd()}\nGoal ID: ${params.runId.slice(0, 8)}`;
 }
 
 function buildSuccessorMap(steps: PlanStep[]): Map<string, Set<string>> {

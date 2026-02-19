@@ -335,6 +335,52 @@ function clampCriticality(value: number): number {
   return Math.max(1, Math.min(10, Math.round(value)));
 }
 
+function splitStructuredDetailLines(value: string | undefined): string[] {
+  if (!value) return [];
+  const normalized = value.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const lines: string[] = [];
+  for (const paragraph of normalized.split(/\n+/)) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) continue;
+    const sentenceParts = trimmed.match(/[^.!?]+[.!?]?/g);
+    if (sentenceParts && sentenceParts.length > 0) {
+      for (const part of sentenceParts) {
+        const sentence = part.trim();
+        if (sentence) lines.push(sentence);
+      }
+      continue;
+    }
+    lines.push(trimmed);
+  }
+  return lines;
+}
+
+function formatTaskDetailSections(plan: Plan): string {
+  if (plan.steps.length === 0) return "";
+  const lines: string[] = ["", "**Tasks**", ""];
+
+  plan.steps.forEach((step, index) => {
+    const taskTitle = step.shortSummary?.trim() || step.id;
+    lines.push(`**Task ${index + 1}: ${taskTitle}**`);
+    const descriptionBullets = splitStructuredDetailLines(step.description);
+    if (descriptionBullets.length > 0) {
+      for (const bullet of descriptionBullets) {
+        lines.push(`• ${bullet}`);
+      }
+    } else {
+      lines.push("• No description provided.");
+    }
+    if (step.dependsOn.length > 0) {
+      lines.push(`• Depends on: ${step.dependsOn.join(", ")}`);
+    }
+    if (index < plan.steps.length - 1) lines.push("");
+  });
+
+  return lines.join("\n");
+}
+
 function formatManualTestDetails(
   runIdPrefix: string,
   tests: ManualTestSuggestion[] | undefined,
@@ -354,18 +400,30 @@ function formatManualTestDetails(
   }
   const lines = [`Manual test details for ${runIdPrefix}:`, ""];
   tests.forEach((test, index) => {
-    lines.push(
-      `${index + 1}. ${test.description} [${clampCriticality(test.criticality)}/10 Critical]`,
-    );
-    lines.push(test.detail || "No additional detail provided.");
+    lines.push(`**Test ${index + 1} [${clampCriticality(test.criticality)}/10 Critical]**`);
+    const bullets: string[] = [];
+    if (test.description.trim()) {
+      bullets.push(`Description: ${test.description.trim()}`);
+    }
+    bullets.push(...splitStructuredDetailLines(test.detail));
+    if (bullets.length === 0) {
+      bullets.push("No additional detail provided.");
+    }
+    for (const bullet of bullets) {
+      lines.push(`• ${bullet}`);
+    }
     if (index < tests.length - 1) lines.push("");
   });
   return lines.join("\n");
 }
 
+function appendGoalIdFooter(summary: string, runId: string): string {
+  return `${summary.trimEnd()}\nGoal ID: ${runId.slice(0, 8)}`;
+}
+
 function buildDoneSummaryWithManualTests(run: SerializedRun): string {
-  return formatCompactGoalCompletionSummary({
-    title: run.goal,
+  const summary = formatCompactGoalCompletionSummary({
+    title: run.plan?.shortSummary?.trim() || run.goal,
     steps:
       run.plan?.steps.map((step) => ({
         id: step.id,
@@ -377,6 +435,7 @@ function buildDoneSummaryWithManualTests(run: SerializedRun): string {
     channel: "telegram",
     manualTests: run.manualTests,
   }).text;
+  return appendGoalIdFooter(summary, run.runId);
 }
 
 // ---------------------------------------------------------------------------
@@ -862,16 +921,23 @@ export async function handleGoalStatus(rawId: string): Promise<string> {
 
 /** /goal_detail <runId> -- show detailed run info and all steps. */
 export async function handleGoalDetail(rawId: string): Promise<string> {
-  if (!rawId.trim()) {
+  const trimmedId = rawId.trim();
+  if (!trimmedId) {
     return "Usage: /goal_detail <runId>";
   }
 
+  const resolvedId = resolveRunId(trimmedId);
   const cap = createCaptureRuntime();
   try {
-    await goalDetailCommand(rawId.trim(), { diagram: "none", channel: "telegram" }, cap.runtime);
+    await goalDetailCommand(trimmedId, { diagram: "none", channel: "telegram" }, cap.runtime);
     const logs = cap.getLogs();
     const errors = cap.getErrors();
-    return errors || logs || "No detail output.";
+    if (errors) return errors;
+
+    const run = resolvedId ? loadRun(resolvedId) : undefined;
+    const base = logs || "No detail output.";
+    const taskDetails = run?.plan ? formatTaskDetailSections(run.plan) : "";
+    return taskDetails ? `${base}\n${taskDetails}` : base;
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || cap.getLogs() || "Detail command failed.";
@@ -1765,7 +1831,11 @@ function formatPlannerFallbackLine(run: SerializedRun): string | undefined {
         ? "rate limit"
         : "availability issue";
   const resetSuffix = run.plannerDegradedResetHint ? ` (${run.plannerDegradedResetHint})` : "";
-  return `Planner fallback: Anthropic ${reasonLabel}${resetSuffix} -> Codex`;
+  return `Anthropic ${reasonLabel}${resetSuffix} -> Codex`;
+}
+
+function formatCaptionLabel(label: string, value: string): string {
+  return `**${label}:** ${value}`;
 }
 
 function formatPlannerFallbackNotice(params: {
@@ -1789,22 +1859,27 @@ function formatPlannerFallbackNotice(params: {
 function buildCaptionHeader(result: GoalPlanResult): string {
   const lines: string[] = [];
   if (result.runId) {
-    lines.push(`Goal ID: ${result.runId.slice(0, 8)}`);
+    lines.push(formatCaptionLabel("Goal ID", result.runId.slice(0, 8)));
   }
   // Load run to get workingDir (already persisted before planning)
   const run = result.runId ? loadRun(result.runId) : undefined;
   if (run?.workingDir) {
-    lines.push(`Working dir: ${shortenHomePath(run.workingDir)}`);
+    lines.push(formatCaptionLabel("Working dir", shortenHomePath(run.workingDir)));
   }
   const plannerFallbackLine = run ? formatPlannerFallbackLine(run) : undefined;
   if (plannerFallbackLine) {
-    lines.push(plannerFallbackLine);
+    lines.push(formatCaptionLabel("Planner notice", plannerFallbackLine));
   }
   if (result.autocheckRounds != null && result.autocheckMaxRounds != null) {
-    lines.push(`Replanned: ${result.autocheckRounds}/${result.autocheckMaxRounds}`);
+    lines.push(
+      formatCaptionLabel("Replanned", `${result.autocheckRounds}/${result.autocheckMaxRounds}`),
+    );
     if (result.autocheckExhausted) {
       lines.push(
-        `\u26A0\uFE0F Autocheck hit max rounds (${result.autocheckRounds}/${result.autocheckMaxRounds})`,
+        formatCaptionLabel(
+          "Autocheck warning",
+          `hit max rounds (${result.autocheckRounds}/${result.autocheckMaxRounds})`,
+        ),
       );
     }
   }
@@ -1814,8 +1889,8 @@ function buildCaptionHeader(result: GoalPlanResult): string {
     for (const step of result.plan.steps) {
       workers.add(resolveStepWorker(step));
     }
-    lines.push(`Workers: ${[...workers].join(", ")}`);
-    lines.push(`Plan: ${result.plan.summary}`);
+    lines.push(formatCaptionLabel("Workers", [...workers].join(", ")));
+    lines.push(formatCaptionLabel("Plan", result.plan.shortSummary?.trim() || result.plan.summary));
   }
   return lines.join("\n");
 }
@@ -1835,7 +1910,9 @@ export async function sendGoalPlanResult(params: {
 
     try {
       // Build a rich caption header with metadata
-      const captionHeader = result.plan ? buildCaptionHeader(result) : `Plan: ${runIdPrefix}`;
+      const captionHeader = result.plan
+        ? buildCaptionHeader(result)
+        : formatCaptionLabel("Plan", runIdPrefix);
 
       // Try to send plan DAG as a single PNG photo with inline keyboard
       if (result.plan) {

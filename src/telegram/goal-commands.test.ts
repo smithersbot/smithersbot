@@ -574,6 +574,49 @@ describe("goal-commands telegram adapter", () => {
         expect.any(Object),
       );
     });
+
+    it("appends structured task detail sections using short summaries", async () => {
+      saveRun(
+        makeRun({
+          runId: "abc12345-0000-0000-0000-000000000000",
+          plan: {
+            goal: "Test goal",
+            shortSummary: "Ship checkout improvements",
+            workingDir: "/tmp/ws",
+            summary: "Plan summary",
+            steps: [
+              {
+                id: "step-login",
+                shortSummary: "Harden login",
+                description: "Validate credential checks. Prevent blank passwords.",
+                dependsOn: [],
+                status: "pending",
+              },
+              {
+                id: "step-release",
+                description: "Ship release candidate",
+                dependsOn: ["step-login"],
+                status: "pending",
+              },
+            ],
+          },
+        }),
+      );
+      mockGoalDetailCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: abc12345");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+
+      const { handleGoalDetail } = await import("./goal-commands.js");
+      const result = await handleGoalDetail("abc12345");
+      expect(result).toContain("**Task 1: Harden login**");
+      expect(result).toContain("• Validate credential checks.");
+      expect(result).toContain("• Prevent blank passwords.");
+      expect(result).toContain("**Task 2: step-release**");
+      expect(result).toContain("• Depends on: step-login");
+    });
   });
 
   describe("sendGoalStatusResponse", () => {
@@ -881,6 +924,53 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("sendGoalPlanResult", () => {
+    it("uses bold caption labels and plan short summary when available", async () => {
+      const plan = {
+        goal: "Test goal",
+        shortSummary: "Ship secure checkout",
+        workingDir: "/tmp/ws",
+        summary: "Long plan summary that should not be preferred in captions",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "claude_code",
+          },
+        ],
+      } as const;
+
+      saveRun(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 88 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 89 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("<b>Goal ID:</b> test-run");
+      expect(options.caption).toContain("<b>Working dir:</b> /tmp/ws");
+      expect(options.caption).toContain("<b>Workers:</b> Claude Code");
+      expect(options.caption).toContain("<b>Plan:</b> Ship secure checkout");
+      expect(options.caption).not.toContain("Long plan summary");
+    });
+
     it("includes planner fallback notice with reset hint in plan caption", async () => {
       const degradedPlan = {
         goal: "Test goal",
@@ -927,7 +1017,7 @@ describe("goal-commands telegram adapter", () => {
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      expect(options.caption).toContain("Planner fallback: Anthropic usage limit");
+      expect(options.caption).toContain("<b>Planner notice:</b> Anthropic usage limit");
       expect(options.caption).toContain("resets 6pm (America/Toronto)");
       expect(options.caption).toContain("Codex");
     });
@@ -974,8 +1064,8 @@ describe("goal-commands telegram adapter", () => {
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      expect(options.caption).toContain("Replanned: 3/3");
-      expect(options.caption).toContain("Autocheck hit max rounds (3/3)");
+      expect(options.caption).toContain("<b>Replanned:</b> 3/3");
+      expect(options.caption).toContain("<b>Autocheck warning:</b> hit max rounds (3/3)");
     });
 
     it("threads reply parameters when PNG plan delivery succeeds", async () => {
@@ -1522,6 +1612,68 @@ describe("goal-commands telegram adapter", () => {
       expect(mockRunCliPlanRevision.mock.calls[1]?.[0]).toMatchObject({
         claudeCodeAuth: "subscription",
       });
+    });
+
+    it("emits all_done summary with short headline and Goal ID footer when no new steps are needed", async () => {
+      saveRun(
+        makeRun({
+          goal: "Very long goal that should not be used as the compact done headline",
+          state: "done",
+          plan: {
+            goal: "Very long goal that should not be used as the compact done headline",
+            shortSummary: "Ship login reliability fixes",
+            workingDir: "/tmp/ws",
+            summary: "Completed plan",
+            steps: [
+              {
+                id: "1",
+                shortSummary: "Harden login checks",
+                description: "Initial implementation",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+          stepResults: {
+            "1": { stepId: "1", success: true, output: "done", durationMs: 1000 },
+          },
+        }),
+      );
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Very long goal that should not be used as the compact done headline",
+          shortSummary: "Ship login reliability fixes",
+          workingDir: "/tmp/ws",
+          summary: "Feedback revised plan",
+          steps: [
+            {
+              id: "1",
+              shortSummary: "Harden login checks",
+              description: "Planner changed description",
+              dependsOn: [],
+              status: "pending",
+            },
+          ],
+        },
+      });
+
+      const { handleGoalFeedback } = await import("./goal-commands.js");
+      const statusCb = vi.fn(async () => undefined);
+      const result = await handleGoalFeedback("test-run", "No further fixes needed", {}, statusCb);
+
+      expect(result).toBeUndefined();
+      const allDoneCall = statusCb.mock.calls.find(
+        ([event]) => (event as { type?: string }).type === "all_done",
+      );
+      expect(allDoneCall).toBeDefined();
+      const allDoneEvent = allDoneCall?.[0] as { summary: string };
+      expect(allDoneEvent.summary).toContain("✅ Done: Ship login reliability fixes");
+      expect(allDoneEvent.summary).not.toContain(
+        "✅ Done: Very long goal that should not be used as the compact done headline",
+      );
+      const summaryLines = allDoneEvent.summary.trim().split("\n");
+      expect(summaryLines.at(-1)).toBe("Goal ID: test-run");
     });
 
     it("syncs workingDir from feedback revisions and ensures new directories", async () => {
@@ -2470,8 +2622,9 @@ describe("goal-commands telegram adapter", () => {
       expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
-      expect(sentText).toContain("Check login flow");
-      expect(sentText).toContain("8/10 Critical");
+      expect(sentText).toContain("<b>Test 1 [8/10 Critical]</b>");
+      expect(sentText).toContain("• Description: Check login flow");
+      expect(sentText).toContain("• Run login with valid + invalid credentials.");
     });
 
     it("routes gTD callback to fallback manual test details when available", async () => {
@@ -2497,7 +2650,12 @@ describe("goal-commands telegram adapter", () => {
 
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
-      expect(sentText).toContain("Validate: Implement login validation");
+      expect(sentText).toContain("<b>Test 1 [7/10 Critical]</b>");
+      expect(sentText).toContain("• Description: Validate: Implement login validation");
+      expect(sentText).toContain(
+        '• Manually exercise the behavior changed by "Implement login validation".',
+      );
+      expect(sentText).toContain("• Confirm expected output and no regressions in related flows.");
       expect(sentText).not.toContain("unavailable");
       expect(sentText).not.toContain("Reason:");
     });
