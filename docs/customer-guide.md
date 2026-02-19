@@ -29,7 +29,7 @@ Use the `/new_goal` command in your chat with the bot.
 
 Format:
 
-```text
+```
 /new_goal <what you want done>
 ```
 
@@ -65,12 +65,12 @@ Note: you can get your Goal ID from the `/goal_list` or from messages the bot se
 
 Examples:
 
-```
+```text
 /goal_list 
 ```
 
 
-```
+```text
 /goal_status c8ee4cdc
 ```
 
@@ -78,24 +78,28 @@ Examples:
 If you have a question you'd like to ask but you don't want to change anything use repo chat. 
 **How to use repo chat:**
 Send a message that isn't responding to any other messages and doesn't have any slash commands (i.e. `/new_goal` or `/goal_list`).
+**Note:** It's important you don't send slash commands by accident or repo chat won't work. If you need to reference a slash command, send it in quotes (i.e. "/new_goal")
 You will get a response from the bot asking any question you have about previous goal runs, or any work you've produced in the past.
 You can also reply to messages the bot sends to keep the conversation going and it will remember what was said earlier on this reply chain.
 
 For example, if a goal has recently completed and its instructions on how to test are unclear to you, simply send a message like this that's not responding to any messages:
-```
+```text
 The goal c8ee4cdc was recently completed but its instructions for Test 1 are unclear to me. Can you please break that down step by step so someone who isn't a professional developer can execute them? 
 ```
 
 Also if you want to do something with SmithersBot and aren't sure how, it has access to all the code so it knows how SmithersBot works and can tell you how to achieve what you want. I.e.:
-```
-My goal completed and when I tried testing it the test failed:
+```text
+My goal c8ee4cdc completed and when I tried testing it the test failed:
 <insert output of test that failed>
 What do I do now, how do I fix this?
 ```
 **Note:** The answer to this question is to click the "🔄 Incorporate Feedback" button on the done task telling it about the failed test and it will update the plan and fix the bug.
 
 
-It's also a great soundboard. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command.
+It's also a great soundboard. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command. I.e.:
+```text
+I want to build something that sends me a report every week about developments in the robotics advanced manufacturing industry. Give me a "/new_goal" command to achieve this.
+```
 
 ## What To Do If It Stops Responding
 
@@ -104,8 +108,7 @@ It's also a great soundboard. If you have an idea for something that you want bu
 3. If you want even more detail (i.e. if a task is taking 2x longer than its estimated time in its flow chart), you can use repo chat to ask what the bot is currently doing and if it's hung.
 
 For example, send this message that's not responding to any other message:
-
-```
+```text
 The goal c8ee4cdc is currently executing but it's taking way longer than its time estimate. Please check what it's doing now and whether it's hung and report back to me with why it's taking so long and if I should stop it.
 ``` 
 
