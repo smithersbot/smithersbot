@@ -64,6 +64,66 @@ export function isGitRepo(cwd: string): boolean {
   return Boolean(findGitRoot(cwd));
 }
 
+function hasHeadCommit(cwd: string): boolean {
+  try {
+    execFileSync("git", ["-C", cwd, "rev-parse", "--verify", "HEAD"], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ensureWorkingDir(cwd: string): void {
+  fs.mkdirSync(cwd, { recursive: true });
+  if (!canRunGit()) return;
+
+  if (!isGitRepo(cwd)) {
+    execFileSync("git", ["-C", cwd, "init"], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  }
+
+  // `git checkout -B` and `git rev-parse HEAD` require HEAD to exist.
+  if (hasHeadCommit(cwd)) return;
+
+  const gitkeepPath = path.join(cwd, ".gitkeep");
+  if (!fs.existsSync(gitkeepPath)) {
+    fs.writeFileSync(gitkeepPath, "");
+  }
+  execFileSync("git", ["-C", cwd, "add", ".gitkeep"], {
+    encoding: "utf8",
+    timeout: 10000,
+  });
+  try {
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Moltbot",
+        "-c",
+        "user.email=moltbot@localhost",
+        "commit",
+        "-m",
+        "chore: initialize workspace",
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10000,
+      },
+    );
+  } catch (error) {
+    if (hasHeadCommit(cwd)) return;
+    const errorText = describeGitError(error);
+    throw new Error(`Failed to create initial commit for working directory ${cwd}: ${errorText}`);
+  }
+}
+
 export function isWorkingTreeClean(cwd: string): boolean {
   if (!canRunGit()) return true;
   try {

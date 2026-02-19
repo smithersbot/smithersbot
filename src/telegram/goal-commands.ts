@@ -194,6 +194,9 @@ function commitPlanRevision(params: {
   });
 
   run.plan = revisedPlan;
+  if (revisedPlan.workingDir !== run.workingDir) {
+    run.workingDir = revisedPlan.workingDir;
+  }
   run.planRevision = newRevision;
   run.activePlanRevision = newRevision;
   run.planHistory = history;

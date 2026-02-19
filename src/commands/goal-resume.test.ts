@@ -44,6 +44,11 @@ vi.mock("../goal/cli-planner.js", () => ({
   runCliPlanning: (...args: unknown[]) => mockRunCliPlanning(...args),
 }));
 
+const mockEnsureWorkingDir = vi.fn();
+vi.mock("../goal/git-checkpoint.js", () => ({
+  ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
+}));
+
 // Mock the agent executor so resume tests don't need a real PI agent session
 const mockExecuteGoalWithAgent = vi.fn(
   async (params: {
@@ -86,6 +91,7 @@ function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
 
 const samplePlan: Plan = {
   goal: "Test goal",
+  workingDir: "/tmp/ws",
   summary: "A test plan",
   steps: [
     {
@@ -123,6 +129,7 @@ describe("goal-resume command", () => {
     mockRunCliPlanning.mockResolvedValue({
       status: "success",
       plan: {
+        workingDir: "/tmp/ws",
         summary: "Default replanned plan",
         steps: [
           {
@@ -484,6 +491,7 @@ describe("goal-resume command", () => {
     const result = await goalResumeCommand("cancelled-run", { yes: true }, rt);
     expect(result).toBeDefined();
     expect(result!.status).toBe("done");
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(workDir);
     const persisted = loadRun("cancelled-run", testGoalsDir);
     expect(persisted?.state).toBe("done");
     fs.rmSync(workDir, { recursive: true, force: true });
@@ -755,6 +763,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "Replanned successfully",
           steps: [
             {
@@ -793,10 +802,58 @@ describe("goal-resume command", () => {
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
     });
 
+    it("updates run.workingDir from replanned plan output", async () => {
+      const runId = "replan-workingdir-update";
+      const oldWorkingDir = "/tmp/ws-old";
+      const newWorkingDir = "/tmp/ws-new";
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          goal: "Original goal text",
+          workingDir: newWorkingDir,
+          summary: "Replanned to a new workspace",
+          steps: [
+            {
+              id: "replanned-step",
+              description: "A replanned task",
+              dependsOn: [],
+              durationMinutes: 30,
+              status: "pending",
+            },
+          ],
+        },
+        scoutStatus: "success",
+      });
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Original goal text",
+          workingDir: oldWorkingDir,
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, { replan: true, quiet: true }, rt);
+
+      expect(mockRunCliPlanning).toHaveBeenCalledWith({
+        runId,
+        goalText: "Original goal text",
+        cwd: oldWorkingDir,
+        includeScoutArtifacts: true,
+      });
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.workingDir).toBe(newWorkingDir);
+      expect(persisted?.plan?.workingDir).toBe(newWorkingDir);
+    });
+
     it("logs planner fallback notice with reset hint and persists degraded metadata on replan", async () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "Replanned with codex fallback",
           steps: [
             {
@@ -846,6 +903,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "Recovery plan",
           steps: [
             {
@@ -971,6 +1029,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "JSON mode replan",
           steps: [
             {
@@ -1014,6 +1073,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "Quiet replan",
           steps: [
             {
@@ -1056,6 +1116,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "Generated plan",
           steps: [
             {
@@ -1187,6 +1248,7 @@ describe("goal-resume command", () => {
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "success",
         plan: {
+          workingDir: "/tmp/ws",
           summary: "No scout replan",
           steps: [
             {

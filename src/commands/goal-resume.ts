@@ -1,5 +1,4 @@
 import { confirm, isCancel } from "@clack/prompts";
-import { mkdirSync } from "node:fs";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -8,6 +7,7 @@ import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { formatPlanOutput } from "../goal/format-output.js";
+import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import {
   loadRun,
   saveRun,
@@ -256,6 +256,7 @@ async function retryPlanning(
     session.state = "awaiting_approval";
     if (planningAnswer) delete session.answers["step:planning:input"];
     run.plan = planResult;
+    run.workingDir = planResult.workingDir;
     run.state = "awaiting_approval";
     run.lastError = undefined;
     run.updatedAt = new Date().toISOString();
@@ -455,8 +456,8 @@ export async function goalResumeCommand(
   // Capture run fields for closure (TypeScript can't narrow across closures)
   const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
 
-  // Ensure workspace directory exists
-  mkdirSync(workingDir, { recursive: true });
+  // Ensure checkpoint-compatible workspace state before execution resumes.
+  ensureWorkingDir(workingDir);
 
   // Reconstruct in-memory session
   const session = serializedToSession(run);

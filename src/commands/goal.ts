@@ -8,7 +8,7 @@ import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { runCliPlanning } from "../goal/cli-planner.js";
 import { formatPlanOutput } from "../goal/format-output.js";
-import { isGitRepo } from "../goal/git-checkpoint.js";
+import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { saveRun, sessionToSerialized } from "../goal/run-store.js";
 import type { GoalBackendId } from "../goal/backend-types.js";
@@ -116,7 +116,7 @@ export async function goalCommand(
   const isDryRun = Boolean(opts.dryRun);
 
   const cwd = process.cwd();
-  const workingDir = resolveWorkingDir(opts.workingDir, opts.config, cwd);
+  let workingDir = resolveWorkingDir(opts.workingDir, opts.config, cwd);
 
   mkdirSync(workingDir, { recursive: true });
 
@@ -243,6 +243,7 @@ export async function goalCommand(
 
     // After the blocked check, planResult is narrowed to Plan
     session.plan = planResult;
+    workingDir = planResult.workingDir;
     persistRun();
 
     // Display plan (human-readable only; JSON mode emits a single combined object later)
@@ -328,6 +329,8 @@ export async function goalCommand(
 
     // Phase 3: Execution
     if (!isJson) runtime.log("");
+    // Ensure checkpoint-compatible workspace state before execution starts.
+    ensureWorkingDir(workingDir);
 
     const disableCheckpoints =
       Boolean(opts.noGitCheckpoints) || process.env.MOLTBOT_NO_GIT_CHECKPOINTS === "1";

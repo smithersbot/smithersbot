@@ -44,8 +44,10 @@ vi.mock("../goal/cli-planner.js", () => ({
 
 // Mock isGitRepo for resolveWorkingDir tests
 const mockIsGitRepo = vi.fn();
+const mockEnsureWorkingDir = vi.fn();
 vi.mock("../goal/git-checkpoint.js", () => ({
   isGitRepo: (...args: unknown[]) => mockIsGitRepo(...args),
+  ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
 }));
 
 // Mock progress
@@ -288,6 +290,44 @@ describe("goal command — early failure persistence", () => {
         cwd: workDir,
       }),
     );
+  });
+
+  it("persists planner-selected workingDir instead of the pre-resolved planning cwd", async () => {
+    const planningDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-planning-"));
+    const plannerWorkingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-planner-selected-"));
+    mockRunCliPlanning.mockResolvedValue({
+      status: "success",
+      plan: {
+        goal: "Build in another directory",
+        workingDir: plannerWorkingDir,
+        summary: "Use a different workspace",
+        steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+      },
+      scoutStatus: "success",
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+    const outcome = await goalCommand(
+      {
+        goal: "Build in another directory",
+        workingDir: planningDir,
+        yes: true,
+        planOnly: true,
+      },
+      rt,
+    );
+
+    expect(outcome).toBeUndefined();
+    expect(mockRunCliPlanning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: planningDir,
+      }),
+    );
+
+    const runs = listRuns(testGoalsDir);
+    const run = loadRun(runs[0]!.runId, testGoalsDir);
+    expect(run?.workingDir).toBe(plannerWorkingDir);
   });
 
   it("records skipped scout metadata from unified planning result", async () => {

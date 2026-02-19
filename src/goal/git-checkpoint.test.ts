@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   autosaveIfDirty,
   canRunGit,
+  ensureWorkingDir,
   ensureRunBranch,
   finalizeTaskCheckpoint,
   isGitRepo,
@@ -95,6 +96,23 @@ describeGit("git-checkpoint", () => {
 
   it("isGitRepo returns true for a git repo", () => {
     expect(isGitRepo(tracked(initRepo()))).toBe(true);
+  });
+
+  it("ensureWorkingDir initializes a new git workspace with a valid HEAD commit", () => {
+    const parent = tracked(mkdtempSync(path.join(tmpdir(), "git-workingdir-parent-")));
+    const workingDir = path.join(parent, "workspace");
+
+    ensureWorkingDir(workingDir);
+
+    expect(fs.existsSync(workingDir)).toBe(true);
+    expect(isGitRepo(workingDir)).toBe(true);
+    expect(fs.existsSync(path.join(workingDir, ".gitkeep"))).toBe(true);
+
+    const head = execSync("git rev-parse HEAD", {
+      cwd: workingDir,
+      encoding: "utf8",
+    }).trim();
+    expect(head).toHaveLength(40);
   });
 
   it("autosaveIfDirty does not fail when only submodule content is dirty", () => {

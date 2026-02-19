@@ -1576,6 +1576,42 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
+    it("syncs run workingDir when revised plan changes it", async () => {
+      const originalWorkingDir = "/tmp/original-working-dir";
+      const revisedWorkingDir = "/tmp/revised-working-dir";
+      saveRun(makeRun({ workingDir: originalWorkingDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          workingDir: revisedWorkingDir,
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      await handleGoalEdit("test-run", "adjust scope");
+
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: originalWorkingDir,
+        }),
+      );
+      const updatedRun = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updatedRun?.workingDir).toBe(revisedWorkingDir);
+      expect(updatedRun?.plan?.workingDir).toBe(revisedWorkingDir);
+    });
+
     it("runs autocheck in handleGoalEdit and persists updated session metadata", async () => {
       saveRun(
         makeRun({
@@ -1676,7 +1712,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
-          workingDir: "/tmp/ws",
+          workingDir: newDir,
           summary: "Revised plan",
           steps: [
             {
@@ -1717,7 +1753,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
-          workingDir: "/tmp/ws",
+          workingDir: newDir,
           summary: "Revised plan",
           steps: [
             {
@@ -1762,7 +1798,7 @@ describe("goal-commands telegram adapter", () => {
       mockRunCliPlanRevision.mockResolvedValue({
         plan: {
           goal: "Test goal",
-          workingDir: "/tmp/ws",
+          workingDir: newDir,
           summary: "Revised plan",
           steps: [
             {
