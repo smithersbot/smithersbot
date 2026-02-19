@@ -14,21 +14,48 @@ describe("goal feedback planning helpers", () => {
     const originalPlan: Plan = {
       goal: "Ship signup flow",
       summary: "Original",
+      shortSummary: "Ship signup flow",
       steps: [
-        { id: "1", description: "Build form", dependsOn: [], status: "done" },
-        { id: "2", description: "Add validation", dependsOn: ["1"], status: "done" },
-        { id: "3", description: "Implement API", dependsOn: ["2"], status: "done" },
+        {
+          id: "1",
+          description: "Build form",
+          shortSummary: "Build form",
+          dependsOn: [],
+          status: "done",
+        },
+        {
+          id: "2",
+          description: "Add validation",
+          shortSummary: "Add validation",
+          dependsOn: ["1"],
+          status: "done",
+        },
+        {
+          id: "3",
+          description: "Implement API",
+          shortSummary: "Implement API",
+          dependsOn: ["2"],
+          status: "done",
+        },
       ],
     };
 
     const revisedPlan: Plan = {
       goal: "Ship signup flow",
       summary: "Revised from feedback",
+      shortSummary: "Fix Safari signup issue",
       steps: [
-        { id: "1", description: "Changed by planner", dependsOn: [], status: "pending" },
+        {
+          id: "1",
+          description: "Changed by planner",
+          shortSummary: "Changed title",
+          dependsOn: [],
+          status: "pending",
+        },
         {
           id: "4",
           description: "Fix Safari edge-case",
+          shortSummary: "Fix Safari edge case",
           dependsOn: ["3", "missing"],
           status: "pending",
         },
@@ -37,6 +64,7 @@ describe("goal feedback planning helpers", () => {
 
     const merged = mergeRevisedPlanWithDoneSteps({ originalPlan, revisedPlan });
     expect(merged.summary).toBe("Revised from feedback");
+    expect(merged.shortSummary).toBe("Fix Safari signup issue");
     expect(merged.steps.map((step) => step.id)).toEqual(["1", "2", "3", "4"]);
 
     const step1 = merged.steps.find((step) => step.id === "1");
@@ -46,9 +74,11 @@ describe("goal feedback planning helpers", () => {
 
     expect(step1?.status).toBe("done");
     expect(step1?.description).toBe("Build form");
+    expect(step1?.shortSummary).toBe("Build form");
     expect(step2?.status).toBe("done");
     expect(step3?.status).toBe("done");
     expect(step4?.status).toBe("pending");
+    expect(step4?.shortSummary).toBe("Fix Safari edge case");
     expect(step4?.dependsOn).toEqual(["3"]);
   });
 

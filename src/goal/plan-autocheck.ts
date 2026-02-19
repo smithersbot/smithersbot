@@ -446,9 +446,11 @@ function buildPlanSnapshot(plan: Plan): string {
     {
       workingDir: plan.workingDir,
       summary: plan.summary,
+      shortSummary: plan.shortSummary,
       steps: plan.steps.map((step) => ({
         id: step.id,
         description: step.description,
+        shortSummary: step.shortSummary,
         backend: step.backend,
         dependsOn: step.dependsOn,
         durationMinutes: step.durationMinutes,

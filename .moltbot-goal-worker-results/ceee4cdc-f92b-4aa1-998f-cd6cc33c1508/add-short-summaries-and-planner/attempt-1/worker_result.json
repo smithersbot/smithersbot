@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Added optional shortSummary to Plan/PlanStep, updated planner prompt+validation fallback parsing, propagated shortSummary through plan revision and autocheck snapshots, preserved it in feedback merges, added targeted tests for planner/feedback/autocheck shortSummary behavior, and verified with the requested vitest targets plus pnpm build." }

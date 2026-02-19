@@ -282,9 +282,11 @@ function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
   const canonical = {
     workingDir: plan.workingDir,
     summary: plan.summary,
+    shortSummary: plan.shortSummary,
     steps: plan.steps.map((step) => ({
       id: step.id,
       description: step.description,
+      shortSummary: step.shortSummary,
       dependsOn: step.dependsOn,
       durationMinutes: step.durationMinutes,
       backend: step.backend,
@@ -332,9 +334,11 @@ function buildPlanRevisionPrompt(params: {
     {
       workingDir: currentPlan.workingDir,
       summary: currentPlan.summary,
+      shortSummary: currentPlan.shortSummary,
       steps: currentPlan.steps.map((step) => ({
         id: step.id,
         description: step.description,
+        shortSummary: step.shortSummary,
         dependsOn: step.dependsOn,
         durationMinutes: step.durationMinutes,
         backend: step.backend,

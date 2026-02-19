@@ -6,6 +6,7 @@ import type { ScoutResult } from "./scout.js";
 import type { GoalBackendId } from "./backend-types.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
+import { normalizeLabel } from "./mermaid-render.js";
 
 export const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
@@ -30,18 +31,26 @@ BACKEND SELECTION RULES (strict):
 Step schema:
 - id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
 - description: clear, actionable description of what the agent should do, including what "done" looks like
+- shortSummary: concise task title (<=60 chars) for UI display
 - dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): "codex" | "claude_code" | "pi" — execution backend
+
+Top-level summary fields:
+- summary: full plan description
+- shortSummary: <=80 chars, human-readable goal headline focused on the outcome (not implementation details)
+- Unless the goal is primarily about testing, avoid mentioning tests in shortSummary.
 
 Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
 {
   "workingDir": "/absolute/path/or/~/path",
   "summary": "Brief description of the plan",
+  "shortSummary": "Readable goal headline, <=80 chars",
   "steps": [
     {
       "id": "unique-step-id",
       "description": "What this step does and how to verify it is done",
+      "shortSummary": "Readable task title, <=60 chars",
       "dependsOn": ["step-ids-that-must-complete-first"],
       "durationMinutes": 12,
       "backend": "codex"
@@ -191,6 +200,24 @@ export function extractJson(text: string): Record<string, unknown> {
 }
 
 const VALID_BACKEND_IDS: GoalBackendId[] = ["pi", "codex", "claude_code"];
+const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
+const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateSummary(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const keep = Math.max(0, maxChars - 3);
+  return `${value.slice(0, keep).trimEnd()}...`;
+}
+
+function parseShortSummary(raw: unknown, fallback: string, maxChars: number): string {
+  const rawString = typeof raw === "string" ? collapseWhitespace(raw) : "";
+  if (rawString.length > 0) return truncateSummary(rawString, maxChars);
+  return truncateSummary(collapseWhitespace(fallback), maxChars);
+}
 
 /** Parse and validate backend from raw LLM output. */
 function parseBackend(raw: unknown): GoalBackendId | undefined {
@@ -204,6 +231,7 @@ function parseBackend(raw: unknown): GoalBackendId | undefined {
 
 function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   const summary = typeof raw.summary === "string" ? raw.summary : goal;
+  const shortSummary = parseShortSummary(raw.shortSummary, summary, PLAN_SHORT_SUMMARY_MAX_CHARS);
   const rawWorkingDir = typeof raw.workingDir === "string" ? raw.workingDir.trim() : "";
   if (!rawWorkingDir) {
     throw new Error("Plan must include a non-empty workingDir");
@@ -232,6 +260,11 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
     const rawDesc = step.description;
     const description = typeof rawDesc === "string" ? rawDesc : "";
     if (!description) throw new Error(`Step ${id}: description is required`);
+    const shortStepSummary = parseShortSummary(
+      step.shortSummary,
+      normalizeLabel(description),
+      STEP_SHORT_SUMMARY_MAX_CHARS,
+    );
 
     const dependsOn = Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [];
 
@@ -250,6 +283,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
     steps.push({
       id,
       description,
+      shortSummary: shortStepSummary,
       dependsOn,
       status: "pending",
       durationMinutes,
@@ -269,7 +303,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   // Detect cycles via Kahn's algorithm
   detectCycles(steps);
 
-  return { goal, workingDir, steps, summary };
+  return { goal, workingDir, steps, summary, shortSummary };
 }
 
 /**
@@ -287,9 +321,11 @@ export async function generatePlanRevision(
     {
       workingDir: currentPlan.workingDir,
       summary: currentPlan.summary,
+      shortSummary: currentPlan.shortSummary,
       steps: currentPlan.steps.map((s) => ({
         id: s.id,
         description: s.description,
+        shortSummary: s.shortSummary,
         dependsOn: s.dependsOn,
         durationMinutes: s.durationMinutes,
         backend: s.backend,

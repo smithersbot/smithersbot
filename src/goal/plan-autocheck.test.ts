@@ -443,6 +443,39 @@ describe("runPlanAutocheck", () => {
     expect(call.cwd).toBe(workingDir);
   });
 
+  it("includes plan and step shortSummary fields in the autocheck snapshot prompt", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: claudeStdout({ decision: { approved: true }, sessionId: "snapshot-short-summary" }),
+      }),
+    );
+
+    const planWithShortSummary: Plan = {
+      ...makePlan("Snapshot plan", "1", "claude_code"),
+      shortSummary: "Ship auth flow updates",
+      steps: [
+        {
+          ...makePlan("Snapshot plan", "1", "claude_code").steps[0],
+          shortSummary: "Implement auth flow",
+        },
+      ],
+    };
+
+    await runPlanAutocheck({
+      plan: planWithShortSummary,
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-short-summary-snapshot"),
+      commitRevision: vi.fn(),
+    });
+
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const prompt = firstArgs.at(-1) ?? "";
+    expect(prompt).toContain('"shortSummary": "Ship auth flow updates"');
+    expect(prompt).toContain('"shortSummary": "Implement auth flow"');
+  });
+
   it("injects prior feedback in next prompt when session ID extraction fails", async () => {
     const originalPlan = makePlan("No session first", "1", "claude_code");
     const revisedPlan = makePlan("No session revised", "2", "claude_code");

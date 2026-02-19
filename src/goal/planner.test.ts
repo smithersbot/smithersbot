@@ -86,6 +86,65 @@ describe("planner", () => {
       }
     });
 
+    it("parses planner-provided short summaries for plan and steps", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Implement authentication and regression checks",
+          shortSummary: "  Improve auth + checks  ",
+          steps: [
+            {
+              id: "implement-auth",
+              description: "Implement auth changes and verify behavior",
+              shortSummary: "  Implement auth  ",
+              dependsOn: [],
+              durationMinutes: 15,
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(
+        client,
+        "Implement authentication and regression checks",
+        TEST_CWD,
+      );
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.shortSummary).toBe("Improve auth + checks");
+        expect(plan.steps[0].shortSummary).toBe("Implement auth");
+      }
+    });
+
+    it("falls back short summaries when planner omits them", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary:
+            "Implement authentication flow updates for multiple clients and verify behavior across environments",
+          steps: [
+            {
+              id: "run-tests",
+              description: "A. Run tests in parallel",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "claude_code",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Auth update", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.shortSummary.startsWith("Implement authentication flow updates")).toBe(true);
+        expect(plan.shortSummary.endsWith("...")).toBe(true);
+        expect(plan.shortSummary.length).toBeLessThanOrEqual(80);
+        expect(plan.steps[0].shortSummary).toBe("Run tests");
+      }
+    });
+
     it("returns blocked when LLM needs more info", async () => {
       const client = mockClient(
         JSON.stringify({

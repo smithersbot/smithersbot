@@ -84,6 +84,7 @@ export function mergeRevisedPlanWithDoneSteps(params: {
     goal: originalPlan.goal,
     workingDir: revisedPlan.workingDir,
     summary: revisedPlan.summary,
+    shortSummary: revisedPlan.shortSummary,
     steps: mergedSteps,
   };
 }
