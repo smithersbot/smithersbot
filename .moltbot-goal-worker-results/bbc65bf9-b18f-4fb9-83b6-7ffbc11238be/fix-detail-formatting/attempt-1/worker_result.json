@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Updated splitStructuredDetailLines() in src/telegram/goal-commands.ts to split detail text by paragraphs/newlines only (one bullet per paragraph) instead of sentence boundaries; verified successfully with pnpm build."}

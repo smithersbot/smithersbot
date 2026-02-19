@@ -340,21 +340,10 @@ function splitStructuredDetailLines(value: string | undefined): string[] {
   const normalized = value.replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
 
-  const lines: string[] = [];
-  for (const paragraph of normalized.split(/\n+/)) {
-    const trimmed = paragraph.trim();
-    if (!trimmed) continue;
-    const sentenceParts = trimmed.match(/[^.!?]+[.!?]?/g);
-    if (sentenceParts && sentenceParts.length > 0) {
-      for (const part of sentenceParts) {
-        const sentence = part.trim();
-        if (sentence) lines.push(sentence);
-      }
-      continue;
-    }
-    lines.push(trimmed);
-  }
-  return lines;
+  return normalized
+    .split(/\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
 }
 
 function formatTaskDetailSections(plan: Plan): string {
