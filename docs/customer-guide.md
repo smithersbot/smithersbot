@@ -10,7 +10,7 @@ This guide shows you how to use SmithersBot in Telegram.
 
 - Your Telegram app on your phone or computer
 - Your bot name (shared during setup)
-- Your Claude subscription (Pro or Max)
+- Your Claude subscription (Pro or Max) and/or OpenAI subscription.
 
 ## How To Message Your Bot
 
@@ -52,15 +52,29 @@ Tip: write tasks in plain language. The more specific you are, the better the ou
 ## How it works
 After you give your bot a `/new_goal` command it will create a plan for you to approve.
 You can approve, reject or request edits to the goal plan.
-Once the goal plan is approved, it executes its tasks in its optimal order.
-If a task gets blocked (i.e. 
+Once the goal plan is approved, it executes its tasks in its optimal time saving order.
+If a task gets blocked, it will send you a message and continue to try and complete other tasks that aren't dependant on blocked tasks. See the Blocked Task Section below.
+Once a goal completes, it will tell you it's completed.
+
+## Blocked Tasks
+Sometimes the agent really can't continue on a task without your input. In this case it will set the task to blocked and won't continue executing that task or any tasks dependant on it until you give the input it requires.
+**Examples of reasons a task would block:** 
+- It takes longer than 2x its expected time to complete. 
+- You run out of Claude or OpenAI usage. 
+- You made edits to its code and broke something.
+
+**How to Unblock Tasks:**
+If it's a simple fix you need to make such as waiting until your OpenAI usage resets, just click "▶️ Resume Task"
+If you need to provide input (i.e. it's trying to do something out of scope such as running a massive set of tests that's taking too long), reply to the "BLOCKED TASK" message and tell it what to do differently and it will take your feedback and resume.
+
+**Note:** If you're unsure how to unblock a task, use Repo Chat for clarity on why the task is blocked and what you should do. (See section below "Repo Chat" for more).
 
 ## How To Check On A Task
 
 To check the status of all goals, simply send `/goal_list` in the same chat.
 
 To check the status of a single goal, send `/goal_status <Goal ID>` in the same chat.
-Note: you can get your Goal ID from the `/goal_list` or from messages the bot sends after you call `/new_goal`
+**Note:** you can get your Goal ID from the `/goal_list` or from messages the bot sends after you call `/new_goal`
 
 
 Examples:
@@ -68,7 +82,6 @@ Examples:
 ```text
 /goal_list 
 ```
-
 
 ```text
 /goal_status c8ee4cdc
@@ -95,8 +108,11 @@ What do I do now, how do I fix this?
 ```
 **Note:** The answer to this question is to click the "🔄 Incorporate Feedback" button on the done task telling it about the failed test and it will update the plan and fix the bug.
 
+```text
+My goal c8ee4cdc blocked and I don't understand how to unblock it. Please check and see what went wrong and how I can unblock it.
+```
 
-It's also a great soundboard. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command. I.e.:
+It's also a great soundboard for planning goals. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command. I.e.:
 ```text
 I want to build something that sends me a report every week about developments in the robotics advanced manufacturing industry. Give me a "/new_goal" command to achieve this.
 ```
@@ -111,14 +127,6 @@ For example, send this message that's not responding to any other message:
 ```text
 The goal c8ee4cdc is currently executing but it's taking way longer than its time estimate. Please check what it's doing now and whether it's hung and report back to me with why it's taking so long and if I should stop it.
 ``` 
-
-
-4. If you do not manage the server directly, contact your support provider.
-
-Support contact placeholder:
-- Name: `[YOUR SUPPORT CONTACT]`
-- Email: `[SUPPORT EMAIL]`
-- Phone or WhatsApp: `[SUPPORT NUMBER]`
 
 ## Your Bot Limits
 
