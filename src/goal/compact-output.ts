@@ -257,7 +257,7 @@ function formatStepLine(
   if (style === "numbered") {
     const normalizedLabel = numberedStepLabel?.trim();
     if (normalizedLabel) {
-      return `${normalizedLabel} ${index + 1}: ${statePrefix}${decoratedText}`;
+      return `**${normalizedLabel} ${index + 1}:** ${statePrefix}${decoratedText}`;
     }
     return `${index + 1}. ${statePrefix}${decoratedText}`;
   }

@@ -1918,7 +1918,7 @@ describe("goal-commands telegram adapter", () => {
         "✅ Done: Very long goal that should not be used as the compact done headline",
       );
       const summaryLines = allDoneEvent.summary.trim().split("\n");
-      expect(summaryLines.at(-1)).toBe("Goal ID: test-run");
+      expect(summaryLines.at(-1)).toBe("**Goal ID:** test-run");
     });
 
     it("syncs workingDir from feedback revisions and ensures new directories", async () => {
@@ -2897,9 +2897,9 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
       expect(sentText).toContain("<b>Test 1: Test signup flow [6/10 Critical]</b>");
-      expect(sentText).toContain("Step 1. Open signup");
-      expect(sentText).toContain("Step 2. Submit invalid email");
-      expect(sentText).toContain("Step 3. Confirm inline error");
+      expect(sentText).toContain("<b>Step 1.</b> Open signup");
+      expect(sentText).toContain("<b>Step 2.</b> Submit invalid email");
+      expect(sentText).toContain("<b>Step 3.</b> Confirm inline error");
       expect(sentText).not.toContain("unavailable");
       expect(sentText).not.toContain("<i>Reason:");
     });

@@ -228,6 +228,10 @@ describe("generateManualTests", () => {
     });
     expect(manualTests[1]?.description.startsWith("Validate:")).toBe(false);
     expect(manualTests[2]?.description.startsWith("Validate:")).toBe(false);
+    expect(manualTests[1]?.detail).toContain("**Step 1.**");
+    expect(manualTests[1]?.detail).toContain("**Step 2.**");
+    expect(manualTests[2]?.detail).toContain("**Step 1.**");
+    expect(manualTests[2]?.detail).toContain("**Step 2.**");
   });
 
   it("runs Claude CLI with subscription auth when no client is injected", async () => {

@@ -405,7 +405,11 @@ function formatManualTestDetails(
     if (reason) {
       lines.push(`_Reason: ${reason}_`);
     }
-    const detail = test.detail.replace(/\r\n/g, "\n").trim();
+    const detail = test.detail
+      .replace(/\r\n/g, "\n")
+      .trim()
+      // Normalize both plain and already-bold Step markers so Telegram output is consistent.
+      .replace(/(?:\*\*)?\bStep (\d+)\.(?:\*\*)?/g, "**Step $1.**");
     lines.push("");
     lines.push(detail || "No additional detail provided.");
     if (index < tests.length - 1) lines.push("");
@@ -414,7 +418,7 @@ function formatManualTestDetails(
 }
 
 function appendGoalIdFooter(summary: string, runId: string): string {
-  return `${summary.trimEnd()}\nGoal ID: ${runId.slice(0, 8)}`;
+  return `${summary.trimEnd()}\n**Goal ID:** ${runId.slice(0, 8)}`;
 }
 
 function buildDoneSummaryWithManualTests(run: SerializedRun): string {

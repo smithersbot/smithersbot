@@ -30,7 +30,7 @@ Return ONLY JSON with this shape:
       "description": "Short human-friendly test name",
       "criticality": 1,
       "reason": "Why the bot could not verify this automatically",
-      "detail": "Step 1. ...\\nStep 2. ...\\nStep 3. ..."
+      "detail": "**Step 1.** ...\\n**Step 2.** ...\\n**Step 3.** ..."
     }
   ]
 }
@@ -39,7 +39,7 @@ Rules:
 - description must be a concise phrase (for example: "Test Telegram message splitting"), not "Validate: ..." and not a pasted task summary.
 - criticality must be an integer from 1 to 10 and should vary based on risk.
 - reason should explain why manual verification is required.
-- detail must be human-friendly numbered steps using "Step 1.", "Step 2.", etc.
+- detail must be human-friendly numbered steps using "**Step 1.**", "**Step 2.**", etc.
 - Do not include markdown fences or prose outside JSON.
 
 Good example:
@@ -49,7 +49,7 @@ Good example:
       "description": "Test Telegram message splitting",
       "criticality": 6,
       "reason": "Requires sending a real message through Telegram which the bot cannot do during automated testing",
-      "detail": "Step 1. Restart the gateway: systemctl --user restart moltbot-gateway-dev.service\\nStep 2. Send a /new_goal command with a prompt longer than 4000 characters\\nStep 3. Verify the message is buffered and combined correctly\\nStep 4. Check that the goal is created with the full prompt text"
+      "detail": "**Step 1.** Restart the gateway: systemctl --user restart moltbot-gateway-dev.service\\n**Step 2.** Send a /new_goal command with a prompt longer than 4000 characters\\n**Step 3.** Verify the message is buffered and combined correctly\\n**Step 4.** Check that the goal is created with the full prompt text"
     }
   ]
 }
@@ -275,9 +275,9 @@ function fallbackCriticality(index: number): number {
 function buildFallbackDetail(step: PlanStep): string {
   const completionSummary = step.taskSummary?.trim().replace(/\s+/g, " ");
   const stepTwo = completionSummary
-    ? `Step 2. Confirm this expected outcome: ${completionSummary}.`
-    : "Step 2. Confirm the expected behavior and no regressions in related flows.";
-  return `Step 1. Manually exercise the behavior described by "${step.description}".\n${stepTwo}`;
+    ? `**Step 2.** Confirm this expected outcome: ${completionSummary}.`
+    : "**Step 2.** Confirm the expected behavior and no regressions in related flows.";
+  return `**Step 1.** Manually exercise the behavior described by "${step.description}".\n${stepTwo}`;
 }
 
 function buildFallbackTests(

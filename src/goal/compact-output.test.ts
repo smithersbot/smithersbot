@@ -20,7 +20,7 @@ function getStepLines(lines: string[]): string[] {
 }
 
 function getNumberedLines(lines: string[]): string[] {
-  return lines.filter((line) => /^(?:\d+\.\s|Test \d+:\s)/.test(line));
+  return lines.filter((line) => /^(?:\d+\.\s|\*\*Test \d+:\*\*\s)/.test(line));
 }
 
 describe("formatAttemptBadge", () => {
@@ -299,8 +299,8 @@ describe("formatCompactGoalCompletionSummary", () => {
     expect(getStepLines(result.lines)).toHaveLength(0);
     const numbered = getNumberedLines(result.lines);
     expect(numbered).toHaveLength(2);
-    expect(numbered[0]).toMatch(/^Test 1:/);
-    expect(numbered[1]).toMatch(/^Test 2:/);
+    expect(numbered[0]).toMatch(/^\*\*Test 1:\*\*/);
+    expect(numbered[1]).toMatch(/^\*\*Test 2:\*\*/);
     expect(numbered[0]).toContain("[9/10 Critical]");
     expect(numbered[1]).toContain("[8/10 Critical]");
   });
@@ -334,7 +334,7 @@ describe("formatCompactGoalCompletionSummary", () => {
 
     const numbered = getNumberedLines(result.lines);
     expect(numbered).toHaveLength(1);
-    expect(numbered[0]).toMatch(/^Test 1:/);
+    expect(numbered[0]).toMatch(/^\*\*Test 1:\*\*/);
     expect(numbered[0]).toContain("[10/10 Critical]");
     expect(numbered[0]).not.toContain("[10/10 Critica…");
   });

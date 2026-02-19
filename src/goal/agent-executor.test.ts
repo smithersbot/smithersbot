@@ -123,6 +123,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       expect(outcome.summary).toContain("✅ Done:");
       expect(outcome.summary).toContain("**Progress** 1/1");
       expect(outcome.summary).toContain("**Retries** 0 retries");
+      expect(outcome.summary).toContain("**Goal ID:** run-cli-");
     }
   });
 

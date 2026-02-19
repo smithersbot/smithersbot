@@ -711,7 +711,7 @@ function buildGoalSummary(params: {
     manualTests: params.manualTests,
     channel: params.channel ?? "cli",
   }).text;
-  return `${summary.trimEnd()}\nGoal ID: ${params.runId.slice(0, 8)}`;
+  return `${summary.trimEnd()}\n**Goal ID:** ${params.runId.slice(0, 8)}`;
 }
 
 function buildSuccessorMap(steps: PlanStep[]): Map<string, Set<string>> {
