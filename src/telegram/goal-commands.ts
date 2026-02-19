@@ -2179,114 +2179,135 @@ export function buildOnStatusChange(params: {
 }): (event: GoalStatusChangeEvent) => Promise<void> {
   const { bot, chatId, threadId, runtime, runId } = params;
   const prefix = runId.slice(0, 8);
+  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   return async (event: GoalStatusChangeEvent) => {
     const run = loadRun(runId);
     const plan = run?.plan;
     if (!plan) return;
     const stepResults = serializedStepResultsToMap(run);
+    const sendDeliveryFallback = async () => {
+      const msg = `⚠️ Goal ${prefix}: ${event.type} - update delivery failed, check /goal_status`;
+      await bot.api.sendMessage(chatId, msg, { ...threadParams }).catch(() => {});
+    };
 
     if (event.type === "step_blocked") {
-      const caption = [
-        `TASK BLOCKED (${prefix}): Step ${event.stepId} needs input`,
-        "",
-        event.question,
-        "",
-        `Next: /goal_answer ${prefix} <your answer>`,
-      ].join("\n");
-      const sentId = await sendDagPng({
-        bot,
-        chatId,
-        threadId,
-        runtime,
-        plan,
-        steps: event.steps,
-        stepResults,
-        caption,
-        replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
-      });
-      // Persist the photo message ID so reply-to routing works
-      if (sentId != null) {
-        persistTelegramQuestionMessage({
-          runId,
+      try {
+        const caption = [
+          `TASK BLOCKED (${prefix}): Step ${event.stepId} needs input`,
+          "",
+          event.question,
+          "",
+          `Next: /goal_answer ${prefix} <your answer>`,
+        ].join("\n");
+        const sentId = await sendDagPng({
+          bot,
           chatId,
-          messageId: sentId,
           threadId,
-          requiredInputKey: `task:${event.stepId}:input`,
+          runtime,
+          plan,
+          steps: event.steps,
+          stepResults,
+          caption,
+          replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
         });
+        // Persist the photo message ID so reply-to routing works
+        if (sentId != null) {
+          persistTelegramQuestionMessage({
+            runId,
+            chatId,
+            messageId: sentId,
+            threadId,
+            requiredInputKey: `task:${event.stepId}:input`,
+          });
+        }
+      } catch {
+        await sendDeliveryFallback();
       }
     } else if (event.type === "fully_blocked") {
-      const lines: string[] = [
-        `GOAL BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
-      ];
-      const blocked = event.steps.filter((s) => s.status === "blocked");
-      if (blocked.length > 0) {
-        lines.push("");
-        for (const s of blocked.slice(0, 3)) {
-          lines.push(`• Step ${s.id}: ${s.blockedQuestion ?? s.blockedReason ?? "needs input"}`);
+      try {
+        const lines: string[] = [
+          `GOAL BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
+        ];
+        const blocked = event.steps.filter((s) => s.status === "blocked");
+        if (blocked.length > 0) {
+          lines.push("");
+          for (const s of blocked.slice(0, 3)) {
+            lines.push(`• Step ${s.id}: ${s.blockedQuestion ?? s.blockedReason ?? "needs input"}`);
+          }
+          if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
         }
-        if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
-      }
-      lines.push("");
-      lines.push(`Next: reply with your answer or /goal_answer ${prefix} <answer>`);
-      const sentId = await sendDagPng({
-        bot,
-        chatId,
-        threadId,
-        runtime,
-        plan,
-        steps: event.steps,
-        stepResults,
-        caption: lines.join("\n"),
-        replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
-      });
-      if (sentId != null) {
-        const blockedSteps =
-          blocked.length > 0 ? blocked : event.steps.filter((s) => s.status === "blocked");
-        const requiredInputKey =
-          blockedSteps.length <= 1
-            ? blockedSteps[0]
-              ? `task:${blockedSteps[0].id}:input`
-              : undefined
-            : `tasks:${blockedSteps.map((s) => s.id).join(",")}:input`;
-        persistTelegramQuestionMessage({
-          runId,
+        lines.push("");
+        lines.push(`Next: reply with your answer or /goal_answer ${prefix} <answer>`);
+        const sentId = await sendDagPng({
+          bot,
           chatId,
-          messageId: sentId,
           threadId,
-          requiredInputKey,
+          runtime,
+          plan,
+          steps: event.steps,
+          stepResults,
+          caption: lines.join("\n"),
+          replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
         });
+        if (sentId != null) {
+          const blockedSteps =
+            blocked.length > 0 ? blocked : event.steps.filter((s) => s.status === "blocked");
+          const requiredInputKey =
+            blockedSteps.length <= 1
+              ? blockedSteps[0]
+                ? `task:${blockedSteps[0].id}:input`
+                : undefined
+              : `tasks:${blockedSteps.map((s) => s.id).join(",")}:input`;
+          persistTelegramQuestionMessage({
+            runId,
+            chatId,
+            messageId: sentId,
+            threadId,
+            requiredInputKey,
+          });
+        }
+      } catch {
+        await sendDeliveryFallback();
       }
     } else if (event.type === "plan_revised") {
-      await sendDagPng({
-        bot,
-        chatId,
-        threadId,
-        runtime,
-        plan,
-        steps: event.steps,
-        stepResults,
-        caption: event.summary,
-      });
-    } else if (event.type === "all_done") {
-      persistManualTests(runId, event.manualTests, event.manualTestsError);
-      const sentId = await sendDagPng({
-        bot,
-        chatId,
-        threadId,
-        runtime,
-        plan,
-        steps: event.steps,
-        stepResults,
-        caption: event.summary,
-        replyMarkup: buildGoalDoneInlineKeyboard(prefix),
-      });
-      if (sentId != null) {
-        persistTelegramDoneMessage({
-          runId,
+      try {
+        await sendDagPng({
+          bot,
           chatId,
-          messageId: sentId,
           threadId,
+          runtime,
+          plan,
+          steps: event.steps,
+          stepResults,
+          caption: event.summary,
         });
+      } catch {
+        await sendDeliveryFallback();
+      }
+    } else if (event.type === "all_done") {
+      try {
+        persistManualTests(runId, event.manualTests, event.manualTestsError);
+        const sentId = await sendDagPng({
+          bot,
+          chatId,
+          threadId,
+          runtime,
+          plan,
+          steps: event.steps,
+          stepResults,
+          caption: event.summary,
+          replyMarkup: buildGoalDoneInlineKeyboard(prefix),
+        });
+        if (sentId != null) {
+          persistTelegramDoneMessage({
+            runId,
+            chatId,
+            messageId: sentId,
+            threadId,
+          });
+        }
+      } catch {
+        await sendDeliveryFallback();
       }
     }
   };

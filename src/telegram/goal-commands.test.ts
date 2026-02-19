@@ -633,8 +633,7 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalDetail } = await import("./goal-commands.js");
       const result = await handleGoalDetail("abc12345");
       expect(result).toContain("**Task 1: Harden login**");
-      expect(result).toContain("• Validate credential checks.");
-      expect(result).toContain("• Prevent blank passwords.");
+      expect(result).toContain("• Validate credential checks. Prevent blank passwords.");
       expect(result).toContain("**Task 2: Ship release candidate**");
       expect(result).toContain("• Depends on: step-login");
     });
@@ -942,6 +941,102 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.manualTestsError).toBe("HTTP 401: invalid x-api-key");
       expect(run?.telegramDoneMessage?.messageId).toBe(23);
     });
+
+    it.each([
+      {
+        eventType: "step_blocked",
+        event: {
+          type: "step_blocked",
+          stepId: "1",
+          question: "Need a value",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "blocked",
+              blockedQuestion: "Need a value",
+            },
+          ],
+        },
+      },
+      {
+        eventType: "fully_blocked",
+        event: {
+          type: "fully_blocked",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "blocked",
+              blockedQuestion: "Need a value",
+            },
+          ],
+        },
+      },
+      {
+        eventType: "plan_revised",
+        event: {
+          type: "plan_revised",
+          revision: 2,
+          summary: "Plan revised summary",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+            },
+          ],
+        },
+      },
+      {
+        eventType: "all_done",
+        event: {
+          type: "all_done",
+          summary: "Done summary",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "done",
+            },
+          ],
+        },
+      },
+    ])(
+      "swallows delivery errors and posts fallback text for $eventType status updates",
+      async ({ eventType, event }) => {
+        saveRunFixture(makeRun());
+        mockRenderMermaidToPng.mockReturnValueOnce(null);
+
+        const sendPhoto = vi.fn().mockResolvedValue({ message_id: 30 });
+        const sendMessage = vi
+          .fn()
+          .mockRejectedValueOnce(new Error("html send failed"))
+          .mockRejectedValueOnce(new Error("text send failed"))
+          .mockResolvedValueOnce({ message_id: 31 });
+        const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+        const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+        const onStatusChange = buildOnStatusChange({
+          bot,
+          chatId: 42,
+          runtime: createCaptureRuntime().runtime,
+          runId: "test-run-id-1234",
+        });
+
+        await expect(onStatusChange(event as never)).resolves.toBeUndefined();
+
+        expect(sendPhoto).not.toHaveBeenCalled();
+        expect(sendMessage).toHaveBeenCalledTimes(3);
+        const fallbackText = sendMessage.mock.calls[2]?.[1];
+        expect(typeof fallbackText).toBe("string");
+        expect(fallbackText).toContain(eventType);
+        expect(fallbackText).toContain("test-run");
+      },
+    );
   });
 
   describe("sendGoalPlanResult", () => {
@@ -2752,9 +2847,8 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain("<b>Test 1 [7/10 Critical]</b>");
       expect(sentText).toContain("• Description: Validate: Implement login validation");
       expect(sentText).toContain(
-        '• Manually exercise the behavior changed by "Implement login validation".',
+        '• Manually exercise the behavior changed by "Implement login validation". Confirm expected output and no regressions in related flows.',
       );
-      expect(sentText).toContain("• Confirm expected output and no regressions in related flows.");
       expect(sentText).not.toContain("unavailable");
       expect(sentText).not.toContain("Reason:");
     });

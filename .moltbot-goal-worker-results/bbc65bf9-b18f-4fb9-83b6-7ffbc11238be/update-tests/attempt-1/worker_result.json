@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Updated goal-commands Telegram detail-formatting tests for paragraph-based bullets and verified with pnpm vitest run src/telegram/goal-commands.test.ts, pnpm lint, and pnpm build."}
