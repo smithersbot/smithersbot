@@ -498,7 +498,7 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
 
 // --- CLI process execution ---
 
-function buildCliArgs(params: {
+export function buildCliArgs(params: {
   backend: GoalBackendId;
   prompt: string;
   workingDir: string;
@@ -534,8 +534,12 @@ function buildCliArgs(params: {
   const allowedTools = buildAllowedToolsList();
   const denyContent = fs.readFileSync(denyFilePath, "utf8");
   const appendedPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
+  // TODO(goal): Claude Code has no workspace sandbox flag equivalent to Codex
+  // `--sandbox workspace-write`; use --cwd so its default context matches the run.
   const args = [
     "-p",
+    "--cwd",
+    workingDir,
     "--verbose",
     "--output-format",
     "stream-json",

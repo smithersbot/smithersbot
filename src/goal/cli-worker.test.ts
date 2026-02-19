@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PlanStep, Plan } from "./types.js";
 import {
   buildAllowedToolsList,
+  buildCliArgs,
   buildGoalWorkerEnv,
   buildCliWorkerPrompt,
   parseClaudeCodeStreamError,
@@ -214,6 +215,27 @@ describe("cli-worker", () => {
         if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevAnthropic;
       }
+    });
+  });
+
+  describe("buildCliArgs", () => {
+    it("includes --cwd for claude_code workers", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-args-"));
+      const denyFilePath = path.join(dir, "deny.txt");
+      fs.writeFileSync(denyFilePath, "HARD DENIES", "utf8");
+
+      const workingDir = path.join(dir, "workspace");
+      const args = buildCliArgs({
+        backend: "claude_code",
+        prompt: "do the task",
+        workingDir,
+        schemaPath: path.join(dir, "schema.json"),
+        denyFilePath,
+      });
+
+      const cwdIndex = args.indexOf("--cwd");
+      expect(cwdIndex).toBeGreaterThanOrEqual(0);
+      expect(args[cwdIndex + 1]).toBe(workingDir);
     });
   });
 
