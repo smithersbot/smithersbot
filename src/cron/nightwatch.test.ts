@@ -167,6 +167,7 @@ describe("nightwatch cron", () => {
       expect(prompt).toContain("/new_goal workflow");
       expect(prompt).toContain("Telegram UX integration");
       expect(prompt).toContain("Architecture simplification");
+      expect(prompt).toContain("Cross-workflow consistency");
     });
   });
 

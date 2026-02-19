@@ -86,6 +86,13 @@ Look across the goal system and Telegram integration for:
 - Duplicated logic that could be consolidated
 - Indirection that makes the code harder to follow without adding real value
 
+## 4. Cross-workflow consistency
+Look for inconsistencies across workflows where a bug fix, UX pattern, or quality-of-life improvement exists in one place but is missing from analogous workflows that would benefit equally.
+Concrete example:
+- For /new_goal, the "Right away, sir." acknowledgment replies to the user's message so the user sees which goal is being planned.
+- When the user clicks "Approve", the confirmation message is not sent as a reply to the approval button message, making it unclear which plan was just approved.
+Find and prioritize similar patterns where one workflow already has a good practice (like reply-to-message context) and other workflows lack it.
+
 ## Output
 Produce a goal plan with concrete, actionable steps that fix real bugs and make high-value improvements.
 Prioritize correctness bugs over style issues. Do not propose changes unless you have read the actual code and confirmed the problem exists.
