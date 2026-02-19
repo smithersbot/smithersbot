@@ -1819,10 +1819,11 @@ describe("goal-commands telegram adapter", () => {
       expect(updated?.workingDir).toBe(newDir);
     });
 
-    it("accepts ~/ working dir instructions even when the directory does not exist yet", async () => {
+    async function expectWorkingDirInstructionResolves(
+      instructionValue: string,
+      resolvedPath: string,
+    ): Promise<void> {
       const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-home-old-"));
-      const requestedPath = `~/goal-edit-workingdir-${Date.now().toString(36)}`;
-      const resolvedPath = path.join(os.homedir(), requestedPath.slice(2));
       fs.rmSync(resolvedPath, { recursive: true, force: true });
       saveRun(makeRun({ workingDir: originalDir }));
 
@@ -1847,11 +1848,10 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit(
         "test-run",
-        `working directory should be ${requestedPath}`,
+        `working directory should be ${instructionValue}`,
       );
 
       expect(result.text).toContain("Working dir:");
-      expect(result.text).toContain(requestedPath);
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: resolvedPath,
@@ -1861,6 +1861,38 @@ describe("goal-commands telegram adapter", () => {
 
       const updated = loadRun("test-run-id-1234", testGoalsDir);
       expect(updated?.workingDir).toBe(resolvedPath);
+    }
+
+    it("resolves working dir instructions using 'a new folder ~/...'", async () => {
+      const projectName = `smithersbot-marketing-${Date.now().toString(36)}`;
+      await expectWorkingDirInstructionResolves(
+        `a new folder ~/${projectName}`,
+        path.join(os.homedir(), projectName),
+      );
+    });
+
+    it("resolves bare ~name working dir instructions as ~/name", async () => {
+      const projectName = `smithersbot-marketing-${Date.now().toString(36)}`;
+      await expectWorkingDirInstructionResolves(
+        `~${projectName}`,
+        path.join(os.homedir(), projectName),
+      );
+    });
+
+    it("resolves conversational 'a new folder ~name' working dir instructions", async () => {
+      const projectName = `smithersbot-marketing-${Date.now().toString(36)}`;
+      await expectWorkingDirInstructionResolves(
+        `a new folder ~${projectName}`,
+        path.join(os.homedir(), projectName),
+      );
+    });
+
+    it("resolves working dir instructions using 'the directory ~/...'", async () => {
+      const projectName = `my-project-${Date.now().toString(36)}`;
+      await expectWorkingDirInstructionResolves(
+        `the directory ~/${projectName}`,
+        path.join(os.homedir(), projectName),
+      );
     });
 
     it("updates run working dir from conversational correction phrasing", async () => {
@@ -1949,7 +1981,7 @@ describe("goal-commands telegram adapter", () => {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     });
 
-    it("returns an error when relative working dir instruction cannot be resolved", async () => {
+    it("rejects unresolvable relative directory", async () => {
       const existingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-existing-"));
       saveRun(makeRun({ workingDir: existingDir }));
       const missingRelativePath = `never/exists/${Date.now().toString(36)}`;

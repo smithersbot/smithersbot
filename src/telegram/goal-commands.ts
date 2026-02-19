@@ -435,6 +435,8 @@ const WORKING_DIR_INSTRUCTION_PATTERNS = [
   /set\s+(?:the\s+)?(?:working\s*dir|working\s*directory|workdir)\s+to\s+([^\n]+)/i,
   /(?:working\s*dir|working\s*directory|workdir)\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
 ];
+const WORKING_DIR_INSTRUCTION_PREFIX_PATTERN =
+  /^(?:(?:in|at)\s+)?(?:(?:a|an|the)\s+)?(?:new\s+)?(?:folder|directory|dir)\b(?:\s+(?:called|named))?(?:\s*[:=-])?\s+/i;
 
 function cleanWorkingDirInstructionPath(rawPath: string): string {
   let value = rawPath.trim();
@@ -446,6 +448,10 @@ function cleanWorkingDirInstructionPath(rawPath: string): string {
     .replace(/[`'"]+$/, "")
     .trim();
   value = value.replace(/[.,;:!?]+$/, "").trim();
+  value = value.replace(WORKING_DIR_INSTRUCTION_PREFIX_PATTERN, "").trim();
+  if (/^~[^/\\]/.test(value)) {
+    value = `~/${value.slice(1)}`;
+  }
   return value;
 }
 
