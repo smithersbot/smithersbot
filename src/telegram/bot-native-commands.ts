@@ -49,6 +49,10 @@ import {
 import { firstDefined } from "./bot-access.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
+import {
+  NIGHTWATCH_COMMAND_SPECS,
+  registerTelegramNightwatchCommand,
+} from "./nightwatch-commands.js";
 import { REPO_CHAT_COMMAND_SPECS, registerTelegramRepoChatCommands } from "./repo-chat-commands.js";
 import type { CommandFragmentBuffer } from "./command-fragments.js";
 
@@ -160,6 +164,7 @@ export const registerTelegramNativeCommands = ({
   const goalSpecs = nativeEnabled ? GOAL_COMMAND_SPECS : [];
   const repoChatSpecs = nativeEnabled ? REPO_CHAT_COMMAND_SPECS : [];
   const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
+  const nightwatchSpecs = nativeEnabled ? NIGHTWATCH_COMMAND_SPECS : [];
   const allCommands: Array<{ command: string; description: string }> = [
     ...nativeCommands.map((command) => ({
       command: command.name,
@@ -169,6 +174,7 @@ export const registerTelegramNativeCommands = ({
     ...goalSpecs,
     ...repoChatSpecs,
     ...gatewayRestartSpecs,
+    ...nightwatchSpecs,
     ...customCommands,
   ];
 
@@ -492,6 +498,18 @@ export const registerTelegramNativeCommands = ({
         registerGatewayRestartCommand({
           bot,
           cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          shouldSkipUpdate,
+        });
+        registerTelegramNightwatchCommand({
+          bot,
+          cfg,
+          accountId,
           telegramCfg,
           allowFrom,
           groupAllowFrom,
