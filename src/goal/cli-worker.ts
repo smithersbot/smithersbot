@@ -535,11 +535,9 @@ export function buildCliArgs(params: {
   const denyContent = fs.readFileSync(denyFilePath, "utf8");
   const appendedPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
   // TODO(goal): Claude Code has no workspace sandbox flag equivalent to Codex
-  // `--sandbox workspace-write`; use --cwd so its default context matches the run.
+  // `--sandbox workspace-write`; cwd is already set by runCliProcess() spawn options.
   const args = [
     "-p",
-    "--cwd",
-    workingDir,
     "--verbose",
     "--output-format",
     "stream-json",

@@ -219,7 +219,7 @@ describe("cli-worker", () => {
   });
 
   describe("buildCliArgs", () => {
-    it("includes --cwd for claude_code workers", () => {
+    it("does not include --cwd for claude_code workers", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-args-"));
       const denyFilePath = path.join(dir, "deny.txt");
       fs.writeFileSync(denyFilePath, "HARD DENIES", "utf8");
@@ -233,9 +233,7 @@ describe("cli-worker", () => {
         denyFilePath,
       });
 
-      const cwdIndex = args.indexOf("--cwd");
-      expect(cwdIndex).toBeGreaterThanOrEqual(0);
-      expect(args[cwdIndex + 1]).toBe(workingDir);
+      expect(args).not.toContain("--cwd");
     });
   });
 

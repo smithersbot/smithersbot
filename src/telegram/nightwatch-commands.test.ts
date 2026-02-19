@@ -330,6 +330,9 @@ describe("nightwatch Telegram command", () => {
       telegramChatId: "777777",
       telegramAccountId: "ops-account",
     });
+    const gateOrder = mockResolveChannelConfigWrites.mock.invocationCallOrder[0] ?? 0;
+    const writeOrder = mockWriteConfigFile.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER;
+    expect(gateOrder).toBeLessThan(writeOrder);
     expect(latestSentText(harness.sendMessage)).toContain(
       "Nightwatch plans will be sent to this chat.",
     );
@@ -348,6 +351,9 @@ describe("nightwatch Telegram command", () => {
       telegramAccountId: "ops-account",
       telegramThreadId: 99,
     });
+    const gateOrder = mockResolveChannelConfigWrites.mock.invocationCallOrder[0] ?? 0;
+    const writeOrder = mockWriteConfigFile.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER;
+    expect(gateOrder).toBeLessThan(writeOrder);
   });
 
   it.each(["on", "off", "time 03:00", "tz America/New_York", "chat"])(
