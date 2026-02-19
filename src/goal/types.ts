@@ -89,6 +89,8 @@ export type StepResult = {
 export type ManualTestSuggestion = {
   description: string;
   criticality: number;
+  /** Why this test requires manual verification. */
+  reason?: string;
   detail: string;
 };
 
