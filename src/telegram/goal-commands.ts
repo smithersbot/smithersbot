@@ -691,22 +691,25 @@ export function runGoalInBackground(params: {
           typeof result === "string" ? result : (result?.text ?? "Goal operation completed.");
         const truncated =
           fallback.length > 4000 ? `${fallback.slice(0, 3900)}\n\n(truncated)` : fallback;
-        await bot.api.sendMessage(chatId, truncated, threadParams).catch(() => {});
+        await bot.api
+          .sendMessage(chatId, truncated, { ...threadParams, ...replyParams })
+          .catch(() => {});
       }
     } catch (err) {
       warn(
         `[goal] ${tag}fn failed chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       const msg = formatGoalError(err);
-      await sendGoalReply(bot, chatId, msg, runtime, threadId).catch(() => {
-        void bot.api
-          .sendMessage(
-            chatId,
-            `Error: ${err instanceof Error ? err.message : String(err)}`,
-            threadParams,
-          )
-          .catch(() => {});
-      });
+      await sendGoalReply(bot, chatId, msg, runtime, threadId, params.replyToMessageId).catch(
+        () => {
+          void bot.api
+            .sendMessage(chatId, `Error: ${err instanceof Error ? err.message : String(err)}`, {
+              ...threadParams,
+              ...replyParams,
+            })
+            .catch(() => {});
+        },
+      );
     } finally {
       loop.stop();
       params.releaseGoalLock?.();
@@ -2029,6 +2032,38 @@ export async function sendGoalPlanResult(params: {
   }
 }
 
+export async function sendGoalBackgroundResult(
+  params: {
+    bot: Bot;
+    chatId: number;
+    runtime: RuntimeEnv;
+    threadId?: number;
+    replyToMessageId?: number;
+  },
+  reply: GoalPlanResult | string | undefined,
+): Promise<void> {
+  if (reply == null) return;
+  if (typeof reply === "string") {
+    await sendGoalReply(
+      params.bot,
+      params.chatId,
+      reply,
+      params.runtime,
+      params.threadId,
+      params.replyToMessageId,
+    );
+    return;
+  }
+  await sendGoalPlanResult({
+    bot: params.bot,
+    chatId: params.chatId,
+    runtime: params.runtime,
+    result: reply,
+    threadId: params.threadId,
+    replyToMessageId: params.replyToMessageId,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // DAG PNG delivery (status-coloured Mermaid diagram via Telegram photo)
 // ---------------------------------------------------------------------------
@@ -2346,30 +2381,25 @@ export function registerTelegramGoalCommands({
     await sendGoalPlanResult({ bot, chatId, runtime, result, threadId, replyToMessageId });
   }
 
-  async function sendGoalBackgroundResult(
-    chatId: number,
-    threadId: number | undefined,
-    reply: GoalPlanResult | string | undefined,
-  ): Promise<void> {
-    if (reply == null) return;
-    if (typeof reply === "string") {
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
-    } else {
-      await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
-    }
-  }
-
   async function startGoalResume(params: {
     rawId: string;
     chatId: number;
     threadId?: number;
+    replyToMessageId?: number;
     lockLabel: "approve" | "resume";
     backgroundLabel: string;
   }): Promise<void> {
-    const { rawId, chatId, threadId, lockLabel, backgroundLabel } = params;
+    const { rawId, chatId, threadId, replyToMessageId, lockLabel, backgroundLabel } = params;
     const resolvedId = resolveRunId(rawId);
     if (!resolvedId) {
-      await sendGoalReply(bot, chatId, `Run not found: ${rawId}`, runtime, threadId);
+      await sendGoalReply(
+        bot,
+        chatId,
+        `Run not found: ${rawId}`,
+        runtime,
+        threadId,
+        replyToMessageId,
+      );
       return;
     }
     const lockResult = acquireGoalOpLock(resolvedId, lockLabel);
@@ -2380,13 +2410,21 @@ export function registerTelegramGoalCommands({
         `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${lockResult.existingLabel ?? "unknown"}).`,
         runtime,
         threadId,
+        replyToMessageId,
       );
       return;
     }
     const run = loadRun(resolvedId);
     if (!run) {
       lockResult.release();
-      await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+      await sendGoalReply(
+        bot,
+        chatId,
+        `Run file missing: ${resolvedId}`,
+        runtime,
+        threadId,
+        replyToMessageId,
+      );
       return;
     }
     const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
@@ -2397,9 +2435,11 @@ export function registerTelegramGoalCommands({
       runtime,
       label: backgroundLabel,
       preface: getGoalExecutionPreface(run.state),
+      replyToMessageId,
       releaseGoalLock: lockResult.release,
       fn: () => handleGoalApprove(rawId, statusCb),
-      onResult: async (reply) => sendGoalBackgroundResult(chatId, threadId, reply),
+      onResult: async (reply) =>
+        sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
     });
   }
 
@@ -2466,7 +2506,14 @@ export function registerTelegramGoalCommands({
 
       const resolvedId = resolveRunId(runIdPrefix!);
       if (!resolvedId) {
-        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
         return;
       }
 
@@ -2475,6 +2522,7 @@ export function registerTelegramGoalCommands({
           rawId: resolvedId,
           chatId,
           threadId,
+          replyToMessageId: messageId,
           lockLabel: "approve",
           backgroundLabel: "callback:approve",
         });
@@ -2506,7 +2554,14 @@ export function registerTelegramGoalCommands({
 
       const resolvedId = resolveRunId(runIdPrefix!);
       if (!resolvedId) {
-        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
         return;
       }
       const run = loadRun(resolvedId);
@@ -2564,7 +2619,14 @@ export function registerTelegramGoalCommands({
 
       const resolvedId = resolveRunId(runIdPrefix!);
       if (!resolvedId) {
-        await sendGoalReply(bot, chatId, `Run not found: ${runIdPrefix}`, runtime, threadId);
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
         return;
       }
 
@@ -2586,6 +2648,7 @@ export function registerTelegramGoalCommands({
           rawId: resolvedId,
           chatId,
           threadId,
+          replyToMessageId: messageId,
           lockLabel: "resume",
           backgroundLabel: "callback:resume",
         });
@@ -2663,16 +2726,14 @@ export function registerTelegramGoalCommands({
         runtime,
         label: "reaction:approve",
         preface: getGoalExecutionPreface(run.state),
+        replyToMessageId: messageId,
         releaseGoalLock: lockResult.release,
         fn: () => handleGoalApprove(run.runId, statusCb),
-        onResult: async (reply) => {
-          if (reply == null) return;
-          if (typeof reply === "string") {
-            await sendGoalReply(bot, chatId, reply, runtime, threadId);
-          } else {
-            await sendGoalPlanResult({ bot, chatId, runtime, result: reply, threadId });
-          }
-        },
+        onResult: async (reply) =>
+          sendGoalBackgroundResult(
+            { bot, chatId, runtime, threadId, replyToMessageId: messageId },
+            reply,
+          ),
       });
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
@@ -2831,6 +2892,7 @@ export function registerTelegramGoalCommands({
       rawId,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
+      replyToMessageId: ctx.message?.message_id,
       lockLabel: "approve",
       backgroundLabel: "goal_approve",
     });
@@ -2855,6 +2917,7 @@ export function registerTelegramGoalCommands({
       rawId,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
+      replyToMessageId: ctx.message?.message_id,
       lockLabel: "resume",
       backgroundLabel: "goal_resume",
     });

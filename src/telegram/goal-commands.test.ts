@@ -1225,6 +1225,84 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("sendGoalBackgroundResult", () => {
+    it("forwards replyToMessageId on string replies", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 901 });
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 902 });
+      const bot = { api: { sendMessage, sendPhoto } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalBackgroundResult } = await import("./goal-commands.js");
+
+      await sendGoalBackgroundResult(
+        {
+          bot,
+          chatId: 42,
+          runtime: createCaptureRuntime().runtime,
+          replyToMessageId: 77,
+        },
+        "Background status",
+      );
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledWith(
+        42,
+        "Background status",
+        expect.objectContaining({ reply_parameters: { message_id: 77 } }),
+      );
+    });
+
+    it("forwards replyToMessageId on GoalPlanResult replies", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      const plan = makeRun({ runId }).plan!;
+      saveRunFixture(makeRun({ runId, plan }));
+
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 903 });
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 904 });
+      const bot = { api: { sendMessage, sendPhoto } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalBackgroundResult } = await import("./goal-commands.js");
+
+      await sendGoalBackgroundResult(
+        {
+          bot,
+          chatId: 42,
+          runtime: createCaptureRuntime().runtime,
+          replyToMessageId: 78,
+        },
+        {
+          text: "ignored when plan renders",
+          runId,
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      );
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const sendPhotoOpts = sendPhoto.mock.calls[0]?.[2] as {
+        reply_parameters?: { message_id: number };
+      };
+      expect(sendPhotoOpts.reply_parameters).toEqual({ message_id: 78 });
+    });
+
+    it("skips delivery when reply is undefined or null", async () => {
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 905 });
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 906 });
+      const bot = { api: { sendMessage, sendPhoto } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalBackgroundResult } = await import("./goal-commands.js");
+      const params = {
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 79,
+      };
+
+      await sendGoalBackgroundResult(params, undefined);
+      await sendGoalBackgroundResult(params, null as unknown as string);
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+  });
+
   describe("handleGoalAnswer", () => {
     it("returns usage on empty input", async () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
@@ -2750,6 +2828,245 @@ describe("goal-commands telegram adapter", () => {
           reply_markup: expect.objectContaining({ force_reply: true }),
         }),
       );
+    });
+  });
+
+  describe("registerTelegramGoalCommands approve/resume reply threading", () => {
+    function makeHarness(): {
+      commandHandlers: Record<string, (ctx: unknown) => Promise<void>>;
+      callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+    } {
+      const commandHandlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      let callbackHandler:
+        | ((ctx: unknown, next?: () => Promise<void>) => Promise<void>)
+        | undefined;
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 600 });
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto: vi.fn().mockResolvedValue({ message_id: 601 }),
+          sendChatAction: vi.fn().mockResolvedValue(true),
+          answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+          setMessageReaction: vi.fn().mockResolvedValue(true),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) commandHandlers[entry] = handler;
+            return;
+          }
+          commandHandlers[name] = handler;
+        },
+        on: (
+          event: string,
+          handler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>,
+        ) => {
+          if (event === "callback_query:data") {
+            callbackHandler = handler;
+          }
+        },
+      } as unknown as import("grammy").Bot;
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: {} as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+
+      return {
+        commandHandlers,
+        get callbackHandler() {
+          if (!callbackHandler) throw new Error("callback handler not registered");
+          return callbackHandler;
+        },
+        sendMessage,
+        register,
+      };
+    }
+
+    function makeCommandCtx(match: string, messageId: number): Record<string, unknown> {
+      return {
+        match,
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: messageId,
+          date: 123_456,
+        },
+      };
+    }
+
+    function makeCallbackCtx(data: string, messageId: number): Record<string, unknown> {
+      return {
+        callbackQuery: {
+          id: "cb-42",
+          data,
+          message: {
+            chat: { id: 42, type: "private" },
+            message_id: messageId,
+          },
+        },
+      };
+    }
+
+    function hasReplyMessageId(call: unknown[], messageId: number): boolean {
+      const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
+      return options?.reply_parameters?.message_id === messageId;
+    }
+
+    async function waitForAssertion(assertion: () => void, timeoutMs = 1500): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (true) {
+        try {
+          assertion();
+          return;
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    }
+
+    it("threads replies for ga callback preface and run-not-found errors", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "awaiting_approval" }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+
+      const harness = makeHarness();
+      await harness.register();
+      const { START_PREFACE } = await import("./goal-commands.js");
+
+      await harness.callbackHandler(makeCallbackCtx("ga:abcdef12:1", 501));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => call[1] === START_PREFACE && hasReplyMessageId(call, 501),
+          ),
+        ).toBe(true);
+      });
+
+      await harness.callbackHandler(makeCallbackCtx("ga:deadbeef:1", 502));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: deadbeef") && hasReplyMessageId(call, 502),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for gResume callback preface and run-not-found errors", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "blocked" }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+
+      const harness = makeHarness();
+      await harness.register();
+      const { RESUME_PREFACE } = await import("./goal-commands.js");
+
+      await harness.callbackHandler(makeCallbackCtx("gResume:abcdef12", 601));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => call[1] === RESUME_PREFACE && hasReplyMessageId(call, 601),
+          ),
+        ).toBe(true);
+      });
+
+      await harness.callbackHandler(makeCallbackCtx("gResume:feedface", 602));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: feedface") && hasReplyMessageId(call, 602),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_approve preface and run-not-found errors", async () => {
+      saveRunFixture(makeRun({ state: "awaiting_approval" }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+
+      const harness = makeHarness();
+      await harness.register();
+      const { START_PREFACE } = await import("./goal-commands.js");
+
+      await harness.commandHandlers.goal_approve?.(makeCommandCtx("test-run", 701));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => call[1] === START_PREFACE && hasReplyMessageId(call, 701),
+          ),
+        ).toBe(true);
+      });
+
+      await harness.commandHandlers.goal_approve?.(makeCommandCtx("missing-run", 702));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: missing-run") && hasReplyMessageId(call, 702),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_resume preface and run-not-found errors", async () => {
+      saveRunFixture(makeRun({ state: "blocked" }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+
+      const harness = makeHarness();
+      await harness.register();
+      const { RESUME_PREFACE } = await import("./goal-commands.js");
+
+      await harness.commandHandlers.goal_resume?.(makeCommandCtx("test-run", 801));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => call[1] === RESUME_PREFACE && hasReplyMessageId(call, 801),
+          ),
+        ).toBe(true);
+      });
+
+      await harness.commandHandlers.goal_resume?.(makeCommandCtx("missing-resume", 802));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: missing-resume") &&
+            hasReplyMessageId(call, 802),
+        ),
+      ).toBe(true);
     });
   });
 
