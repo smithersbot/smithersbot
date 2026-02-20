@@ -2220,7 +2220,7 @@ export function buildOnStatusChange(params: {
     if (event.type === "step_blocked") {
       try {
         const caption = [
-          `TASK BLOCKED (${prefix}): Step ${event.stepId} needs input`,
+          `**TASK BLOCKED** (${prefix}): Step ${event.stepId} needs input`,
           "",
           event.question,
           "",
@@ -2253,7 +2253,7 @@ export function buildOnStatusChange(params: {
     } else if (event.type === "fully_blocked") {
       try {
         const lines: string[] = [
-          `GOAL BLOCKED (${prefix}): no runnable steps — waiting for answers.`,
+          `**GOAL BLOCKED** (${prefix}): no runnable steps — waiting for answers.`,
         ];
         const blocked = event.steps.filter((s) => s.status === "blocked");
         if (blocked.length > 0) {
