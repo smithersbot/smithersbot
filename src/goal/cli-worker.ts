@@ -312,6 +312,15 @@ export async function executeTaskWithCliWorker(
     logExcerpt: tailText(stdout, LOG_EXCERPT_CHARS),
     diffstat,
     changedFiles,
+    ralphDetail:
+      output.status === "ralph"
+        ? {
+            approachTried: output.approachTried,
+            specificErrors: output.specificErrors,
+            keyInsight: output.keyInsight,
+            suggestedApproach: output.suggestedApproach,
+          }
+        : undefined,
     durationMs,
   });
 

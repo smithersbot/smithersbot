@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Implemented executor-side ralph handling and build-gate verification with retries, checkpoint resets, context propagation into attempt bundles, final build-gate enforcement, and comprehensive agent-executor tests (including ralph/build-gate retry/limit/skip/final-gate flows)."
+}

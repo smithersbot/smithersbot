@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
 
 import type { MoltbotConfig } from "../config/config.js";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
@@ -7,6 +8,8 @@ import {
   loadAttemptBundles,
   resolveWorkerDir,
   formatAttemptBundleSummary,
+  writeAttemptBundle,
+  type AttemptBundle,
 } from "./attempt-bundle.js";
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
@@ -47,8 +50,12 @@ import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-run
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
 const DEFAULT_MAX_ATTEMPTS = 2;
+const DEFAULT_MAX_RALPH_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_BACKEND: GoalBackendId = "claude_code";
+const DEFAULT_MAX_BUILD_GATE_FIX_CYCLES = 2;
+const BUILD_GATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
+const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 
 const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -148,6 +155,170 @@ function appendRetryContext(
   }
 }
 
+function appendRalphContext(
+  runId: string,
+  stepId: string,
+  attemptNumber: number,
+  detail: {
+    approachTried: string;
+    specificErrors: string;
+    keyInsight: string;
+    suggestedApproach: string;
+  },
+): void {
+  try {
+    const filePath = resolveWorkingFile(runId, stepId);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const timestamp = new Date().toISOString();
+    const entry = [
+      `\n## Ralph (attempt ${attemptNumber}) — ${timestamp}`,
+      "### Approach tried",
+      detail.approachTried,
+      "### Errors encountered",
+      detail.specificErrors,
+      "### Key insight",
+      detail.keyInsight,
+      "### Suggested approach for next attempt",
+      detail.suggestedApproach,
+      "",
+    ].join("\n");
+    fs.appendFileSync(filePath, entry, "utf8");
+  } catch {
+    // Best-effort; don't mask task execution errors.
+  }
+}
+
+type BuildGateResult = { passed: true } | { passed: false; failedCommand: string; output: string };
+
+function truncateForPrompt(text: string): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (trimmed.length <= BUILD_GATE_OUTPUT_MAX_CHARS) return trimmed;
+  return trimmed.slice(-BUILD_GATE_OUTPUT_MAX_CHARS);
+}
+
+function formatExecError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const maybeStdout = (error as { stdout?: Buffer | string }).stdout;
+  const maybeStderr = (error as { stderr?: Buffer | string }).stderr;
+  const stdout =
+    typeof maybeStdout === "string"
+      ? maybeStdout
+      : maybeStdout instanceof Buffer
+        ? maybeStdout.toString("utf8")
+        : "";
+  const stderr =
+    typeof maybeStderr === "string"
+      ? maybeStderr
+      : maybeStderr instanceof Buffer
+        ? maybeStderr.toString("utf8")
+        : "";
+  return [error.message, stdout, stderr]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+function runBuildGateCommands(
+  commands: string[],
+  workingDir: string,
+  onProgress?: (text: string) => void,
+): BuildGateResult {
+  for (const command of commands) {
+    const trimmed = command.trim();
+    if (!trimmed) continue;
+    onProgress?.(`  [build-gate] Running: ${trimmed}`);
+
+    const result = spawnSync("bash", ["-lc", trimmed], {
+      cwd: workingDir,
+      encoding: "utf8",
+      timeout: BUILD_GATE_COMMAND_TIMEOUT_MS,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const stdout = typeof result.stdout === "string" ? result.stdout : "";
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    const output = truncateForPrompt([stdout, stderr].filter(Boolean).join("\n"));
+
+    if (result.error) {
+      const message = truncateForPrompt(
+        [output, `Build gate command failed to execute: ${formatExecError(result.error)}`]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      return {
+        passed: false,
+        failedCommand: trimmed,
+        output: message || "Build gate command failed with an unknown process error.",
+      };
+    }
+
+    if (result.status !== 0) {
+      const statusBits = [
+        result.status != null ? `exit code ${result.status}` : null,
+        result.signal ? `signal ${result.signal}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      const message = truncateForPrompt(
+        [output, statusBits ? `Build gate command failed with ${statusBits}.` : ""]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      return {
+        passed: false,
+        failedCommand: trimmed,
+        output: message || "Build gate command exited non-zero with no output.",
+      };
+    }
+  }
+
+  return { passed: true };
+}
+
+function resetToTaskBaseSha(
+  workingDir: string,
+  checkpointSha: string | undefined,
+): { success: true } | { success: false; error: string } {
+  if (!checkpointSha) {
+    return { success: false, error: "No task checkpoint base SHA was recorded for this step." };
+  }
+  try {
+    execFileSync("git", ["-C", workingDir, "reset", "--hard", checkpointSha], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: formatExecError(error) };
+  }
+}
+
+function buildRalphHistorySummary(stepId: string, bundles: AttemptBundle[]): string {
+  const entries = bundles.filter((bundle) => bundle.ralphDetail);
+  if (entries.length === 0) return `Task ${stepId} ralphed repeatedly but no detail was captured.`;
+
+  const lines: string[] = [];
+  for (const [index, bundle] of entries.entries()) {
+    const detail = bundle.ralphDetail!;
+    lines.push(`Ralph ${index + 1} (attempt ${bundle.attemptNumber}):`);
+    lines.push(`- Approach tried: ${detail.approachTried}`);
+    lines.push(`- Errors: ${detail.specificErrors}`);
+    lines.push(`- Key insight: ${detail.keyInsight}`);
+    lines.push(`- Suggested approach: ${detail.suggestedApproach}`);
+  }
+  return lines.join("\n");
+}
+
+function makeBuildGateFailurePrompt(command: string, output: string): string {
+  return [
+    `The build gate (${command}) failed after you reported complete.`,
+    "Fix the errors.",
+    "Here is the output:",
+    output,
+  ].join("\n");
+}
+
 function resolveTaskTimeoutMs(durationMinutes: number | undefined, fallbackMs: number): number {
   if (!durationMinutes || durationMinutes <= 0) return Math.max(fallbackMs, MIN_TASK_TIMEOUT_MS);
   const estimateMs = durationMinutes * 2 * 60_000;
@@ -175,8 +346,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   if (!plan) throw new Error("No plan to execute");
 
   session.state = "executing";
+  session.buildGateConfig = plan.buildGate;
+  session.stepRalphCounts ??= {};
+  session.buildGateResults ??= {};
 
   const effectiveAbort = abortSignal ?? new AbortController().signal;
+  const maxRalphAttempts = retryConfig?.maxRalphAttempts ?? DEFAULT_MAX_RALPH_ATTEMPTS;
+  const buildGateFixCounts = new Map<string, number>();
 
   // --- Git setup (branch + autosave) ---
   if (gitCheckpointConfig?.enabled) {
@@ -352,9 +528,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     const maxAttempts = retryConfig?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     const retryDelayMs = retryConfig?.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+    const workerDir = resolveWorkerDir(runId, task.id);
+    let latestResult: TaskRunnerResult | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const workerDir = resolveWorkerDir(runId, task.id);
       const attemptBundles = loadAttemptBundles(workerDir);
 
       const completedSummaries = orderedSteps
@@ -386,6 +563,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       }
 
       const result = await runner.execute(context);
+      latestResult = result;
       applyTaskResult(task, result, onProgress);
 
       const latestBundles = loadAttemptBundles(workerDir);
@@ -423,6 +601,165 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       } else if (!commitResult.success) {
         onProgress?.(`  [git] Task commit failed: ${commitResult.error}`);
       }
+    }
+
+    if (latestResult?.status === "ralph") {
+      const ralphCount = (session.stepRalphCounts[task.id] ?? 0) + 1;
+      session.stepRalphCounts[task.id] = ralphCount;
+      const ralphBundles = loadAttemptBundles(workerDir);
+      const ralphHistory = buildRalphHistorySummary(task.id, ralphBundles);
+
+      if (ralphCount >= maxRalphAttempts) {
+        const question = [
+          `Task ${task.id} reached the ralph limit (${ralphCount}/${maxRalphAttempts}).`,
+          ralphHistory,
+        ].join("\n\n");
+        task.status = "blocked";
+        task.blockedReason = "task_failed";
+        task.blockedQuestion = question;
+        task.failedDetail = {
+          whatTried: ralphHistory,
+          errorType: "ralph_limit_reached",
+          suggestedNext:
+            "Review the ralph history and provide guidance or constraints for a new strategy.",
+          needsRevert: false,
+        };
+        onProgress?.(
+          `  [ralph] Task ${task.id} hit ralph limit (${ralphCount}/${maxRalphAttempts})`,
+        );
+      } else {
+        const reset = resetToTaskBaseSha(workingDir, session.taskCheckpoints?.[task.id]?.baseSha);
+        if (!reset.success) {
+          task.status = "blocked";
+          task.blockedReason = "task_failed";
+          task.blockedQuestion = `Ralph reset failed: ${reset.error}`;
+          task.failedDetail = {
+            whatTried: ralphHistory,
+            errorType: "ralph_reset_failed",
+            suggestedNext: "Fix git checkpoint state and retry the task.",
+            needsRevert: false,
+          };
+          onProgress?.(`  [ralph] Reset failed for task ${task.id}: ${reset.error}`);
+        } else if (task.ralphDetail) {
+          appendRalphContext(runId, task.id, ralphCount, task.ralphDetail);
+          appendGoalWorkingEntry(
+            runId,
+            task.id,
+            "ralph",
+            [
+              `Attempt ${ralphCount}/${maxRalphAttempts}`,
+              `Approach tried: ${task.ralphDetail.approachTried}`,
+              `Key insight: ${task.ralphDetail.keyInsight}`,
+              `Suggested approach: ${task.ralphDetail.suggestedApproach}`,
+            ].join("\n"),
+          );
+          onProgress?.(
+            `Task ${task.id}: ralph (attempt ${ralphCount}/${maxRalphAttempts}) — reverting to clean state, dispatching new attempt.`,
+          );
+          task.status = "pending";
+          task.blockedReason = undefined;
+          task.blockedQuestion = undefined;
+          task.failedDetail = undefined;
+          task.taskSummary = undefined;
+        }
+      }
+    }
+
+    const gateCommands = plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
+    if (
+      task.status === "done" &&
+      plan.buildGate?.runBetweenSteps === true &&
+      gateCommands.length > 0
+    ) {
+      const gateResult = runBuildGateCommands(gateCommands, workingDir, onProgress);
+      const timestamp = new Date().toISOString();
+      if (gateResult.passed) {
+        session.buildGateResults[task.id] = { passed: true, timestamp };
+        buildGateFixCounts.delete(task.id);
+        onProgress?.(`  [build-gate] Task ${task.id} passed`);
+      } else {
+        session.buildGateResults[task.id] = {
+          passed: false,
+          failedCommand: gateResult.failedCommand,
+          output: gateResult.output,
+          timestamp,
+        };
+
+        const fixCount = (buildGateFixCounts.get(task.id) ?? 0) + 1;
+        buildGateFixCounts.set(task.id, fixCount);
+        onProgress?.(`  [build-gate] Task ${task.id} failed on ${gateResult.failedCommand}`);
+
+        if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
+          const detail = makeBuildGateFailurePrompt(gateResult.failedCommand, gateResult.output);
+          task.status = "blocked";
+          task.blockedReason = "task_failed";
+          task.blockedQuestion = `Build gate failed after ${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES} retry cycles.\n${detail}`;
+          task.failedDetail = {
+            whatTried: detail,
+            errorType: "build_gate_failed",
+            suggestedNext:
+              "Review the build-gate output and provide guidance for the next attempt.",
+            needsRevert: false,
+          };
+        } else {
+          const reset = resetToTaskBaseSha(workingDir, session.taskCheckpoints?.[task.id]?.baseSha);
+          if (!reset.success) {
+            task.status = "blocked";
+            task.blockedReason = "task_failed";
+            task.blockedQuestion = `Build gate reset failed: ${reset.error}`;
+            task.failedDetail = {
+              whatTried: gateResult.output,
+              errorType: "build_gate_reset_failed",
+              suggestedNext: "Fix git checkpoint state and retry the task.",
+              needsRevert: false,
+            };
+          } else {
+            const outputForRetry = makeBuildGateFailurePrompt(
+              gateResult.failedCommand,
+              gateResult.output,
+            );
+            const attemptNumber = (loadAttemptBundles(workerDir).at(-1)?.attemptNumber ?? 0) + 1;
+            const syntheticBundle: AttemptBundle = {
+              attemptNumber,
+              backend,
+              outcome: "failed",
+              errorClassification: "build_gate_failure",
+              durationMs: 0,
+              buildGateFailure: {
+                failedCommand: gateResult.failedCommand,
+                output: outputForRetry,
+              },
+              logExcerpt: truncateForPrompt(outputForRetry),
+            };
+            writeAttemptBundle(workerDir, syntheticBundle);
+            appendRetryContext(
+              runId,
+              task.id,
+              formatAttemptBundleSummary(syntheticBundle),
+              syntheticBundle.attemptNumber,
+            );
+            appendGoalWorkingEntry(
+              runId,
+              task.id,
+              "build-gate",
+              `Build gate failed (${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) on ${gateResult.failedCommand}. Retrying after reset.`,
+            );
+            onProgress?.(
+              `Task ${task.id}: build gate failed (cycle ${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) — reverting to clean state, dispatching new attempt.`,
+            );
+            task.status = "pending";
+            task.blockedReason = undefined;
+            task.blockedQuestion = undefined;
+            task.failedDetail = undefined;
+            task.taskSummary = undefined;
+          }
+        }
+      }
+    }
+
+    if (task.status === "pending") {
+      lastExecutedId = task.id;
+      continue;
     }
 
     recordTaskResult(session, task, taskStartMs, onTaskUpdate);
@@ -478,6 +815,53 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
 
     if (stopAllTasks) break;
+  }
+
+  const finalGateCommands =
+    plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
+  if (orderedSteps.every((s) => s.status === "done") && finalGateCommands.length > 0) {
+    const finalGateResult = runBuildGateCommands(finalGateCommands, workingDir, onProgress);
+    const timestamp = new Date().toISOString();
+    if (finalGateResult.passed) {
+      session.buildGateResults["__final__"] = { passed: true, timestamp };
+      onProgress?.("  [build-gate] Final gate passed");
+    } else {
+      session.buildGateResults["__final__"] = {
+        passed: false,
+        failedCommand: finalGateResult.failedCommand,
+        output: finalGateResult.output,
+        timestamp,
+      };
+
+      const fallbackStep = orderedSteps.at(-1);
+      const targetStep =
+        (lastExecutedId ? orderedSteps.find((step) => step.id === lastExecutedId) : undefined) ??
+        fallbackStep;
+
+      if (targetStep) {
+        const detail = makeBuildGateFailurePrompt(
+          finalGateResult.failedCommand,
+          finalGateResult.output,
+        );
+        targetStep.status = "blocked";
+        targetStep.blockedReason = "task_failed";
+        targetStep.blockedQuestion = `Final build gate failed.\n${detail}`;
+        targetStep.failedDetail = {
+          whatTried: detail,
+          errorType: "build_gate_failed",
+          suggestedNext: "Fix the build-gate failures and retry the goal step.",
+          needsRevert: false,
+        };
+        appendGoalWorkingEntry(
+          runId,
+          targetStep.id,
+          "failed",
+          `Final build gate failed on ${finalGateResult.failedCommand}.`,
+        );
+        recordTaskResult(session, targetStep, Date.now(), onTaskUpdate);
+      }
+      onProgress?.(`  [build-gate] Final gate failed on ${finalGateResult.failedCommand}`);
+    }
   }
 
   const allDone = orderedSteps.every((s) => s.status === "done");
@@ -553,6 +937,7 @@ function applyTaskResult(
   if (result.status === "complete") {
     task.status = "done";
     task.taskSummary = result.summary;
+    task.ralphDetail = undefined;
     onProgress?.(`  [done] ${result.summary ?? "completed"}`);
     return;
   }
@@ -562,13 +947,26 @@ function applyTaskResult(
     task.blockedReason = "task_failed";
     task.blockedQuestion = result.question ?? "Task failed.";
     task.failedDetail = result.failedDetail;
+    task.ralphDetail = undefined;
     onProgress?.(`  [failed] ${task.blockedQuestion}`);
+    return;
+  }
+
+  if (result.status === "ralph") {
+    task.status = "pending";
+    task.ralphDetail = result.ralphDetail;
+    task.blockedReason = undefined;
+    task.blockedQuestion = undefined;
+    task.failedDetail = undefined;
+    task.taskSummary = undefined;
+    onProgress?.("  [ralph] Worker requested strategic reset");
     return;
   }
 
   task.status = "blocked";
   task.blockedReason = result.blockedReason ?? "other";
   task.blockedQuestion = result.question ?? "Task blocked.";
+  task.ralphDetail = undefined;
   onProgress?.(`  [blocked] ${task.blockedQuestion}`);
 }
 
