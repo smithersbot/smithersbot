@@ -145,6 +145,8 @@ export type GoalPlanResult = {
   autocheckMaxRounds?: number;
   /** Whether autocheck hit max rounds before user review. */
   autocheckExhausted?: boolean;
+  /** Whether autocheck failed and was skipped. */
+  autocheckSkipped?: boolean;
 };
 
 function serializedStepResultsToMap(
@@ -767,6 +769,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     // Successful plan — load run for PNG rendering in sendGoalPlanResult
     let run = loadRun(runId);
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
+    let autocheckSkipped = false;
     if (run?.plan) {
       try {
         const autocheckResult = await runGoalPlanAutocheck({
@@ -785,6 +788,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
         warn(
           `[goal] autocheck failed for run ${runId.slice(0, 8)}: ${autocheckErr instanceof Error ? autocheckErr.message : String(autocheckErr)}`,
         );
+        autocheckSkipped = true;
         // Re-load the run in case autocheck partially modified it
         run = loadRun(runId) ?? run;
       }
@@ -808,6 +812,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       autocheckRounds: autocheckDisplay?.rounds,
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
+      autocheckSkipped: autocheckSkipped || undefined,
     };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
@@ -1500,6 +1505,7 @@ export async function handleGoalEdit(
 
     let finalPlan = result;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
+    let autocheckSkipped = false;
     try {
       const autocheckResult = await runGoalPlanAutocheck({
         runId: resolvedId,
@@ -1518,6 +1524,7 @@ export async function handleGoalEdit(
       warn(
         `[goal] autocheck failed for run ${resolvedId.slice(0, 8)}: ${autocheckErr instanceof Error ? autocheckErr.message : String(autocheckErr)}`,
       );
+      autocheckSkipped = true;
       // Re-load the run in case autocheck partially modified it
       run = loadRun(resolvedId) ?? run;
     }
@@ -1550,6 +1557,7 @@ export async function handleGoalEdit(
       autocheckRounds: autocheckDisplay?.rounds,
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
+      autocheckSkipped: autocheckSkipped || undefined,
     };
   } catch (err) {
     if (err instanceof PlanParseError) {
@@ -1889,6 +1897,9 @@ function buildCaptionHeader(result: GoalPlanResult): string {
         ),
       );
     }
+  }
+  if (result.autocheckSkipped) {
+    lines.push("Note: Plan autocheck was skipped due to an error.");
   }
   if (result.plan) {
     // Resolve workers from classification + planner hints, deduplicated

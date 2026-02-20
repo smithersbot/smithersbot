@@ -304,6 +304,27 @@ describe("goal-commands telegram adapter", () => {
       expect(persisted?.state).toBe("awaiting_approval");
     });
 
+    it("marks autocheck as skipped in handleGoal when autocheck throws", async () => {
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
+          runtime.log("## Plan\n1. Do something");
+          return undefined;
+        },
+      );
+      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+
+      const { handleGoal } = await import("./goal-commands.js");
+      const result = await handleGoal("Build a website", {
+        goal: { planAutocheck: "codex" },
+      } as never);
+
+      expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
+      expect(result.autocheckSkipped).toBe(true);
+      const persisted = loadRun(result.runId!, testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+    });
+
     it("skips autocheck in handleGoal when planAutocheck is off", async () => {
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
@@ -1249,6 +1270,49 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("<b>Autocheck warning:</b> hit max rounds (3/3)");
     });
 
+    it("shows a notice in the plan caption when autocheck was skipped", async () => {
+      const plan = {
+        goal: "Test goal",
+        workingDir: "/tmp/ws",
+        summary: "Plan where autocheck failed",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "codex",
+          },
+        ],
+      } as const;
+
+      saveRunFixture(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 211 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 212 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+          autocheckSkipped: true,
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("Note: Plan autocheck was skipped due to an error.");
+    });
+
     it("threads reply parameters when PNG plan delivery succeeds", async () => {
       const plan = makeRun().plan!;
       saveRunFixture(makeRun({ plan }));
@@ -2157,6 +2221,39 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.autocheckMaxRounds).toBe(3);
       expect(run?.autocheckBackend).toBe("claude_code");
       expect(run?.autocheckSessionId).toBe("session-new");
+      expect(run?.state).toBe("awaiting_approval");
+    });
+
+    it("marks autocheck as skipped in handleGoalEdit when autocheck throws", async () => {
+      saveRunFixture(makeRun());
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          workingDir: "/tmp/ws",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+      });
+      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", "change it", {
+        goal: { planAutocheck: "codex" },
+      } as never);
+
+      expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
+      expect(result.autocheckSkipped).toBe(true);
+      const run = loadRun("test-run-id-1234", testGoalsDir);
       expect(run?.state).toBe("awaiting_approval");
     });
 
