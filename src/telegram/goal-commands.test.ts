@@ -3263,6 +3263,22 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("threads replies for gr callback responses", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "awaiting_approval" }));
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gr:abcdef12:1", 503));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Plan rejected") && hasReplyMessageId(call, 503),
+        ),
+      ).toBe(true);
+    });
+
     it("threads replies for gResume callback preface and run-not-found errors", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(makeRun({ runId, state: "blocked" }));

@@ -2577,7 +2577,7 @@ export function registerTelegramGoalCommands({
         });
       } else if (action === "gr") {
         const reply = await handleGoalReject(resolvedId);
-        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+        await sendGoalReply(bot, chatId, reply, runtime, threadId, messageId);
       }
       return;
     }
