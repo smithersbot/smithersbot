@@ -329,6 +329,9 @@ export function sessionToSerialized(params: {
       ? { telegramFeedbackPromptMessages: params.telegramFeedbackPromptMessages }
       : {}),
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
+    ...(session.buildGateConfig ? { buildGateConfig: session.buildGateConfig } : {}),
+    ...(session.stepRalphCounts ? { stepRalphCounts: session.stepRalphCounts } : {}),
+    ...(session.buildGateResults ? { buildGateResults: session.buildGateResults } : {}),
   };
   const previous = params.previousRun;
   if (!previous) return serialized;
@@ -396,6 +399,15 @@ export function sessionToSerialized(params: {
   if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
     serialized.taskCheckpoints = previous.taskCheckpoints;
   }
+  if (!serialized.buildGateConfig && previous.buildGateConfig) {
+    serialized.buildGateConfig = previous.buildGateConfig;
+  }
+  if (!serialized.stepRalphCounts && previous.stepRalphCounts) {
+    serialized.stepRalphCounts = previous.stepRalphCounts;
+  }
+  if (!serialized.buildGateResults && previous.buildGateResults) {
+    serialized.buildGateResults = previous.buildGateResults;
+  }
   return serialized;
 }
 
@@ -445,5 +457,8 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     answers: run.answers ?? {},
     lastError: run.lastError,
     taskCheckpoints: run.taskCheckpoints ?? {},
+    buildGateConfig: run.buildGateConfig,
+    stepRalphCounts: run.stepRalphCounts ?? {},
+    buildGateResults: run.buildGateResults ?? {},
   };
 }

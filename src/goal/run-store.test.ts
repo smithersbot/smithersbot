@@ -486,6 +486,73 @@ describe("session serialization", () => {
     expect(serialized.dryRun).toBe(true);
   });
 
+  it("round-trips build-gate and ralph tracking fields", () => {
+    const session: GoalSession = {
+      goal: "Build-gate persistence",
+      state: "executing",
+      plan: null,
+      stepResults: new Map(),
+      blockReason: null,
+      buildGateConfig: {
+        commands: ["pnpm build"],
+        runBetweenSteps: true,
+      },
+      stepRalphCounts: {
+        "step-1": 1,
+      },
+      buildGateResults: {
+        "step-1": {
+          passed: false,
+          failedCommand: "pnpm build",
+          output: "Cannot find module",
+          timestamp: "2026-01-30T00:00:00.000Z",
+        },
+      },
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "build-gate-rt",
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    expect(serialized.buildGateConfig).toEqual({
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+    });
+    expect(serialized.stepRalphCounts).toEqual({ "step-1": 1 });
+    expect(serialized.buildGateResults?.["step-1"]?.failedCommand).toBe("pnpm build");
+
+    const restored = serializedToSession(serialized);
+    expect(restored.buildGateConfig?.commands).toEqual(["pnpm build"]);
+    expect(restored.stepRalphCounts).toEqual({ "step-1": 1 });
+    expect(restored.buildGateResults?.["step-1"]?.output).toBe("Cannot find module");
+  });
+
+  it("defaults ralph/build-gate maps to empty objects when missing", () => {
+    const serialized: SerializedRun = {
+      runId: "empty-ralph-buildgate",
+      goal: "No ralph/build-gate state",
+      state: "planning",
+      plan: null,
+      stepResults: {},
+      blockReason: null,
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    };
+
+    const restored = serializedToSession(serialized);
+    expect(restored.stepRalphCounts).toEqual({});
+    expect(restored.buildGateResults).toEqual({});
+    expect(restored.buildGateConfig).toBeUndefined();
+  });
+
   it("preserves run metadata when previousRun is provided", () => {
     const session: GoalSession = {
       goal: "Metadata test",
@@ -528,6 +595,19 @@ describe("session serialization", () => {
         },
       ],
       manualTestsError: "HTTP 401: invalid x-api-key",
+      buildGateConfig: {
+        commands: ["pnpm build"],
+        runBetweenSteps: true,
+      },
+      stepRalphCounts: {
+        "step-1": 2,
+      },
+      buildGateResults: {
+        "step-1": {
+          passed: true,
+          timestamp: "2026-01-30T00:00:00.000Z",
+        },
+      },
     };
 
     const serialized = sessionToSerialized({
@@ -552,5 +632,8 @@ describe("session serialization", () => {
     expect(serialized.agentMaxTurnsPerTask).toBe(7);
     expect(serialized.manualTests?.[0]?.description).toBe("Run smoke test");
     expect(serialized.manualTestsError).toBe("HTTP 401: invalid x-api-key");
+    expect(serialized.buildGateConfig?.commands).toEqual(["pnpm build"]);
+    expect(serialized.stepRalphCounts).toEqual({ "step-1": 2 });
+    expect(serialized.buildGateResults?.["step-1"]?.passed).toBe(true);
   });
 });
