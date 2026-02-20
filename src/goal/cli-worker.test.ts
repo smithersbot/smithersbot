@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { PlanStep, Plan } from "./types.js";
+import { formatAttemptBundleSummary, type AttemptBundle } from "./attempt-bundle.js";
 import {
   buildAllowedToolsList,
   buildCliArgs,
@@ -167,6 +168,34 @@ describe("cli-worker", () => {
       });
     });
 
+    it("validates ralph output", () => {
+      const result = validateWorkerOutput({
+        status: "ralph",
+        approachTried: "Tried fixing import paths in src/index.ts",
+        specificErrors: "Cannot find module './foo' from src/index.ts",
+        keyInsight: "The generated file path changed; imports must be rewritten",
+        suggestedApproach: "Regenerate imports first, then re-run build and fix leftovers",
+      });
+      expect(result).toEqual({
+        status: "ralph",
+        approachTried: "Tried fixing import paths in src/index.ts",
+        specificErrors: "Cannot find module './foo' from src/index.ts",
+        keyInsight: "The generated file path changed; imports must be rewritten",
+        suggestedApproach: "Regenerate imports first, then re-run build and fix leftovers",
+      });
+    });
+
+    it("rejects ralph output with empty required fields", () => {
+      const result = validateWorkerOutput({
+        status: "ralph",
+        approachTried: "",
+        specificErrors: "errors",
+        keyInsight: "insight",
+        suggestedApproach: "next",
+      });
+      expect(result).toBeNull();
+    });
+
     it("rejects blocked with missing question", () => {
       expect(validateWorkerOutput({ status: "blocked" })).toBeNull();
     });
@@ -248,6 +277,70 @@ describe("cli-worker", () => {
       });
       expect(prompt).toContain("HARD DENIES");
       expect(prompt).toContain(HARD_DENIES[0]!.pattern);
+    });
+
+    it("includes success criteria and constraints when provided", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep({
+          successCriteria: "pnpm build exits 0 with tsconfig include unchanged",
+          constraints: [
+            "Do not narrow tsconfig include to hide errors",
+            "Do not skip build verification",
+          ],
+        }),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain("SUCCESS CRITERIA:");
+      expect(prompt).toContain("pnpm build exits 0 with tsconfig include unchanged");
+      expect(prompt).toContain("CONSTRAINTS (do NOT violate these):");
+      expect(prompt).toContain("- Do not narrow tsconfig include to hide errors");
+      expect(prompt).toContain("- Do not skip build verification");
+    });
+
+    it("omits success criteria and constraints sections when absent", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).not.toContain("SUCCESS CRITERIA:");
+      expect(prompt).not.toContain("CONSTRAINTS (do NOT violate these):");
+    });
+
+    it("includes ralph context from previous attempt summary", () => {
+      const previousBundle: AttemptBundle = {
+        attemptNumber: 1,
+        backend: "codex",
+        outcome: "ralph",
+        durationMs: 1000,
+        ralphDetail: {
+          approachTried: "Updated imports manually and re-ran build",
+          specificErrors: "30 unresolved modules remained",
+          keyInsight: "The codegen step must run before import fixes",
+          suggestedApproach: "Run codegen first, then patch import paths",
+        },
+      };
+
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        previousAttempt: formatAttemptBundleSummary(previousBundle),
+      });
+
+      expect(prompt).toContain("PREVIOUS ATTEMPT FAILED:");
+      expect(prompt).toContain("Approach tried: Updated imports manually and re-ran build");
+      expect(prompt).toContain("Key insight: The codegen step must run before import fixes");
+      expect(prompt).toContain("Suggested approach: Run codegen first, then patch import paths");
     });
   });
 

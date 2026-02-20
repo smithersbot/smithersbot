@@ -377,6 +377,18 @@ export function buildCliWorkerPrompt(params: {
   if (step.dependsOn.length > 0) {
     lines.push(`Dependencies completed: ${step.dependsOn.join(", ")}`);
   }
+  if (step.successCriteria) {
+    lines.push("");
+    lines.push("SUCCESS CRITERIA:");
+    lines.push(step.successCriteria);
+  }
+  if (step.constraints && step.constraints.length > 0) {
+    lines.push("");
+    lines.push("CONSTRAINTS (do NOT violate these):");
+    for (const constraint of step.constraints) {
+      lines.push(`- ${constraint}`);
+    }
+  }
   lines.push("");
 
   lines.push("HARD DENIES (never do these):");
@@ -398,10 +410,23 @@ export function buildCliWorkerPrompt(params: {
   lines.push(resultPath);
   lines.push("");
   lines.push("The file must contain valid JSON with one of these shapes:");
-  lines.push('  Complete: { "status": "complete", "summary": "<brief summary of what was done>" }');
-  lines.push('  Blocked:  { "status": "blocked", "question": "<what you need from the user>" }');
   lines.push(
-    '  Failed:   { "status": "failed", "reason": "...", "whatTried": "...", "errorType": "...", "suggestedNext": "...", "needsRevert": false }',
+    '  Complete (task done): { "status": "complete", "summary": "<brief summary of what was done>" }',
+  );
+  lines.push("");
+  lines.push(
+    "  Ralph (stuck after genuine attempt — use only when continuing is slower than reverting and retrying with a different strategy):",
+  );
+  lines.push(
+    '  { "status": "ralph", "approachTried": "...", "specificErrors": "...", "keyInsight": "...", "suggestedApproach": "..." }',
+  );
+  lines.push("");
+  lines.push(
+    '  Blocked (need user input): { "status": "blocked", "question": "<what you need from the user>" }',
+  );
+  lines.push("");
+  lines.push(
+    '  Failed (impossible/out of scope): { "status": "failed", "reason": "...", "whatTried": "...", "errorType": "...", "suggestedNext": "...", "needsRevert": false }',
   );
   lines.push(
     "Write the file using your file-writing tool. This is how the orchestrator knows you are done.",
@@ -477,6 +502,20 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
     return { status: "blocked", question: parsed.question };
   }
 
+  if (status === "ralph") {
+    if (!isNonEmptyString(parsed.approachTried)) return null;
+    if (!isNonEmptyString(parsed.specificErrors)) return null;
+    if (!isNonEmptyString(parsed.keyInsight)) return null;
+    if (!isNonEmptyString(parsed.suggestedApproach)) return null;
+    return {
+      status: "ralph",
+      approachTried: parsed.approachTried,
+      specificErrors: parsed.specificErrors,
+      keyInsight: parsed.keyInsight,
+      suggestedApproach: parsed.suggestedApproach,
+    };
+  }
+
   if (status === "failed") {
     if (typeof parsed.reason !== "string") return null;
     if (typeof parsed.whatTried !== "string") return null;
@@ -494,6 +533,10 @@ export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorke
   }
 
   return null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 // --- CLI process execution ---
@@ -762,6 +805,7 @@ function classifyAttemptOutcome(
 ): AttemptOutcome {
   if (output.status === "complete") return "complete";
   if (output.status === "blocked") return "blocked";
+  if (output.status === "ralph") return "ralph";
   if (output.status === "failed" && output.errorType === "timeout") {
     return "timeout";
   }

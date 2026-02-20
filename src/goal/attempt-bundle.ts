@@ -98,6 +98,19 @@ export function formatAttemptBundleSummary(bundle: AttemptBundle): string {
   if (bundle.errorClassification) {
     lines.push(`Error classification: ${bundle.errorClassification}`);
   }
+  if (bundle.ralphDetail) {
+    lines.push("Ralph details:");
+    lines.push(`Approach tried: ${bundle.ralphDetail.approachTried}`);
+    lines.push(`Specific errors: ${bundle.ralphDetail.specificErrors}`);
+    lines.push(`Key insight: ${bundle.ralphDetail.keyInsight}`);
+    lines.push(`Suggested approach: ${bundle.ralphDetail.suggestedApproach}`);
+  }
+  if (bundle.buildGateFailure) {
+    lines.push("Build gate failure:");
+    lines.push(`Failed command: ${bundle.buildGateFailure.failedCommand}`);
+    lines.push("Build gate output:");
+    lines.push(bundle.buildGateFailure.output);
+  }
   if (bundle.logExcerpt) {
     lines.push("Log excerpt:");
     lines.push(bundle.logExcerpt);

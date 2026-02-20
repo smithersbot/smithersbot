@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Implemented worker-side ralph support and retry-context plumbing: updated cli-worker prompt (ralph protocol + success criteria/constraints), added ralph validation and attempt outcome classification, synced expanded stuck guidance in both worker-context files, enhanced attempt bundle summaries with ralph/build-gate failure detail, and added tests in cli-worker.test.ts and new attempt-bundle.test.ts; verified with pnpm vitest run src/goal/cli-worker.test.ts && pnpm vitest run src/goal/attempt-bundle.test.ts."
+}
