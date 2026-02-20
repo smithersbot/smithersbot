@@ -10,16 +10,18 @@ import {
   buildGoalWorkerEnv,
   buildCliWorkerPrompt,
   parseClaudeCodeStreamError,
-  parseCodexSchemaOutput,
   readWorkerResultFile,
   validateWorkerOutput,
-  writeWorkerSchema,
   writeDenyFile,
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
 
 vi.mock("./planner.js", () => ({
   formatPlanAsContext: vi.fn(() => "- Task step-1: Do something"),
+}));
+
+vi.mock("./backend-availability.js", () => ({
+  getCodexAskForApprovalPlacement: vi.fn(() => "before_exec"),
 }));
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
@@ -42,23 +44,6 @@ function makePlan(): Plan {
 }
 
 describe("cli-worker", () => {
-  describe("parseCodexSchemaOutput", () => {
-    it("parses a valid JSON object", () => {
-      const stdout = '{"status":"complete","summary":"Done"}';
-      const result = parseCodexSchemaOutput(stdout);
-      expect(result).toEqual({ status: "complete", summary: "Done" });
-    });
-
-    it("returns null for empty output", () => {
-      expect(parseCodexSchemaOutput("")).toBeNull();
-      expect(parseCodexSchemaOutput("   ")).toBeNull();
-    });
-
-    it("returns null for invalid JSON", () => {
-      expect(parseCodexSchemaOutput("not json")).toBeNull();
-    });
-  });
-
   describe("readWorkerResultFile", () => {
     it("reads valid result file", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-result-"));
@@ -258,11 +243,21 @@ describe("cli-worker", () => {
         backend: "claude_code",
         prompt: "do the task",
         workingDir,
-        schemaPath: path.join(dir, "schema.json"),
         denyFilePath,
       });
 
       expect(args).not.toContain("--cwd");
+    });
+
+    it("does not include --output-schema for codex workers", () => {
+      const args = buildCliArgs({
+        backend: "codex",
+        prompt: "test",
+        workingDir: "/tmp",
+        denyFilePath: "/tmp/deny",
+      });
+
+      expect(args).not.toContain("--output-schema");
     });
   });
 
@@ -352,16 +347,6 @@ describe("cli-worker", () => {
       const content = fs.readFileSync(result, "utf8");
       expect(content).toContain("HARD DENIES");
       expect(content).toContain(HARD_DENIES[0]!.pattern);
-    });
-  });
-
-  describe("writeWorkerSchema", () => {
-    it("writes schema to output-schema.json", () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-schema-"));
-      const schemaPath = writeWorkerSchema(dir);
-      expect(schemaPath).toBe(path.join(dir, "output-schema.json"));
-      const content = fs.readFileSync(schemaPath, "utf8");
-      expect(content).toContain('"status"');
     });
   });
 

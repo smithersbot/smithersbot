@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Removed Codex --output-schema usage and dead schema paths from goal worker/probe code, deleted GOAL_WORKER_OUTPUT_SCHEMA and related helper functions, updated cli-worker tests with a regression guard ensuring codex args exclude --output-schema, and verified with pnpm vitest run src/goal/cli-worker.test.ts plus pnpm build." }

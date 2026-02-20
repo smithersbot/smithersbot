@@ -3,7 +3,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
-import { GOAL_WORKER_OUTPUT_SCHEMA as SCHEMA } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
 import type { PlanStep, Plan } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
@@ -174,14 +173,12 @@ export async function executeTaskWithCliWorker(
   });
 
   // Write artifacts
-  const schemaPath = writeWorkerSchema(workerDir);
   const denyFilePath = writeDenyFile(hardDenies, workerDir);
 
   const args = buildCliArgs({
     backend,
     prompt,
     workingDir,
-    schemaPath,
     denyFilePath,
     model,
   });
@@ -206,9 +203,6 @@ export async function executeTaskWithCliWorker(
     env: workerEnv,
   });
 
-  const codexParsed = backend === "codex" ? parseCodexSchemaOutput(stdout) : null;
-  const codexValidated = codexParsed ? validateWorkerOutput(codexParsed) : null;
-
   const resultRead = readWorkerResultFile({
     primaryPath: workspaceResultPath,
     fallbackPath: canonicalResultPath,
@@ -222,7 +216,7 @@ export async function executeTaskWithCliWorker(
     });
   }
 
-  let output = codexValidated ?? fileValidated;
+  let output = fileValidated;
   let errorType: string | undefined;
   let blockedClassification: string | undefined;
 
@@ -452,14 +446,7 @@ export function buildAllowedToolsList(): string[] {
   return ["Read", "Edit", "Write", "Glob", "Grep", "Bash(*)"];
 }
 
-// --- Schema / caps file writing ---
-
-/** Write the GoalWorkerOutput JSON Schema to disk. Returns the file path. */
-export function writeWorkerSchema(dir: string): string {
-  const filePath = path.join(dir, "output-schema.json");
-  fs.writeFileSync(filePath, JSON.stringify(SCHEMA, null, 2), "utf8");
-  return filePath;
-}
+// --- Capability bounds file writing ---
 
 /** Build capability bounds text for --append-system-prompt, and write to disk for auditing. */
 export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
@@ -475,23 +462,6 @@ export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
 }
 
 // --- Output parsing + validation ---
-
-/**
- * Parse structured JSON output from Codex CLI stdout.
- *
- * Codex --json with --output-schema is expected to emit a single JSON object.
- */
-export function parseCodexSchemaOutput(stdout: string): Record<string, unknown> | null {
-  const trimmed = stdout.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Validate parsed JSON against GoalWorkerOutput type.
@@ -554,11 +524,10 @@ export function buildCliArgs(params: {
   backend: GoalBackendId;
   prompt: string;
   workingDir: string;
-  schemaPath: string;
   denyFilePath: string;
   model?: string;
 }): string[] {
-  const { backend, prompt, workingDir, schemaPath, denyFilePath, model } = params;
+  const { backend, prompt, workingDir, denyFilePath, model } = params;
 
   if (backend === "codex") {
     const codexAskForApproval = getCodexAskForApprovalPlacement();
@@ -569,8 +538,6 @@ export function buildCliArgs(params: {
       ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
       "--sandbox",
       "workspace-write",
-      "--output-schema",
-      schemaPath,
       "--cd",
       workingDir,
     ];

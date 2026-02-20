@@ -84,7 +84,7 @@ CONSTRAINTS (do NOT violate these):
 - {step.constraints[1]}
 ...
 
-d) Update the output schema. Add the ralph status to GOAL_WORKER_OUTPUT_SCHEMA in cli-worker.ts (the validateWorkerOutput function and the output-schema.json that gets written to the worker directory). The schema should accept status "ralph" with required fields: approachTried, specificErrors, keyInsight, suggestedApproach (all strings, all required).
+d) Update the worker output validation contract in cli-worker.ts. Add the ralph status in validateWorkerOutput and the related worker result documentation. The contract should accept status "ralph" with required fields: approachTried, specificErrors, keyInsight, suggestedApproach (all strings, all required).
 
 3. Executor changes (agent-executor.ts)
 

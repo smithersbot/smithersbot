@@ -1,7 +1,4 @@
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 
 let cachedAvailability: BackendAvailability[] | null = null;
@@ -29,7 +26,7 @@ type ProbeResult = {
 type ProbeSpec = {
   binary: string;
   helpArgs: string[];
-  flagProbeArgs?: (params: { workingDir: string; schemaPath: string }) => string[];
+  flagProbeArgs?: (params: { workingDir: string }) => string[];
 };
 
 function runProbe(binary: string, args: string[]): ProbeResult {
@@ -84,13 +81,8 @@ function probeBackend(spec: ProbeSpec): { available: boolean; reason?: string } 
 
   if (spec.flagProbeArgs) {
     const workingDir = process.cwd();
-    let tempDir: string | null = null;
     try {
-      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "moltbot-goal-probe-"));
-      const schemaPath = path.join(tempDir, "output-schema.json");
-      fs.writeFileSync(schemaPath, JSON.stringify({ type: "object" }));
-
-      const probeArgs = spec.flagProbeArgs({ workingDir, schemaPath });
+      const probeArgs = spec.flagProbeArgs({ workingDir });
       const flagResult = runProbe(spec.binary, probeArgs);
       if (!flagResult.ok) {
         return {
@@ -100,10 +92,6 @@ function probeBackend(spec: ProbeSpec): { available: boolean; reason?: string } 
       }
     } catch {
       // If we cannot run the flag probe, fall back to the help check result.
-    } finally {
-      if (tempDir) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
     }
   }
 
@@ -136,7 +124,7 @@ export function detectBackendAvailability(): BackendAvailability[] {
     binary: "codex",
     helpArgs: ["exec", "--help"],
     // Safe no-op probe: include the actual flags plus --help to avoid invoking the model.
-    flagProbeArgs: ({ workingDir, schemaPath }) => {
+    flagProbeArgs: ({ workingDir }) => {
       const args = [
         ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
         "exec",
@@ -144,8 +132,6 @@ export function detectBackendAvailability(): BackendAvailability[] {
         ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
         "--sandbox",
         "workspace-write",
-        "--output-schema",
-        schemaPath,
         "--cd",
         workingDir,
         "-c",
