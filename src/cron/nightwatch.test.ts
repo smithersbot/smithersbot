@@ -168,6 +168,9 @@ describe("nightwatch cron", () => {
       expect(prompt).toContain("Telegram UX integration");
       expect(prompt).toContain("Architecture simplification");
       expect(prompt).toContain("Cross-workflow consistency");
+      expect(prompt).toContain("Security concerns");
+      expect(prompt).toContain("src/security/audit.ts");
+      expect(prompt).toContain("OWASP Top 10");
     });
   });
 

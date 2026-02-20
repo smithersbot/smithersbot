@@ -93,6 +93,19 @@ Concrete example:
 - When the user clicks "Approve", the confirmation message is not sent as a reply to the approval button message, making it unclear which plan was just approved.
 Find and prioritize similar patterns where one workflow already has a good practice (like reply-to-message context) and other workflows lack it.
 
+## 5. Security concerns
+Review security posture across goal, gateway, and channel flows.
+Key files: src/security/audit.ts, src/security/audit-extra.ts, src/goal/hard-deny.ts, src/goal/capability-enforcement.ts.
+Look for:
+- Input validation gaps or unsafe parsing of untrusted input
+- Command or path injection risks in shell/file/process boundaries
+- Credential and secret handling issues (storage, redaction, accidental exposure)
+- Authentication/authorization gaps in gateway and channel handlers
+- Hard-deny pattern bypass opportunities in goal execution paths
+- Sensitive data leaks in logs or error messages
+- OWASP Top 10 style vulnerabilities and similar high-impact patterns
+Propose concrete patches with tests for each confirmed issue.
+
 ## Output
 Produce a goal plan with concrete, actionable steps that fix real bugs and make high-value improvements.
 Prioritize correctness bugs over style issues. Do not propose changes unless you have read the actual code and confirmed the problem exists.
