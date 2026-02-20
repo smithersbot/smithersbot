@@ -1,20 +1,42 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlanStep, Plan } from "./types.js";
-import { formatAttemptBundleSummary, type AttemptBundle } from "./attempt-bundle.js";
+import {
+  collectGitDiffSummary,
+  formatAttemptBundleSummary,
+  resolveWorkerDir,
+  writeAttemptBundle,
+  type AttemptBundle,
+} from "./attempt-bundle.js";
+import { runCliProcess } from "./cli-process.js";
 import {
   buildAllowedToolsList,
   buildCliArgs,
   buildGoalWorkerEnv,
   buildCliWorkerPrompt,
+  executeTaskWithCliWorker,
   parseClaudeCodeStreamError,
   readWorkerResultFile,
   validateWorkerOutput,
   writeDenyFile,
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
+
+vi.mock("./attempt-bundle.js", async () => {
+  const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
+  return {
+    ...actual,
+    collectGitDiffSummary: vi.fn(() => ({})),
+    resolveWorkerDir: vi.fn(),
+    writeAttemptBundle: vi.fn(),
+  };
+});
+
+vi.mock("./cli-process.js", () => ({
+  runCliProcess: vi.fn(),
+}));
 
 vi.mock("./planner.js", () => ({
   formatPlanAsContext: vi.fn(() => "- Task step-1: Do something"),
@@ -23,6 +45,23 @@ vi.mock("./planner.js", () => ({
 vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: vi.fn(() => "before_exec"),
 }));
+
+const runCliProcessMock = vi.mocked(runCliProcess);
+const resolveWorkerDirMock = vi.mocked(resolveWorkerDir);
+const writeAttemptBundleMock = vi.mocked(writeAttemptBundle);
+const collectGitDiffSummaryMock = vi.mocked(collectGitDiffSummary);
+
+const EARLY_RESULT_PROGRESS_MESSAGE =
+  "  [cli-worker] result file detected — waiting grace period for process exit";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  collectGitDiffSummaryMock.mockReturnValue({});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
   return {
@@ -258,6 +297,143 @@ describe("cli-worker", () => {
       });
 
       expect(args).not.toContain("--output-schema");
+    });
+  });
+
+  describe("executeTaskWithCliWorker", () => {
+    it("terminates a hanging process once worker_result.json is detected", async () => {
+      vi.useFakeTimers();
+
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-early-"));
+      const runId = "run-early";
+      const stepId = "step-early";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      const expectedOutput = {
+        status: "complete",
+        summary: "Detected early and stopped hanging process",
+      } as const;
+      const onProgress = vi.fn();
+
+      runCliProcessMock.mockImplementation(({ abortSignal }) => {
+        return new Promise((resolve) => {
+          const finish = () =>
+            resolve({
+              stdout: "",
+              stderr: "",
+              timedOut: true,
+              exitCode: null,
+              signal: "SIGTERM",
+              durationMs: 0,
+            });
+          if (abortSignal?.aborted) {
+            finish();
+            return;
+          }
+          abortSignal?.addEventListener("abort", finish, { once: true });
+        });
+      });
+
+      setTimeout(() => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(workspaceResultPath, JSON.stringify(expectedOutput), "utf8");
+      }, 100);
+
+      const externalAbort = new AbortController();
+      const startedAt = Date.now();
+      const taskPromise = executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Validate early worker result detection",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        abortSignal: externalAbort.signal,
+        onProgress,
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000 + 10_000 + 500);
+      const result = await taskPromise;
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(result.output).toEqual(expectedOutput);
+      expect(elapsedMs).toBeLessThanOrEqual(16_000);
+      expect(externalAbort.signal.aborted).toBe(false);
+      expect(onProgress).toHaveBeenCalledWith(EARLY_RESULT_PROGRESS_MESSAGE);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal).toBeDefined();
+      expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal).not.toBe(externalAbort.signal);
+      expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal?.aborted).toBe(true);
+    });
+
+    it("keeps normal behavior when process exits before polling finds a result file", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-normal-"));
+      const runId = "run-normal";
+      const stepId = "step-normal";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const onProgress = vi.fn();
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      const expectedOutput = {
+        status: "complete",
+        summary: "Process exited normally",
+      } as const;
+
+      runCliProcessMock.mockImplementation(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(workspaceResultPath, JSON.stringify(expectedOutput), "utf8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 25,
+        };
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify normal worker exit path",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        onProgress,
+      });
+
+      expect(result.output).toEqual(expectedOutput);
+      expect(onProgress).not.toHaveBeenCalledWith(EARLY_RESULT_PROGRESS_MESSAGE);
+      expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal?.aborted).toBe(false);
     });
   });
 

@@ -25,6 +25,8 @@ import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 const WORKER_RESULT_FILENAME = "worker_result.json";
 const LOG_EXCERPT_CHARS = 2048;
 const WORKER_RESULT_WORKSPACE_DIR = ".moltbot-goal-worker-results";
+const RESULT_POLL_INTERVAL_MS = 4_000;
+const RESULT_GRACE_PERIOD_MS = 10_000;
 
 // --- Public API ---
 
@@ -192,21 +194,94 @@ export async function executeTaskWithCliWorker(
   const stdoutPath = path.join(workerDir, `attempt-${attemptNumber}.stdout.txt`);
   const stderrPath = path.join(workerDir, `attempt-${attemptNumber}.stderr.txt`);
 
-  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
+  const localAbortController = new AbortController();
+  const forwardAbort = () => localAbortController.abort();
+  let removeAbortForwarding: (() => void) | undefined;
+
+  if (abortSignal) {
+    if (abortSignal.aborted) {
+      localAbortController.abort();
+    } else {
+      abortSignal.addEventListener("abort", forwardAbort, { once: true });
+      removeAbortForwarding = () => abortSignal.removeEventListener("abort", forwardAbort);
+    }
+  }
+
+  let processSettled = false;
+  let earlyResult: GoalWorkerOutput | null = null;
+  let earlyResultSourcePath: string | undefined;
+  let pollTimer: NodeJS.Timeout | undefined;
+  let graceTimer: NodeJS.Timeout | undefined;
+
+  const clearPollTimer = () => {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = undefined;
+  };
+  const clearGraceTimer = () => {
+    if (!graceTimer) return;
+    clearTimeout(graceTimer);
+    graceTimer = undefined;
+  };
+
+  const processPromise = runCliProcess({
     command,
     args,
     cwd: workingDir,
     timeoutMs,
-    abortSignal,
+    abortSignal: localAbortController.signal,
     stdoutPath,
     stderrPath,
     env: workerEnv,
-  });
+  })
+    .then((result) => {
+      processSettled = true;
+      return result;
+    })
+    .catch((error) => {
+      processSettled = true;
+      throw error;
+    });
 
-  const resultRead = readWorkerResultFile({
-    primaryPath: workspaceResultPath,
-    fallbackPath: canonicalResultPath,
-  });
+  const pollForEarlyResult = () => {
+    if (processSettled || earlyResult) return;
+    const polled = readWorkerResultFile({
+      primaryPath: workspaceResultPath,
+      fallbackPath: canonicalResultPath,
+    });
+    if (!polled.output || !polled.sourcePath) return;
+
+    earlyResult = polled.output;
+    earlyResultSourcePath = polled.sourcePath;
+    clearPollTimer();
+    onProgress?.("  [cli-worker] result file detected — waiting grace period for process exit");
+
+    graceTimer = setTimeout(() => {
+      if (processSettled || localAbortController.signal.aborted) return;
+      localAbortController.abort();
+    }, RESULT_GRACE_PERIOD_MS);
+    graceTimer.unref();
+  };
+
+  pollTimer = setInterval(pollForEarlyResult, RESULT_POLL_INTERVAL_MS);
+  pollTimer.unref();
+
+  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await processPromise.finally(
+    () => {
+      processSettled = true;
+      clearPollTimer();
+      clearGraceTimer();
+      removeAbortForwarding?.();
+    },
+  );
+
+  const resultRead: ReturnType<typeof readWorkerResultFile> =
+    earlyResult && earlyResultSourcePath
+      ? { output: earlyResult, sourcePath: earlyResultSourcePath }
+      : readWorkerResultFile({
+          primaryPath: workspaceResultPath,
+          fallbackPath: canonicalResultPath,
+        });
   const fileValidated = resultRead.output;
 
   if (resultRead.output && resultRead.sourcePath) {
