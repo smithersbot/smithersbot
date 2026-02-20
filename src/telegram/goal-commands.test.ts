@@ -1030,6 +1030,105 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("Note: Manual test generation failed.");
     });
 
+    it("sends step_blocked updates with bold caption and stop-only keyboard", async () => {
+      saveRunFixture(makeRun());
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 40 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 41 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "step_blocked",
+        stepId: "1",
+        question: [
+          "Task 1 reached the ralph limit (2/2).",
+          "",
+          "**Ralph 1 (attempt 1):**",
+          "- **Approach tried:** First attempt",
+          "- **Errors:** Controlled failure",
+          "- **Key insight:** Need another attempt",
+          "- **Suggested approach:** Retry once more",
+          "",
+          "**Ralph 2 (attempt 2):**",
+          "- **Approach tried:** Second attempt",
+          "- **Errors:** Controlled second failure",
+          "- **Key insight:** Limit reached",
+          "- **Suggested approach:** Resume with guidance",
+        ].join("\n"),
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "blocked",
+            blockedQuestion: "Need a value",
+          },
+        ],
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        caption?: string;
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
+      expect(options.caption).toContain("<b>TASK BLOCKED</b> (test-run): Step 1 needs input");
+      expect(options.caption).toContain("<b>Ralph 1 (attempt 1):</b>");
+      expect(options.reply_markup?.inline_keyboard).toEqual([
+        [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],
+      ]);
+      const buttonTexts =
+        options.reply_markup?.inline_keyboard?.flat().map((button) => button.text) ?? [];
+      expect(buttonTexts).not.toContain("▶️ Resume Goal");
+    });
+
+    it("sends fully_blocked updates with bold caption and resume+stop keyboard", async () => {
+      saveRunFixture(makeRun());
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 42 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 43 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "fully_blocked",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "blocked",
+            blockedQuestion: "Need a value",
+          },
+        ],
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        caption?: string;
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
+      expect(options.caption).toContain("<b>GOAL BLOCKED</b> (test-run): no runnable steps");
+      expect(options.reply_markup?.inline_keyboard).toEqual([
+        [
+          { text: "▶️ Resume Goal", callback_data: "gResume:test-run" },
+          { text: "⏹️ Stop Goal", callback_data: "gStop:test-run" },
+        ],
+      ]);
+    });
+
     it.each([
       {
         eventType: "step_blocked",
