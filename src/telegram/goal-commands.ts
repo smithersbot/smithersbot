@@ -324,6 +324,13 @@ function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
   ]);
 }
 
+/** Inline keyboard for task-blocked goal messages: Stop only. */
+function buildTaskBlockedInlineKeyboard(runIdPrefix: string) {
+  return buildInlineKeyboard([
+    [{ text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` }],
+  ]);
+}
+
 /** Inline keyboard for done goal messages: test details + feedback loop. */
 export function buildGoalDoneInlineKeyboard(runIdPrefix: string) {
   return buildInlineKeyboard([
@@ -2235,7 +2242,7 @@ export function buildOnStatusChange(params: {
           steps: event.steps,
           stepResults,
           caption,
-          replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
+          replyMarkup: buildTaskBlockedInlineKeyboard(prefix),
         });
         // Persist the photo message ID so reply-to routing works
         if (sentId != null) {

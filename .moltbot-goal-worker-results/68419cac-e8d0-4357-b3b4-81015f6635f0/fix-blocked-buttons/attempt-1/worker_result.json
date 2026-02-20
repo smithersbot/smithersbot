@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Added a new task-blocked inline keyboard with only Stop Goal, wired step_blocked notifications to use it, kept fully_blocked notifications on the existing Resume+Stop keyboard, and verified with pnpm build (pass)."}
