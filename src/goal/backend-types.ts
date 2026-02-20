@@ -16,6 +16,13 @@ export type GoalWorkerOutput =
   | { status: "complete"; summary: string }
   | { status: "blocked"; question: string }
   | {
+      status: "ralph";
+      approachTried: string;
+      specificErrors: string;
+      keyInsight: string;
+      suggestedApproach: string;
+    }
+  | {
       status: "failed";
       reason: string;
       whatTried: string;
@@ -44,11 +51,18 @@ export const GOAL_WORKER_OUTPUT_SCHEMA = {
   properties: {
     status: {
       type: "string",
-      enum: ["complete", "blocked", "failed"],
+      enum: ["complete", "blocked", "ralph", "failed"],
       description: "Task outcome",
     },
     summary: { type: "string", description: "Completion summary (when status=complete)" },
     question: { type: "string", description: "What is needed (when status=blocked)" },
+    approachTried: { type: "string", description: "What was attempted before ralphing" },
+    specificErrors: { type: "string", description: "Exact errors encountered before ralphing" },
+    keyInsight: {
+      type: "string",
+      description: "Key insight learned that changes the approach",
+    },
+    suggestedApproach: { type: "string", description: "Suggested next attempt strategy" },
     reason: { type: "string", description: "Failure reason (when status=failed)" },
     whatTried: { type: "string", description: "What was attempted (when status=failed)" },
     errorType: { type: "string", description: "Error classification (when status=failed)" },
@@ -59,6 +73,10 @@ export const GOAL_WORKER_OUTPUT_SCHEMA = {
     "status",
     "summary",
     "question",
+    "approachTried",
+    "specificErrors",
+    "keyInsight",
+    "suggestedApproach",
     "reason",
     "whatTried",
     "errorType",

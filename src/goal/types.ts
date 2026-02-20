@@ -26,6 +26,16 @@ export type GoalSession = {
   answers: Record<string, string>;
   lastError?: string;
   taskCheckpoints?: Record<string, TaskCheckpoint>;
+  buildGateConfig?: PlanBuildGate;
+  stepRalphCounts?: Record<string, number>;
+  buildGateResults?: {
+    [stepId: string]: {
+      passed: boolean;
+      failedCommand?: string;
+      output?: string;
+      timestamp: string;
+    };
+  };
 };
 
 export type FailedDetail = {
@@ -35,12 +45,23 @@ export type FailedDetail = {
   needsRevert: boolean;
 };
 
+export type RalphDetail = {
+  approachTried: string;
+  specificErrors: string;
+  keyInsight: string;
+  suggestedApproach: string;
+};
+
 export type PlanStep = {
   id: string;
   description: string;
   /** Concise human-readable task headline for compact UI surfaces. */
   shortSummary: string;
   dependsOn: string[];
+  /** Verifiable done-when condition for this step. */
+  successCriteria?: string;
+  /** Explicitly disallowed approaches for this step. */
+  constraints?: string[];
   status: "pending" | "in_progress" | "done" | "blocked";
   durationMinutes?: number;
   /** Number of agent prompt cycles used for this task (agent executor). */
@@ -63,10 +84,17 @@ export type PlanStep = {
   taskSummary?: string;
   /** Structured failure detail from mark_task_failed tool. */
   failedDetail?: FailedDetail;
+  /** Strategic reset guidance captured from a ralph result. */
+  ralphDetail?: RalphDetail;
   /** Planner-selected backend for this step. */
   backend?: GoalBackendId;
   /** Sticky: set once a backend is chosen, persisted across retries/resume. */
   executedBackend?: GoalBackendId;
+};
+
+export type PlanBuildGate = {
+  commands: string[];
+  runBetweenSteps: boolean;
 };
 
 export type Plan = {
@@ -76,6 +104,8 @@ export type Plan = {
   summary: string;
   /** Concise human-readable goal headline for compact UI surfaces. */
   shortSummary: string;
+  /** Post-step and/or final verification commands chosen by the planner. */
+  buildGate?: PlanBuildGate;
 };
 
 export type StepResult = {
@@ -121,6 +151,7 @@ export type GoalOutcome =
 export type RetryConfig = {
   maxAttempts: number; // default 2 (one retry)
   retryDelayMs: number; // default 1000
+  maxRalphAttempts: number; // default 2
 };
 
 export type GitCheckpointConfig = {
@@ -226,6 +257,19 @@ export type SerializedRun = {
   plannerDegradedResetHint?: string;
   /** Per-task git checkpoint bookkeeping. */
   taskCheckpoints?: Record<string, TaskCheckpoint>;
+  /** Build-gate config from the planner (post-execution verification). */
+  buildGateConfig?: PlanBuildGate;
+  /** Ralph count per step (key = step id). */
+  stepRalphCounts?: Record<string, number>;
+  /** Most recent build-gate result per step. */
+  buildGateResults?: {
+    [stepId: string]: {
+      passed: boolean;
+      failedCommand?: string;
+      output?: string;
+      timestamp: string;
+    };
+  };
 };
 
 /** Result of executing a single task with the agent. */

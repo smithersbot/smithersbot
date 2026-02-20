@@ -1,6 +1,6 @@
 import type { AttemptBundle } from "./attempt-bundle.js";
 import type { HardDenyList } from "./hard-deny.js";
-import type { FailedDetail, Plan, PlanStep } from "./types.js";
+import type { FailedDetail, Plan, PlanStep, RalphDetail } from "./types.js";
 
 export interface TaskRunnerContext {
   task: PlanStep;
@@ -19,10 +19,11 @@ export interface TaskRunnerContext {
 }
 
 export interface TaskRunnerResult {
-  status: "complete" | "blocked" | "failed";
+  status: "complete" | "blocked" | "failed" | "ralph";
   summary?: string;
   question?: string;
   failedDetail?: FailedDetail;
+  ralphDetail?: RalphDetail;
   turnsUsed: number;
   artifacts?: string[];
   blockedReason?: PlanStep["blockedReason"];

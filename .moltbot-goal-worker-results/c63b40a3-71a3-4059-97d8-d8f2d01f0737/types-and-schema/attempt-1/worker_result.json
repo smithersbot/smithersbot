@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Added build-gate and ralph-related goal types/schemas across types.ts, backend-types.ts, task-runner.ts, and attempt-bundle.ts; included ralph mapping in cli-runner.ts for type safety; pnpm build now passes."
+}

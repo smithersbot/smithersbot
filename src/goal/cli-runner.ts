@@ -76,6 +76,19 @@ function mapWorkerOutput(output: GoalWorkerOutput, turnsUsed: number): TaskRunne
     };
   }
 
+  if (output.status === "ralph") {
+    return {
+      status: "ralph",
+      ralphDetail: {
+        approachTried: output.approachTried,
+        specificErrors: output.specificErrors,
+        keyInsight: output.keyInsight,
+        suggestedApproach: output.suggestedApproach,
+      },
+      turnsUsed,
+    };
+  }
+
   const blockedReason = mapWorkerErrorTypeToBlockedReason(output.errorType);
   if (blockedReason === "task_failed") {
     return {

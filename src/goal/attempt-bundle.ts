@@ -3,8 +3,16 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { canRunGit, isGitRepo } from "./git-checkpoint.js";
 import { resolveRunDir } from "./run-store.js";
+import type { RalphDetail } from "./types.js";
 
-export type AttemptOutcome = "complete" | "blocked" | "failed" | "timeout" | "crash" | "rate_limit";
+export type AttemptOutcome =
+  | "complete"
+  | "blocked"
+  | "failed"
+  | "ralph"
+  | "timeout"
+  | "crash"
+  | "rate_limit";
 
 export type AttemptBundle = {
   attemptNumber: number;
@@ -17,6 +25,11 @@ export type AttemptBundle = {
   changedFiles?: string[];
   durationMs: number;
   toolCalls?: string[];
+  ralphDetail?: RalphDetail;
+  buildGateFailure?: {
+    failedCommand: string;
+    output: string;
+  };
 };
 
 export function resolveWorkerDir(runId: string, stepId: string): string {
