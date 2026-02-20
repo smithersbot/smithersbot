@@ -1,4 +1,4 @@
----
+Her---
 summary: "Simple guide for customers using SmithersBot in Telegram"
 ---
 
@@ -116,6 +116,17 @@ My goal c8ee4cdc blocked and I don't understand how to unblock it. Please check 
 It's also a great soundboard for planning goals. If you have an idea for something that you want but can't quite articulate it clearly enough for a `/new_goal` command, you can ask it to write a `/new_goal` command based on a loose description of what you want and you can iterate with it until the command looks ready to send as a `/new_goal` command. I.e.:
 ```text
 I want to build something that sends me a report every week about developments in the robotics advanced manufacturing industry. Give me a "/new_goal" command to achieve this.
+```
+
+Here's a real example:
+```text
+I’ve never seen this issue:
+Failed to parse the planner response. Debug: cat $STATE_DIR/goals/l63b40a3-71a3-4059-97d8-d8f2d01f0737/plan-raw.txt
+
+It just happened
+(State dir is .clawdbot-dev)
+
+Please tell me what went wrong and write a “/new_goals” command to fix it
 ```
 
 ## What To Do If It Stops Responding
