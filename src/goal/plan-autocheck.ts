@@ -25,6 +25,14 @@ const REVIEW_INSTRUCTION = [
   "You have access to the full codebase in the current working directory.",
   "Before answering, inspect relevant source files to validate that the plan references",
   "correct file paths, function names, module structures, and patterns.",
+  "Focus rejections on issues that make the plan fundamentally incorrect or unexecutable:",
+  "wrong file paths in implementation steps, incorrect function or API names, missing step",
+  "dependencies, or logic that contradicts the goal.",
+  "Do NOT reject for minor issues in verification, cleanup, or restart steps that the",
+  "executing agent can reasonably adapt to at runtime (for example environment path",
+  "assumptions or fixture creation details), since the executing agent has full codebase access.",
+  "If core implementation steps are correct and well-specified, approve the plan even if",
+  "ancillary steps have minor environmental assumptions.",
   'Then respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
 ].join(" ");
 
