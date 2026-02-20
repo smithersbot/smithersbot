@@ -1026,6 +1026,8 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.manualTests).toBeUndefined();
       expect(run?.manualTestsError).toBe("HTTP 401: invalid x-api-key");
       expect(run?.telegramDoneMessage?.messageId).toBe(23);
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("Note: Manual test generation failed.");
     });
 
     it.each([
@@ -1995,6 +1997,7 @@ describe("goal-commands telegram adapter", () => {
       expect(allDoneEvent.summary).not.toContain(
         "✅ Done: Very long goal that should not be used as the compact done headline",
       );
+      expect(allDoneEvent.summary).toContain("Note: Manual test generation failed.");
       const summaryLines = allDoneEvent.summary.trim().split("\n");
       expect(summaryLines.at(-1)).toBe("**Goal ID:** test-run");
     });

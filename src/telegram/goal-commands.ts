@@ -422,6 +422,17 @@ function appendGoalIdFooter(summary: string, runId: string): string {
   return `${summary.trimEnd()}\n**Goal ID:** ${runId.slice(0, 8)}`;
 }
 
+const MANUAL_TEST_GENERATION_FAILED_NOTICE = "Note: Manual test generation failed.";
+
+function appendManualTestGenerationFailureNotice(
+  summary: string,
+  manualTestsError?: string,
+): string {
+  if (!manualTestsError?.trim()) return summary;
+  if (summary.includes(MANUAL_TEST_GENERATION_FAILED_NOTICE)) return summary;
+  return `${summary.trimEnd()}\n${MANUAL_TEST_GENERATION_FAILED_NOTICE}`;
+}
+
 function buildDoneSummaryWithManualTests(run: SerializedRun): string {
   const summary = formatCompactGoalCompletionSummary({
     title:
@@ -439,7 +450,10 @@ function buildDoneSummaryWithManualTests(run: SerializedRun): string {
     channel: "telegram",
     manualTests: run.manualTests,
   }).text;
-  return appendGoalIdFooter(summary, run.runId);
+  return appendGoalIdFooter(
+    appendManualTestGenerationFailureNotice(summary, run.manualTestsError),
+    run.runId,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2309,6 +2323,10 @@ export function buildOnStatusChange(params: {
     } else if (event.type === "all_done") {
       try {
         persistManualTests(runId, event.manualTests, event.manualTestsError);
+        const caption = appendManualTestGenerationFailureNotice(
+          event.summary,
+          event.manualTestsError,
+        );
         const sentId = await sendDagPng({
           bot,
           chatId,
@@ -2317,7 +2335,7 @@ export function buildOnStatusChange(params: {
           plan,
           steps: event.steps,
           stepResults,
-          caption: event.summary,
+          caption,
           replyMarkup: buildGoalDoneInlineKeyboard(prefix),
         });
         if (sentId != null) {
