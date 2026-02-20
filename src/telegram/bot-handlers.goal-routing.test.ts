@@ -314,7 +314,7 @@ describe("handleTelegramGoalRouting", () => {
     expect(feedback).toHaveBeenCalledWith("r1", "Manual test failed on step 2");
   });
 
-  // ---- Goal query intents (A, B) ----
+  // ---- Goal query intents (A) ----
 
   it("handles goal query 'list goals' directly", async () => {
     const sendReply = vi.fn(async () => {});
@@ -337,86 +337,6 @@ describe("handleTelegramGoalRouting", () => {
 
     expect(handled).toBe(true);
     expect(sendReply).toHaveBeenCalled();
-  });
-
-  it("'recent goals' is handled locally", async () => {
-    const sendReply = vi.fn(async () => {});
-
-    const handled = await handleTelegramGoalRouting({
-      chatId: 9,
-      threadId: undefined,
-      messageText: "recent goals",
-      replyToMessageId: undefined,
-      runs: [],
-      chatMode: "chat",
-      sendReply,
-      sendPlanResult: vi.fn(async () => {}),
-      runHandlers: {
-        edit: vi.fn(),
-        answer: vi.fn(),
-      },
-    });
-
-    expect(handled).toBe(true);
-    expect(sendReply).toHaveBeenCalled();
-  });
-
-  it("'what goals have been run' is handled locally", async () => {
-    const sendReply = vi.fn(async () => {});
-
-    const handled = await handleTelegramGoalRouting({
-      chatId: 9,
-      threadId: undefined,
-      messageText: "what goals have been run",
-      replyToMessageId: undefined,
-      runs: [],
-      chatMode: "chat",
-      sendReply,
-      sendPlanResult: vi.fn(async () => {}),
-      runHandlers: {
-        edit: vi.fn(),
-        answer: vi.fn(),
-      },
-    });
-
-    expect(handled).toBe(true);
-    expect(sendReply).toHaveBeenCalled();
-  });
-
-  it("handles 'what's the latest goal that was run' as recent-goals intent", async () => {
-    const runs = [
-      makeRun({
-        runId: "r1",
-        state: "blocked",
-        blocked: {
-          blockedAt: "execution",
-          prompt: "Need input",
-          requiredInputKey: "input_key",
-        },
-        telegramPlanMessage: { chatId: 9, messageId: 10 },
-      }),
-    ];
-    const sendReply = vi.fn(async () => {});
-
-    const handled = await handleTelegramGoalRouting({
-      chatId: 9,
-      threadId: undefined,
-      messageText: "What\u2019s the latest goal that was run?",
-      replyToMessageId: undefined,
-      runs,
-      chatMode: "help",
-      sendReply,
-      sendPlanResult: vi.fn(async () => {}),
-      runHandlers: {
-        edit: vi.fn(),
-        answer: vi.fn(),
-      },
-    });
-
-    expect(handled).toBe(true);
-    expect(sendReply).toHaveBeenCalledTimes(1);
-    expect(sendReply).not.toHaveBeenCalledWith(expect.stringContaining("/goal_answer"));
-    expect(sendReply).not.toHaveBeenCalledWith(expect.stringContaining("/new_goal"));
   });
 
   // ---- Chat mode: non-goal text falls through to LLM ----

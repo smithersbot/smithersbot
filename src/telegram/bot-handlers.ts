@@ -78,23 +78,7 @@ function isGoalListIntent(text: string): boolean {
   return /\blist\b/i.test(text) && /\b(goal|run)s?\b/i.test(text) && text.trim().length <= 60;
 }
 
-// B) GOAL_RECENT: "recent" + "goal"/"run", or starts with "what goals"/"what runs"
-function isGoalRecentIntent(text: string): boolean {
-  const normalized = text.trim().toLowerCase().replace(/[’]/g, "'");
-  if (!normalized) return false;
-
-  // Accept natural phrasings like:
-  // - "what's the latest goal that was run?"
-  // - "latest run"
-  // - "recent goals"
-  if (/\b(recent|latest|last)\b/.test(normalized) && /\b(goal|run)s?\b/.test(normalized)) {
-    return true;
-  }
-  if (/^what(?:'s| is)?\s+(goal|run)s?\b/.test(normalized)) return true;
-  return false;
-}
-
-// C) GOAL_STATUS: bare 8-hex-char run ID, or optional-leading-slash command aliases.
+// B) GOAL_STATUS: bare 8-hex-char run ID, or optional-leading-slash command aliases.
 function matchGoalStatusIntent(text: string): string | undefined {
   const trimmed = text.trim();
   if (RUN_ID_PREFIX_RE.test(trimmed)) return trimmed;
@@ -102,7 +86,7 @@ function matchGoalStatusIntent(text: string): string | undefined {
   return m ? m[1]! : undefined;
 }
 
-// D) APPROVAL_GUIDANCE: deterministic regex, never actually approves
+// C) APPROVAL_GUIDANCE: deterministic regex, never actually approves
 const APPROVAL_LIKE_RE =
   /^(approve|approved|approve\s*it|go\s*ahead|lgtm|ship\s*it|yes\s*,?\s*approve|approve\s+(?:that\s+)?(?:the\s+)?(?:last\s+one|latest|most\s+recent))$/i;
 
@@ -110,42 +94,9 @@ function isApprovalLikeText(text: string): boolean {
   return APPROVAL_LIKE_RE.test(text.trim().replace(/[!.]+$/, ""));
 }
 
-// Recent runs formatter: sorted by updatedAt, prefers active states, capped at 10
-const ACTIVE_RUN_STATES = new Set([
-  "planning",
-  "awaiting_approval",
-  "executing",
-  "blocked",
-  "done",
-  "cancelled",
-]);
-
-function formatRecentRuns(): string {
-  const all = listRuns(); // already sorted by updatedAt desc
-  if (all.length === 0) return "No goal runs found.";
-
-  const active = all.filter((r) => ACTIVE_RUN_STATES.has(r.state));
-  const rest = all.filter((r) => !ACTIVE_RUN_STATES.has(r.state));
-  const sorted = [...active, ...rest].slice(0, 10);
-
-  const lines: string[] = ["Most recently updated runs:", "```"];
-  lines.push("ID       State               Steps Goal");
-  lines.push("\u2500".repeat(58));
-  for (const run of sorted) {
-    const id = run.runId.slice(0, 8);
-    const state = run.state.padEnd(20);
-    const steps =
-      run.stepCount > 0 ? `${run.completedSteps}/${run.stepCount}`.padEnd(6) : "\u2014".padEnd(6);
-    const goal = run.goal.length > 22 ? `${run.goal.slice(0, 19)}...` : run.goal;
-    lines.push(`${id} ${state} ${steps}${goal}`);
-  }
-  lines.push("```");
-  return lines.join("\n");
-}
-
 /**
  * Try all deterministic local intents. Returns reply text if matched, undefined otherwise.
- * Intents A-D never call the LLM.
+ * Intents A-C never call the LLM.
  */
 async function tryLocalIntentHandlers(
   messageText: string,
@@ -156,18 +107,13 @@ async function tryLocalIntentHandlers(
     return await handleGoalList();
   }
 
-  // B) GOAL_RECENT
-  if (isGoalRecentIntent(messageText)) {
-    return formatRecentRuns();
-  }
-
-  // C) GOAL_STATUS
+  // B) GOAL_STATUS
   const statusId = matchGoalStatusIntent(messageText);
   if (statusId) {
     return await handleGoalStatus(statusId);
   }
 
-  // D) APPROVAL_GUIDANCE (never approves)
+  // C) APPROVAL_GUIDANCE (never approves)
   if (isApprovalLikeText(messageText)) {
     const awaitingRuns = runs.filter((r) => r.state === "awaiting_approval");
     if (awaitingRuns.length === 1) {
@@ -230,7 +176,7 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   if (route.kind === "CHAT") {
-    // Try deterministic local intent handlers (A-D). Never calls LLM.
+    // Try deterministic local intent handlers (A-C). Never calls LLM.
     const localReply = await tryLocalIntentHandlers(params.messageText, params.runs);
     if (localReply) {
       await params.sendReply(localReply);
