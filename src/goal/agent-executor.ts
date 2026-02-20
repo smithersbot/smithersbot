@@ -553,8 +553,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       onTaskStart?.(task.id);
       if (attempt === 1) {
         onProgress?.(`\n--- Task ${task.id} [${backend}]: ${task.description} ---`);
-      } else {
-        onProgress?.(`  [ralph] Attempt ${attempt}/${maxAttempts}`);
       }
 
       const result = await runner.execute(context);
@@ -619,9 +617,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             "Review the ralph history and provide guidance or constraints for a new strategy.",
           needsRevert: false,
         };
-        onProgress?.(
-          `  [ralph] Task ${task.id} hit ralph limit (${ralphCount}/${maxRalphAttempts})`,
-        );
       } else {
         const reset = resetToTaskBaseSha(workingDir, session.taskCheckpoints?.[task.id]?.baseSha);
         if (!reset.success) {
@@ -634,7 +629,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             suggestedNext: "Fix git checkpoint state and retry the task.",
             needsRevert: false,
           };
-          onProgress?.(`  [ralph] Reset failed for task ${task.id}: ${reset.error}`);
         } else if (task.ralphDetail) {
           appendRalphContext(runId, task.id, ralphCount, task.ralphDetail);
           appendGoalWorkingEntry(
@@ -647,9 +641,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               `Key insight: ${task.ralphDetail.keyInsight}`,
               `Suggested approach: ${task.ralphDetail.suggestedApproach}`,
             ].join("\n"),
-          );
-          onProgress?.(
-            `Task ${task.id}: ralph (attempt ${ralphCount}/${maxRalphAttempts}) — reverting to clean state, dispatching new attempt.`,
           );
           task.status = "pending";
           task.blockedReason = undefined;
@@ -947,7 +938,6 @@ function applyTaskResult(
     task.blockedQuestion = undefined;
     task.failedDetail = undefined;
     task.taskSummary = undefined;
-    onProgress?.("  [ralph] Worker requested strategic reset");
     return;
   }
 

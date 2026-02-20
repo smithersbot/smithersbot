@@ -370,13 +370,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       };
     });
 
-    const progress: string[] = [];
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
       runId: "run-ralph-retry",
       workingDir: "/tmp/moltbot-goal-test",
-      onProgress: (text) => progress.push(text),
     });
 
     expect(outcome.status).toBe("done");
@@ -386,7 +384,6 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       ["-C", "/tmp/moltbot-goal-test", "reset", "--hard", "base-sha-1"],
       expect.any(Object),
     );
-    expect(progress.some((text) => text.includes("Task 1: ralph (attempt 1/2)"))).toBe(true);
     expect(contexts[1]?.attemptBundles?.some((bundle) => bundle.ralphDetail?.keyInsight)).toBe(
       true,
     );

@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Removed all ralph-related onProgress notifications in agent-executor.ts, updated executor tests to stop expecting ralph progress output, and verified with pnpm lint && pnpm build && pnpm vitest run src/goal/agent-executor.test.ts."}
