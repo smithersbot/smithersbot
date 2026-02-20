@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Full static quality gate passed: pnpm lint (0 errors), pnpm build (clean compile), pnpm vitest run src/goal/ (24 test files, 405 tests passed, 0 failures, 8 skipped). Dev service restart is blocked by HARD DENY (systemctl --user restart) — operator must restart manually after goal completes. The /new_goal e2e test command for manual build-gate and ralph verification has been output for the user to copy-paste."
+}
