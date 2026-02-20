@@ -490,7 +490,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(retryBundle?.buildGateFailure?.output).toContain(
       "The build gate (pnpm build) failed after you reported complete.",
     );
-    expect(progress.some((text) => text.includes("build gate failed (cycle 1/2)"))).toBe(true);
+    expect(progress.every((text) => !text.toLowerCase().includes("build gate"))).toBe(true);
     expect(session.buildGateResults?.["1"]?.passed).toBe(true);
   });
 

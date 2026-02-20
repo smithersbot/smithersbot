@@ -220,15 +220,10 @@ function formatExecError(error: unknown): string {
     .join("\n");
 }
 
-function runBuildGateCommands(
-  commands: string[],
-  workingDir: string,
-  onProgress?: (text: string) => void,
-): BuildGateResult {
+function runBuildGateCommands(commands: string[], workingDir: string): BuildGateResult {
   for (const command of commands) {
     const trimmed = command.trim();
     if (!trimmed) continue;
-    onProgress?.(`  [build-gate] Running: ${trimmed}`);
 
     const result = spawnSync("bash", ["-lc", trimmed], {
       cwd: workingDir,
@@ -671,12 +666,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       plan.buildGate?.runBetweenSteps === true &&
       gateCommands.length > 0
     ) {
-      const gateResult = runBuildGateCommands(gateCommands, workingDir, onProgress);
+      const gateResult = runBuildGateCommands(gateCommands, workingDir);
       const timestamp = new Date().toISOString();
       if (gateResult.passed) {
         session.buildGateResults[task.id] = { passed: true, timestamp };
         buildGateFixCounts.delete(task.id);
-        onProgress?.(`  [build-gate] Task ${task.id} passed`);
       } else {
         session.buildGateResults[task.id] = {
           passed: false,
@@ -687,7 +681,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
         const fixCount = (buildGateFixCounts.get(task.id) ?? 0) + 1;
         buildGateFixCounts.set(task.id, fixCount);
-        onProgress?.(`  [build-gate] Task ${task.id} failed on ${gateResult.failedCommand}`);
 
         if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
           const detail = makeBuildGateFailurePrompt(gateResult.failedCommand, gateResult.output);
@@ -743,9 +736,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               task.id,
               "build-gate",
               `Build gate failed (${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) on ${gateResult.failedCommand}. Retrying after reset.`,
-            );
-            onProgress?.(
-              `Task ${task.id}: build gate failed (cycle ${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) — reverting to clean state, dispatching new attempt.`,
             );
             task.status = "pending";
             task.blockedReason = undefined;
@@ -820,11 +810,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const finalGateCommands =
     plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
   if (orderedSteps.every((s) => s.status === "done") && finalGateCommands.length > 0) {
-    const finalGateResult = runBuildGateCommands(finalGateCommands, workingDir, onProgress);
+    const finalGateResult = runBuildGateCommands(finalGateCommands, workingDir);
     const timestamp = new Date().toISOString();
     if (finalGateResult.passed) {
       session.buildGateResults["__final__"] = { passed: true, timestamp };
-      onProgress?.("  [build-gate] Final gate passed");
     } else {
       session.buildGateResults["__final__"] = {
         passed: false,
@@ -860,7 +849,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         );
         recordTaskResult(session, targetStep, Date.now(), onTaskUpdate);
       }
-      onProgress?.(`  [build-gate] Final gate failed on ${finalGateResult.failedCommand}`);
     }
   }
 

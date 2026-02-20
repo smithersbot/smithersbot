@@ -567,7 +567,11 @@ describe("planner", () => {
       });
       const steps = result.steps as Array<Record<string, unknown>>;
       expect(steps).toHaveLength(1);
-      const description = String(steps[0]?.description ?? "");
+      const description = steps[0]?.description;
+      expect(typeof description).toBe("string");
+      if (typeof description !== "string") {
+        throw new Error("Expected step description to be a string");
+      }
       expect(description).toContain("```bash");
       expect(description).toContain("chmod +x /tmp/moltbot-test-goal/hello.sh");
     });
