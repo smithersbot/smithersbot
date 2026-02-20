@@ -201,11 +201,23 @@ export function extractJson(text: string): Record<string, unknown> {
     }
   }
 
+  // Fallback: match from the first fence opening to the last fence closing.
+  const greedyFenceMatch = /```(?:json)?\s*\n?([\s\S]*)\n?\s*```/.exec(trimmed);
+  if (greedyFenceMatch?.[1]) {
+    try {
+      const result = JSON.parse(greedyFenceMatch[1].trim());
+      if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
+    } catch {
+      // Fall through
+    }
+  }
+
   // Fallback: allow a prose preamble before a bare JSON object.
   const braceIdx = trimmed.indexOf("{");
-  if (braceIdx > 0) {
+  const lastBraceIdx = trimmed.lastIndexOf("}");
+  if (braceIdx > 0 && lastBraceIdx > braceIdx) {
     try {
-      const result = JSON.parse(trimmed.slice(braceIdx));
+      const result = JSON.parse(trimmed.slice(braceIdx, lastBraceIdx + 1));
       if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
     } catch {
       // Fall through

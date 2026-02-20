@@ -544,9 +544,44 @@ describe("planner", () => {
       expect(result).toEqual({ key: "value" });
     });
 
+    it("extracts fenced JSON when a string value contains nested code fences", () => {
+      const result = extractJson(`\`\`\`json
+{
+  "workingDir": "/tmp/moltbot",
+  "summary": "Create hello-world script",
+  "steps": [
+    {
+      "id": "create-script",
+      "description": "Create the script:\\n\`\`\`bash\\nmkdir -p /tmp/moltbot-test-goal\\ncat <<'EOF' > /tmp/moltbot-test-goal/hello.sh\\n#!/usr/bin/env bash\\necho hello world\\nEOF\\nchmod +x /tmp/moltbot-test-goal/hello.sh\\n\`\`\`\\nThen run it once to verify output.",
+      "dependsOn": [],
+      "durationMinutes": 3,
+      "backend": "codex"
+    }
+  ]
+}
+\`\`\``);
+
+      expect(result).toMatchObject({
+        workingDir: "/tmp/moltbot",
+        summary: "Create hello-world script",
+      });
+      const steps = result.steps as Array<Record<string, unknown>>;
+      expect(steps).toHaveLength(1);
+      const description = String(steps[0]?.description ?? "");
+      expect(description).toContain("```bash");
+      expect(description).toContain("chmod +x /tmp/moltbot-test-goal/hello.sh");
+    });
+
     it("parses bare JSON that follows a prose preamble", () => {
       const result = extractJson(
         'Now I have all the context needed. Here is the revised plan:\n{"key":"value"}',
+      );
+      expect(result).toEqual({ key: "value" });
+    });
+
+    it("parses JSON between prose preamble and a trailing fence marker", () => {
+      const result = extractJson(
+        'Now I have all the context needed. Here is the revised plan:\n{"key":"value"}\n```',
       );
       expect(result).toEqual({ key: "value" });
     });

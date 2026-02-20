@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Added a greedy code-fence fallback and improved first-brace extraction in extractJson(), added two regression tests for nested backticks and trailing fence markers, and verified with pnpm vitest run src/goal/planner.test.ts plus pnpm build (both passed)." }
