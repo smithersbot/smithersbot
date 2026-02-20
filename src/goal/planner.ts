@@ -28,11 +28,21 @@ BACKEND SELECTION RULES (strict):
 - If a step both creates/modifies code AND runs tests, use "codex".
 - Only use "pi" if the user explicitly requests it.
 
+STRUCTURED PLANNING REQUIREMENTS (strict):
+- Every step MUST include successCriteria: a specific, verifiable done-when condition.
+- Every step MUST include constraints: explicit approaches that are off-limits.
+- Step descriptions should include expected deliverables, not just generic task descriptions.
+- Build-gate commands are the objective stop-token for completion. Pick commands that prove the work is actually healthy.
+- For Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
+- For non-code projects, set buildGate.commands to [].
+
 Step schema:
 - id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
 - description: clear, actionable description of what the agent should do, including what "done" looks like
 - shortSummary: concise task title (<=60 chars) for UI display
 - dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
+- successCriteria (required): specific, verifiable done-when condition
+- constraints (required): array of explicit do-not-do constraints (can be [] if none)
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): "codex" | "claude_code" | "pi" — execution backend
 
@@ -40,18 +50,27 @@ Top-level summary fields:
 - summary: full plan description
 - shortSummary: <=80 chars, human-readable goal headline focused on the outcome (not implementation details)
 - Unless the goal is primarily about testing, avoid mentioning tests in shortSummary.
+- buildGate: post-execution verification gate for this plan
+- buildGate.commands: array of commands to run as objective verification (empty array for non-code projects)
+- buildGate.runBetweenSteps: true to run gate after each completed step, false to run only at the end
 
 Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
 {
   "workingDir": "/absolute/path/or/~/path",
   "summary": "Brief description of the plan",
   "shortSummary": "Readable goal headline, <=80 chars",
+  "buildGate": {
+    "commands": ["pnpm build"],
+    "runBetweenSteps": true
+  },
   "steps": [
     {
       "id": "unique-step-id",
       "description": "What this step does and how to verify it is done",
       "shortSummary": "Readable task title, <=60 chars",
       "dependsOn": ["step-ids-that-must-complete-first"],
+      "successCriteria": "Verifiable done-when condition",
+      "constraints": ["Explicit do-not-do constraint"],
       "durationMinutes": 12,
       "backend": "codex"
     }
@@ -229,9 +248,42 @@ function parseBackend(raw: unknown): GoalBackendId | undefined {
   return undefined;
 }
 
+function parseOptionalNonEmptyString(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const normalized = collapseWhitespace(raw);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function parseConstraints(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const constraints: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== "string") continue;
+    const normalized = collapseWhitespace(value);
+    if (normalized.length > 0) constraints.push(normalized);
+  }
+  return constraints;
+}
+
+function parseBuildGate(raw: unknown): Plan["buildGate"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const buildGate = raw as Record<string, unknown>;
+  if (!Array.isArray(buildGate.commands) || typeof buildGate.runBetweenSteps !== "boolean") {
+    return undefined;
+  }
+  const commands = buildGate.commands
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+  return {
+    commands,
+    runBetweenSteps: buildGate.runBetweenSteps,
+  };
+}
+
 function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   const summary = typeof raw.summary === "string" ? raw.summary : goal;
   const shortSummary = parseShortSummary(raw.shortSummary, summary, PLAN_SHORT_SUMMARY_MAX_CHARS);
+  const buildGate = parseBuildGate(raw.buildGate);
   const rawWorkingDir = typeof raw.workingDir === "string" ? raw.workingDir.trim() : "";
   if (!rawWorkingDir) {
     throw new Error("Plan must include a non-empty workingDir");
@@ -265,6 +317,8 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       normalizeLabel(description),
       STEP_SHORT_SUMMARY_MAX_CHARS,
     );
+    const successCriteria = parseOptionalNonEmptyString(step.successCriteria);
+    const constraints = parseConstraints(step.constraints);
 
     const dependsOn = Array.isArray(step.dependsOn) ? step.dependsOn.map(String) : [];
 
@@ -285,6 +339,8 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       description,
       shortSummary: shortStepSummary,
       dependsOn,
+      successCriteria,
+      constraints,
       status: "pending",
       durationMinutes,
       backend,
@@ -303,7 +359,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
   // Detect cycles via Kahn's algorithm
   detectCycles(steps);
 
-  return { goal, workingDir, steps, summary, shortSummary };
+  return { goal, workingDir, steps, summary, shortSummary, buildGate };
 }
 
 /**
@@ -322,11 +378,14 @@ export async function generatePlanRevision(
       workingDir: currentPlan.workingDir,
       summary: currentPlan.summary,
       shortSummary: currentPlan.shortSummary,
+      buildGate: currentPlan.buildGate,
       steps: currentPlan.steps.map((s) => ({
         id: s.id,
         description: s.description,
         shortSummary: s.shortSummary,
         dependsOn: s.dependsOn,
+        successCriteria: s.successCriteria,
+        constraints: s.constraints,
         durationMinutes: s.durationMinutes,
         backend: s.backend,
       })),

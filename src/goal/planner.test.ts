@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildPlannerUserMessage, extractJson, generatePlan, PlanParseError } from "./planner.js";
+import {
+  buildPlannerUserMessage,
+  extractJson,
+  generatePlan,
+  generatePlanRevision,
+  PlanParseError,
+} from "./planner.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
 
@@ -114,6 +120,75 @@ describe("planner", () => {
       if (!("blocked" in plan)) {
         expect(plan.shortSummary).toBe("Improve auth + checks");
         expect(plan.steps[0].shortSummary).toBe("Implement auth");
+      }
+    });
+
+    it("parses buildGate, successCriteria, and constraints when provided", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Fix build and keep constraints",
+          buildGate: {
+            commands: ["pnpm build", "pnpm test --filter goal"],
+            runBetweenSteps: true,
+          },
+          steps: [
+            {
+              id: "fix-build",
+              description: "Fix imports and restore build health",
+              dependsOn: [],
+              successCriteria: "pnpm build exits 0 with full src/**/* include intact",
+              constraints: [
+                "Do not narrow tsconfig includes to hide errors",
+                "Do not remove tests to pass the build gate",
+              ],
+              durationMinutes: 15,
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Fix build and keep constraints", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.buildGate).toEqual({
+          commands: ["pnpm build", "pnpm test --filter goal"],
+          runBetweenSteps: true,
+        });
+        expect(plan.steps[0].successCriteria).toBe(
+          "pnpm build exits 0 with full src/**/* include intact",
+        );
+        expect(plan.steps[0].constraints).toEqual([
+          "Do not narrow tsconfig includes to hide errors",
+          "Do not remove tests to pass the build gate",
+        ]);
+      }
+    });
+
+    it("defaults optional build-gate and step metadata when omitted", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Fix build",
+          steps: [
+            {
+              id: "fix-build",
+              description: "Fix imports and restore build health",
+              dependsOn: [],
+              durationMinutes: 15,
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Fix build", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.buildGate).toBeUndefined();
+        expect(plan.steps[0].successCriteria).toBeUndefined();
+        expect(plan.steps[0].constraints).toEqual([]);
       }
     });
 
@@ -393,6 +468,63 @@ describe("planner", () => {
       if (!("blocked" in plan)) {
         expect(plan.workingDir).toBe("/tmp/custom-workspace");
       }
+    });
+
+    it("includes buildGate, successCriteria, and constraints in revision prompt context", async () => {
+      const complete = vi.fn().mockResolvedValue({
+        text: JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "step-1",
+              description: "Do work",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        }),
+      });
+
+      await generatePlanRevision(
+        { complete },
+        "Revise plan",
+        TEST_CWD,
+        {
+          goal: "Revise plan",
+          workingDir: "/tmp/moltbot",
+          summary: "Current plan",
+          shortSummary: "Current short summary",
+          buildGate: {
+            commands: ["pnpm build"],
+            runBetweenSteps: false,
+          },
+          steps: [
+            {
+              id: "step-1",
+              description: "Do work",
+              shortSummary: "Do work",
+              dependsOn: [],
+              successCriteria: "pnpm build exits 0",
+              constraints: ["Do not narrow tsconfig include"],
+              status: "pending",
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        },
+        "Tighten constraints",
+      );
+
+      const prompt = String(complete.mock.calls[0]?.[0]?.userMessage ?? "");
+      expect(prompt).toContain('"buildGate": {');
+      expect(prompt).toContain('"commands": [');
+      expect(prompt).toContain('"pnpm build"');
+      expect(prompt).toContain('"runBetweenSteps": false');
+      expect(prompt).toContain('"successCriteria": "pnpm build exits 0"');
+      expect(prompt).toContain('"constraints": [');
+      expect(prompt).toContain('"Do not narrow tsconfig include"');
     });
   });
 

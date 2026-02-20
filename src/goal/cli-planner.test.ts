@@ -178,6 +178,53 @@ describe("runCliPlanning", () => {
     expect(procCall.cwd).toBe(process.cwd());
   });
 
+  it("writes canonical execution plan with buildGate and step metadata", async () => {
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Plan with verification metadata",
+        workingDir: "/tmp/test-wd",
+        buildGate: {
+          commands: ["pnpm build"],
+          runBetweenSteps: true,
+        },
+        steps: [
+          {
+            id: "impl-step",
+            description: "Implement and verify",
+            dependsOn: [],
+            successCriteria: "pnpm build exits 0",
+            constraints: ["Do not narrow tsconfig include"],
+            durationMinutes: 20,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 40,
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-canonical-build-gate",
+      goalText: "Write canonical plan artifact",
+      goalsDir,
+      includeScoutArtifacts: false,
+    });
+
+    expect(result.status).toBe("success");
+    const planPath = path.join(goalsDir, "run-canonical-build-gate", "scout", EXECUTION_PLAN_FILE);
+    const savedPlan = JSON.parse(fs.readFileSync(planPath, "utf8")) as Record<string, unknown>;
+    expect(savedPlan.buildGate).toEqual({
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+    });
+    const firstStep = ((savedPlan.steps as unknown[])?.[0] ?? {}) as Record<string, unknown>;
+    expect(firstStep.successCriteria).toBe("pnpm build exits 0");
+    expect(firstStep.constraints).toEqual(["Do not narrow tsconfig include"]);
+  });
+
   it("returns blocked-at-planning when clarification artifact is produced", async () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const scoutDir = path.dirname(String(params.stdoutPath));
@@ -754,6 +801,68 @@ describe("runCliPlanning", () => {
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
     expect(procCall.cwd).toBe(process.cwd());
+  });
+
+  it("serializes buildGate, successCriteria, and constraints in revision prompts", async () => {
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Revised summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    await runCliPlanRevision({
+      runId: "run-revision-build-gate-fields",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        shortSummary: "Original short summary",
+        workingDir: "/tmp/test-wd",
+        buildGate: {
+          commands: ["pnpm build"],
+          runBetweenSteps: true,
+        },
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            shortSummary: "Initial step",
+            dependsOn: [],
+            successCriteria: "pnpm build exits 0",
+            constraints: ["Do not narrow tsconfig include"],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Keep the same build-gate and constraints",
+      goalsDir,
+    });
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(procCall.stdin).toContain('"buildGate": {');
+    expect(procCall.stdin).toContain('"commands": [');
+    expect(procCall.stdin).toContain('"pnpm build"');
+    expect(procCall.stdin).toContain('"runBetweenSteps": true');
+    expect(procCall.stdin).toContain('"successCriteria": "pnpm build exits 0"');
+    expect(procCall.stdin).toContain('"constraints": [');
+    expect(procCall.stdin).toContain('"Do not narrow tsconfig include"');
   });
 
   it("includes a deduplicated prior corrections checklist in revision prompts", async () => {
