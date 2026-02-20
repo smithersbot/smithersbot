@@ -660,6 +660,7 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         rawId: "test-run",
         runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 77,
       });
 
       expect(sendPhoto).toHaveBeenCalledOnce();
@@ -669,6 +670,7 @@ describe("goal-commands telegram adapter", () => {
         expect.objectContaining({
           caption: expect.stringContaining("Run: test-run-id-1234"),
           parse_mode: "HTML",
+          reply_parameters: { message_id: 77 },
         }),
       );
       expect(sendMessage).not.toHaveBeenCalled();
@@ -693,10 +695,15 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         rawId: "test-run",
         runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 78,
       });
 
       expect(sendPhoto).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledWith(
+        42,
+        expect.any(String),
+        expect.objectContaining({ reply_parameters: { message_id: 78 } }),
+      );
     });
   });
 
@@ -722,6 +729,7 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         rawId: "test-run",
         runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 79,
       });
 
       expect(sendPhoto).toHaveBeenCalledOnce();
@@ -731,6 +739,7 @@ describe("goal-commands telegram adapter", () => {
         expect.objectContaining({
           caption: expect.stringContaining("<b>Steps</b>"),
           parse_mode: "HTML",
+          reply_parameters: { message_id: 79 },
         }),
       );
       expect(sendMessage).not.toHaveBeenCalled();
@@ -756,10 +765,15 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         rawId: "test-run",
         runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 80,
       });
 
       expect(sendPhoto).not.toHaveBeenCalled();
-      expect(sendMessage).toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledWith(
+        42,
+        expect.any(String),
+        expect.objectContaining({ reply_parameters: { message_id: 80 } }),
+      );
     });
   });
 
@@ -3231,6 +3245,54 @@ describe("goal-commands telegram adapter", () => {
           (call) =>
             String(call[1]).includes("Run not found: missing-resume") &&
             hasReplyMessageId(call, 802),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_status and /goal_detail responses", async () => {
+      saveRunFixture(makeRun({ plan: null }));
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+      mockGoalDetailCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("**Steps**");
+          runtime.log("- 1. pending Step one");
+        },
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_status?.(makeCommandCtx("test-run", 901));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run: test-run-id-1234") && hasReplyMessageId(call, 901),
+        ),
+      ).toBe(true);
+
+      await harness.commandHandlers.goal_detail?.(makeCommandCtx("test-run", 902));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Steps") && hasReplyMessageId(call, 902),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_reject responses", async () => {
+      saveRunFixture(makeRun({ state: "awaiting_approval" }));
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_reject?.(makeCommandCtx("test-run", 903));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Plan rejected") && hasReplyMessageId(call, 903),
         ),
       ).toBe(true);
     });

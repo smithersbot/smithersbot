@@ -958,8 +958,9 @@ export async function sendGoalStatusResponse(params: {
   runtime: RuntimeEnv;
   rawId: string;
   threadId?: number;
+  replyToMessageId?: number;
 }): Promise<void> {
-  const { bot, chatId, runtime, rawId, threadId } = params;
+  const { bot, chatId, runtime, rawId, threadId, replyToMessageId } = params;
   const reply = await handleGoalStatus(rawId);
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
@@ -973,10 +974,11 @@ export async function sendGoalStatusResponse(params: {
       steps: run.plan.steps,
       stepResults: serializedStepResultsToMap(run),
       caption: reply,
+      replyToMessageId,
     });
     return;
   }
-  await sendGoalReply(bot, chatId, reply, runtime, threadId);
+  await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
 
 /** Send `/goal_detail` reply text and attach DAG PNG when the run has a plan. */
@@ -986,8 +988,9 @@ export async function sendGoalDetailResponse(params: {
   runtime: RuntimeEnv;
   rawId: string;
   threadId?: number;
+  replyToMessageId?: number;
 }): Promise<void> {
-  const { bot, chatId, runtime, rawId, threadId } = params;
+  const { bot, chatId, runtime, rawId, threadId, replyToMessageId } = params;
   const reply = await handleGoalDetail(rawId);
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
@@ -1001,10 +1004,11 @@ export async function sendGoalDetailResponse(params: {
       steps: run.plan.steps,
       stepResults: serializedStepResultsToMap(run),
       caption: reply,
+      replyToMessageId,
     });
     return;
   }
-  await sendGoalReply(bot, chatId, reply, runtime, threadId);
+  await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
 
 /** /goal_answer <runId> <value> -- answer a blocked goal's question. */
@@ -2945,7 +2949,14 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const reply = await handleGoalReject(ctx.match?.trim() ?? "");
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      reply,
+      runtime,
+      resolved.threadIdForSend,
+      ctx.message?.message_id,
+    );
   });
 
   // /goal_edit <runId> <instructions>
@@ -3018,6 +3029,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       rawId: raw,
+      replyToMessageId: ctx.message?.message_id,
     });
   });
 
@@ -3032,6 +3044,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       rawId: raw,
+      replyToMessageId: ctx.message?.message_id,
     });
   });
 
