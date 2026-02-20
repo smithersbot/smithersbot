@@ -2231,7 +2231,7 @@ export function buildOnStatusChange(params: {
           "",
           event.question,
           "",
-          `Next: /goal_answer ${prefix} <your answer>`,
+          `**Next:** I will continue to complete tasks that aren't dependant on this blocked task.`,
         ].join("\n");
         const sentId = await sendDagPng({
           bot,
@@ -2271,7 +2271,7 @@ export function buildOnStatusChange(params: {
           if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
         }
         lines.push("");
-        lines.push(`Next: reply with your answer or /goal_answer ${prefix} <answer>`);
+        lines.push(`**Next:** /goal_answer ${prefix} <your answer>`);
         const sentId = await sendDagPng({
           bot,
           chatId,

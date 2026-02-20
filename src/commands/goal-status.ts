@@ -90,10 +90,10 @@ function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string
       return `**Goal ID:** ${runPrefix}`;
     }
     if (channel === "telegram") {
-      return `Next: /goal_answer ${runPrefix} <answer>`;
+      return `**Next:** /goal_answer ${runPrefix} <answer>`;
     }
     return (
-      `Next: moltbot goal answer ${runPrefix} --key ${run.blocked.requiredInputKey} ` +
+      `**Next:** moltbot goal answer ${runPrefix} --key ${run.blocked.requiredInputKey} ` +
       "--value <VALUE>"
     );
   }

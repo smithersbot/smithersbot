@@ -284,6 +284,7 @@ describe("goal-status command", () => {
     const output = rt.logs.join("\n");
     expect(output).toContain("Need creds");
     expect(output).toContain("db_password");
+    expect(output).toContain("**Next:**");
     expect(output).toContain("moltbot goal answer");
   });
 

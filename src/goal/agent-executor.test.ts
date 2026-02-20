@@ -433,15 +433,15 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const blockedQuestion = step.blockedQuestion ?? "";
     expect(blockedQuestion).toContain("**Ralph 1 (attempt 1):**");
     expect(blockedQuestion).toContain("**Ralph 2 (attempt 2):**");
-    expect(blockedQuestion).toContain("- **Approach tried:** Tried patching unresolved paths");
+    expect(blockedQuestion).toContain("• **Approach tried:** Tried patching unresolved paths");
     expect(blockedQuestion).toContain(
-      "- **Errors:** Build still failed with many unresolved imports",
+      "• **Errors:** Build still failed with many unresolved imports",
     );
     expect(blockedQuestion).toContain(
-      "- **Key insight:** Current patch-only approach is structurally wrong",
+      "• **Key insight:** Current patch-only approach is structurally wrong",
     );
     expect(blockedQuestion).toContain(
-      "- **Suggested approach:** Regenerate artifacts before patching imports",
+      "• **Suggested approach:** Regenerate artifacts before patching imports",
     );
     expect(blockedQuestion.match(/\*\*Approach tried:\*\*/g)).toHaveLength(2);
     expect(blockedQuestion.match(/\*\*Errors:\*\*/g)).toHaveLength(2);

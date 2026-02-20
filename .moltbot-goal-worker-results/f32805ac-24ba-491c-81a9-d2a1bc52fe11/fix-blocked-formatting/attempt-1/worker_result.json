@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Updated blocked formatting across goal executor, Telegram status captions, and CLI action hints; switched Ralph bullet prefixes to • while keeping blank-line separators between attempts, updated related tests, and verified with targeted Vitest plus real CLI goal status output showing bold **Next:**."}

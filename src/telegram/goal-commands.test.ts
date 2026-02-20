@@ -1051,16 +1051,16 @@ describe("goal-commands telegram adapter", () => {
           "Task 1 reached the ralph limit (2/2).",
           "",
           "**Ralph 1 (attempt 1):**",
-          "- **Approach tried:** First attempt",
-          "- **Errors:** Controlled failure",
-          "- **Key insight:** Need another attempt",
-          "- **Suggested approach:** Retry once more",
+          "• **Approach tried:** First attempt",
+          "• **Errors:** Controlled failure",
+          "• **Key insight:** Need another attempt",
+          "• **Suggested approach:** Retry once more",
           "",
           "**Ralph 2 (attempt 2):**",
-          "- **Approach tried:** Second attempt",
-          "- **Errors:** Controlled second failure",
-          "- **Key insight:** Limit reached",
-          "- **Suggested approach:** Resume with guidance",
+          "• **Approach tried:** Second attempt",
+          "• **Errors:** Controlled second failure",
+          "• **Key insight:** Limit reached",
+          "• **Suggested approach:** Resume with guidance",
         ].join("\n"),
         steps: [
           {
@@ -1080,6 +1080,9 @@ describe("goal-commands telegram adapter", () => {
       };
       expect(options.caption).toContain("<b>TASK BLOCKED</b> (test-run): Step 1 needs input");
       expect(options.caption).toContain("<b>Ralph 1 (attempt 1):</b>");
+      expect(options.caption).toContain(
+        "<b>Next:</b> I will continue to complete tasks that aren't dependant on this blocked task.",
+      );
       expect(options.reply_markup?.inline_keyboard).toEqual([
         [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],
       ]);
@@ -1121,6 +1124,7 @@ describe("goal-commands telegram adapter", () => {
         reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
       };
       expect(options.caption).toContain("<b>GOAL BLOCKED</b> (test-run): no runnable steps");
+      expect(options.caption).toContain("<b>Next:</b> /goal_answer");
       expect(options.reply_markup?.inline_keyboard).toEqual([
         [
           { text: "▶️ Resume Goal", callback_data: "gResume:test-run" },

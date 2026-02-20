@@ -297,10 +297,10 @@ function buildRalphHistorySummary(stepId: string, bundles: AttemptBundle[]): str
   for (const [index, bundle] of entries.entries()) {
     const detail = bundle.ralphDetail!;
     lines.push(`**Ralph ${index + 1} (attempt ${bundle.attemptNumber}):**`);
-    lines.push(`- **Approach tried:** ${detail.approachTried}`);
-    lines.push(`- **Errors:** ${detail.specificErrors}`);
-    lines.push(`- **Key insight:** ${detail.keyInsight}`);
-    lines.push(`- **Suggested approach:** ${detail.suggestedApproach}`);
+    lines.push(`• **Approach tried:** ${detail.approachTried}`);
+    lines.push(`• **Errors:** ${detail.specificErrors}`);
+    lines.push(`• **Key insight:** ${detail.keyInsight}`);
+    lines.push(`• **Suggested approach:** ${detail.suggestedApproach}`);
     if (index < entries.length - 1) lines.push("");
   }
   return lines.join("\n");
