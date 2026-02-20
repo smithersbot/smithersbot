@@ -32,9 +32,9 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
       execute: async (
         toolCallId,
         params,
-        signal,
         onUpdate,
         _ctx,
+        signal,
       ): Promise<AgentToolResult<unknown>> => {
         try {
           return await tool.execute(toolCallId, params, signal, onUpdate);

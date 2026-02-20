@@ -116,7 +116,7 @@ function createDefaultBashOps(): BashOperations {
       return new Promise((resolve) => {
         const child = spawn("bash", ["-c", command], {
           cwd,
-          env: options.env ?? process.env,
+          env: process.env,
           stdio: ["ignore", "pipe", "pipe"],
         });
 

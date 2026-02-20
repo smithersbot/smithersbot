@@ -4,7 +4,6 @@ import { getModel } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   createAgentSession,
-  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
@@ -109,23 +108,13 @@ export class PiTaskRunner implements TaskRunner {
     );
 
     const workingJournal = loadGoalWorkingJournal(context.runId);
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: context.workingDir,
-      agentDir: this.agentDir,
-      settingsManager: this.settingsManager,
-      systemPrompt: buildGoalSystemPrompt(
-        context.goal,
-        context.plan,
-        context.completedSummaries,
-        workingJournal,
-        context.denyPolicy,
-      ),
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-    });
-    await resourceLoader.reload();
+    const goalSystemPrompt = buildGoalSystemPrompt(
+      context.goal,
+      context.plan,
+      context.completedSummaries,
+      workingJournal,
+      context.denyPolicy,
+    );
 
     const codingTools = createEnforcedCodingTools(
       context.workingDir,
@@ -148,13 +137,16 @@ export class PiTaskRunner implements TaskRunner {
       agentDir: this.agentDir,
       model,
       thinkingLevel: "low",
+      systemPrompt: goalSystemPrompt,
       tools: codingTools,
       customTools: this.goalTools.tools,
       sessionManager: SessionManager.open(taskSessionFile),
       settingsManager: this.settingsManager,
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
-      resourceLoader,
+      extensions: [],
+      skills: [],
+      promptTemplates: [],
     });
 
     const unsubscribe = piSession.subscribe((event) => {

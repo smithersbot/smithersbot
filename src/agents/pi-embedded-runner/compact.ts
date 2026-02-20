@@ -3,7 +3,6 @@ import os from "node:os";
 
 import {
   createAgentSession,
-  DefaultResourceLoader,
   estimateTokens,
   SessionManager,
   SettingsManager,
@@ -384,16 +383,6 @@ export async function compactEmbeddedPiSessionDirect(
         sandboxEnabled: !!sandbox?.enabled,
       });
 
-      const resourceLoader = new DefaultResourceLoader({
-        cwd: resolvedWorkspace,
-        agentDir,
-        settingsManager,
-        systemPromptOverride: (base) => systemPrompt(base ?? ""),
-        additionalExtensionPaths,
-        noSkills: true,
-      });
-      await resourceLoader.reload();
-
       let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
       ({ session } = await createAgentSession({
         cwd: resolvedWorkspace,
@@ -402,11 +391,13 @@ export async function compactEmbeddedPiSessionDirect(
         modelRegistry,
         model,
         thinkingLevel: mapThinkingLevel(params.thinkLevel),
+        systemPrompt: (base: string) => systemPrompt(base ?? ""),
         tools: builtInTools,
         customTools,
         sessionManager,
         settingsManager,
-        resourceLoader,
+        additionalExtensionPaths,
+        skills: [],
       }));
 
       try {
