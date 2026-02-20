@@ -40,7 +40,7 @@ import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import { acquireGoalOpLock, forceReleaseGoalOpLock, isGoalOpLocked } from "../goal/goal-lock.js";
+import { acquireGoalOpLock, forceReleaseGoalOpLock } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
 import type {
   ManualTestSuggestion,
@@ -476,15 +476,6 @@ export async function withChatAction<T>(params: {
   } finally {
     loop.stop();
   }
-}
-
-// ---------------------------------------------------------------------------
-// File-based lock helpers (survive gateway restarts)
-// ---------------------------------------------------------------------------
-
-/** Read-only check: return the label of an in-flight goal op, or undefined. */
-export function getGoalLockLabel(runId: string): string | undefined {
-  return isGoalOpLocked(runId).label;
 }
 
 // ---------------------------------------------------------------------------
@@ -2499,8 +2490,8 @@ export function registerTelegramGoalCommands({
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
 
-    // --- Plan buttons: ga/gA/gD/gr/ge:<runIdPrefix>:<revision> ---
-    const planMatch = /^(ga|gA|gD|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
+    // --- Plan buttons: ga/gD/gr/ge:<runIdPrefix>:<revision> ---
+    const planMatch = /^(ga|gD|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
     if (planMatch) {
       await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
       const [, action, runIdPrefix] = planMatch;
@@ -2514,7 +2505,7 @@ export function registerTelegramGoalCommands({
       // (Plan detail should not set a reaction.)
       if (messageId && action !== "gD") {
         const emoji: ReactionTypeEmoji["emoji"] =
-          action === "ga" || action === "gA"
+          action === "ga"
             ? "\u2764" // ❤ for approve
             : action === "gr"
               ? "\uD83D\uDC4E" // 👎 for reject
@@ -2567,7 +2558,7 @@ export function registerTelegramGoalCommands({
         return;
       }
 
-      if (action === "ga" || action === "gA") {
+      if (action === "ga") {
         await startGoalResume({
           rawId: resolvedId,
           chatId,
