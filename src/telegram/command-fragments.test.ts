@@ -475,7 +475,8 @@ describe("command-fragments", () => {
   });
 
   describe("integration", () => {
-    it("short /new_goal (500-char full message) is not buffered", async () => {
+    it("buffers short /new_goal and appends immediate continuation fragments", async () => {
+      vi.useFakeTimers();
       const { createTelegramBot } = await import("./bot.js");
       createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
 
@@ -492,14 +493,7 @@ describe("command-fragments", () => {
         }),
       });
 
-      await waitForAssertion(() => {
-        expect(goalCommandMock).toHaveBeenCalledTimes(1);
-      });
-      expect(goalCommandMock.mock.calls[0]?.[0]).toEqual(
-        expect.objectContaining({
-          goal: shortPrompt,
-        }),
-      );
+      expect(goalCommandMock).not.toHaveBeenCalled();
 
       await messageHandler({
         message: makeTelegramMessage({
@@ -510,14 +504,65 @@ describe("command-fragments", () => {
         getFile: async () => ({}),
       });
 
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
       await waitForAssertion(() => {
-        expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+        expect(goalCommandMock).toHaveBeenCalledTimes(1);
       });
-      expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+      expect(goalCommandMock.mock.calls[0]?.[0]).toEqual(
         expect.objectContaining({
-          prompt: "continuation text",
+          goal: `${shortPrompt}continuation text`,
         }),
       );
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+    });
+
+    it("buffers /new_goal when the first chunk is around 2k chars", async () => {
+      vi.useFakeTimers();
+      const { createTelegramBot } = await import("./bot.js");
+      createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
+
+      const messageHandler = getOnHandler("message");
+      const newGoalHandler = getCommandHandler("new_goal");
+
+      const part1 = "A".repeat(2117);
+      const part2 = "B".repeat(2200);
+      expect(`/new_goal ${part1}`.length).toBe(2127);
+
+      await newGoalHandler({
+        match: part1,
+        message: makeTelegramMessage({
+          messageId: 70,
+          text: `/new_goal ${part1}`,
+        }),
+      });
+
+      expect(goalCommandMock).not.toHaveBeenCalled();
+
+      await messageHandler({
+        message: makeTelegramMessage({
+          messageId: 71,
+          text: part2,
+        }),
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+      await waitForAssertion(() => {
+        expect(goalCommandMock).toHaveBeenCalledTimes(1);
+      });
+      expect(goalCommandMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          goal: part1 + part2,
+        }),
+      );
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
     });
 
     it("buffers /new_goal when prompt is 3894 chars but full message is 3904", async () => {
@@ -700,6 +745,51 @@ describe("command-fragments", () => {
           String(call[1]).includes("Repo chat is disabled. Enable it with /chat_backend codex"),
         ),
       ).toBe(true);
+    });
+
+    it("combines split /repo_chat when the first chunk is short", async () => {
+      vi.useFakeTimers();
+      const { createTelegramBot } = await import("./bot.js");
+      createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
+
+      const messageHandler = getOnHandler("message");
+      const repoChatHandler = getCommandHandler("repo_chat");
+
+      const part1 = "T".repeat(300);
+      const part2 = "U".repeat(2500);
+      expect(`/repo_chat ${part1}`.length).toBe(311);
+
+      await repoChatHandler({
+        match: part1,
+        message: makeTelegramMessage({
+          messageId: 400,
+          text: `/repo_chat ${part1}`,
+        }),
+      });
+
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
+      await messageHandler({
+        message: makeTelegramMessage({
+          messageId: 401,
+          text: part2,
+        }),
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+      await waitForAssertion(() => {
+        expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+      });
+      expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          prompt: part1 + part2,
+        }),
+      );
     });
   });
 });

@@ -1,9 +1,6 @@
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 import type { TelegramMessage } from "./bot/types.js";
 
-// Telegram splits at 4096 chars, but command prefixes reduce ctx.match length.
-// Start buffering earlier so split command chunks are still combined reliably.
-export const COMMAND_FRAGMENT_START_THRESHOLD = 3800;
 // Wait up to 3s for the next chunk. Telegram delivery can exceed 1500ms
 // when bot replies cause message ID interleaving.
 export const COMMAND_FRAGMENT_MAX_GAP_MS = 3000;

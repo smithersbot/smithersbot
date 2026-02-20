@@ -59,7 +59,6 @@ import { resolveUserPath, shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 import {
   buildCommandFragmentKey,
-  COMMAND_FRAGMENT_START_THRESHOLD,
   type CommandFragmentBuffer,
   normalizeCommandFragmentParams,
 } from "./command-fragments.js";
@@ -2803,11 +2802,7 @@ export function registerTelegramGoalCommands({
     };
 
     const msg = ctx.message;
-    if (
-      msg &&
-      commandFragmentBuffer &&
-      (msg.text ?? "").length >= COMMAND_FRAGMENT_START_THRESHOLD
-    ) {
+    if (msg && commandFragmentBuffer && text) {
       const normalized = normalizeCommandFragmentParams(msg, accountId);
       const key = buildCommandFragmentKey(normalized);
       if (commandFragmentBuffer.hasPending(key)) {
