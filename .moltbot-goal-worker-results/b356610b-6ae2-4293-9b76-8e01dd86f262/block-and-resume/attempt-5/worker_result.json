@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Fixed src/goal/__e2e-resume-test2.ts to export const resumed = true; so the prior build-gate type error is resolved." }
