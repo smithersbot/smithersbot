@@ -2599,6 +2599,7 @@ export function registerTelegramGoalCommands({
           runtime,
           rawId: resolvedId,
           threadId,
+          replyToMessageId: messageId,
         });
       } else if (action === "gr") {
         const reply = await handleGoalReject(resolvedId);
@@ -2762,7 +2763,7 @@ export function registerTelegramGoalCommands({
 
       if (action === "gStop") {
         const reply = await handleGoalStop(resolvedId);
-        await sendGoalReply(bot, chatId, reply, runtime, threadId);
+        await sendGoalReply(bot, chatId, reply, runtime, threadId, messageId);
       } else {
         await startGoalResume({
           rawId: resolvedId,
@@ -2940,6 +2941,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_plan_autocheck", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
 
     const rawMode = ctx.match?.trim() ?? "";
     if (!rawMode) {
@@ -2950,6 +2952,7 @@ export function registerTelegramGoalCommands({
         `Goal plan autocheck mode: \`${currentMode}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}`,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2963,6 +2966,7 @@ export function registerTelegramGoalCommands({
         `Invalid mode: \`${rawMode}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}\nCurrent: \`${currentMode}\``,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2974,6 +2978,7 @@ export function registerTelegramGoalCommands({
         "Config writes are disabled for this Telegram account.",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2990,7 +2995,14 @@ export function registerTelegramGoalCommands({
       nextMode === "off"
         ? "Goal plan autocheck disabled."
         : `Goal plan autocheck set to \`${nextMode}\`.`;
-    await sendGoalReply(bot, resolved.chatId, confirmation, runtime, resolved.threadIdForSend);
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      confirmation,
+      runtime,
+      resolved.threadIdForSend,
+      replyToMessageId,
+    );
   });
 
   // /goal_approve <runId>
@@ -3062,6 +3074,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_edit", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const raw = ctx.match?.trim() ?? "";
     const spaceIdx = raw.indexOf(" ");
     if (spaceIdx === -1) {
@@ -3071,6 +3084,7 @@ export function registerTelegramGoalCommands({
         "Usage: /goal_edit <runId> <edit instructions>",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -3084,6 +3098,7 @@ export function registerTelegramGoalCommands({
         `Run not found: ${editRunIdRaw}`,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -3095,6 +3110,7 @@ export function registerTelegramGoalCommands({
         `Goal \`${editRunId.slice(0, 8)}\` is already being processed (${editLock.existingLabel ?? "unknown"}).`,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -3104,14 +3120,22 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_edit",
+      replyToMessageId,
       releaseGoalLock: editLock.release,
       fn: () => handleGoalEdit(editRunIdRaw, instructions, cfg),
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {
-          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+          await sendGoalReply(
+            bot,
+            resolved.chatId,
+            result,
+            runtime,
+            resolved.threadIdForSend,
+            replyToMessageId,
+          );
         } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
         }
       },
     });
@@ -3286,7 +3310,14 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const reply = await handleGoalList();
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      reply,
+      runtime,
+      resolved.threadIdForSend,
+      ctx.message?.message_id,
+    );
   });
 
   // /goal_stop <runId>
@@ -3294,6 +3325,13 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const reply = await handleGoalStop(ctx.match?.trim() ?? "");
-    await sendGoalReply(bot, resolved.chatId, reply, runtime, resolved.threadIdForSend);
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      reply,
+      runtime,
+      resolved.threadIdForSend,
+      ctx.message?.message_id,
+    );
   });
 }

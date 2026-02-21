@@ -47,6 +47,11 @@ vi.mock("../commands/goal-answer.js", () => ({
   goalAnswerCommand: (...args: unknown[]) => mockGoalAnswerCommand(...args),
 }));
 
+const mockGoalStopCommand = vi.fn();
+vi.mock("../commands/goal-stop.js", () => ({
+  goalStopCommand: (...args: unknown[]) => mockGoalStopCommand(...args),
+}));
+
 // goal-list.js no longer imported by goal-commands (Telegram uses listRuns directly)
 
 const mockRunCliPlanRevision = vi.fn();
@@ -2918,6 +2923,13 @@ describe("goal-commands telegram adapter", () => {
       };
     }
 
+    function lastReplyMessageId(sendMessage: ReturnType<typeof vi.fn>): number | undefined {
+      const options = sendMessage.mock.calls.at(-1)?.[2] as
+        | { reply_parameters?: { message_id?: number } }
+        | undefined;
+      return options?.reply_parameters?.message_id;
+    }
+
     it("shows current autocheck mode when no argument is provided", async () => {
       const harness = makeCommandHarness({ goal: { planAutocheck: "codex" } });
       await harness.register();
@@ -2928,6 +2940,7 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Goal plan autocheck mode:");
       expect(sentText).toContain("codex");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
     });
 
@@ -2952,6 +2965,7 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Goal plan autocheck set to");
       expect(sentText).toContain("claude_code");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
     });
 
     it("rejects invalid autocheck mode input", async () => {
@@ -2964,6 +2978,7 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Invalid mode");
       expect(sentText).toContain("goal_plan_autocheck");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
     });
 
     it("blocks mode changes when config writes are disabled", async () => {
@@ -2976,6 +2991,7 @@ describe("goal-commands telegram adapter", () => {
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Config writes are disabled");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
     });
   });
 
@@ -3279,6 +3295,7 @@ describe("goal-commands telegram adapter", () => {
       commandHandlers: Record<string, (ctx: unknown) => Promise<void>>;
       callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
       sendMessage: ReturnType<typeof vi.fn>;
+      sendPhoto: ReturnType<typeof vi.fn>;
       register: () => Promise<void>;
     } {
       const commandHandlers: Record<string, (ctx: unknown) => Promise<void>> = {};
@@ -3286,10 +3303,11 @@ describe("goal-commands telegram adapter", () => {
         | ((ctx: unknown, next?: () => Promise<void>) => Promise<void>)
         | undefined;
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 600 });
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 601 });
       const bot = {
         api: {
           sendMessage,
-          sendPhoto: vi.fn().mockResolvedValue({ message_id: 601 }),
+          sendPhoto,
           sendChatAction: vi.fn().mockResolvedValue(true),
           answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
           setMessageReaction: vi.fn().mockResolvedValue(true),
@@ -3350,6 +3368,7 @@ describe("goal-commands telegram adapter", () => {
           return callbackHandler;
         },
         sendMessage,
+        sendPhoto,
         register,
       };
     }
@@ -3574,6 +3593,113 @@ describe("goal-commands telegram adapter", () => {
           (call) => String(call[1]).includes("Plan rejected") && hasReplyMessageId(call, 903),
         ),
       ).toBe(true);
+    });
+
+    it("threads replies for gD callback detail responses", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "awaiting_approval" }));
+      mockGoalDetailCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run detail");
+        },
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gD:abcdef12:1", 904));
+
+      const hasPhotoReply = harness.sendPhoto.mock.calls.some((call) => {
+        const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
+        return options?.reply_parameters?.message_id === 904;
+      });
+      expect(hasPhotoReply).toBe(true);
+    });
+
+    it("threads replies for gStop callback responses", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "blocked" }));
+      mockGoalStopCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Goal stopped.");
+        },
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gStop:abcdef12", 905));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Goal stopped.") && hasReplyMessageId(call, 905),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_list responses", async () => {
+      saveRunFixture(makeRun({ runId: "abcdef12-3456-7890-abcd-ef1234567890" }));
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_list?.(makeCommandCtx("", 906));
+
+      expect(harness.sendMessage.mock.calls.some((call) => hasReplyMessageId(call, 906))).toBe(
+        true,
+      );
+    });
+
+    it("threads replies for /goal_stop usage responses", async () => {
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_stop?.(makeCommandCtx("", 907));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Usage: /goal_stop") && hasReplyMessageId(call, 907),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_edit usage responses", async () => {
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_edit?.(makeCommandCtx("abcdef12", 908));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Usage: /goal_edit") && hasReplyMessageId(call, 908),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_edit background preface and result", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "done" }));
+      const harness = makeHarness();
+      await harness.register();
+      const { PLANNING_PREFACE } = await import("./goal-commands.js");
+
+      await harness.commandHandlers.goal_edit?.(makeCommandCtx("abcdef12 revise plan", 909));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => call[1] === PLANNING_PREFACE && hasReplyMessageId(call, 909),
+          ),
+        ).toBe(true);
+      });
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) =>
+              String(call[1]).includes("Cannot edit: run is in") && hasReplyMessageId(call, 909),
+          ),
+        ).toBe(true);
+      });
     });
   });
 
