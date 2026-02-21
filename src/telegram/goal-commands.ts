@@ -314,9 +314,18 @@ function buildGoalInlineKeyboard(runIdPrefix: string, revision: number) {
   ]);
 }
 
-/** Inline keyboard for blocked/failed goal messages: Resume + Stop. */
+function resolveBlockedRequiredInputKey(run: SerializedRun): string | undefined {
+  if (run.blocked?.requiredInputKey?.trim()) {
+    return run.blocked.requiredInputKey;
+  }
+  const firstBlockedStep = run.plan?.steps.find((step) => step.status === "blocked");
+  return firstBlockedStep ? `task:${firstBlockedStep.id}:input` : undefined;
+}
+
+/** Inline keyboard for blocked/failed goal messages: Add Details + Resume + Stop. */
 function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
   return buildInlineKeyboard([
+    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
     [
       { text: "\u25B6\uFE0F Resume Goal", callback_data: `gResume:${runIdPrefix}` },
       { text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` },
@@ -324,9 +333,10 @@ function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
   ]);
 }
 
-/** Inline keyboard for task-blocked goal messages: Stop only. */
+/** Inline keyboard for task-blocked goal messages: Add Details + Stop. */
 function buildTaskBlockedInlineKeyboard(runIdPrefix: string) {
   return buildInlineKeyboard([
+    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
     [{ text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` }],
   ]);
 }
@@ -2270,8 +2280,6 @@ export function buildOnStatusChange(params: {
           }
           if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
         }
-        lines.push("");
-        lines.push(`**Next:** /goal_answer ${prefix} <your answer>`);
         const sentId = await sendDagPng({
           bot,
           chatId,
@@ -2649,6 +2657,60 @@ export function registerTelegramGoalCommands({
           chatId,
           messageId: sent.message_id,
           threadId,
+        });
+      }
+      return;
+    }
+
+    // --- Blocked message detail button: gAD:<runIdPrefix> ---
+    const blockedDetailsMatch = /^gAD:([a-f0-9-]+)$/.exec(data);
+    if (blockedDetailsMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      const [, runIdPrefix] = blockedDetailsMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+        return;
+      }
+
+      const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+      const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
+      const sent = await bot.api
+        .sendMessage(chatId, "Reply to the blocked message with unblocking details.", {
+          ...threadParams,
+          ...replyParams,
+          reply_markup: {
+            force_reply: true,
+            input_field_placeholder: "Describe your answer...",
+          },
+        })
+        .catch(() => undefined);
+      if (sent?.message_id) {
+        persistTelegramQuestionMessage({
+          runId: resolvedId,
+          chatId,
+          messageId: sent.message_id,
+          threadId,
+          requiredInputKey: resolveBlockedRequiredInputKey(run),
         });
       }
       return;

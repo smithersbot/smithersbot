@@ -1030,7 +1030,7 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("Note: Manual test generation failed.");
     });
 
-    it("sends step_blocked updates with bold caption and stop-only keyboard", async () => {
+    it("sends step_blocked updates with bold caption and add-details+stop keyboard", async () => {
       saveRunFixture(makeRun());
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 40 });
@@ -1084,14 +1084,16 @@ describe("goal-commands telegram adapter", () => {
         "<b>Next:</b> I will continue to complete tasks that aren't dependant on this blocked task.",
       );
       expect(options.reply_markup?.inline_keyboard).toEqual([
+        [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
         [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],
       ]);
+      expect(options.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toMatch(/^gAD:/);
       const buttonTexts =
         options.reply_markup?.inline_keyboard?.flat().map((button) => button.text) ?? [];
       expect(buttonTexts).not.toContain("▶️ Resume Goal");
     });
 
-    it("sends fully_blocked updates with bold caption and resume+stop keyboard", async () => {
+    it("sends fully_blocked updates with bold caption and add-details+resume+stop keyboard", async () => {
       saveRunFixture(makeRun());
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 42 });
@@ -1124,13 +1126,15 @@ describe("goal-commands telegram adapter", () => {
         reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
       };
       expect(options.caption).toContain("<b>GOAL BLOCKED</b> (test-run): no runnable steps");
-      expect(options.caption).toContain("<b>Next:</b> /goal_answer");
+      expect(options.caption).not.toContain("Next:");
       expect(options.reply_markup?.inline_keyboard).toEqual([
+        [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
         [
           { text: "▶️ Resume Goal", callback_data: "gResume:test-run" },
           { text: "⏹️ Stop Goal", callback_data: "gStop:test-run" },
         ],
       ]);
+      expect(options.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toMatch(/^gAD:/);
     });
 
     it.each([
@@ -3185,6 +3189,62 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         messageId: 777,
         threadId: undefined,
+      });
+    });
+
+    it("routes gAD callback to force-reply prompt and persists question tracking", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need credentials",
+            requiredInputKey: "task:1:input",
+          },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedQuestion: "Need a value",
+              },
+            ],
+          },
+        }),
+      );
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockResolvedValue({ message_id: 779 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gAD:abcdef12", 502));
+
+      expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      expect(harness.sendMessage).toHaveBeenCalledWith(
+        42,
+        "Reply to the blocked message with unblocking details.",
+        expect.objectContaining({
+          reply_parameters: { message_id: 502 },
+          reply_markup: expect.objectContaining({
+            force_reply: true,
+            input_field_placeholder: "Describe your answer...",
+          }),
+        }),
+      );
+      const run = loadRun(runId, testGoalsDir);
+      expect(run?.telegramQuestionMessages?.[0]).toEqual({
+        chatId: 42,
+        messageId: 779,
+        threadId: undefined,
+        requiredInputKey: "task:1:input",
       });
     });
 
