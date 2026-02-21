@@ -183,9 +183,10 @@ function commitPlanRevision(params: {
   run: SerializedRun;
   revisedPlan: Plan;
   editInstructions: string;
+  source?: "user" | "autocheck";
   previousPlan?: Plan;
 }): number {
-  const { run, revisedPlan, editInstructions } = params;
+  const { run, revisedPlan, editInstructions, source } = params;
   const oldRevision = run.planRevision ?? 1;
   const newRevision = oldRevision + 1;
   const history = run.planHistory ?? [];
@@ -193,6 +194,7 @@ function commitPlanRevision(params: {
     revision: oldRevision,
     plan: params.previousPlan ?? run.plan ?? revisedPlan,
     editInstructions,
+    source,
   });
 
   run.plan = revisedPlan;
@@ -236,6 +238,7 @@ async function runGoalPlanAutocheck(params: {
         run: latestRun,
         revisedPlan,
         editInstructions,
+        source: "autocheck",
         previousPlan,
       });
       if (latestRun.workingDir !== workingDirBeforeRevision) {
@@ -1280,6 +1283,7 @@ export async function handleGoalFeedback(
       run,
       revisedPlan: mergedPlan,
       editInstructions: `Incorporate feedback: ${trimmedFeedback}`,
+      source: "user",
       previousPlan: currentPlan,
     });
     if (run.workingDir !== currentPlan.workingDir) {
@@ -1516,6 +1520,7 @@ export async function handleGoalEdit(
       run,
       revisedPlan: result,
       editInstructions: trimmedInstructions,
+      source: "user",
       previousPlan: run.plan,
     });
     if (run.workingDir !== workingDirBeforeRevision) {

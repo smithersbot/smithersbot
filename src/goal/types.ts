@@ -193,7 +193,12 @@ export type SerializedRun = {
   /** Currently active plan revision number. */
   activePlanRevision?: number;
   /** History of previous plans (append-only). */
-  planHistory?: Array<{ revision: number; plan: Plan; editInstructions?: string }>;
+  planHistory?: Array<{
+    revision: number;
+    plan: Plan;
+    editInstructions?: string;
+    source?: "user" | "autocheck";
+  }>;
   /** Number of autocheck-driven replans applied before user review. */
   autocheckRounds?: number;
   /** Configured cap for autocheck rounds. */

@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Added optional source tracking to planHistory entries, updated commitPlanRevision to accept/persist source, tagged autocheck revision commits as source: 'autocheck' and user-driven feedback/edit revisions as source: 'user', and verified with pnpm build (passes)."
+}
