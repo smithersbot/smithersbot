@@ -2,9 +2,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { TaskCheckpoint } from "./types.js";
+import { isRepoPrivate } from "./git-privacy.js";
 
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
+export type GitPullRequestResult = { ok: true; prUrl: string } | { ok: false; error: string };
 
 const INITIAL_WORKING_DIR_GITIGNORE = `venv/
 .venv/
@@ -176,6 +178,78 @@ export function ensureRunBranch(cwd: string, runId: string): GitResult {
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
   return getHeadSha(cwd);
+}
+
+export function pushRunBranch(cwd: string, runId: string, remote = "origin"): GitResult {
+  if (!canRunGit()) return { success: false, error: "git not available" };
+  if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
+
+  try {
+    if (!isRepoPrivate(cwd)) {
+      return { success: false, error: "Repository is not private; refusing to push run branch" };
+    }
+  } catch (e) {
+    return { success: false, error: `Failed to verify repo privacy: ${describeGitError(e)}` };
+  }
+
+  try {
+    execFileSync("git", ["-C", cwd, "push", "-u", remote, `claw/run/${runId}`], {
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+  } catch (e) {
+    return { success: false, error: describeGitError(e) };
+  }
+
+  return getHeadSha(cwd);
+}
+
+export function createRunPullRequest(
+  cwd: string,
+  runId: string,
+  goalTitle: string,
+  baseBranch = "main",
+): GitPullRequestResult {
+  const title = goalTitle.trim() || `Goal run ${runId}`;
+  const body = [
+    "Automated goal run artifact PR created by Moltbot.",
+    "",
+    `Run branch: claw/run/${runId}`,
+  ].join("\n");
+
+  try {
+    const output = execFileSync(
+      "gh",
+      [
+        "pr",
+        "create",
+        "--head",
+        `claw/run/${runId}`,
+        "--base",
+        baseBranch,
+        "--title",
+        title,
+        "--body",
+        body,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 60_000,
+      },
+    ).trim();
+    const prUrl = output
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => /^https:\/\/github\.com\/.+\/pull\/\d+/.test(line));
+
+    if (!prUrl) {
+      return { ok: false, error: `gh pr create did not return a PR URL: ${output}` };
+    }
+
+    return { ok: true, prUrl };
+  } catch (e) {
+    return { ok: false, error: describeGitError(e) };
+  }
 }
 
 export function autosaveIfDirty(cwd: string, message: string): GitCommitResult {

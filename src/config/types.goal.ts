@@ -1,6 +1,17 @@
 export type ClaudeCodeAuthMode = "subscription" | "api_key";
 export type PlanAutocheckMode = "codex" | "claude_code" | "off";
 
+export type GitHubPushConfig = {
+  /** Enable pushing run branches to GitHub after goal completion. Default: false. */
+  enabled?: boolean;
+  /** Create a pull request after push. Default: true. */
+  createPr?: boolean;
+  /** Git remote name to push to. Default: "origin". */
+  remote?: string;
+  /** Base branch for PR creation. Default: "main". */
+  baseBranch?: string;
+};
+
 export type GoalConfig = {
   /** Default working directory when --working-dir is not specified. */
   defaultWorkingDir?: string;
@@ -14,4 +25,6 @@ export type GoalConfig = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Auto-review backend for plans before sending them to users. */
   planAutocheck?: PlanAutocheckMode;
+  /** GitHub push integration for completed goal runs. */
+  githubPush?: GitHubPushConfig;
 };
