@@ -23,6 +23,7 @@ import {
   SCOUT_REPORT_FILE,
   type ScoutResult,
 } from "../goal/scout.js";
+import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { GoalOutcome, OutputFormat, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -32,6 +33,7 @@ export type GoalResumeOptions = {
   output?: OutputFormat;
   quiet?: boolean;
   replan?: boolean;
+  config?: MoltbotConfig;
   /** Allow /goal feedback flow to resume a run even if persisted state is done. */
   allowDoneStateResume?: boolean;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
@@ -589,6 +591,7 @@ export async function goalResumeCommand(
     session,
     runId: savedRunId,
     workingDir,
+    config: opts.config,
     model,
     maxTurnsPerTask: 5,
     timeoutMs: 300_000,

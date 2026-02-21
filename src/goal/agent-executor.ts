@@ -20,12 +20,15 @@ import { HARD_DENIES } from "./hard-deny.js";
 import {
   autosaveIfDirty,
   canRunGit,
+  createRunPullRequest,
   ensureRunBranch,
   finalizeTaskCheckpoint,
   isGitRepo,
   isWorkingTreeClean,
+  pushRunBranch,
   startTaskCheckpoint,
 } from "./git-checkpoint.js";
+import { isRepoPrivate } from "./git-privacy.js";
 import {
   orderStepsCriticalPathFirst,
   computeCriticalPathScores,
@@ -86,6 +89,7 @@ export type GoalStatusChangeEvent =
       type: "all_done";
       steps: PlanStep[];
       summary: string;
+      prUrl?: string;
       manualTests?: ManualTestSuggestion[];
       manualTestsError?: string;
     };
@@ -856,6 +860,45 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const allDone = orderedSteps.every((s) => s.status === "done");
   if (allDone) {
     session.state = "done";
+    let prUrl: string | undefined;
+    const githubPushConfig = config?.goal?.githubPush;
+    if (gitCheckpointConfig?.enabled && githubPushConfig?.enabled) {
+      let isPrivateRepo = false;
+      try {
+        isPrivateRepo = isRepoPrivate(workingDir);
+      } catch (error) {
+        onProgress?.(
+          `  [warn] GitHub push skipped: failed to verify repository privacy (${formatExecError(error)})`,
+        );
+      }
+
+      if (!isPrivateRepo) {
+        onProgress?.("  [warn] GitHub push skipped: working repository is not private.");
+      } else {
+        const remote = githubPushConfig.remote ?? "origin";
+        const pushResult = pushRunBranch(workingDir, runId, remote);
+        if (!pushResult.success) {
+          onProgress?.(`  [warn] GitHub push failed: ${pushResult.error}`);
+        } else {
+          onProgress?.(`  [git] Run branch pushed to ${remote} (${pushResult.sha.slice(0, 7)})`);
+          if (githubPushConfig.createPr ?? true) {
+            const baseBranch = githubPushConfig.baseBranch ?? "main";
+            const pullRequestResult = createRunPullRequest(
+              workingDir,
+              runId,
+              session.goal,
+              baseBranch,
+            );
+            if (pullRequestResult.ok) {
+              prUrl = pullRequestResult.prUrl;
+              onProgress?.(`  [git] Pull request created: ${pullRequestResult.prUrl}`);
+            } else {
+              onProgress?.(`  [warn] GitHub PR creation failed: ${pullRequestResult.error}`);
+            }
+          }
+        }
+      }
+    }
     let manualTests: ManualTestSuggestion[] | undefined;
     let manualTestsError: string | undefined;
     try {
@@ -883,6 +926,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         type: "all_done",
         steps: [...orderedSteps],
         summary,
+        ...(prUrl ? { prUrl } : {}),
         ...(manualTests !== undefined ? { manualTests } : {}),
         ...(manualTestsError ? { manualTestsError } : {}),
       });

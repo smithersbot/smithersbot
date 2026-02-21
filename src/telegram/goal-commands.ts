@@ -858,6 +858,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
 export async function handleGoalApprove(
   rawId: string,
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+  config?: MoltbotConfig,
 ): Promise<string | GoalPlanResult | undefined> {
   if (!rawId.trim()) {
     return "Usage: /goal_approve <runId>";
@@ -880,7 +881,12 @@ export async function handleGoalApprove(
   try {
     const outcome = await goalResumeCommand(
       resolvedId,
-      { yes: true, quiet: true, onStatusChange: trackedStatus.onStatusChange },
+      {
+        yes: true,
+        quiet: true,
+        config,
+        onStatusChange: trackedStatus.onStatusChange,
+      },
       cap.runtime,
     );
 
@@ -1051,6 +1057,7 @@ export async function handleGoalAnswer(
   rawId: string,
   value: string,
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>,
+  config?: MoltbotConfig,
 ): Promise<GoalPlanResult | string | undefined> {
   if (!rawId.trim() || !value) {
     return "Usage: /goal_answer <runId> <value>";
@@ -1070,7 +1077,12 @@ export async function handleGoalAnswer(
     try {
       const outcome = await goalResumeCommand(
         resolvedId,
-        { yes: true, quiet: true, onStatusChange: trackedStatus.onStatusChange },
+        {
+          yes: true,
+          quiet: true,
+          config,
+          onStatusChange: trackedStatus.onStatusChange,
+        },
         cap.runtime,
       );
 
@@ -1102,7 +1114,7 @@ export async function handleGoalAnswer(
       normalizedValue === "resume" &&
       (run.state === "awaiting_approval" || run.state === "cancelled")
     ) {
-      return handleGoalApprove(resolvedId, onStatusChange);
+      return handleGoalApprove(resolvedId, onStatusChange, config);
     }
     const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
     return `Run is not awaiting input (state: ${run.state}).${suffix}`;
@@ -1123,7 +1135,7 @@ export async function handleGoalAnswer(
       const answerErrors = cap.getErrors();
       if (answerErrors) return answerErrors;
 
-      const outcome = await goalResumeCommand(resolvedId, { quiet: true }, cap.runtime);
+      const outcome = await goalResumeCommand(resolvedId, { quiet: true, config }, cap.runtime);
       const errors = cap.getErrors();
       if (errors) return errors;
 
@@ -1352,6 +1364,7 @@ export async function handleGoalFeedback(
       {
         yes: true,
         quiet: true,
+        config,
         allowDoneStateResume: true,
         onStatusChange: trackedStatus.onStatusChange,
       },
@@ -2339,10 +2352,13 @@ export function buildOnStatusChange(params: {
     } else if (event.type === "all_done") {
       try {
         persistManualTests(runId, event.manualTests, event.manualTestsError);
-        const caption = appendManualTestGenerationFailureNotice(
+        const baseCaption = appendManualTestGenerationFailureNotice(
           event.summary,
           event.manualTestsError,
         );
+        const caption = event.prUrl
+          ? `${baseCaption}\n\n📎 Review on GitHub: ${event.prUrl}`
+          : baseCaption;
         const sentId = await sendDagPng({
           bot,
           chatId,
@@ -2503,7 +2519,7 @@ export function registerTelegramGoalCommands({
       preface: getGoalExecutionPreface(run.state),
       replyToMessageId,
       releaseGoalLock: lockResult.release,
-      fn: () => handleGoalApprove(rawId, statusCb),
+      fn: () => handleGoalApprove(rawId, statusCb, cfg),
       onResult: async (reply) =>
         sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
     });
@@ -2849,7 +2865,7 @@ export function registerTelegramGoalCommands({
         preface: getGoalExecutionPreface(run.state),
         replyToMessageId: messageId,
         releaseGoalLock: lockResult.release,
-        fn: () => handleGoalApprove(run.runId, statusCb),
+        fn: () => handleGoalApprove(run.runId, statusCb, cfg),
         onResult: async (reply) =>
           sendGoalBackgroundResult(
             { bot, chatId, runtime, threadId, replyToMessageId: messageId },
@@ -3225,7 +3241,7 @@ export function registerTelegramGoalCommands({
       runtime,
       label: "goal_answer",
       releaseGoalLock: answerLock.release,
-      fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb),
+      fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb, cfg),
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {

@@ -338,6 +338,7 @@ export async function goalCommand(
       session,
       runId,
       workingDir,
+      config: opts.config,
       model: opts.model,
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,
