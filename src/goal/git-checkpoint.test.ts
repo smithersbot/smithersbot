@@ -107,12 +107,26 @@ describeGit("git-checkpoint", () => {
     expect(fs.existsSync(workingDir)).toBe(true);
     expect(isGitRepo(workingDir)).toBe(true);
     expect(fs.existsSync(path.join(workingDir, ".gitkeep"))).toBe(true);
+    const gitignorePath = path.join(workingDir, ".gitignore");
+    expect(fs.existsSync(gitignorePath)).toBe(true);
+    expect(fs.readFileSync(gitignorePath, "utf8")).toBe(
+      "venv/\n.venv/\nnode_modules/\n__pycache__/\n.pytest_cache/\n.tox/\n.mypy_cache/\n",
+    );
 
     const head = execSync("git rev-parse HEAD", {
       cwd: workingDir,
       encoding: "utf8",
     }).trim();
     expect(head).toHaveLength(40);
+
+    const filesInHead = execSync("git ls-tree --name-only -r HEAD", {
+      cwd: workingDir,
+      encoding: "utf8",
+    })
+      .trim()
+      .split("\n");
+    expect(filesInHead).toContain(".gitkeep");
+    expect(filesInHead).toContain(".gitignore");
   });
 
   it("autosaveIfDirty does not fail when only submodule content is dirty", () => {

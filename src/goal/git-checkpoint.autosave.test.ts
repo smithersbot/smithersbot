@@ -79,4 +79,38 @@ describe("git-checkpoint autosave", () => {
       expect(result.error).toContain("unable to auto-detect email address");
     }
   });
+
+  it("falls back to git add -u when git add -A times out", async () => {
+    const dir = makeRepoDir();
+    dirs.push(dir);
+    const seenGitArgs: string[][] = [];
+
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      if (command !== "git") throw new Error(`Unexpected command: ${String(command)}`);
+      const argv = Array.isArray(args) ? (args as string[]) : [];
+      seenGitArgs.push(argv);
+      if (argv[0] === "--version") return "git version 2.34.1";
+      if (argv[2] === "status") return " M README.md\n";
+      if (argv[2] === "add" && argv[3] === "-A") {
+        const err = new Error("spawnSync git ETIMEDOUT") as Error & { code?: string };
+        err.code = "ETIMEDOUT";
+        throw err;
+      }
+      if (argv[2] === "add" && argv[3] === "-u") return "";
+      if (argv[2] === "commit") return "";
+      if (argv[2] === "rev-parse") return "1234567890123456789012345678901234567890\n";
+      throw new Error(`Unexpected git args: ${argv.join(" ")}`);
+    });
+
+    const { autosaveIfDirty } = await import("./git-checkpoint.js");
+    const result = autosaveIfDirty(dir, "claw: autosave");
+
+    expect(result).toEqual({
+      success: true,
+      sha: "1234567890123456789012345678901234567890",
+    });
+
+    const addModes = seenGitArgs.filter((argv) => argv[2] === "add").map((argv) => argv[3]);
+    expect(addModes).toEqual(["-A", "-u"]);
+  });
 });

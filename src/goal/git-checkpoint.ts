@@ -6,6 +6,15 @@ import type { TaskCheckpoint } from "./types.js";
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
 
+const INITIAL_WORKING_DIR_GITIGNORE = `venv/
+.venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+.tox/
+.mypy_cache/
+`;
+
 function describeGitError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const stderr = (error as { stderr?: Buffer | string }).stderr;
@@ -94,7 +103,11 @@ export function ensureWorkingDir(cwd: string): void {
   if (!fs.existsSync(gitkeepPath)) {
     fs.writeFileSync(gitkeepPath, "");
   }
-  execFileSync("git", ["-C", cwd, "add", ".gitkeep"], {
+  const gitignorePath = path.join(cwd, ".gitignore");
+  if (!fs.existsSync(gitignorePath)) {
+    fs.writeFileSync(gitignorePath, INITIAL_WORKING_DIR_GITIGNORE);
+  }
+  execFileSync("git", ["-C", cwd, "add", ".gitkeep", ".gitignore"], {
     encoding: "utf8",
     timeout: 10000,
   });
@@ -206,12 +219,24 @@ function buildTaskCommitMessage(taskId: string, summary?: string): string {
   return `claw: ${taskId}${suffix}`;
 }
 
+function isTimeoutError(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null ? (error as { code?: string }).code : undefined;
+  if (code === "ETIMEDOUT") return true;
+  return describeGitError(error).includes("ETIMEDOUT");
+}
+
 function commitAll(cwd: string, message: string): GitCommitResult {
   try {
-    execFileSync("git", ["-C", cwd, "add", "-A"], { encoding: "utf8", timeout: 10000 });
+    try {
+      execFileSync("git", ["-C", cwd, "add", "-A"], { encoding: "utf8", timeout: 60000 });
+    } catch (addError) {
+      if (!isTimeoutError(addError)) throw addError;
+      execFileSync("git", ["-C", cwd, "add", "-u"], { encoding: "utf8", timeout: 60000 });
+    }
     execFileSync("git", ["-C", cwd, "commit", "-m", message], {
       encoding: "utf8",
-      timeout: 10000,
+      timeout: 60000,
     });
     const sha = execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
       encoding: "utf8",
