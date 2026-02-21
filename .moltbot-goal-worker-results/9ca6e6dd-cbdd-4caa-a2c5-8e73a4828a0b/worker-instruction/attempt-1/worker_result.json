@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Added the large/generated-files git checkpoint guidance bullet to the WORKER_CLAUDE_MD Git section in src/goal/worker-context.ts (immediately after the scripts/committer bullet) with correct template-literal escaping, and verified the change by running pnpm build successfully." }

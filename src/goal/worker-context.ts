@@ -45,6 +45,7 @@ If your task modifies code in the \`/goal\` family, you must verify your changes
 - Never force-push, reset --hard, or run destructive git commands.
 - Commit only the files you changed. Do not stage unrelated files.
 - Use \`scripts/committer "<msg>" <file...>\` if available; otherwise \`git add <specific-files> && git commit -m "<msg>"\`.
+- Large / generated files: If your task creates bulky data directories, model weights, virtual environments, or other large artifacts (>5 MB total), add a \`.gitignore\` at the repo root before generating the files. At minimum ignore the output directories (e.g. \`data/\`, \`venv/\`, \`__pycache__/\`). The goal system checkpoints via \`git add -A\`; un-ignored large files will slow down checkpoints.
 
 ## Security
 
