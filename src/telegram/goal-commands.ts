@@ -218,10 +218,15 @@ async function runGoalPlanAutocheck(params: {
 }): Promise<{ run: SerializedRun; plan: Plan; display: PlanAutocheckDisplayInfo } | undefined> {
   const mode = params.config?.goal?.planAutocheck;
   if (!isPlanAutocheckBackend(mode)) return undefined;
+  const userEditInstructions = (params.run.planHistory ?? [])
+    .filter((entry) => entry.source === "user")
+    .map((entry) => entry.editInstructions?.trim() ?? "")
+    .filter((instruction) => instruction.length > 0);
 
   const autocheckResult = await runPlanAutocheck({
     plan: params.plan,
     goalText: params.run.goal,
+    userEditInstructions,
     mode,
     maxRounds: GOAL_PLAN_AUTOCHECK_MAX_ROUNDS,
     workingDir: params.run.workingDir,

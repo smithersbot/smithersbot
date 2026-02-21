@@ -48,6 +48,7 @@ export type PlanAutocheckCommitRevisionParams = {
 export type PlanAutocheckParams = {
   plan: Plan;
   goalText: string;
+  userEditInstructions?: string[];
   mode: PlanAutocheckBackend;
   maxRounds?: number;
   workingDir: string;
@@ -469,6 +470,18 @@ function buildPlanSnapshot(plan: Plan): string {
   );
 }
 
+function buildUserEditInstructionsSection(userEditInstructions: string[] | undefined): string[] {
+  const normalizedInstructions = (userEditInstructions ?? [])
+    .map((instruction) => instruction.trim())
+    .filter(Boolean);
+  if (normalizedInstructions.length === 0) return [];
+  return [
+    "User-requested changes (treat as authoritative requirements):",
+    ...normalizedInstructions.map((instruction, idx) => `${idx + 1}. ${instruction}`),
+    "",
+  ];
+}
+
 function buildAutocheckPrompt(params: {
   goalText: string;
   plan: Plan;
@@ -476,6 +489,7 @@ function buildAutocheckPrompt(params: {
   resume: boolean;
   priorFeedback: string[];
   contextNotes: string[];
+  userEditInstructions?: string[];
 }): string {
   const planDetail = formatPlanOutput(params.plan, {
     diagram: "none",
@@ -484,6 +498,7 @@ function buildAutocheckPrompt(params: {
   });
   const mermaidDag = renderMermaidDag(params.plan);
   const snapshot = buildPlanSnapshot(params.plan);
+  const userEditInstructionsSection = buildUserEditInstructionsSection(params.userEditInstructions);
 
   if (params.resume) {
     return [
@@ -493,6 +508,7 @@ function buildAutocheckPrompt(params: {
       "Original goal (verbatim):",
       params.goalText,
       "",
+      ...userEditInstructionsSection,
       "Updated /plan_detail output:",
       planDetail,
       "",
@@ -523,6 +539,7 @@ function buildAutocheckPrompt(params: {
     "Original goal (verbatim):",
     params.goalText,
     "",
+    ...userEditInstructionsSection,
     ...contextSection,
     ...feedbackSection,
     "Current /plan_detail output:",
@@ -704,6 +721,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         resume: true,
         priorFeedback: feedbackHistory,
         contextNotes,
+        userEditInstructions: params.userEditInstructions,
       });
 
       try {
@@ -734,6 +752,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           resume: false,
           priorFeedback: feedbackHistory,
           contextNotes,
+          userEditInstructions: params.userEditInstructions,
         });
         result = await runReviewerAttempt({
           backend,
@@ -754,6 +773,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         resume: false,
         priorFeedback: feedbackHistory,
         contextNotes,
+        userEditInstructions: params.userEditInstructions,
       });
       result = await runReviewerAttempt({
         backend,
