@@ -478,6 +478,71 @@ describe("runPlanAutocheck", () => {
     expect(prompt).toContain('"shortSummary": "Implement auth flow"');
   });
 
+  it("includes user-requested edits in the fresh autocheck prompt", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: claudeStdout({ decision: { approved: true }, sessionId: "user-edits-fresh" }),
+      }),
+    );
+
+    await runPlanAutocheck({
+      plan: makePlan("Fresh user edits"),
+      goalText: "Ship feature",
+      userEditInstructions: [
+        "Add an explicit Add Details button for revision requests.",
+        "Keep user-requested changes intact across planner revisions.",
+      ],
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-user-edits-fresh"),
+      commitRevision: vi.fn(),
+    });
+
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const prompt = firstArgs.at(-1) ?? "";
+    expect(prompt).toContain("User-requested changes (treat as authoritative requirements):");
+    expect(prompt).toContain("1. Add an explicit Add Details button for revision requests.");
+    expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
+    expect(
+      prompt.indexOf("User-requested changes (treat as authoritative requirements):"),
+    ).toBeLessThan(prompt.indexOf("Current /plan_detail output:"));
+  });
+
+  it("includes user-requested edits in the resume autocheck prompt", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: claudeStdout({ decision: { approved: true }, sessionId: "user-edits-resume" }),
+      }),
+    );
+
+    await runPlanAutocheck({
+      plan: makePlan("Resume user edits"),
+      goalText: "Ship feature",
+      userEditInstructions: [
+        "Add an explicit Add Details button for revision requests.",
+        "Keep user-requested changes intact across planner revisions.",
+      ],
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-user-edits-resume"),
+      existingSessionId: "resume-user-edits-session",
+      existingBackend: "claude_code",
+      commitRevision: vi.fn(),
+    });
+
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    expect(firstArgs).toContain("--resume");
+    expect(firstArgs).toContain("resume-user-edits-session");
+
+    const prompt = firstArgs.at(-1) ?? "";
+    expect(prompt).toContain("User-requested changes (treat as authoritative requirements):");
+    expect(prompt).toContain("1. Add an explicit Add Details button for revision requests.");
+    expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
+    expect(
+      prompt.indexOf("User-requested changes (treat as authoritative requirements):"),
+    ).toBeLessThan(prompt.indexOf("Updated /plan_detail output:"));
+  });
+
   it("injects prior feedback in next prompt when session ID extraction fails", async () => {
     const originalPlan = makePlan("No session first", "1", "claude_code");
     const revisedPlan = makePlan("No session revised", "2", "claude_code");
