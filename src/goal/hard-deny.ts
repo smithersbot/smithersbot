@@ -159,6 +159,298 @@ function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
+function normalizeCommandToken(token: string): string {
+  const normalized = token.replace(/\\/g, "/");
+  const base = normalized.split("/").pop() ?? normalized;
+  return base.toLowerCase();
+}
+
+function splitCompoundCommand(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  const pushCurrent = () => {
+    const trimmed = current.trim();
+    if (trimmed) segments.push(trimmed);
+    current = "";
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    const next = command[i + 1];
+
+    if (escape) {
+      current += ch;
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      current += ch;
+      escape = true;
+      continue;
+    }
+
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      current += ch;
+      quote = ch as "'" | '"';
+      continue;
+    }
+
+    if (ch === ";") {
+      pushCurrent();
+      continue;
+    }
+
+    if (ch === "&" && next === "&") {
+      pushCurrent();
+      i += 1;
+      continue;
+    }
+
+    if (ch === "|" && next === "|") {
+      pushCurrent();
+      i += 1;
+      continue;
+    }
+
+    if (ch === "|") {
+      pushCurrent();
+      continue;
+    }
+
+    current += ch;
+  }
+
+  pushCurrent();
+  return segments;
+}
+
+function isEnvAssignment(token: string): boolean {
+  const equalsIndex = token.indexOf("=");
+  if (equalsIndex <= 0) return false;
+
+  const key = token.slice(0, equalsIndex);
+  if (!/^[A-Za-z_]/.test(key)) return false;
+  for (let i = 1; i < key.length; i++) {
+    const ch = key[i]!;
+    if (!/[A-Za-z0-9_]/.test(ch)) return false;
+  }
+  return true;
+}
+
+function stripEnvPrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "env") return tokens;
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+    if (token.startsWith("-") || isEnvAssignment(token)) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+
+  return tokens.slice(i);
+}
+
+function readBacktickSubstitution(
+  command: string,
+  startIndex: number,
+): { content: string; endIndex: number } | null {
+  let escape = false;
+  for (let i = startIndex + 1; i < command.length; i++) {
+    const ch = command[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+
+    if (ch === "`") {
+      return {
+        content: command.slice(startIndex + 1, i),
+        endIndex: i,
+      };
+    }
+  }
+
+  return null;
+}
+
+function readDollarSubstitution(
+  command: string,
+  startIndex: number,
+): { content: string; endIndex: number } | null {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  for (let i = startIndex + 2; i < command.length; i++) {
+    const ch = command[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch as "'" | '"';
+      continue;
+    }
+
+    if (ch === "$" && command[i + 1] === "(") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          content: command.slice(startIndex + 2, i),
+          endIndex: i,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractCommandSubstitutions(command: string): string[] {
+  const substitutions: string[] = [];
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') {
+        quote = null;
+        continue;
+      }
+
+      if (ch === "$" && command[i + 1] === "(") {
+        const parsed = readDollarSubstitution(command, i);
+        if (parsed) {
+          substitutions.push(parsed.content);
+          i = parsed.endIndex;
+        }
+        continue;
+      }
+
+      if (ch === "`") {
+        const parsed = readBacktickSubstitution(command, i);
+        if (parsed) {
+          substitutions.push(parsed.content);
+          i = parsed.endIndex;
+        }
+        continue;
+      }
+
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch as "'" | '"';
+      continue;
+    }
+
+    if (ch === "$" && command[i + 1] === "(") {
+      const parsed = readDollarSubstitution(command, i);
+      if (parsed) {
+        substitutions.push(parsed.content);
+        i = parsed.endIndex;
+      }
+      continue;
+    }
+
+    if (ch === "`") {
+      const parsed = readBacktickSubstitution(command, i);
+      if (parsed) {
+        substitutions.push(parsed.content);
+        i = parsed.endIndex;
+      }
+    }
+  }
+
+  return substitutions;
+}
+
+function extractShellCommandFromCTokens(tokens: string[]): string | null {
+  if (tokens.length < 3) return null;
+
+  const cmd = normalizeCommandToken(tokens[0]!);
+  if (cmd !== "bash" && cmd !== "sh" && cmd !== "zsh") return null;
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token === "-c" || token === "--command") {
+      return tokens[i + 1] ?? null;
+    }
+
+    if (token.startsWith("-") && !token.startsWith("--") && token.includes("c")) {
+      return tokens[i + 1] ?? null;
+    }
+
+    if (!token.startsWith("-")) return null;
+  }
+
+  return null;
+}
+
 function isDangerousRm(tokens: string[]): boolean {
   if (tokens.length === 0 || tokens[0] !== "rm") return false;
   const args = tokens.slice(1);
@@ -173,27 +465,15 @@ function isDangerousRm(tokens: string[]): boolean {
   return targets.some((target) => target === "/" || target === "/*");
 }
 
-/**
- * Token-aware command deny check.
- *
- * For "rm", checks if args contain -rf with target / or empty expansion.
- * For simple commands like "sudo", checks if the command starts with that token.
- *
- * This avoids false positives from substring matching (e.g., a filename
- * containing "deploy" or an echo statement mentioning "sudo").
- */
-export function checkCommandDeny(
-  command: string,
-  hardDenies: HardDenyList = HARD_DENIES,
-): HardDeny | null {
-  const trimmed = command.trim();
-  if (!trimmed) return null;
-  const tokens = tokenizeCommand(trimmed).map((token) => token.toLowerCase());
+function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): HardDeny | null {
   if (tokens.length === 0) return null;
 
-  const cmdToken = tokens[0]!;
-  const cmd = path.posix.basename(cmdToken).replace(/\\/g, "/").split("/").pop() ?? cmdToken;
-  const args = tokens.slice(1);
+  const lowerTokens = tokens.map((token) => token.toLowerCase());
+  if (lowerTokens.length === 0) return null;
+
+  const cmdToken = lowerTokens[0]!;
+  const cmd = normalizeCommandToken(cmdToken);
+  const args = lowerTokens.slice(1);
 
   for (const deny of hardDenies) {
     if (deny.type !== "command") continue;
@@ -207,7 +487,7 @@ export function checkCommandDeny(
         if (cmd === "npm" && args[0] === "publish") return deny;
         break;
       case "rm -rf /":
-        if (isDangerousRm(tokens)) return deny;
+        if (isDangerousRm(lowerTokens)) return deny;
         break;
       case "mkfs":
         if (cmd.startsWith("mkfs")) return deny;
@@ -251,4 +531,56 @@ export function checkCommandDeny(
   }
 
   return null;
+}
+
+function checkCommandDenyRecursive(
+  command: string,
+  hardDenies: HardDenyList,
+  depth: number,
+): HardDeny | null {
+  if (depth > 8) return null;
+
+  const segments = splitCompoundCommand(command);
+  for (const segment of segments) {
+    const tokens = tokenizeCommand(segment);
+    if (tokens.length > 0) {
+      const stripped = stripEnvPrefix(tokens);
+      if (stripped.length > 0) {
+        const deny = checkCommandDenyTokens(stripped, hardDenies);
+        if (deny) return deny;
+
+        const nestedShellCommand = extractShellCommandFromCTokens(stripped);
+        if (nestedShellCommand) {
+          const nestedDeny = checkCommandDenyRecursive(nestedShellCommand, hardDenies, depth + 1);
+          if (nestedDeny) return nestedDeny;
+        }
+      }
+    }
+
+    const substitutions = extractCommandSubstitutions(segment);
+    for (const nestedCommand of substitutions) {
+      const nestedDeny = checkCommandDenyRecursive(nestedCommand, hardDenies, depth + 1);
+      if (nestedDeny) return nestedDeny;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Token-aware command deny check.
+ *
+ * For "rm", checks if args contain -rf with target / or empty expansion.
+ * For simple commands like "sudo", checks if the command starts with that token.
+ *
+ * This avoids false positives from substring matching (e.g., a filename
+ * containing "deploy" or an echo statement mentioning "sudo").
+ */
+export function checkCommandDeny(
+  command: string,
+  hardDenies: HardDenyList = HARD_DENIES,
+): HardDeny | null {
+  const trimmed = command.trim();
+  if (!trimmed) return null;
+  return checkCommandDenyRecursive(trimmed, hardDenies, 0);
 }

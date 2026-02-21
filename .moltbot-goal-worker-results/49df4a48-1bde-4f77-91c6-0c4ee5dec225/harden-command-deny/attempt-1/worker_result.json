@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Hardened checkCommandDeny to inspect compound shell segments (;, &&, ||, |), unwrap env prefixes, recurse through bash/sh/zsh -c payloads, and detect command substitution ($() and backticks). Added src/goal/hard-deny.test.ts with bypass and quote-safety coverage; new tests and existing capability-enforcement tests both pass." }
