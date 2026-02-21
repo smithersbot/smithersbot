@@ -31,7 +31,7 @@ import { resolveScoutDir } from "./scout.js";
 import type { HardDenyList } from "./hard-deny.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { Plan, PlanStep } from "./types.js";
-import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
+import { classifyProviderError } from "./error-patterns.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 
 const DEFAULT_PROVIDER = "anthropic";
@@ -336,10 +336,8 @@ export class PiTaskRunner implements TaskRunner {
 }
 
 function classifyExecutorError(errMsg: string): ExecutorErrorKind {
-  if (RATE_LIMIT_RE.test(errMsg)) return "rate_limit";
-  if (CREDITS_RE.test(errMsg)) return "out_of_credits";
-  if (AUTH_RE.test(errMsg)) return "auth";
-  if (NETWORK_RE.test(errMsg)) return "network";
+  const classified = classifyProviderError({ text: errMsg });
+  if (classified) return classified;
   if (/abort|timeout/i.test(errMsg)) return "timeout";
   return "other";
 }

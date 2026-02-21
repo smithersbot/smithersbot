@@ -411,11 +411,6 @@ export function sessionToSerialized(params: {
   return serialized;
 }
 
-/** Resolve the agent session file path for a goal run. */
-export function resolveAgentSessionFile(runId: string, goalsDir?: string): string {
-  return path.join(resolveRunDir(runId, goalsDir), "session.jsonl");
-}
-
 /** Resolve per-task working notes file path. */
 export function resolveWorkingFile(runId: string, stepId: string, goalsDir?: string): string {
   return path.join(resolveRunDir(runId, goalsDir), "working", `${stepId}.md`);
@@ -424,11 +419,6 @@ export function resolveWorkingFile(runId: string, stepId: string, goalsDir?: str
 /** Resolve top-level WORKING.md for the goal run. */
 export function resolveGoalWorkingFile(runId: string, goalsDir?: string): string {
   return path.join(resolveRunDir(runId, goalsDir), "WORKING.md");
-}
-
-/** Resolve per-step CLI worker artifact directory. */
-export function resolveWorkerDir(runId: string, stepId: string, goalsDir?: string): string {
-  return path.join(resolveRunDir(runId, goalsDir), "workers", stepId);
 }
 
 /** Resolve a per-task agent session file path. */

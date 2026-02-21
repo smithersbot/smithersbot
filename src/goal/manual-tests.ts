@@ -1,5 +1,6 @@
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
+import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { GoalLlmClient, ManualTestSuggestion, PlanStep } from "./types.js";
 
@@ -75,38 +76,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function extractJsonObject(text: string): Record<string, unknown> {
-  const trimmed = text.trim();
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed === "object") {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Fall through to tolerant extraction.
-  }
-
-  const fenceMatch = /```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/.exec(trimmed);
-  if (fenceMatch?.[1]) {
-    const parsed = JSON.parse(fenceMatch[1].trim());
-    if (!parsed || typeof parsed !== "object") {
-      throw new Error("Manual test response is not a JSON object.");
-    }
-    return parsed as Record<string, unknown>;
-  }
-
-  const firstBrace = trimmed.indexOf("{");
-  if (firstBrace >= 0) {
-    const parsed = JSON.parse(trimmed.slice(firstBrace));
-    if (!parsed || typeof parsed !== "object") {
-      throw new Error("Manual test response is not a JSON object.");
-    }
-    return parsed as Record<string, unknown>;
-  }
-
-  throw new Error("Failed to parse manual test JSON from model response.");
-}
-
 function collectText(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -138,7 +107,7 @@ function buildCombinedManualTestsPrompt(userMessage: string): string {
 }
 
 function extractAssistantTextFromCliResult(rawStdout: string): string {
-  const parsed = extractJsonObject(rawStdout);
+  const parsed = extractJson(rawStdout);
   const result = parsed.result;
 
   if (Array.isArray(result)) {
@@ -396,7 +365,7 @@ export async function generateManualTests(
     modelResponseText = await generateManualTestsViaCli(userMessage);
   }
 
-  const parsed = extractJsonObject(modelResponseText);
+  const parsed = extractJson(modelResponseText);
   const rawTests = Array.isArray(parsed.tests)
     ? parsed.tests
     : Array.isArray(parsed.manualTests)

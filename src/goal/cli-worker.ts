@@ -14,7 +14,7 @@ import {
   type AttemptOutcome,
 } from "./attempt-bundle.js";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
-import { RATE_LIMIT_RE, CREDITS_RE, AUTH_RE, NETWORK_RE } from "./error-patterns.js";
+import { classifyProviderError } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
@@ -812,40 +812,44 @@ function findPrecedingAssistantError(lines: string[], fromIndex: number): string
 }
 
 function classifyStreamError(resultText: string, assistantError: string | null): StreamError {
-  // Check assistant error field first (e.g. "billing_error")
-  if (assistantError === "billing_error" || CREDITS_RE.test(resultText)) {
-    return {
-      message: resultText,
-      errorType: "out_of_credits",
-      suggestedNext: "Add credits to your account or switch to subscription auth mode.",
-    };
+  const classification = classifyProviderError({
+    text: resultText,
+    assistantError,
+    preferCredits: true,
+  });
+
+  switch (classification) {
+    case "out_of_credits":
+      return {
+        message: resultText,
+        errorType: "out_of_credits",
+        suggestedNext: "Add credits to your account or switch to subscription auth mode.",
+      };
+    case "auth":
+      return {
+        message: resultText,
+        errorType: "auth",
+        suggestedNext: "Check API key or auth configuration.",
+      };
+    case "rate_limit":
+      return {
+        message: resultText,
+        errorType: "rate_limit",
+        suggestedNext: "Wait and retry, or reduce concurrency.",
+      };
+    case "network":
+      return {
+        message: resultText,
+        errorType: "network",
+        suggestedNext: "Check network connectivity and retry.",
+      };
+    default:
+      return {
+        message: resultText,
+        errorType: "process_error",
+        suggestedNext: "Check CLI logs and retry the task.",
+      };
   }
-  if (AUTH_RE.test(resultText)) {
-    return {
-      message: resultText,
-      errorType: "auth",
-      suggestedNext: "Check API key or auth configuration.",
-    };
-  }
-  if (RATE_LIMIT_RE.test(resultText)) {
-    return {
-      message: resultText,
-      errorType: "rate_limit",
-      suggestedNext: "Wait and retry, or reduce concurrency.",
-    };
-  }
-  if (NETWORK_RE.test(resultText)) {
-    return {
-      message: resultText,
-      errorType: "network",
-      suggestedNext: "Check network connectivity and retry.",
-    };
-  }
-  return {
-    message: resultText,
-    errorType: "process_error",
-    suggestedNext: "Check CLI logs and retry the task.",
-  };
 }
 
 function classifyAttemptOutcome(
