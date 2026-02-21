@@ -331,6 +331,7 @@ export function sessionToSerialized(params: {
     ...(session.taskCheckpoints ? { taskCheckpoints: session.taskCheckpoints } : {}),
     ...(session.buildGateConfig ? { buildGateConfig: session.buildGateConfig } : {}),
     ...(session.stepRalphCounts ? { stepRalphCounts: session.stepRalphCounts } : {}),
+    ...(session.buildGateFixCounts ? { buildGateFixCounts: session.buildGateFixCounts } : {}),
     ...(session.buildGateResults ? { buildGateResults: session.buildGateResults } : {}),
   };
   const previous = params.previousRun;
@@ -405,6 +406,9 @@ export function sessionToSerialized(params: {
   if (!serialized.stepRalphCounts && previous.stepRalphCounts) {
     serialized.stepRalphCounts = previous.stepRalphCounts;
   }
+  if (!serialized.buildGateFixCounts && previous.buildGateFixCounts) {
+    serialized.buildGateFixCounts = previous.buildGateFixCounts;
+  }
   if (!serialized.buildGateResults && previous.buildGateResults) {
     serialized.buildGateResults = previous.buildGateResults;
   }
@@ -449,6 +453,7 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     taskCheckpoints: run.taskCheckpoints ?? {},
     buildGateConfig: run.buildGateConfig,
     stepRalphCounts: run.stepRalphCounts ?? {},
+    buildGateFixCounts: run.buildGateFixCounts ?? {},
     buildGateResults: run.buildGateResults ?? {},
   };
 }

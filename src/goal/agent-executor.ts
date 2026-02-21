@@ -344,11 +344,18 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   session.state = "executing";
   session.buildGateConfig = plan.buildGate;
   session.stepRalphCounts ??= {};
+  session.buildGateFixCounts ??= {};
   session.buildGateResults ??= {};
 
   const effectiveAbort = abortSignal ?? new AbortController().signal;
   const maxRalphAttempts = retryConfig?.maxRalphAttempts ?? DEFAULT_MAX_RALPH_ATTEMPTS;
-  const buildGateFixCounts = new Map<string, number>();
+  const buildGateFixCounts = new Map<string, number>(
+    Object.entries(params.serializedRun?.buildGateFixCounts ?? session.buildGateFixCounts),
+  );
+  const persistBuildGateFixCounts = (): void => {
+    session.buildGateFixCounts = Object.fromEntries(buildGateFixCounts);
+  };
+  persistBuildGateFixCounts();
 
   // --- Git setup (branch + autosave) ---
   if (gitCheckpointConfig?.enabled) {
@@ -663,6 +670,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       if (gateResult.passed) {
         session.buildGateResults[task.id] = { passed: true, timestamp };
         buildGateFixCounts.delete(task.id);
+        persistBuildGateFixCounts();
       } else {
         session.buildGateResults[task.id] = {
           passed: false,
@@ -673,6 +681,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
         const fixCount = (buildGateFixCounts.get(task.id) ?? 0) + 1;
         buildGateFixCounts.set(task.id, fixCount);
+        persistBuildGateFixCounts();
 
         if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
           const detail = makeBuildGateFailurePrompt(gateResult.failedCommand, gateResult.output);

@@ -545,6 +545,43 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
   });
 
+  it("respects persisted build-gate fix counts when resuming", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: true };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-5" } };
+
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "TS2307: Cannot find module ./generated/client",
+    });
+
+    mockCliExecute.mockResolvedValue({
+      status: "complete",
+      summary: "Reported complete",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-build-gate-resume-count",
+      workingDir: "/tmp/moltbot-goal-test",
+      serializedRun: { buildGateFixCounts: { "1": 2 } } as unknown as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("task_failed");
+    expect(step.blockedQuestion).toContain("Build gate failed after 2 retry cycles.");
+    expect(mockCliExecute).toHaveBeenCalledTimes(1);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(session.buildGateFixCounts?.["1"]).toBe(3);
+  });
+
   it("skips build gate when commands are empty", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);

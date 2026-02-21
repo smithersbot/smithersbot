@@ -28,6 +28,7 @@ export type GoalSession = {
   taskCheckpoints?: Record<string, TaskCheckpoint>;
   buildGateConfig?: PlanBuildGate;
   stepRalphCounts?: Record<string, number>;
+  buildGateFixCounts?: Record<string, number>;
   buildGateResults?: {
     [stepId: string]: {
       passed: boolean;
@@ -266,6 +267,8 @@ export type SerializedRun = {
   buildGateConfig?: PlanBuildGate;
   /** Ralph count per step (key = step id). */
   stepRalphCounts?: Record<string, number>;
+  /** Build-gate fix cycle count per step (key = step id). */
+  buildGateFixCounts?: Record<string, number>;
   /** Most recent build-gate result per step. */
   buildGateResults?: {
     [stepId: string]: {
