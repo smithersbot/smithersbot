@@ -1399,7 +1399,7 @@ export async function handleGoalList(): Promise<string> {
     const state = run.state.padEnd(20);
     const steps =
       run.stepCount > 0 ? `${run.completedSteps}/${run.stepCount}`.padEnd(6) : "\u2014".padEnd(6);
-    const goal = run.goal.length > 22 ? `${run.goal.slice(0, 19)}...` : run.goal;
+    const goal = run.goal.length > 43 ? `${run.goal.slice(0, 40)}...` : run.goal;
     lines.push(`${id} ${state} ${steps}${goal}`);
   }
   lines.push("```");
@@ -2251,7 +2251,7 @@ export function buildOnStatusChange(params: {
           "",
           event.question,
           "",
-          `**Next:** I will continue to complete tasks that aren't dependant on this blocked task.`,
+          `**Next:** I will continue to complete tasks that aren't dependent on this blocked task.`,
         ].join("\n");
         const sentId = await sendDagPng({
           bot,
@@ -2658,7 +2658,7 @@ export function registerTelegramGoalCommands({
           ...replyParams,
           reply_markup: {
             force_reply: true,
-            input_field_placeholder: "Describe what failed and what you expected...",
+            input_field_placeholder: "Describe your feedback or what needs to change...",
           },
         })
         .catch(() => undefined);
