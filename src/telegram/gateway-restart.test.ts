@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const triggerMoltbotRestartMock = vi.fn();
+const scheduleGatewaySigusr1RestartMock = vi.fn();
 
 vi.mock("../infra/restart.js", () => ({
+  scheduleGatewaySigusr1Restart: (...args: unknown[]) => scheduleGatewaySigusr1RestartMock(...args),
   triggerMoltbotRestart: (...args: unknown[]) => triggerMoltbotRestartMock(...args),
 }));
 
@@ -102,6 +104,15 @@ describe("gateway_restart telegram command", () => {
     previousStateDir = process.env.CLAWDBOT_STATE_DIR;
     testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-restart-test-"));
     process.env.CLAWDBOT_STATE_DIR = testStateDir;
+    scheduleGatewaySigusr1RestartMock.mockReset();
+    scheduleGatewaySigusr1RestartMock.mockReturnValue({
+      ok: true,
+      pid: process.pid,
+      signal: "SIGUSR1",
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+      mode: "emit",
+    });
     triggerMoltbotRestartMock.mockReset();
     triggerMoltbotRestartMock.mockReturnValue({ ok: true, method: "systemd", tried: [] });
   });
@@ -158,10 +169,11 @@ describe("gateway_restart telegram command", () => {
     await handler(createCtx({ chatId: 7, userId: authorizedUserId }));
 
     expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("accepted");
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
     expect(sendMessage.mock.calls[1]?.[1]).toContain("cooldown");
     expect(listTriggerRequests()).toHaveLength(0);
-    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
+    expect(triggerMoltbotRestartMock).not.toHaveBeenCalled();
 
     const entries = readAuditEntries();
     expect(entries).toHaveLength(2);
@@ -170,21 +182,55 @@ describe("gateway_restart telegram command", () => {
     expect((entries[1]?.cooldownSecondsRemaining ?? 0) > 0).toBe(true);
   });
 
-  it("records cooldown timestamp and performs direct restart when accepted", async () => {
+  it("records cooldown timestamp and schedules SIGUSR1 restart when accepted", async () => {
     const { handler, sendMessage } = createHarness();
     const authorizedUserId = AUTHORIZED_USER_ID;
 
     await handler(createCtx({ chatId: 88, userId: authorizedUserId }));
 
-    expect(sendMessage).toHaveBeenCalledWith(88, expect.stringContaining("accepted"));
-    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(88, expect.stringContaining("restart scheduled"));
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledWith({
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+    });
+    expect(triggerMoltbotRestartMock).not.toHaveBeenCalled();
     expect(listTriggerRequests()).toHaveLength(0);
 
     const lastRestartPath = path.join(testStateDir, TRIGGER_DIRNAME, ".last-restart-ts");
     expect(fs.existsSync(lastRestartPath)).toBe(true);
   });
 
+  it("falls back to direct restart when SIGUSR1 scheduling fails", async () => {
+    scheduleGatewaySigusr1RestartMock.mockReturnValueOnce({
+      ok: false,
+      pid: process.pid,
+      signal: "SIGUSR1",
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+      mode: "emit",
+    });
+
+    const { handler, sendMessage } = createHarness();
+    const authorizedUserId = AUTHORIZED_USER_ID;
+
+    await handler(createCtx({ chatId: 77, userId: authorizedUserId }));
+
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
+    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
+    expect(listTriggerRequests()).toHaveLength(0);
+  });
+
   it("queues fallback trigger when direct restart attempt fails", async () => {
+    scheduleGatewaySigusr1RestartMock.mockReturnValueOnce({
+      ok: false,
+      pid: process.pid,
+      signal: "SIGUSR1",
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+      mode: "emit",
+    });
     triggerMoltbotRestartMock.mockReturnValueOnce({
       ok: false,
       method: "systemd",
@@ -197,9 +243,10 @@ describe("gateway_restart telegram command", () => {
 
     await handler(createCtx({ chatId: 77, userId: authorizedUserId }));
 
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("accepted");
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
     expect(sendMessage.mock.calls[1]?.[1]).toContain("direct restart failed");
     expect(sendMessage.mock.calls[1]?.[1]).toContain("Fallback queued");
 

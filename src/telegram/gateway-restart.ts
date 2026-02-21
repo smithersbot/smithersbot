@@ -12,7 +12,7 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import { resolveStateDir } from "../config/paths.js";
-import { triggerMoltbotRestart } from "../infra/restart.js";
+import { scheduleGatewaySigusr1Restart, triggerMoltbotRestart } from "../infra/restart.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const GATEWAY_RESTART_COMMAND = "gateway_restart";
@@ -165,7 +165,7 @@ function decideGatewayRestart(params: {
   return {
     accepted: true,
     reason: "accepted",
-    message: "gateway_restart accepted: restart requested.",
+    message: "gateway_restart accepted: restart scheduled.",
   };
 }
 
@@ -248,6 +248,12 @@ export function registerGatewayRestartCommand({
     await bot.api.sendMessage(chatId, decision.message);
 
     if (!decision.accepted) return;
+
+    const scheduledRestart = scheduleGatewaySigusr1Restart({
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+    });
+    if (scheduledRestart.ok) return;
 
     const restartAttempt = triggerMoltbotRestart();
     if (restartAttempt.ok) return;
