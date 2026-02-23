@@ -16,13 +16,14 @@ import { goalStatusCommand } from "../commands/goal-status.js";
 import { loadConfig, type MoltbotConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { writeConfigFile } from "../config/io.js";
-import type { PlanAutocheckMode } from "../config/types.goal.js";
+import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import type {
   TelegramAccountConfig,
   TelegramGroupConfig,
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { resolveEnabledWorkers } from "../goal/backend-types.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
 import { computeCpm } from "../goal/cpm.js";
@@ -76,6 +77,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   {
     command: "goal_plan_autocheck",
     description: "Set plan autocheck backend: codex, claude_code, or off",
+  },
+  {
+    command: "goal_workers",
+    description: "Set enabled CLI workers: codex, claude_code, or both",
   },
   {
     command: "goal_status",
@@ -157,6 +162,7 @@ function serializedStepResultsToMap(
 }
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
+const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
@@ -173,6 +179,19 @@ function parseGoalPlanAutocheckMode(raw: string): PlanAutocheckMode | undefined 
     return normalized;
   }
   return undefined;
+}
+
+function parseGoalWorkersArg(raw: string): CliWorkerId[] | undefined {
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "codex") return ["codex"];
+  if (normalized === "claude_code") return ["claude_code"];
+  if (normalized === "both" || normalized === "all") return ["codex", "claude_code"];
+  return undefined;
+}
+
+function formatGoalWorkers(workers: CliWorkerId[]): string {
+  return workers.join(", ");
 }
 
 function isPlanAutocheckBackend(
@@ -3022,6 +3041,70 @@ export function registerTelegramGoalCommands({
       bot,
       resolved.chatId,
       confirmation,
+      runtime,
+      resolved.threadIdForSend,
+      replyToMessageId,
+    );
+  });
+
+  // /goal_workers [codex|claude_code|both|all]
+  bot.command("goal_workers", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
+
+    const rawWorkers = ctx.match?.trim() ?? "";
+    const currentWorkers = resolveEnabledWorkers(cfg.goal);
+    const currentWorkersText = formatGoalWorkers(currentWorkers);
+    if (!rawWorkers) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Enabled goal workers: \`${currentWorkersText}\`.\n${GOAL_WORKERS_USAGE}`,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const nextWorkers = parseGoalWorkersArg(rawWorkers);
+    if (!nextWorkers) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Invalid workers: \`${rawWorkers}\`.\n${GOAL_WORKERS_USAGE}\nCurrent: \`${currentWorkersText}\``,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Config writes are disabled for this Telegram account.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const nextConfig = loadConfig();
+    nextConfig.goal ??= {};
+    nextConfig.goal.enabledWorkers = [...nextWorkers];
+    await writeConfigFile(nextConfig);
+
+    cfg.goal ??= {};
+    cfg.goal.enabledWorkers = [...nextWorkers];
+
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      `Enabled goal workers set to \`${formatGoalWorkers(nextWorkers)}\`.`,
       runtime,
       resolved.threadIdForSend,
       replyToMessageId,
