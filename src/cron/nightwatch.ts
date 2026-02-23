@@ -58,6 +58,8 @@ export async function checkGitChanges(
 export function buildNightwatchPrompt(): string {
   return `Nightwatch nightly review for the Moltbot repository.
 
+You are a senior code reviewer performing a nightly audit of the Moltbot codebase. Your output will be used as a goal description for the planning system — write it as a focused, actionable goal that the planner can decompose into concrete steps.
+
 Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
@@ -92,6 +94,7 @@ Concrete example:
 - For /new_goal, the "Right away, sir." acknowledgment replies to the user's message so the user sees which goal is being planned.
 - When the user clicks "Approve", the confirmation message is not sent as a reply to the approval button message, making it unclear which plan was just approved.
 Find and prioritize similar patterns where one workflow already has a good practice (like reply-to-message context) and other workflows lack it.
+This is one example pattern — look broadly for any good practice that exists in one workflow but is missing from analogous workflows.
 
 ## 5. Security concerns
 Review security posture across goal, gateway, and channel flows.
@@ -106,10 +109,14 @@ Look for:
 - OWASP Top 10 style vulnerabilities and similar high-impact patterns
 Propose concrete patches with tests for each confirmed issue.
 
+## 6. Nightwatch self-maintenance
+Review the nightwatch prompt itself (in src/cron/nightwatch.ts, buildNightwatchPrompt function). Check whether the Key files references in each section are still accurate — files may have been renamed, moved, or deleted since the prompt was last updated. If any file paths are stale, include a step to update them. Also check if new important files have been added that should be reviewed but aren't listed.
+
 ## Output
 Produce a goal plan with concrete, actionable steps that fix real bugs and make high-value improvements.
 Prioritize correctness bugs over style issues. Do not propose changes unless you have read the actual code and confirmed the problem exists.
-Each step should include both the fix and its test.`;
+Each step should include both the fix and its test.
+Format your output as a single coherent goal description, not as raw JSON. The planning system will decompose it into steps.`;
 }
 
 export async function runNightwatch(params: {
