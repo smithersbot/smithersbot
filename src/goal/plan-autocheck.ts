@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ClaudeCodeAuthMode, PlanAutocheckMode } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import { runCliPlanRevision } from "./cli-planner.js";
@@ -71,6 +71,7 @@ export type PlanAutocheckParams = {
   maxRounds?: number;
   workingDir: string;
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  enabledWorkers?: CliWorkerId[];
   runDir: string;
   existingSessionId?: string;
   existingBackend?: string;
@@ -864,6 +865,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
       cwd: params.workingDir,
       model: params.model,
       claudeCodeAuth: params.claudeCodeAuth,
+      ...(params.enabledWorkers ? { enabledWorkers: params.enabledWorkers } : {}),
     });
 
     if ("blocked" in revision.plan) {

@@ -233,6 +233,9 @@ async function runGoalPlanAutocheck(params: {
     maxRounds: GOAL_PLAN_AUTOCHECK_MAX_ROUNDS,
     workingDir: params.run.workingDir,
     claudeCodeAuth: params.config?.goal?.claudeCodeAuth ?? "subscription",
+    ...(params.config?.goal?.enabledWorkers
+      ? { enabledWorkers: params.config.goal.enabledWorkers }
+      : {}),
     runDir: path.join(resolveGoalsDir(), params.runId),
     existingSessionId: params.existingSessionId,
     existingBackend: params.existingBackend,
@@ -1255,6 +1258,7 @@ export async function handleGoalFeedback(
           cwd: run.workingDir,
           model: run.model,
           claudeCodeAuth: authMode,
+          ...(config?.goal?.enabledWorkers ? { enabledWorkers: config.goal.enabledWorkers } : {}),
         });
         break;
       } catch (err) {
@@ -1497,6 +1501,7 @@ export async function handleGoalEdit(
       cwd: run.workingDir,
       model: run.model,
       claudeCodeAuth: authMode,
+      ...(config?.goal?.enabledWorkers ? { enabledWorkers: config.goal.enabledWorkers } : {}),
     });
     const result = revisionResult.plan;
     const plannerFallbackNotice = revisionResult.plannerDegradedReason

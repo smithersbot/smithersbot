@@ -186,6 +186,9 @@ export async function goalCommand(
           cwd: workingDir,
           timeoutMs: opts.scoutTimeoutMs,
           claudeCodeAuth: resolvedAuthMode,
+          ...(opts.config?.goal?.enabledWorkers
+            ? { enabledWorkers: opts.config.goal.enabledWorkers }
+            : {}),
           includeScoutArtifacts: !opts.noScout,
         });
       } finally {

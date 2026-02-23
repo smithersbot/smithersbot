@@ -601,6 +601,69 @@ describe("runCliPlanning", () => {
     expect(attempt.errorClassification).toBe("validation");
   });
 
+  it("uses codex immediately when only codex is enabled", async () => {
+    mockResolveClaudeBinary.mockReturnValue(undefined);
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Codex only planning summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "analyze-repo",
+            description: "Inspect repository files and verify with a targeted test run",
+            dependsOn: [],
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 33,
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-codex-only",
+      goalText: "Create codex-only plan",
+      goalsDir,
+      includeScoutArtifacts: false,
+      enabledWorkers: ["codex"],
+    });
+
+    expect(result.status).toBe("success");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    const onlyCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string; args: string[] };
+    expect(onlyCall.command).toBe("codex");
+    expect(onlyCall.args).toContain("exec");
+  });
+
+  it("throws a clear error when only claude_code is enabled and Anthropic degrades", async () => {
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "Planning execution failed: You've hit your limit · resets 6pm (America/Toronto)",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 31,
+    });
+
+    await expect(
+      runCliPlanning({
+        runId: "run-claude-only-degraded",
+        goalText: "Create claude-only plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code"],
+      }),
+    ).rejects.toThrow("codex fallback is disabled by goal.enabledWorkers");
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    const onlyCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    expect(onlyCall.command).toBe("/usr/bin/claude");
+  });
+
   it("falls back to codex on Anthropic limits and rewrites all claude_code steps", async () => {
     mockRunCliProcess
       .mockResolvedValueOnce({
@@ -653,6 +716,7 @@ describe("runCliPlanning", () => {
       runId: "run-fallback",
       goalText: "Create fallback plan",
       goalsDir,
+      enabledWorkers: ["codex", "claude_code"],
     });
 
     expect(result.status).toBe("success");
@@ -982,6 +1046,101 @@ describe("runCliPlanning", () => {
     expect(procCall.stdin).not.toContain("Prior corrections checklist:");
   });
 
+  it("uses codex immediately for plan revision when only codex is enabled", async () => {
+    mockResolveClaudeBinary.mockReturnValue(undefined);
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: JSON.stringify({
+        summary: "Codex-only revised summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 21,
+    });
+
+    const result = await runCliPlanRevision({
+      runId: "run-revision-codex-only",
+      goalText: "Refine auth flow",
+      currentPlan: {
+        goal: "Refine auth flow",
+        summary: "Original summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "step-1",
+            description: "Initial step",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      },
+      editInstructions: "Tighten validation logic",
+      goalsDir,
+      enabledWorkers: ["codex"],
+    });
+    const revisedPlan = result.plan;
+
+    if ("blocked" in revisedPlan) throw new Error("Expected plan result, got blocked");
+    expect(result.plannerBackendUsed).toBe("codex");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    const onlyCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string; args: string[] };
+    expect(onlyCall.command).toBe("codex");
+    expect(onlyCall.args).toContain("exec");
+  });
+
+  it("throws a clear revision error when only claude_code is enabled and Anthropic degrades", async () => {
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "Plan revision failed: You've hit your limit · resets 6pm (America/Toronto)",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 21,
+    });
+
+    await expect(
+      runCliPlanRevision({
+        runId: "run-revision-claude-only-degraded",
+        goalText: "Refine auth flow",
+        currentPlan: {
+          goal: "Refine auth flow",
+          summary: "Original summary",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "step-1",
+              description: "Initial step",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 45,
+              backend: "claude_code",
+            },
+          ],
+        },
+        editInstructions: "Tighten validation logic",
+        goalsDir,
+        enabledWorkers: ["claude_code"],
+      }),
+    ).rejects.toThrow("codex fallback is disabled by goal.enabledWorkers");
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    const onlyCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    expect(onlyCall.command).toBe("/usr/bin/claude");
+  });
+
   it("falls back to codex for plan revision on Anthropic limits and rewrites claude_code steps", async () => {
     mockRunCliProcess
       .mockResolvedValueOnce({
@@ -1033,6 +1192,7 @@ describe("runCliPlanning", () => {
       },
       editInstructions: "Tighten validation logic",
       goalsDir,
+      enabledWorkers: ["codex", "claude_code"],
     });
     const revisedPlan = result.plan;
 

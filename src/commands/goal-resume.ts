@@ -186,6 +186,9 @@ async function retryPlanning(
           runId: run.runId,
           goalText,
           cwd: run.workingDir,
+          ...(opts.config?.goal?.enabledWorkers
+            ? { enabledWorkers: opts.config.goal.enabledWorkers }
+            : {}),
           includeScoutArtifacts,
         });
       } finally {

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
+import { resolveEnabledWorkers } from "./backend-types.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
@@ -27,7 +28,7 @@ import {
   type ScoutResult,
 } from "./scout.js";
 import type { Plan, PlannerBackendId, PlannerDegradedReason } from "./types.js";
-import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 1_200_000;
 const LOG_EXCERPT_CHARS = 2048;
@@ -75,6 +76,8 @@ export type CliPlanningParams = {
   cwd?: string;
   /** How the planner's Claude Code process authenticates (default: "subscription"). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /** Restrict planning workers to codex, claude_code, or both (default: both). */
+  enabledWorkers?: CliWorkerId[];
   /** Preserve legacy --no-scout semantics by skipping scout artifact generation. */
   includeScoutArtifacts?: boolean;
 };
@@ -116,6 +119,8 @@ export type CliPlanRevisionParams = {
   model?: string;
   /** How Claude Code revision process authenticates (default: "subscription"). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /** Restrict revision workers to codex, claude_code, or both (default: both). */
+  enabledWorkers?: CliWorkerId[];
 };
 
 export type CliPlanRevisionResult = {
@@ -163,7 +168,31 @@ function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
   ];
 }
 
-function rewritePlanForDegradedPlanner(plan: Plan): Plan {
+function resolvePlannerBackends(enabledWorkers?: CliWorkerId[]): CliWorkerId[] {
+  const resolvedWorkers = resolveEnabledWorkers(enabledWorkers ? { enabledWorkers } : undefined);
+  const hasClaudeCode = resolvedWorkers.includes("claude_code");
+  const hasCodex = resolvedWorkers.includes("codex");
+  if (hasClaudeCode && hasCodex) return ["claude_code", "codex"];
+  if (hasClaudeCode) return ["claude_code"];
+  return ["codex"];
+}
+
+function formatCodexFallbackDisabledError(params: {
+  context: "Planning" | "Plan revision";
+  degradedReason: PlannerDegradedReason;
+  resetHint?: string;
+}): string {
+  const { context, degradedReason, resetHint } = params;
+  const reasonLabel = degradedReason === "anthropic_usage_limit" ? "usage limit" : "rate limit";
+  const resetSuffix = resetHint ? ` (${resetHint})` : "";
+  return (
+    `${context} failed: Anthropic ${reasonLabel} reached${resetSuffix}, ` +
+    "and codex fallback is disabled by goal.enabledWorkers."
+  );
+}
+
+function rewritePlanForDegradedPlanner(plan: Plan, enabledWorkers?: CliWorkerId[]): Plan {
+  if (!resolvePlannerBackends(enabledWorkers).includes("codex")) return plan;
   return {
     ...plan,
     steps: plan.steps.map((step) => {
@@ -416,10 +445,12 @@ export async function runCliPlanRevision(
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
   const plannerCwd = params.cwd ?? process.cwd();
 
-  const claudeBin = resolveClaudeBinary();
-  if (!claudeBin) {
+  const plannerBackends = resolvePlannerBackends(params.enabledWorkers);
+  const claudeBin = plannerBackends.includes("claude_code") ? resolveClaudeBinary() : undefined;
+  if (plannerBackends.includes("claude_code") && !claudeBin) {
     throw new Error("claude binary not found on PATH");
   }
+  const claudeCommand = claudeBin ?? "claude";
 
   const runDir = resolveRunDir(runId, goalsDir);
   const revisionDir = path.join(runDir, PLAN_REVISION_DIR);
@@ -450,12 +481,13 @@ export async function runCliPlanRevision(
   let plannerBackendUsed: PlannerBackendId | undefined;
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
-  let attemptNumber = 1;
+  let attemptIndex = 0;
   let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
 
-  while (true) {
-    const backend = attemptNumber === 1 ? "claude_code" : "codex";
-    const command = backend === "claude_code" ? claudeBin : "codex";
+  while (attemptIndex < plannerBackends.length) {
+    const backend = plannerBackends[attemptIndex];
+    if (!backend) break;
+    const command = backend === "claude_code" ? claudeCommand : "codex";
     const args =
       backend === "claude_code"
         ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS, ...(model ? ["--model", model] : [])]
@@ -489,8 +521,17 @@ export async function runCliPlanRevision(
         if (degradedReason) {
           plannerDegradedReason = degradedReason;
           plannerDegradedResetHint = extractResetHint(errMsg);
-          attemptNumber += 1;
-          continue;
+          if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
+            attemptIndex += 1;
+            continue;
+          }
+          throw new Error(
+            formatCodexFallbackDisabledError({
+              context: "Plan revision",
+              degradedReason,
+              resetHint: plannerDegradedResetHint,
+            }),
+          );
         }
       }
 
@@ -518,7 +559,7 @@ export async function runCliPlanRevision(
   const parsedPlan = parsePlanResultFromText(procResult.stdout, goalText);
   const plan =
     plannerDegradedReason && !("blocked" in parsedPlan)
-      ? rewritePlanForDegradedPlanner(parsedPlan)
+      ? rewritePlanForDegradedPlanner(parsedPlan, params.enabledWorkers)
       : parsedPlan;
 
   return {
@@ -535,10 +576,12 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
   const plannerCwd = params.cwd ?? process.cwd();
 
-  const claudeBin = resolveClaudeBinary();
-  if (!claudeBin) {
+  const plannerBackends = resolvePlannerBackends(params.enabledWorkers);
+  const claudeBin = plannerBackends.includes("claude_code") ? resolveClaudeBinary() : undefined;
+  if (plannerBackends.includes("claude_code") && !claudeBin) {
     throw new Error("claude binary not found on PATH");
   }
+  const claudeCommand = claudeBin ?? "claude";
 
   const scoutDir = resolveScoutDir(runId, goalsDir);
   fs.mkdirSync(scoutDir, { recursive: true });
@@ -577,13 +620,18 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   let plannerBackendUsed: PlannerBackendId | undefined;
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
-  let attemptNumber = 1;
+  let attemptIndex = 0;
+  let finalAttemptNumber = 0;
   let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
+  const defaultPlannerBackend: PlannerBackendId = plannerBackends[0] ?? "claude_code";
 
-  while (true) {
-    const backend = attemptNumber === 1 ? "claude_code" : "codex";
+  while (attemptIndex < plannerBackends.length) {
+    const backend = plannerBackends[attemptIndex];
+    if (!backend) break;
+    const attemptNumber = attemptIndex + 1;
+    finalAttemptNumber = attemptNumber;
     const prompt = backend === "codex" ? codexPrompt : claudePrompt;
-    const command = backend === "claude_code" ? claudeBin : "codex";
+    const command = backend === "claude_code" ? claudeCommand : "codex";
     const args =
       backend === "claude_code"
         ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS]
@@ -637,8 +685,17 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         if (degradedReason) {
           plannerDegradedReason = degradedReason;
           plannerDegradedResetHint = extractResetHint(errMsg);
-          attemptNumber += 1;
-          continue;
+          if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
+            attemptIndex += 1;
+            continue;
+          }
+          throw new Error(
+            formatCodexFallbackDisabledError({
+              context: "Planning",
+              degradedReason,
+              resetHint: plannerDegradedResetHint,
+            }),
+          );
         }
       }
 
@@ -652,7 +709,6 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   if (!procResult) {
     throw new Error("Planning process failed before producing output.");
   }
-  const finalAttemptNumber = attemptNumber;
   const degradedMetadata =
     plannerDegradedReason && plannerBackendUsed
       ? {
@@ -676,7 +732,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     if (scoutResult.status === "error") {
       writeAttemptBundle(scoutDir, {
         attemptNumber: finalAttemptNumber,
-        backend: plannerBackendUsed ?? "claude_code",
+        backend: plannerBackendUsed ?? defaultPlannerBackend,
         outcome: "failed",
         errorClassification: scoutResult.errorKind,
         resultFile: SCOUT_REPORT_FILE,
@@ -689,7 +745,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     if (scoutResult.status === "needs_clarification") {
       writeAttemptBundle(scoutDir, {
         attemptNumber: finalAttemptNumber,
-        backend: plannerBackendUsed ?? "claude_code",
+        backend: plannerBackendUsed ?? defaultPlannerBackend,
         outcome: "blocked",
         errorClassification: "needs_clarification",
         resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
@@ -722,7 +778,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   } catch (err) {
     writeAttemptBundle(scoutDir, {
       attemptNumber: finalAttemptNumber,
-      backend: plannerBackendUsed ?? "claude_code",
+      backend: plannerBackendUsed ?? defaultPlannerBackend,
       outcome: "failed",
       errorClassification: err instanceof PlanParseError ? "parse" : "validation",
       resultFile: fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
@@ -737,7 +793,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   if ("blocked" in parsedPlan) {
     writeAttemptBundle(scoutDir, {
       attemptNumber: finalAttemptNumber,
-      backend: plannerBackendUsed ?? "claude_code",
+      backend: plannerBackendUsed ?? defaultPlannerBackend,
       outcome: "blocked",
       errorClassification: "needs_clarification",
       resultFile: fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
@@ -757,13 +813,13 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   }
 
   const effectivePlan = plannerDegradedReason
-    ? rewritePlanForDegradedPlanner(parsedPlan)
+    ? rewritePlanForDegradedPlanner(parsedPlan, params.enabledWorkers)
     : parsedPlan;
   writeCanonicalPlanArtifact(scoutDir, effectivePlan);
 
   writeAttemptBundle(scoutDir, {
     attemptNumber: finalAttemptNumber,
-    backend: plannerBackendUsed ?? "claude_code",
+    backend: plannerBackendUsed ?? defaultPlannerBackend,
     outcome: "complete",
     resultFile: EXECUTION_PLAN_FILE,
     logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
