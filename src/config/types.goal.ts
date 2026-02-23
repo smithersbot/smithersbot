@@ -1,5 +1,7 @@
 export type ClaudeCodeAuthMode = "subscription" | "api_key";
 export type PlanAutocheckMode = "codex" | "claude_code" | "off";
+export type CliWorkerId = "codex" | "claude_code";
+export type EnabledWorkers = CliWorkerId[];
 
 export type GitHubPushConfig = {
   /** Enable pushing run branches to GitHub after goal completion. Default: false. */
@@ -25,6 +27,8 @@ export type GoalConfig = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Auto-review backend for plans before sending them to users. */
   planAutocheck?: PlanAutocheckMode;
+  /** Enabled CLI workers for goal planning and execution. */
+  enabledWorkers?: EnabledWorkers;
   /** GitHub push integration for completed goal runs. */
   githubPush?: GitHubPushConfig;
 };

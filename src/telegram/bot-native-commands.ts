@@ -501,6 +501,7 @@ export const registerTelegramNativeCommands = ({
         registerGatewayRestartCommand({
           bot,
           cfg,
+          accountId,
           telegramCfg,
           allowFrom,
           groupAllowFrom,

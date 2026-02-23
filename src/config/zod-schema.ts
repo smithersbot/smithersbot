@@ -463,6 +463,10 @@ export const MoltbotSchema = z
         readOnlyRoots: z.array(z.string()).optional(),
         claudeCodeAuth: z.enum(["subscription", "api_key"]).optional(),
         planAutocheck: z.enum(["codex", "claude_code", "off"]).optional(),
+        enabledWorkers: z
+          .array(z.enum(["codex", "claude_code"]))
+          .min(1)
+          .optional(),
         githubPush: z
           .object({
             enabled: z.boolean().optional(),

@@ -5,10 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const triggerMoltbotRestartMock = vi.fn();
 const scheduleGatewaySigusr1RestartMock = vi.fn();
+const writeRestartSentinelMock = vi.fn();
 
 vi.mock("../infra/restart.js", () => ({
   scheduleGatewaySigusr1Restart: (...args: unknown[]) => scheduleGatewaySigusr1RestartMock(...args),
   triggerMoltbotRestart: (...args: unknown[]) => triggerMoltbotRestartMock(...args),
+}));
+vi.mock("../infra/restart-sentinel.js", () => ({
+  writeRestartSentinel: (...args: unknown[]) => writeRestartSentinelMock(...args),
 }));
 
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -32,7 +36,7 @@ type AuditEntry = {
 let testStateDir = "";
 let previousStateDir: string | undefined;
 
-function createHarness(params?: { allowFrom?: Array<string | number> }) {
+function createHarness(params?: { allowFrom?: Array<string | number>; accountId?: string }) {
   const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const bot = {
@@ -45,6 +49,7 @@ function createHarness(params?: { allowFrom?: Array<string | number> }) {
   registerGatewayRestartCommand({
     bot,
     cfg: {} as MoltbotConfig,
+    accountId: params?.accountId ?? "test-account",
     telegramCfg: {} as TelegramAccountConfig,
     allowFrom: params?.allowFrom ?? [AUTHORIZED_USER_ID],
     groupAllowFrom: [],
@@ -115,6 +120,8 @@ describe("gateway_restart telegram command", () => {
     });
     triggerMoltbotRestartMock.mockReset();
     triggerMoltbotRestartMock.mockReturnValue({ ok: true, method: "systemd", tried: [] });
+    writeRestartSentinelMock.mockReset();
+    writeRestartSentinelMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -168,11 +175,11 @@ describe("gateway_restart telegram command", () => {
     await handler(createCtx({ chatId: 7, userId: authorizedUserId }));
     await handler(createCtx({ chatId: 7, userId: authorizedUserId }));
 
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
-    expect(sendMessage.mock.calls[1]?.[1]).toContain("cooldown");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("cooldown");
     expect(listTriggerRequests()).toHaveLength(0);
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(writeRestartSentinelMock).toHaveBeenCalledTimes(1);
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
 
     const entries = readAuditEntries();
@@ -188,8 +195,20 @@ describe("gateway_restart telegram command", () => {
 
     await handler(createCtx({ chatId: 88, userId: authorizedUserId }));
 
-    expect(sendMessage).toHaveBeenCalledWith(88, expect.stringContaining("restart scheduled"));
+    expect(sendMessage).not.toHaveBeenCalled();
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(writeRestartSentinelMock).toHaveBeenCalledWith({
+      kind: "restart",
+      status: "ok",
+      ts: expect.any(Number),
+      sessionKey: "telegram:88",
+      deliveryContext: {
+        channel: "telegram",
+        to: "88",
+        accountId: "test-account",
+      },
+      message: "Gateway restarted.",
+    });
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
     expect(listTriggerRequests()).toHaveLength(0);
 
@@ -212,8 +231,7 @@ describe("gateway_restart telegram command", () => {
 
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
     expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
+    expect(sendMessage).not.toHaveBeenCalled();
     expect(listTriggerRequests()).toHaveLength(0);
   });
 
@@ -240,10 +258,9 @@ describe("gateway_restart telegram command", () => {
 
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
     expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("restart scheduled");
-    expect(sendMessage.mock.calls[1]?.[1]).toContain("direct restart failed");
-    expect(sendMessage.mock.calls[1]?.[1]).toContain("Fallback queued");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("direct restart failed");
+    expect(sendMessage.mock.calls[0]?.[1]).toContain("Fallback queued");
 
     const triggerFiles = listTriggerRequests();
     expect(triggerFiles).toHaveLength(1);

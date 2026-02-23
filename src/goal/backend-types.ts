@@ -1,7 +1,19 @@
+import type { CliWorkerId, GoalConfig } from "../config/types.goal.js";
+
 // Types for CLI worker backends used by /goal execution.
 
 /** Supported execution backends for goal steps. */
 export type GoalBackendId = "pi" | "codex" | "claude_code";
+
+const DEFAULT_ENABLED_WORKERS: CliWorkerId[] = ["codex", "claude_code"];
+
+export function resolveEnabledWorkers(config?: GoalConfig): CliWorkerId[] {
+  const configuredWorkers = config?.enabledWorkers;
+  if (!configuredWorkers || configuredWorkers.length === 0) {
+    return [...DEFAULT_ENABLED_WORKERS];
+  }
+  return [...configuredWorkers];
+}
 
 /** Result of probing whether a CLI backend is available. */
 export type BackendAvailability = {

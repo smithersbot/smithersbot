@@ -13,6 +13,7 @@ import type {
 } from "../config/types.js";
 import { resolveStateDir } from "../config/paths.js";
 import { scheduleGatewaySigusr1Restart, triggerMoltbotRestart } from "../infra/restart.js";
+import { writeRestartSentinel, type RestartSentinelPayload } from "../infra/restart-sentinel.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const GATEWAY_RESTART_COMMAND = "gateway_restart";
@@ -57,6 +58,7 @@ type GatewayRestartAuditEntry = {
 type RegisterGatewayRestartCommandParams = {
   bot: Bot;
   cfg: MoltbotConfig;
+  accountId: string;
   telegramCfg: TelegramAccountConfig;
   allowFrom?: Array<string | number>;
   groupAllowFrom?: Array<string | number>;
@@ -172,6 +174,7 @@ function decideGatewayRestart(params: {
 export function registerGatewayRestartCommand({
   bot,
   cfg,
+  accountId,
   telegramCfg,
   allowFrom,
   groupAllowFrom,
@@ -245,9 +248,28 @@ export function registerGatewayRestartCommand({
       // Acknowledge command even if audit write fails.
     }
 
-    await bot.api.sendMessage(chatId, decision.message);
+    if (!decision.accepted) {
+      await bot.api.sendMessage(chatId, decision.message);
+      return;
+    }
 
-    if (!decision.accepted) return;
+    const sentinelPayload: RestartSentinelPayload = {
+      kind: "restart",
+      status: "ok",
+      ts: Date.now(),
+      sessionKey: `telegram:${chatId}`,
+      deliveryContext: {
+        channel: "telegram",
+        to: String(chatId),
+        accountId,
+      },
+      message: "Gateway restarted.",
+    };
+    try {
+      await writeRestartSentinel(sentinelPayload);
+    } catch {
+      // ignore: sentinel is best-effort
+    }
 
     const restartAttempt = triggerMoltbotRestart();
     if (restartAttempt.ok) return;
