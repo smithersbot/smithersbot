@@ -577,6 +577,14 @@ function buildChatCommands(): ChatCommandDefinition[] {
       formatArgs: COMMAND_ARG_FORMATTERS.queue,
     }),
     defineChatCommand({
+      key: "create_repo",
+      description: "Create a private GitHub repo for a local directory.",
+      textAlias: "/create_repo",
+      scope: "text",
+      category: "tools",
+      acceptsArgs: true,
+    }),
+    defineChatCommand({
       key: "bash",
       description: "Run host shell commands (host-only).",
       textAlias: "/bash",

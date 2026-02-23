@@ -47,6 +47,7 @@ import {
   buildTelegramGroupPeerId,
 } from "./bot/helpers.js";
 import { firstDefined } from "./bot-access.js";
+import { CREATE_REPO_COMMAND_SPEC, registerCreateRepoCommand } from "./create-repo-command.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
 import {
@@ -164,6 +165,7 @@ export const registerTelegramNativeCommands = ({
   const goalSpecs = nativeEnabled ? GOAL_COMMAND_SPECS : [];
   const repoChatSpecs = nativeEnabled ? REPO_CHAT_COMMAND_SPECS : [];
   const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
+  const createRepoSpecs = nativeEnabled ? [CREATE_REPO_COMMAND_SPEC] : [];
   const nightwatchSpecs = nativeEnabled ? NIGHTWATCH_COMMAND_SPECS : [];
   const allCommands: Array<{ command: string; description: string }> = [
     ...nativeCommands.map((command) => ({
@@ -174,6 +176,7 @@ export const registerTelegramNativeCommands = ({
     ...goalSpecs,
     ...repoChatSpecs,
     ...gatewayRestartSpecs,
+    ...createRepoSpecs,
     ...nightwatchSpecs,
     ...customCommands,
   ];
@@ -496,6 +499,17 @@ export const registerTelegramNativeCommands = ({
           commandFragmentBuffer,
         });
         registerGatewayRestartCommand({
+          bot,
+          cfg,
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          shouldSkipUpdate,
+        });
+        registerCreateRepoCommand({
           bot,
           cfg,
           telegramCfg,
