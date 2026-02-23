@@ -92,6 +92,7 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   },
   { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
+  { command: "goal_github_push", description: "Toggle auto GitHub push + PR for completed runs" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -156,6 +157,7 @@ function serializedStepResultsToMap(
 }
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
+const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
 type PlanAutocheckDisplayInfo = {
@@ -3011,6 +3013,73 @@ export function registerTelegramGoalCommands({
       nextMode === "off"
         ? "Goal plan autocheck disabled."
         : `Goal plan autocheck set to \`${nextMode}\`.`;
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      confirmation,
+      runtime,
+      resolved.threadIdForSend,
+      replyToMessageId,
+    );
+  });
+
+  // /goal_github_push [on|off]
+  bot.command("goal_github_push", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
+
+    const rawArg = ctx.match?.trim().toLowerCase() ?? "";
+    if (!rawArg) {
+      const current = cfg.goal?.githubPush?.enabled ? "on" : "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `GitHub push is currently \`${current}\`.\n${GOAL_GITHUB_PUSH_USAGE}`,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (rawArg !== "on" && rawArg !== "off") {
+      const current = cfg.goal?.githubPush?.enabled ? "on" : "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Invalid argument: \`${rawArg}\`.\n${GOAL_GITHUB_PUSH_USAGE}\nCurrent: \`${current}\``,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Config writes are disabled for this Telegram account.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const enabled = rawArg === "on";
+    const nextConfig = loadConfig();
+    nextConfig.goal ??= {};
+    nextConfig.goal.githubPush = { ...nextConfig.goal.githubPush, enabled };
+    await writeConfigFile(nextConfig);
+
+    cfg.goal ??= {};
+    cfg.goal.githubPush = { ...cfg.goal.githubPush, enabled };
+
+    const confirmation = enabled
+      ? "GitHub push enabled. Completed runs will push branch + open PR."
+      : "GitHub push disabled.";
     await sendGoalReply(
       bot,
       resolved.chatId,
