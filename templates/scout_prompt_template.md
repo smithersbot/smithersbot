@@ -15,6 +15,13 @@ GOAL_ID: {{GOAL_ID}}
    - You may exceed {{NODE_COUNT_MAX}} only if strictly necessary and nodes remain milestone-sized.
 3. Write all output files to {{OUTPUT_DIR}}/ (create subdirectories as needed).
 
+## How to Explore
+
+- Start with entry points mentioned in the goal (commands, routes, functions named in the goal text). Find those files first.
+- Trace imports and call chains from those entry points to understand the surrounding architecture.
+- Read test files adjacent to implementation files to understand expected behavior and existing coverage.
+- Check for existing patterns — if the goal says "add X", find existing similar X implementations to follow as a template.
+
 ## Output Readability Rules
 
 - Mermaid graph node labels must be short titles only (roughly <= 60 characters).
@@ -72,6 +79,12 @@ Notes on the example:
 | add-health-tests | Impl | Add HTTP tests for /health | pnpm test path/to/test-file.test.ts | 3 | 2 | 2 |
 | update-api-docs | Other | Document /health endpoint | rg "/health" -n docs && echo "docs updated" | 2 | 1 | 2 |
 | run-full-suite | Integration | Run full suite | pnpm test | 2 | 2 | 1 |
+
+### Calibration Anchors
+
+- **Effort:** 1 = trivial one-liner change, 2 = small focused change (~10 min), 3 = moderate implementation (~20 min), 4 = substantial multi-file work (~30 min), 5 = complex cross-cutting change (30+ min)
+- **Risk:** 1 = safe isolated change, 3 = touches shared code, 5 = changes critical paths or public APIs
+- **Uncertainty:** 1 = well-understood with clear approach, 3 = some unknowns, 5 = significant unknowns requiring exploration
 
 ## Edge Justifications
 
