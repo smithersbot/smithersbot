@@ -595,6 +595,9 @@ export async function goalResumeCommand(
     runId: savedRunId,
     workingDir,
     config: opts.config,
+    ...(opts.config?.goal?.enabledWorkers
+      ? { enabledWorkers: opts.config.goal.enabledWorkers }
+      : {}),
     model,
     maxTurnsPerTask: 5,
     timeoutMs: 300_000,

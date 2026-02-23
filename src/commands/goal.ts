@@ -342,6 +342,9 @@ export async function goalCommand(
       runId,
       workingDir,
       config: opts.config,
+      ...(opts.config?.goal?.enabledWorkers
+        ? { enabledWorkers: opts.config.goal.enabledWorkers }
+        : {}),
       model: opts.model,
       maxTurnsPerTask: 5,
       timeoutMs: 300_000,

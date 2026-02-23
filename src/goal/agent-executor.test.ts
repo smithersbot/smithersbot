@@ -12,10 +12,19 @@ const mockSpawnSync = vi.fn();
 const mockExecFileSync = vi.fn();
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
+const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
+const executedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
 
 class MockCliTaskRunner {
-  constructor(_params: unknown) {}
+  private readonly backend: Exclude<GoalBackendId, "pi">;
+
+  constructor(params: { backend: Exclude<GoalBackendId, "pi"> }) {
+    this.backend = params.backend;
+    constructedCliBackends.push(params.backend);
+  }
+
   execute(context: TaskRunnerContext) {
+    executedCliBackends.push(this.backend);
     return mockCliExecute(context);
   }
 }
@@ -134,6 +143,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       { id: "codex", available: true },
       { id: "claude_code", available: true },
     ];
+    constructedCliBackends.length = 0;
+    executedCliBackends.length = 0;
   });
 
   it("completes a task via CLI runner and marks run done", async () => {
@@ -164,6 +175,81 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       expect(outcome.summary).toContain("**Retries** 0 retries");
       expect(outcome.summary).toContain("**Goal ID:** run-cli-");
     }
+  });
+
+  it("clamps claude_code steps to codex when codex is the only enabled worker", async () => {
+    const step = makeStep({ backend: "claude_code", executedBackend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done via codex",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-only-clamp",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex"],
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("codex");
+    expect(executedCliBackends).toEqual(["codex"]);
+    expect(constructedCliBackends).toEqual(["codex"]);
+  });
+
+  it("clamps codex steps to claude_code when claude_code is the only enabled worker", async () => {
+    const step = makeStep({ backend: "codex", executedBackend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done via claude",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-claude-only-clamp",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(executedCliBackends).toEqual(["claude_code"]);
+    expect(constructedCliBackends).toEqual(["claude_code"]);
+  });
+
+  it("keeps existing CLI backend routing when both workers are enabled", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done via claude",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-both-workers",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(executedCliBackends).toEqual(["claude_code"]);
+    expect(constructedCliBackends).toEqual(["codex", "claude_code"]);
   });
 
   it("omits manualTests and emits manualTestsError when manual-test auth fails", async () => {
@@ -778,6 +864,46 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(outcome.status).toBe("done");
     expect(step.backend).toBe("codex");
     expect(step.executedBackend).toBe("codex");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
+  it("does not rewrite degraded planner backends to codex when codex is disabled", async () => {
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex intentionally disabled" },
+      { id: "claude_code", available: true },
+    ];
+
+    const step = makeStep({
+      backend: "claude_code",
+      executedBackend: "claude_code",
+      status: "blocked",
+      blockedReason: "error",
+      blockedQuestion: "Previous Anthropic limit",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Recovered with claude",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-degraded-claude-only",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      serializedRun: { plannerDegradedReason: "anthropic_usage_limit" } as unknown as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.backend).toBe("claude_code");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(executedCliBackends).toEqual(["claude_code"]);
+    expect(constructedCliBackends).toEqual(["claude_code"]);
     expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 

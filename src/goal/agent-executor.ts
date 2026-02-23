@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 
 import type { MoltbotConfig } from "../config/config.js";
-import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 import {
   loadAttemptBundles,
   resolveWorkerDir,
@@ -13,7 +13,7 @@ import {
 } from "./attempt-bundle.js";
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
-import type { GoalBackendId } from "./backend-types.js";
+import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
 import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
@@ -55,7 +55,7 @@ const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_MAX_RALPH_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 1000;
-const DEFAULT_BACKEND: GoalBackendId = "claude_code";
+const DEFAULT_BACKEND: CliWorkerId = "claude_code";
 const DEFAULT_MAX_BUILD_GATE_FIX_CYCLES = 2;
 const BUILD_GATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
 const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
@@ -72,7 +72,11 @@ function isAnthropicPlannerDegraded(
   return reason === "anthropic_rate_limit" || reason === "anthropic_usage_limit";
 }
 
-function rewriteStepBackendsForDegradedPlanner(step: PlanStep): void {
+function rewriteStepBackendsForDegradedPlanner(
+  step: PlanStep,
+  enabledWorkers: CliWorkerId[],
+): void {
+  if (!enabledWorkers.includes("codex")) return;
   if (!step.backend || step.backend === "claude_code") {
     step.backend = "codex";
   }
@@ -99,6 +103,7 @@ export type ExecuteGoalParams = {
   runId: string;
   workingDir: string;
   config?: MoltbotConfig;
+  enabledWorkers?: CliWorkerId[];
   provider?: string;
   model?: string;
   maxTurnsPerTask?: number;
@@ -331,6 +336,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     runId,
     workingDir,
     config,
+    enabledWorkers,
     maxTurnsPerTask = DEFAULT_MAX_TURNS_PER_TASK,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     retryConfig,
@@ -352,6 +358,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   session.buildGateResults ??= {};
 
   const effectiveAbort = abortSignal ?? new AbortController().signal;
+  const resolvedEnabledWorkers = resolveEnabledWorkers(
+    enabledWorkers ? { enabledWorkers } : config?.goal,
+  );
   const maxRalphAttempts = retryConfig?.maxRalphAttempts ?? DEFAULT_MAX_RALPH_ATTEMPTS;
   const buildGateFixCounts = new Map<string, number>(
     Object.entries(params.serializedRun?.buildGateFixCounts ?? session.buildGateFixCounts),
@@ -431,11 +440,14 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const degradedPlanner =
     backendOverride !== "claude_code" &&
     isAnthropicPlannerDegraded(params.serializedRun?.plannerDegradedReason);
-  const defaultBackend: GoalBackendId = degradedPlanner ? "codex" : DEFAULT_BACKEND;
+  const defaultCliBackend: CliWorkerId =
+    resolvedEnabledWorkers.length === 1 ? resolvedEnabledWorkers[0]! : DEFAULT_BACKEND;
+  const defaultBackend: GoalBackendId =
+    degradedPlanner && resolvedEnabledWorkers.includes("codex") ? "codex" : defaultCliBackend;
 
   if (degradedPlanner) {
     for (const step of plan.steps) {
-      rewriteStepBackendsForDegradedPlanner(step);
+      rewriteStepBackendsForDegradedPlanner(step, resolvedEnabledWorkers);
     }
   }
 
@@ -447,14 +459,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     model: params.model,
     maxTurnsPerTask,
   });
-  const cliRunners: Record<Exclude<GoalBackendId, "pi">, TaskRunner> = {
-    codex: new CliTaskRunner({ backend: "codex", model: params.model }),
-    claude_code: new CliTaskRunner({
+  const cliRunners: Partial<Record<CliWorkerId, TaskRunner>> = {};
+  if (resolvedEnabledWorkers.includes("codex")) {
+    cliRunners.codex = new CliTaskRunner({ backend: "codex", model: params.model });
+  }
+  if (resolvedEnabledWorkers.includes("claude_code")) {
+    cliRunners.claude_code = new CliTaskRunner({
       backend: "claude_code",
       model: params.model,
       claudeCodeAuth: params.claudeCodeAuth,
-    }),
-  };
+    });
+  }
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -489,7 +504,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const taskStartMs = Date.now();
     const taskTimeoutMs = resolveTaskTimeoutMs(task.durationMinutes, timeoutMs);
 
-    const backend = resolveBackendForStep(task, backendOverride, defaultBackend);
+    const backend = clampBackendForEnabledWorkers(
+      resolveBackendForStep(task, backendOverride, defaultBackend),
+      resolvedEnabledWorkers,
+    );
     const availabilityResult = isBackendAvailable(backend, availability);
     if (!availabilityResult.available) {
       const reason = availabilityResult.reason ? `: ${availabilityResult.reason}` : "";
@@ -503,7 +521,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       continue;
     }
 
-    if (!task.executedBackend) task.executedBackend = backend;
+    if (task.executedBackend !== backend) task.executedBackend = backend;
 
     const runner = backend === "pi" ? piRunner : cliRunners[backend];
     if (!runner) {
@@ -959,6 +977,15 @@ function resolveBackendForStep(
   if (step.executedBackend) return step.executedBackend;
   if (step.backend) return step.backend;
   return fallback;
+}
+
+function clampBackendForEnabledWorkers(
+  backend: GoalBackendId,
+  enabledWorkers: CliWorkerId[],
+): GoalBackendId {
+  if (backend === "pi") return backend;
+  if (enabledWorkers.includes(backend)) return backend;
+  return enabledWorkers.length === 1 ? enabledWorkers[0]! : backend;
 }
 
 function applyTaskResult(
