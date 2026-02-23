@@ -170,17 +170,31 @@ export function registerCreateRepoCommand({
       return;
     }
 
-    // Parse arguments: first token = path, optional second = custom repo name
-    const tokens = rawArgs.split(/\s+/);
-    const rawPath = tokens[0];
-    const customRepoName = tokens[1] || undefined;
+    // Parse arguments: try full string as path first, then split off last token as custom name.
+    // This handles paths with spaces like "~/Separation Agreement Context".
+    let resolvedPath: string | undefined;
+    let customRepoName: string | undefined;
 
-    // Resolve directory path
-    const resolvedPath = resolveDirectoryPath(rawPath);
+    // Strategy 1: try the full rawArgs as a directory path
+    resolvedPath = resolveDirectoryPath(rawArgs);
+
+    if (!resolvedPath) {
+      // Strategy 2: split off the last token as a candidate custom repo name
+      const lastSpaceIdx = rawArgs.lastIndexOf(" ");
+      if (lastSpaceIdx > 0) {
+        const candidatePath = rawArgs.slice(0, lastSpaceIdx);
+        const candidateName = rawArgs.slice(lastSpaceIdx + 1);
+        resolvedPath = resolveDirectoryPath(candidatePath);
+        if (resolvedPath) {
+          customRepoName = candidateName;
+        }
+      }
+    }
+
     if (!resolvedPath) {
       await bot.api.sendMessage(
         chatId,
-        `Directory not found: ${rawPath}\nPlease provide a valid directory path.`,
+        `Directory not found: ${rawArgs}\nPlease provide a valid directory path.`,
       );
       return;
     }
@@ -254,7 +268,7 @@ export function registerCreateRepoCommand({
       if (errMsg.includes("already exists")) {
         await bot.api.sendMessage(
           chatId,
-          `A GitHub repo named "${repoName}" already exists. Choose a different name:\n/create_repo ${rawPath} <new-name>`,
+          `A GitHub repo named "${repoName}" already exists. Choose a different name:\n/create_repo ${shortenHomePath(resolvedPath)} <new-name>`,
         );
       } else {
         await bot.api.sendMessage(chatId, `Failed to create repo: ${errMsg}`);
