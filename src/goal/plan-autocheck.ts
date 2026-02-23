@@ -22,19 +22,37 @@ const SESSION_NOT_FOUND_RE =
 const MAX_DETAIL_CHARS = 1_200;
 
 const REVIEW_INSTRUCTION = [
-  "You have access to the full codebase in the current working directory.",
-  "Before answering, inspect relevant source files to validate that the plan references",
-  "correct file paths, function names, module structures, and patterns.",
+  "## 1. ROLE",
+  "You are an expert plan reviewer validating an execution plan against the actual codebase.",
+  "The executing agent has full filesystem access (Read, Edit, Write, Glob, Grep, Bash),",
+  "can chain unlimited tool calls per turn, and can adapt to minor environmental differences at runtime.",
+  "",
+  "## 2. POSITIVE CHECKLIST (what to verify)",
+  "Before answering, inspect relevant source files in the current working directory to validate:",
+  "- File paths referenced in step descriptions actually exist",
+  "- Function names, API names, and module structures match the codebase",
+  "- Dependency ordering is correct (no step depends on work not yet done)",
+  "- Success criteria are specific and testable (not vague like 'add test coverage')",
+  "- Step descriptions reference concrete code locations, not just abstract concepts",
+  "- Constraints are actionable and don't contradict each other",
+  "",
+  "## 3. REJECTION CRITERIA (when to reject)",
   "Focus rejections on issues that make the plan fundamentally incorrect or unexecutable:",
   "wrong file paths in implementation steps, incorrect function or API names, missing step",
   "dependencies, or logic that contradicts the goal.",
+  "Reject plans where step descriptions are 1000+ characters of embedded sub-tasks —",
+  "these should be split into separate steps or simplified.",
+  "",
+  "## 4. APPROVAL CRITERIA (when to approve)",
   "Do NOT reject for minor issues in verification, cleanup, or restart steps that the",
   "executing agent can reasonably adapt to at runtime (for example environment path",
   "assumptions or fixture creation details), since the executing agent has full codebase access.",
   "If core implementation steps are correct and well-specified, approve the plan even if",
   "ancillary steps have minor environmental assumptions.",
-  'Then respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
-].join(" ");
+  "",
+  "## 5. OUTPUT FORMAT",
+  'Respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
+].join("\n");
 
 export type PlanAutocheckBackend = Exclude<PlanAutocheckMode, "off">;
 
