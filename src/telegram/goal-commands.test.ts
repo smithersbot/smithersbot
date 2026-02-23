@@ -1086,7 +1086,7 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("<b>TASK BLOCKED</b> (test-run): Step 1 needs input");
       expect(options.caption).toContain("<b>Ralph 1 (attempt 1):</b>");
       expect(options.caption).toContain(
-        "<b>Next:</b> I will continue to complete tasks that aren't dependant on this blocked task.",
+        "<b>Next:</b> I will continue to complete tasks that aren't dependent on this blocked task.",
       );
       expect(options.reply_markup?.inline_keyboard).toEqual([
         [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
