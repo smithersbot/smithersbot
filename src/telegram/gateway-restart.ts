@@ -249,14 +249,14 @@ export function registerGatewayRestartCommand({
 
     if (!decision.accepted) return;
 
+    const restartAttempt = triggerMoltbotRestart();
+    if (restartAttempt.ok) return;
+
     const scheduledRestart = scheduleGatewaySigusr1Restart({
       delayMs: 2000,
       reason: "telegram /gateway_restart",
     });
     if (scheduledRestart.ok) return;
-
-    const restartAttempt = triggerMoltbotRestart();
-    if (restartAttempt.ok) return;
 
     // Fallback path for environments where direct restart is unavailable:
     // keep compatibility with file-trigger restart workers if present.
