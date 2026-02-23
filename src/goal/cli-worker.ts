@@ -427,6 +427,10 @@ export function buildCliWorkerPrompt(params: {
   } = params;
   const lines: string[] = [];
 
+  lines.push(
+    "You are a goal worker: an autonomous coding agent executing one task from a multi-step plan. Complete your assigned task independently, verify your work, then report the result.",
+  );
+  lines.push("");
   lines.push(`GOAL: ${goal}`);
   lines.push("");
   lines.push("PLAN CONTEXT:");
@@ -455,6 +459,14 @@ export function buildCliWorkerPrompt(params: {
   if (step.dependsOn.length > 0) {
     lines.push(`Dependencies completed: ${step.dependsOn.join(", ")}`);
   }
+
+  const estMinutes = step.durationMinutes || 30;
+  const timeoutMinutes = Math.min(120, 2 * estMinutes);
+  lines.push("");
+  lines.push(
+    `TIME BUDGET: You have an estimated ${estMinutes} minutes for this task (max timeout: ${timeoutMinutes}m). Plan your work accordingly.`,
+  );
+
   if (step.successCriteria) {
     lines.push("");
     lines.push("SUCCESS CRITERIA:");
@@ -482,6 +494,11 @@ export function buildCliWorkerPrompt(params: {
     lines.push("Try a different approach. Do not repeat what failed.");
     lines.push("");
   }
+
+  lines.push(
+    "VERIFICATION: Before reporting completion, run the project's build and test commands to verify your changes work. Do not mark complete without verification.",
+  );
+  lines.push("");
 
   lines.push("RESULT PROTOCOL:");
   lines.push("When you are done, write your result to this exact file path:");
@@ -605,6 +622,8 @@ export function buildCliArgs(params: {
   const { backend, prompt, workingDir, denyFilePath, model } = params;
 
   if (backend === "codex") {
+    // Codex has no --append-system-prompt; prepend WORKER_CONTEXT to the prompt itself.
+    const fullPrompt = WORKER_CONTEXT ? `${WORKER_CONTEXT}\n\n${prompt}` : prompt;
     const codexAskForApproval = getCodexAskForApprovalPlacement();
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
@@ -620,7 +639,7 @@ export function buildCliArgs(params: {
     args.push("-c", "net.allowed=true");
 
     if (model) args.push("--model", model);
-    args.push(prompt);
+    args.push(fullPrompt);
     return args;
   }
 
