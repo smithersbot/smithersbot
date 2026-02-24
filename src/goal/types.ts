@@ -96,6 +96,8 @@ export type PlanStep = {
 export type PlanBuildGate = {
   commands: string[];
   runBetweenSteps: boolean;
+  /** Enable/disable post-execution system review (defaults to true). */
+  postExecutionReview?: boolean;
 };
 
 export type Plan = {

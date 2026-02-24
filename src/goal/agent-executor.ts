@@ -14,6 +14,8 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
+import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
@@ -38,6 +40,7 @@ import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { generateManualTests } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import { loadRun, resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
+import { resolveClaudeBinary } from "./scout.js";
 import type {
   GitCheckpointConfig,
   GoalLlmClient,
@@ -60,12 +63,28 @@ const DEFAULT_BACKEND: CliWorkerId = "claude_code";
 const DEFAULT_MAX_BUILD_GATE_FIX_CYCLES = 2;
 const BUILD_GATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
 const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
+const POST_EXECUTION_REVIEW_TIMEOUT_MS = 120_000;
+const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
+const POST_EXECUTION_REVIEW_ERROR_MAX_CHARS = 400;
+const CLAUDE_REVIEW_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
+const CLAUDE_REVIEW_READ_ONLY_PROMPT =
+  "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 
 const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
 
 const PI_RETRYABLE: PlanStep["blockedReason"][] = ["timeout", "network", "rate_limit"];
 const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
+
+type PostExecutionReviewDecision = {
+  approved: boolean;
+  issues: string[];
+};
+
+type PostExecutionReviewResult =
+  | { status: "approved"; issues: string[] }
+  | { status: "rejected"; issues: string[] }
+  | { status: "error"; reason: string };
 
 function isAnthropicPlannerDegraded(
   reason: string | undefined,
@@ -230,6 +249,278 @@ function formatExecError(error: unknown): string {
     .join("\n");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function collectText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
+  if (!isRecord(value)) return "";
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.content === "string") return value.content;
+  if (Array.isArray(value.content))
+    return value.content.map((entry) => collectText(entry)).join("");
+  if (isRecord(value.message)) return collectText(value.message);
+  if (isRecord(value.delta)) return collectText(value.delta);
+  if (isRecord(value.item)) return collectText(value.item);
+  if (isRecord(value.result)) return collectText(value.result);
+  return "";
+}
+
+function extractJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (!ch) continue;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function normalizeReviewIssues(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const normalized = raw
+    .map((issue) => (typeof issue === "string" ? issue.trim() : ""))
+    .filter((issue) => issue.length > 0);
+  return normalized.slice(0, POST_EXECUTION_REVIEW_MAX_ISSUES);
+}
+
+function parsePostExecutionReviewDecisionRecord(
+  raw: unknown,
+): PostExecutionReviewDecision | undefined {
+  if (!isRecord(raw) || typeof raw.approved !== "boolean") return undefined;
+  return { approved: raw.approved, issues: normalizeReviewIssues(raw.issues) };
+}
+
+function parsePostExecutionReviewDecisionFromText(
+  text: string,
+): PostExecutionReviewDecision | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    const decision = parsePostExecutionReviewDecisionRecord(parsed);
+    if (decision) return decision;
+  } catch {
+    // Fall through to lenient extraction.
+  }
+
+  for (const line of trimmed.split(/\r?\n/g)) {
+    const candidate = line.trim();
+    if (!candidate.startsWith("{") || !candidate.endsWith("}")) continue;
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      const decision = parsePostExecutionReviewDecisionRecord(parsed);
+      if (decision) return decision;
+    } catch {
+      continue;
+    }
+  }
+
+  for (const candidate of extractJsonObjectCandidates(trimmed)) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      const decision = parsePostExecutionReviewDecisionRecord(parsed);
+      if (decision) return decision;
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+function parsePostExecutionReviewDecision(stdout: string): PostExecutionReviewDecision | undefined {
+  const fromText = parsePostExecutionReviewDecisionFromText(stdout);
+  if (fromText) return fromText;
+
+  for (const line of stdout.split(/\r?\n/g)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      const direct = parsePostExecutionReviewDecisionRecord(parsed);
+      if (direct) return direct;
+      const viaResult = isRecord(parsed)
+        ? parsePostExecutionReviewDecisionRecord(parsed.result)
+        : undefined;
+      if (viaResult) return viaResult;
+      const text = collectText(parsed).trim();
+      if (!text) continue;
+      const fromLineText = parsePostExecutionReviewDecisionFromText(text);
+      if (fromLineText) return fromLineText;
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+function truncateSingleLine(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= POST_EXECUTION_REVIEW_ERROR_MAX_CHARS) return normalized;
+  return `${normalized.slice(0, POST_EXECUTION_REVIEW_ERROR_MAX_CHARS).trimEnd()}...`;
+}
+
+function describeCliFailure(result: RunCliProcessResult): string {
+  const detail = truncateSingleLine(result.stderr) || truncateSingleLine(result.stdout);
+  if (detail) return detail;
+  if (result.signal) return `terminated by ${result.signal}`;
+  return `exit=${result.exitCode ?? "unknown"}`;
+}
+
+function resolvePostExecutionReviewBaseSha(
+  steps: PlanStep[],
+  checkpoints?: GoalSession["taskCheckpoints"],
+): string | undefined {
+  if (!checkpoints) return undefined;
+  const firstStepId = steps[0]?.id;
+  const firstSha = firstStepId ? checkpoints[firstStepId]?.baseSha : undefined;
+  if (firstSha) return firstSha;
+
+  for (const step of steps) {
+    const candidate = checkpoints[step.id]?.baseSha;
+    if (candidate) return candidate;
+  }
+
+  return undefined;
+}
+
+function buildPostExecutionReviewPrompt(params: {
+  goal: string;
+  steps: PlanStep[];
+  diff: string;
+}): string {
+  const stepLines = params.steps.map((step, index) => {
+    const headline = step.shortSummary?.trim() || step.description.trim();
+    const summary = step.taskSummary?.trim();
+    return `${index + 1}. ${step.id} — ${headline}${summary ? `\n   Result: ${summary}` : ""}`;
+  });
+
+  return [
+    "Review this diff for: code quality issues, missed edge cases, unnecessary complexity, security concerns, leftover debug code, incomplete error handling.",
+    "",
+    "Goal description:",
+    params.goal,
+    "",
+    "Plan step summaries:",
+    ...(stepLines.length > 0 ? stepLines : ["(no steps)"]),
+    "",
+    "Full diff:",
+    "```diff",
+    params.diff || "(no diff output)",
+    "```",
+    "",
+    'Return ONLY JSON with shape: {"approved": boolean, "issues": string[]}.',
+    "When approved is true, issues may be empty.",
+    "When approved is false, include concrete actionable issues.",
+  ].join("\n");
+}
+
+async function runPostExecutionReview(params: {
+  goal: string;
+  steps: PlanStep[];
+  diff: string;
+  workingDir: string;
+  claudeCodeAuth: ClaudeCodeAuthMode;
+  abortSignal: AbortSignal;
+}): Promise<PostExecutionReviewResult> {
+  const claudeBinary = resolveClaudeBinary();
+  if (!claudeBinary) {
+    return { status: "error", reason: "claude binary not found on PATH" };
+  }
+
+  const reviewPrompt = buildPostExecutionReviewPrompt({
+    goal: params.goal,
+    steps: params.steps,
+    diff: params.diff,
+  });
+
+  let result: RunCliProcessResult;
+  try {
+    result = await runCliProcess({
+      command: claudeBinary,
+      args: [
+        "-p",
+        "--output-format",
+        "json",
+        "--max-turns",
+        "1",
+        "--allowedTools",
+        CLAUDE_REVIEW_ALLOWED_TOOLS,
+        "--append-system-prompt",
+        CLAUDE_REVIEW_READ_ONLY_PROMPT,
+      ],
+      cwd: params.workingDir,
+      timeoutMs: POST_EXECUTION_REVIEW_TIMEOUT_MS,
+      stdin: reviewPrompt,
+      abortSignal: params.abortSignal,
+      env: buildClaudeCodeEnv(params.claudeCodeAuth),
+    });
+  } catch (error) {
+    return {
+      status: "error",
+      reason: `review process failed: ${truncateSingleLine(formatExecError(error)) || "unknown error"}`,
+    };
+  }
+
+  if (result.timedOut) {
+    return {
+      status: "error",
+      reason: `review timed out after ${(POST_EXECUTION_REVIEW_TIMEOUT_MS / 1000).toFixed(0)}s`,
+    };
+  }
+  if ((result.exitCode && result.exitCode !== 0) || result.signal) {
+    return { status: "error", reason: describeCliFailure(result) };
+  }
+
+  const decision = parsePostExecutionReviewDecision(result.stdout);
+  if (!decision) {
+    return { status: "error", reason: "review response was not valid JSON decision output" };
+  }
+
+  return decision.approved
+    ? { status: "approved", issues: decision.issues }
+    : { status: "rejected", issues: decision.issues };
+}
+
 function runBuildGateCommands(commands: string[], workingDir: string): BuildGateResult {
   for (const command of commands) {
     const trimmed = command.trim();
@@ -347,6 +638,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     onProgress,
     onStatusChange,
     abortSignal,
+    claudeCodeAuth = "subscription",
   } = params;
 
   const plan = session.plan;
@@ -879,6 +1171,226 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const allDone = orderedSteps.every((s) => s.status === "done");
   if (allDone) {
     session.state = "done";
+    let postExecutionReviewNote: string | undefined;
+    const shouldRunPostExecutionReview = plan.buildGate?.postExecutionReview !== false;
+    const reviewBaseSha = resolvePostExecutionReviewBaseSha(plan.steps, session.taskCheckpoints);
+
+    if (!shouldRunPostExecutionReview) {
+      postExecutionReviewNote =
+        "Post-execution review skipped: disabled by buildGate.postExecutionReview.";
+    } else if (!reviewBaseSha) {
+      postExecutionReviewNote = "Post-execution review skipped: no base SHA available.";
+    } else {
+      let reviewDiff: string | undefined;
+      try {
+        reviewDiff = execFileSync("git", ["-C", workingDir, "diff", `${reviewBaseSha}...HEAD`], {
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+          timeout: 15_000,
+        });
+      } catch (error) {
+        postExecutionReviewNote = `Post-execution review skipped: failed to collect diff (${truncateSingleLine(formatExecError(error))}).`;
+      }
+
+      if (reviewDiff !== undefined) {
+        onProgress?.("  [review] Running post-execution code review...");
+        const initialReview = await runPostExecutionReview({
+          goal: session.goal,
+          steps: orderedSteps,
+          diff: reviewDiff,
+          workingDir,
+          claudeCodeAuth,
+          abortSignal: effectiveAbort,
+        });
+
+        if (initialReview.status === "error") {
+          postExecutionReviewNote = `Post-execution review skipped: ${initialReview.reason}.`;
+        } else if (initialReview.status === "approved") {
+          postExecutionReviewNote = "Approved.";
+        } else {
+          const actionableIssues = initialReview.issues;
+          if (actionableIssues.length === 0) {
+            postExecutionReviewNote =
+              "Issues found, but reviewer did not provide actionable issue details.";
+          } else {
+            onProgress?.(
+              `  [review] Found ${actionableIssues.length} issue${actionableIssues.length === 1 ? "" : "s"}; running system-polish step.`,
+            );
+
+            const dependsOn = orderedSteps
+              .filter((step) => step.status === "done")
+              .map((step) => step.id);
+            const polishDescription = [
+              "Address post-execution review issues:",
+              ...actionableIssues.map((issue, index) => `${index + 1}. ${issue}`),
+            ].join("\n");
+            const existingPolishStep = plan.steps.find((step) => step.id === "system-polish");
+            const polishStep: PlanStep =
+              existingPolishStep ??
+              ({
+                id: "system-polish",
+                description: polishDescription,
+                shortSummary: "Apply review polish",
+                dependsOn,
+                successCriteria: "All review issues addressed",
+                constraints: ["No ralph; address the review issues directly in this attempt."],
+                status: "pending",
+                durationMinutes: 20,
+              } satisfies PlanStep);
+            if (!existingPolishStep) {
+              plan.steps.push(polishStep);
+            } else {
+              existingPolishStep.description = polishDescription;
+              existingPolishStep.shortSummary = "Apply review polish";
+              existingPolishStep.dependsOn = dependsOn;
+              existingPolishStep.successCriteria = "All review issues addressed";
+              existingPolishStep.constraints = [
+                "No ralph; address the review issues directly in this attempt.",
+              ];
+              existingPolishStep.status = "pending";
+              existingPolishStep.turnsUsed = 0;
+              existingPolishStep.taskSummary = undefined;
+              existingPolishStep.blockedReason = undefined;
+              existingPolishStep.blockedQuestion = undefined;
+              existingPolishStep.failedDetail = undefined;
+              existingPolishStep.ralphDetail = undefined;
+            }
+
+            const polishBackend = clampBackendForEnabledWorkers(
+              resolveBackendForStep(polishStep, backendOverride, defaultBackend),
+              resolvedEnabledWorkers,
+            );
+            if (polishStep.executedBackend !== polishBackend) {
+              polishStep.executedBackend = polishBackend;
+            }
+            const polishRunner = polishBackend === "pi" ? piRunner : cliRunners[polishBackend];
+            let polishAttempted = false;
+            if (!polishRunner) {
+              postExecutionReviewNote =
+                "Issues found. System polish skipped because no compatible backend was available.";
+            } else {
+              polishAttempted = true;
+              const polishStartMs = Date.now();
+              const polishWorkerDir = resolveWorkerDir(runId, polishStep.id);
+              const completedSummaries = orderedSteps
+                .filter((step) => step.status === "done" && step.taskSummary)
+                .map((step) => ({ id: step.id, summary: step.taskSummary! }));
+              const polishContext: TaskRunnerContext = {
+                task: polishStep,
+                plan,
+                goal: session.goal,
+                workingDir,
+                runId,
+                denyPolicy: HARD_DENIES,
+                completedSummaries,
+                attemptBundles: loadAttemptBundles(polishWorkerDir),
+                onProgress,
+                abortSignal: effectiveAbort,
+                timeoutMs: resolveTaskTimeoutMs(polishStep.durationMinutes, timeoutMs),
+              };
+
+              polishStep.status = "in_progress";
+              onTaskStart?.(polishStep.id);
+              onProgress?.(
+                `\n--- Task ${polishStep.id} [${polishBackend}]: ${polishStep.description} ---`,
+              );
+              const polishResult = await polishRunner.execute(polishContext);
+              let polishCompleted = false;
+              let polishTaskFailed = false;
+              if (polishResult.status === "ralph") {
+                polishStep.turnsUsed = polishResult.turnsUsed;
+                polishStep.status = "blocked";
+                polishStep.blockedReason = "task_failed";
+                polishStep.blockedQuestion =
+                  "system-polish returned ralph, and additional polish cycles are disabled.";
+                polishStep.failedDetail = {
+                  whatTried:
+                    polishResult.ralphDetail?.approachTried ?? "system-polish returned ralph.",
+                  errorType: "system_polish_ralph",
+                  suggestedNext: "Proceeding without additional polish attempts.",
+                  needsRevert: false,
+                };
+                polishStep.taskSummary = undefined;
+                polishStep.ralphDetail = undefined;
+                onProgress?.(
+                  "  [warn] system-polish returned ralph; continuing without additional polish cycles.",
+                );
+                polishTaskFailed = true;
+              } else {
+                applyTaskResult(polishStep, polishResult, onProgress);
+                polishCompleted = polishResult.status === "complete";
+                polishTaskFailed = polishStep.blockedReason === "task_failed";
+              }
+              recordTaskResult(session, polishStep, polishStartMs, onTaskUpdate);
+              if (polishCompleted) {
+                appendGoalWorkingEntry(
+                  runId,
+                  polishStep.id,
+                  "done",
+                  polishStep.taskSummary ?? "Completed.",
+                );
+              } else if (polishTaskFailed) {
+                appendGoalWorkingEntry(
+                  runId,
+                  polishStep.id,
+                  "failed",
+                  polishStep.failedDetail?.whatTried ?? polishStep.blockedQuestion ?? "Failed.",
+                );
+              }
+
+              let postPolishDiff = reviewDiff;
+              try {
+                postPolishDiff = execFileSync(
+                  "git",
+                  ["-C", workingDir, "diff", `${reviewBaseSha}...HEAD`],
+                  {
+                    encoding: "utf8",
+                    maxBuffer: 64 * 1024 * 1024,
+                    timeout: 15_000,
+                  },
+                );
+              } catch (error) {
+                onProgress?.(
+                  `  [warn] Post-polish diff collection failed: ${truncateSingleLine(formatExecError(error))}`,
+                );
+              }
+
+              const postPolishReview = await runPostExecutionReview({
+                goal: session.goal,
+                steps: orderedSteps,
+                diff: postPolishDiff,
+                workingDir,
+                claudeCodeAuth,
+                abortSignal: effectiveAbort,
+              });
+              if (postPolishReview.status === "approved") {
+                postExecutionReviewNote = "Approved after system-polish.";
+              } else {
+                const remainingIssues =
+                  postPolishReview.status === "rejected" && postPolishReview.issues.length > 0
+                    ? postPolishReview.issues
+                    : actionableIssues;
+                const issueLines = remainingIssues.map((issue) => `- ${issue}`).join("\n");
+                const suffix =
+                  postPolishReview.status === "error"
+                    ? `\nReview rerun failed after polish: ${postPolishReview.reason}.`
+                    : "";
+                postExecutionReviewNote = [
+                  "Issues found after review.",
+                  polishAttempted ? "System-polish executed once." : "",
+                  "Remaining issues:",
+                  issueLines,
+                  suffix,
+                ]
+                  .filter(Boolean)
+                  .join("\n");
+              }
+            }
+          }
+        }
+      }
+    }
+
     let prUrl: string | undefined;
     const githubPushConfig = config?.goal?.githubPush;
     if (gitCheckpointConfig?.enabled && githubPushConfig?.enabled) {
@@ -944,7 +1456,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       manualTests = undefined;
       manualTestsError = err instanceof Error ? err.message : String(err);
     }
-    const summary = buildGoalSummary({
+    const baseSummary = buildGoalSummary({
       goal: session.goal,
       goalHeadline: plan.shortSummary,
       runId,
@@ -953,6 +1465,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       manualTests,
       channel: params.channel,
     });
+    const summary = postExecutionReviewNote
+      ? `${baseSummary}\n\n**Post-Execution Review**\n${postExecutionReviewNote}`
+      : baseSummary;
     if (onStatusChange) {
       await onStatusChange({
         type: "all_done",

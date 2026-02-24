@@ -10,6 +10,8 @@ const mockLoadAttemptBundles = vi.fn<(dir: string) => AttemptBundle[]>();
 const mockWriteAttemptBundle = vi.fn<(dir: string, bundle: AttemptBundle) => void>();
 const mockSpawnSync = vi.fn();
 const mockExecFileSync = vi.fn();
+const mockRunCliProcess = vi.fn();
+const mockResolveClaudeBinary = vi.fn();
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
@@ -64,6 +66,14 @@ vi.mock("./attempt-bundle.js", () => ({
   resolveWorkerDir: () => WORKER_DIR,
   formatAttemptBundleSummary: (bundle: AttemptBundle) => JSON.stringify(bundle),
   writeAttemptBundle: (dir: string, bundle: AttemptBundle) => mockWriteAttemptBundle(dir, bundle),
+}));
+
+vi.mock("./cli-process.js", () => ({
+  runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
+}));
+
+vi.mock("./scout.js", () => ({
+  resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
 }));
 
 vi.mock("node:child_process", async () => {
@@ -138,6 +148,15 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       stderr: "",
     });
     mockExecFileSync.mockReturnValue("");
+    mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
+    mockRunCliProcess.mockResolvedValue({
+      stdout: '{"approved":true,"issues":[]}',
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 50,
+    });
     availability = [
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -421,6 +440,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   it("reverts on ralph and retries with ralph context", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
+    plan.buildGate = { commands: [], runBetweenSteps: false, postExecutionReview: false };
     const session = makeSession(plan);
     session.taskCheckpoints = { "1": { baseSha: "base-sha-1" } };
 
@@ -478,6 +498,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   it("escalates to blocked when ralph limit is reached", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
+    plan.buildGate = { commands: [], runBetweenSteps: false, postExecutionReview: false };
     const session = makeSession(plan);
     session.taskCheckpoints = { "1": { baseSha: "base-sha-2" } };
 
@@ -543,7 +564,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   it("retries failed build gate and forwards failure context to the next worker attempt", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
-    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: true };
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
     const session = makeSession(plan);
     session.taskCheckpoints = { "1": { baseSha: "base-sha-3" } };
 
@@ -599,7 +624,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   it("marks task blocked when build gate keeps failing after max fix cycles", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
-    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: true };
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
     const session = makeSession(plan);
     session.taskCheckpoints = { "1": { baseSha: "base-sha-4" } };
 
@@ -634,7 +663,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
   it("respects persisted build-gate fix counts when resuming", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
-    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: true };
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
     const session = makeSession(plan);
     session.taskCheckpoints = { "1": { baseSha: "base-sha-5" } };
 
@@ -722,6 +755,102 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.blockedQuestion).toContain("Final build gate failed.");
     expect(session.buildGateResults?.__final__?.passed).toBe(false);
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs post-execution review by default when a base SHA is available", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-review" } };
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: '{"approved":true,"issues":[]}',
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 20,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-review-approved",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    if (outcome.status === "done") {
+      expect(outcome.summary).toContain("**Post-Execution Review**");
+      expect(outcome.summary).toContain("Approved.");
+    }
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["-C", "/tmp/moltbot-goal-test", "diff", "base-sha-review...HEAD"],
+      expect.any(Object),
+    );
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs one system-polish step when review finds actionable issues", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-polish" } };
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Primary implementation done",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Polish applied",
+        turnsUsed: 1,
+      });
+
+    mockRunCliProcess
+      .mockResolvedValueOnce({
+        stdout: '{"approved":false,"issues":["Handle empty payloads in parser"]}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 25,
+      })
+      .mockResolvedValueOnce({
+        stdout: '{"approved":false,"issues":["Parser still misses empty payload edge case"]}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 30,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-review-polish",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockCliExecute).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    const polishStep = plan.steps.find((item) => item.id === "system-polish");
+    expect(polishStep).toBeDefined();
+    expect(polishStep?.successCriteria).toBe("All review issues addressed");
+    expect(polishStep?.dependsOn).toContain("1");
+    if (outcome.status === "done") {
+      expect(outcome.summary).toContain("System-polish executed once.");
+      expect(outcome.summary).toContain("Parser still misses empty payload edge case");
+    }
   });
 
   it("blocks when the selected backend is unavailable", async () => {

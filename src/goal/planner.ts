@@ -310,9 +310,12 @@ function parseBuildGate(raw: unknown): Plan["buildGate"] {
   const commands = buildGate.commands
     .map((value) => (typeof value === "string" ? value.trim() : ""))
     .filter((value) => value.length > 0);
+  const postExecutionReview =
+    typeof buildGate.postExecutionReview === "boolean" ? buildGate.postExecutionReview : undefined;
   return {
     commands,
     runBetweenSteps: buildGate.runBetweenSteps,
+    ...(postExecutionReview !== undefined ? { postExecutionReview } : {}),
   };
 }
 

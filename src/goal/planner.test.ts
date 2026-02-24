@@ -131,6 +131,7 @@ describe("planner", () => {
           buildGate: {
             commands: ["pnpm build", "pnpm test --filter goal"],
             runBetweenSteps: true,
+            postExecutionReview: false,
           },
           steps: [
             {
@@ -155,6 +156,7 @@ describe("planner", () => {
         expect(plan.buildGate).toEqual({
           commands: ["pnpm build", "pnpm test --filter goal"],
           runBetweenSteps: true,
+          postExecutionReview: false,
         });
         expect(plan.steps[0].successCriteria).toBe(
           "pnpm build exits 0 with full src/**/* include intact",
@@ -189,6 +191,38 @@ describe("planner", () => {
         expect(plan.buildGate).toBeUndefined();
         expect(plan.steps[0].successCriteria).toBeUndefined();
         expect(plan.steps[0].constraints).toEqual([]);
+      }
+    });
+
+    it("omits postExecutionReview when planner returns a non-boolean value", async () => {
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Fix build",
+          buildGate: {
+            commands: ["pnpm build"],
+            runBetweenSteps: true,
+            postExecutionReview: "yes",
+          },
+          steps: [
+            {
+              id: "fix-build",
+              description: "Fix imports and restore build health",
+              dependsOn: [],
+              durationMinutes: 15,
+              backend: "codex",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Fix build", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.buildGate).toEqual({
+          commands: ["pnpm build"],
+          runBetweenSteps: true,
+        });
       }
     });
 
