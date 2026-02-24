@@ -84,6 +84,7 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
       }
     }
 
+    fs.mkdirSync(cwd, { recursive: true });
     const proc: ChildProcess = spawn(command, args, {
       cwd,
       stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"],
