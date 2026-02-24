@@ -6,6 +6,7 @@ import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
+import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import {
@@ -153,6 +154,8 @@ async function retryPlanning(
   saveRun(run);
 
   try {
+    ensureGlobalConventions();
+
     const includeScoutArtifacts = !(
       run.scoutStatus === "skipped" && run.scoutSkipReason === "--no-scout flag"
     );

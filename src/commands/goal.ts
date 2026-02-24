@@ -7,6 +7,7 @@ import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { runCliPlanning } from "../goal/cli-planner.js";
+import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
@@ -169,6 +170,7 @@ export async function goalCommand(
   try {
     // Resolve auth mode early so planner and executor stay in sync
     const resolvedAuthMode = opts.claudeCodeAuth ?? opts.config?.goal?.claudeCodeAuth;
+    ensureGlobalConventions();
 
     // Phase 1: Single CLI planning pass (plan + scout artifacts)
     session.state = "planning";
