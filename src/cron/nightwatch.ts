@@ -1,8 +1,16 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { Bot } from "grammy";
 import type { MoltbotConfig } from "../config/config.js";
 import type { NightwatchConfig } from "../config/types.cron.js";
+import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
+import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { runCliProcess } from "../goal/cli-process.js";
+import { addLesson, loadLessons, removeLessons, type Lesson } from "../goal/lessons.js";
+import { resolveClaudeBinary } from "../goal/scout.js";
+import { getChildLogger } from "../logging.js";
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { createCaptureRuntime, handleGoal, sendGoalPlanResult } from "../telegram/goal-commands.js";
 import { CronService } from "./service.js";
@@ -15,11 +23,27 @@ export const NIGHTWATCH_DEFAULTS = {
 
 export const NIGHTWATCH_JOB_NAME = "nightwatch-daily";
 const NIGHTWATCH_SENTINEL_MESSAGE = "__nightwatch__";
+const LESSON_CONDENSE_TIMEOUT_MS = 120_000;
+const MAX_CONDENSED_LESSONS_PER_DIR = 25;
+const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
+const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
+const nightwatchLogger = getChildLogger({ module: "cron-nightwatch" });
 
 export type NightwatchRunResult =
   | { status: "ok"; summary: string }
   | { status: "skipped"; summary: string }
   | { status: "error"; error: string; summary?: string };
+
+type CondensedLesson = {
+  pattern: string;
+  lesson: string;
+  sourceLessonIds: string[];
+};
+
+type ParsedCondensedLessons = {
+  parsed: boolean;
+  lessons: CondensedLesson[];
+};
 
 export function expandTilde(p: string): string {
   if (!p.startsWith("~")) return p;
@@ -36,6 +60,486 @@ function runExecFileUtf8(command: string, args: string[]): Promise<string> {
       resolve(stdout);
     });
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function collectText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
+  if (!isRecord(value)) return "";
+  if (typeof value.text === "string") return value.text;
+  if (typeof value.content === "string") return value.content;
+  if (Array.isArray(value.content))
+    return value.content.map((entry) => collectText(entry)).join("");
+  if (isRecord(value.message)) return collectText(value.message);
+  if (isRecord(value.delta)) return collectText(value.delta);
+  if (isRecord(value.item)) return collectText(value.item);
+  if (isRecord(value.result)) return collectText(value.result);
+  return "";
+}
+
+function extractJsonObjectCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (!ch) continue;
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === "\\") {
+        escaping = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function parseJsonLines(text: string): Record<string, unknown>[] {
+  const parsed: Record<string, unknown>[] = [];
+  for (const line of text.split(/\r?\n/g)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const value = JSON.parse(trimmed) as unknown;
+      if (isRecord(value)) parsed.push(value);
+    } catch {
+      // Ignore non-JSON lines.
+    }
+  }
+  return parsed;
+}
+
+function normalizeSourceLessonIds(value: unknown, validIds: Set<string>): string[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const id = entry.trim();
+    if (!id || !validIds.has(id)) continue;
+    unique.add(id);
+  }
+  return [...unique];
+}
+
+function normalizeCondensedLesson(
+  value: unknown,
+  validIds: Set<string>,
+): CondensedLesson | undefined {
+  if (!isRecord(value)) return undefined;
+  const pattern =
+    typeof value.pattern === "string"
+      ? collapseWhitespace(value.pattern)
+      : typeof value.tag === "string"
+        ? collapseWhitespace(value.tag)
+        : "";
+  const lesson =
+    typeof value.lesson === "string"
+      ? collapseWhitespace(value.lesson)
+      : typeof value.text === "string"
+        ? collapseWhitespace(value.text)
+        : "";
+
+  if (!pattern || !lesson) return undefined;
+
+  const directSourceIds = normalizeSourceLessonIds(value.sourceLessonIds, validIds);
+  const sourceIdsAlias = normalizeSourceLessonIds(value.sourceIds, validIds);
+  const lessonIdsAlias = normalizeSourceLessonIds(value.lessonIds, validIds);
+  const sourceLessonIds =
+    directSourceIds.length > 0
+      ? directSourceIds
+      : sourceIdsAlias.length > 0
+        ? sourceIdsAlias
+        : lessonIdsAlias;
+
+  return { pattern, lesson, sourceLessonIds };
+}
+
+function parseCondensedLessonsFromUnknown(
+  value: unknown,
+  validIds: Set<string>,
+): ParsedCondensedLessons {
+  if (Array.isArray(value)) {
+    return {
+      parsed: true,
+      lessons: value
+        .map((entry) => normalizeCondensedLesson(entry, validIds))
+        .filter((entry): entry is CondensedLesson => Boolean(entry)),
+    };
+  }
+
+  if (!isRecord(value)) return { parsed: false, lessons: [] };
+
+  if (Array.isArray(value.lessons)) {
+    return {
+      parsed: true,
+      lessons: value.lessons
+        .map((entry) => normalizeCondensedLesson(entry, validIds))
+        .filter((entry): entry is CondensedLesson => Boolean(entry)),
+    };
+  }
+
+  if (Array.isArray(value.items)) {
+    return {
+      parsed: true,
+      lessons: value.items
+        .map((entry) => normalizeCondensedLesson(entry, validIds))
+        .filter((entry): entry is CondensedLesson => Boolean(entry)),
+    };
+  }
+
+  const direct = normalizeCondensedLesson(value, validIds);
+  if (direct) return { parsed: true, lessons: [direct] };
+
+  return { parsed: false, lessons: [] };
+}
+
+function parseCondensedLessonsFromCliOutput(
+  stdout: string,
+  validIds: Set<string>,
+): ParsedCondensedLessons {
+  const trimmed = stdout.trim();
+  if (!trimmed) return { parsed: false, lessons: [] };
+
+  try {
+    const parsed = parseCondensedLessonsFromUnknown(JSON.parse(trimmed), validIds);
+    if (parsed.parsed) return parsed;
+  } catch {
+    // Fall through to line/object extraction.
+  }
+
+  for (const line of trimmed.split(/\r?\n/g)) {
+    const candidate = line.trim();
+    if (!candidate.startsWith("{") || !candidate.endsWith("}")) continue;
+    try {
+      const parsed = parseCondensedLessonsFromUnknown(JSON.parse(candidate), validIds);
+      if (parsed.parsed) return parsed;
+    } catch {
+      continue;
+    }
+  }
+
+  for (const candidate of extractJsonObjectCandidates(trimmed)) {
+    try {
+      const parsed = parseCondensedLessonsFromUnknown(JSON.parse(candidate), validIds);
+      if (parsed.parsed) return parsed;
+    } catch {
+      continue;
+    }
+  }
+
+  const lines = parseJsonLines(trimmed);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const entry = lines[i]!;
+    const parsed = parseCondensedLessonsFromUnknown(entry, validIds);
+    if (parsed.parsed) return parsed;
+
+    const parsedResult = parseCondensedLessonsFromUnknown(entry.result, validIds);
+    if (parsedResult.parsed) return parsedResult;
+
+    const text = collectText(entry).trim();
+    if (!text) continue;
+
+    for (const textCandidate of extractJsonObjectCandidates(text)) {
+      try {
+        const parsedNested = parseCondensedLessonsFromUnknown(JSON.parse(textCandidate), validIds);
+        if (parsedNested.parsed) return parsedNested;
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return { parsed: false, lessons: [] };
+}
+
+function formatCliFailure(stdout: string, stderr: string, signal: NodeJS.Signals | null): string {
+  const detail = collapseWhitespace(stderr || stdout);
+  if (detail) return detail.slice(0, 260);
+  if (signal) return `terminated by ${signal}`;
+  return "unknown CLI error";
+}
+
+function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): string {
+  const payload = lessons.map((lesson) => ({
+    id: lesson.id,
+    pattern: lesson.pattern,
+    lesson: lesson.lesson,
+    runId: lesson.runId,
+    createdAt: lesson.createdAt,
+  }));
+
+  return [
+    "Condense and curate these project lessons for long-term reuse.",
+    `Working directory: ${workingDir}`,
+    `Return at most ${MAX_CONDENSED_LESSONS_PER_DIR} lessons by merging duplicates, dropping low-value entries, and generalizing where helpful.`,
+    "",
+    "Output requirements:",
+    'Return ONLY JSON with shape {"lessons":[{"pattern":"short-keyword","lesson":"1-3 sentence insight","sourceLessonIds":["input-id"]}]}',
+    "- sourceLessonIds should reference the input IDs that support each output lesson.",
+    `- Output must contain at most ${MAX_CONDENSED_LESSONS_PER_DIR} lessons.`,
+    "- Do not invent facts that are not grounded in the input lessons.",
+    '- If no lessons should remain, return {"lessons":[]}.',
+    "",
+    "Input lessons:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
+}
+
+function buildClaudeCondensePrompt(userPrompt: string): string {
+  const systemPrompt = [
+    "You condense lesson memory for a software project.",
+    'Output only JSON with shape {"lessons":[{"pattern":"...","lesson":"...","sourceLessonIds":["..."]}]}',
+    `Never return more than ${MAX_CONDENSED_LESSONS_PER_DIR} lessons.`,
+  ].join(" ");
+  return ["## System Prompt", systemPrompt, "", "## User Message", userPrompt].join("\n");
+}
+
+function buildCodexCondenseArgs(params: { workingDir: string; prompt: string }): string[] {
+  const askForApprovalPlacement = getCodexAskForApprovalPlacement();
+  return [
+    ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
+    "exec",
+    ...(askForApprovalPlacement === "after_exec" ? ["--ask-for-approval", "never"] : []),
+    "--json",
+    "--color",
+    "never",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    params.workingDir,
+    "--skip-git-repo-check",
+    params.prompt,
+  ];
+}
+
+async function runClaudeLessonCondense(params: {
+  claudeBinary: string;
+  workingDir: string;
+  prompt: string;
+  validIds: Set<string>;
+}): Promise<CondensedLesson[]> {
+  const result = await runCliProcess({
+    command: params.claudeBinary,
+    args: [
+      "-p",
+      "--output-format",
+      "json",
+      "--max-turns",
+      "1",
+      "--allowedTools",
+      CLAUDE_ALLOWED_TOOLS,
+      "--append-system-prompt",
+      CLAUDE_READ_ONLY_PROMPT,
+    ],
+    cwd: params.workingDir,
+    timeoutMs: LESSON_CONDENSE_TIMEOUT_MS,
+    stdin: buildClaudeCondensePrompt(params.prompt),
+    env: buildClaudeCodeEnv("subscription"),
+  });
+
+  if (result.timedOut) throw new Error("timed out");
+  if ((result.exitCode && result.exitCode !== 0) || result.signal) {
+    throw new Error(formatCliFailure(result.stdout, result.stderr, result.signal));
+  }
+
+  const parsed = parseCondensedLessonsFromCliOutput(result.stdout, params.validIds);
+  if (!parsed.parsed) throw new Error("unparseable output");
+  return parsed.lessons;
+}
+
+async function runCodexLessonCondense(params: {
+  workingDir: string;
+  prompt: string;
+  validIds: Set<string>;
+}): Promise<CondensedLesson[]> {
+  const result = await runCliProcess({
+    command: "codex",
+    args: buildCodexCondenseArgs(params),
+    cwd: params.workingDir,
+    timeoutMs: LESSON_CONDENSE_TIMEOUT_MS,
+  });
+
+  if (result.timedOut) throw new Error("timed out");
+  if ((result.exitCode && result.exitCode !== 0) || result.signal) {
+    throw new Error(formatCliFailure(result.stdout, result.stderr, result.signal));
+  }
+
+  const parsed = parseCondensedLessonsFromCliOutput(result.stdout, params.validIds);
+  if (!parsed.parsed) throw new Error("unparseable output");
+  return parsed.lessons;
+}
+
+function resolveCondenseWorkingDir(workingDir: string): string {
+  const trimmed = workingDir.trim();
+  if (!trimmed || trimmed === "*") return process.cwd();
+
+  const resolved = path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
+  if (!fs.existsSync(resolved)) return process.cwd();
+  return resolved;
+}
+
+function parseIsoTime(value: string): number {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function pickMostRecentLesson(lessons: Lesson[]): Lesson {
+  return lessons.reduce((latest, current) =>
+    parseIsoTime(current.createdAt) > parseIsoTime(latest.createdAt) ? current : latest,
+  );
+}
+
+function groupLessonsByWorkingDir(lessons: Lesson[]): Map<string, Lesson[]> {
+  const groups = new Map<string, Lesson[]>();
+  for (const lesson of lessons) {
+    const existing = groups.get(lesson.workingDir);
+    if (existing) existing.push(lesson);
+    else groups.set(lesson.workingDir, [lesson]);
+  }
+  return groups;
+}
+
+export async function pruneAndCondenseLessons(): Promise<void> {
+  const lessons = loadLessons();
+  if (lessons.length === 0) return;
+
+  const groups = groupLessonsByWorkingDir(lessons);
+  const claudeBinary = resolveClaudeBinary();
+
+  let totalPruned = 0;
+  let totalMerged = 0;
+  let processedGroups = 0;
+
+  for (const [workingDir, group] of groups) {
+    const validIds = new Set(group.map((lesson) => lesson.id));
+    const prompt = buildLessonCondensePrompt(workingDir, group);
+    const condenseWorkingDir = resolveCondenseWorkingDir(workingDir);
+
+    let condensed: CondensedLesson[] | undefined;
+    if (claudeBinary) {
+      try {
+        condensed = await runClaudeLessonCondense({
+          claudeBinary,
+          workingDir: condenseWorkingDir,
+          prompt,
+          validIds,
+        });
+      } catch (err) {
+        nightwatchLogger.warn(
+          {
+            workingDir,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "nightwatch: Claude lesson condense failed; falling back to Codex",
+        );
+      }
+    }
+
+    if (!condensed) {
+      try {
+        condensed = await runCodexLessonCondense({
+          workingDir: condenseWorkingDir,
+          prompt,
+          validIds,
+        });
+      } catch (err) {
+        nightwatchLogger.warn(
+          {
+            workingDir,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          "nightwatch: skipping lesson condense for workingDir",
+        );
+        continue;
+      }
+    }
+
+    const capped = condensed.slice(0, MAX_CONDENSED_LESSONS_PER_DIR);
+    const lessonsById = new Map(group.map((lesson) => [lesson.id, lesson] as const));
+    const mostRecentLesson = pickMostRecentLesson(group);
+    const removed = removeLessons(group.map((lesson) => lesson.id));
+    let mergedCount = 0;
+
+    for (const entry of capped) {
+      const sourceLessons = entry.sourceLessonIds
+        .map((sourceId) => lessonsById.get(sourceId))
+        .filter((candidate): candidate is Lesson => Boolean(candidate));
+      if (sourceLessons.length > 1) mergedCount += 1;
+      const source =
+        sourceLessons.length > 0 ? pickMostRecentLesson(sourceLessons) : mostRecentLesson;
+
+      addLesson({
+        workingDir,
+        pattern: entry.pattern,
+        lesson: entry.lesson,
+        source: source.source,
+        runId: source.runId,
+        ...(source.stepId ? { stepId: source.stepId } : {}),
+      });
+    }
+
+    const prunedCount = Math.max(removed - capped.length, 0);
+    totalPruned += prunedCount;
+    totalMerged += mergedCount;
+    processedGroups += 1;
+
+    nightwatchLogger.info(
+      {
+        workingDir,
+        before: group.length,
+        after: capped.length,
+        pruned: prunedCount,
+        merged: mergedCount,
+      },
+      "nightwatch: condensed lessons for workingDir",
+    );
+  }
+
+  if (processedGroups > 0) {
+    nightwatchLogger.info(
+      {
+        groups: processedGroups,
+        pruned: totalPruned,
+        merged: totalMerged,
+      },
+      "nightwatch: lesson condensation cycle complete",
+    );
+  }
 }
 
 export async function checkGitChanges(
@@ -127,6 +631,16 @@ export async function runNightwatch(params: {
   const { cfg, nightwatchCfg, lastRunAtMs } = params;
   if (!nightwatchCfg || nightwatchCfg.enabled !== true) {
     return { status: "skipped", summary: "Nightwatch is not configured or disabled" };
+  }
+
+  // Best-effort maintenance: this should never block nightwatch execution.
+  try {
+    await pruneAndCondenseLessons();
+  } catch (err) {
+    nightwatchLogger.warn(
+      { error: err instanceof Error ? err.message : String(err) },
+      "nightwatch: lesson condensation failed",
+    );
   }
 
   const rawChatId = nightwatchCfg.telegramChatId;
