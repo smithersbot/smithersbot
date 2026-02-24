@@ -551,10 +551,11 @@ type WorkingDirInstructionHint = {
   resolvedPath?: string;
 };
 
+// Word boundaries + trailing lookaheads avoid camelCase false matches (e.g. workingDir, workingDirectory).
 const WORKING_DIR_INSTRUCTION_PATTERNS = [
-  /(?:working\s*dir|working\s*directory|workdir)[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
-  /set\s+(?:the\s+)?(?:working\s*dir|working\s*directory|workdir)\s+to\s+([^\n]+)/i,
-  /(?:working\s*dir|working\s*directory|workdir)\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
+  /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
+  /set\s+(?:the\s+)?(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+to\s+([^\n]+)/i,
+  /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
 ];
 const WORKING_DIR_INSTRUCTION_PREFIX_PATTERN =
   /^(?:(?:in|at)\s+)?(?:(?:a|an|the)\s+)?(?:new\s+)?(?:folder|directory|dir)\b(?:\s+(?:called|named))?(?:\s*[:=-])?\s+/i;
