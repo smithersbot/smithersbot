@@ -28,6 +28,7 @@ export const GATEWAY_RESTART_COMMAND_SPEC = {
 } as const;
 
 type TelegramGatewayRestartContext = Context & {
+  update: { update_id: number };
   message?: {
     chat: { id: number; type: string };
     from?: { id?: number };
@@ -59,6 +60,7 @@ type RegisterGatewayRestartCommandParams = {
   bot: Bot;
   cfg: MoltbotConfig;
   accountId: string;
+  onUpdateProcessed?: (updateId: number) => void | Promise<void>;
   telegramCfg: TelegramAccountConfig;
   allowFrom?: Array<string | number>;
   groupAllowFrom?: Array<string | number>;
@@ -175,6 +177,7 @@ export function registerGatewayRestartCommand({
   bot,
   cfg,
   accountId,
+  onUpdateProcessed,
   telegramCfg,
   allowFrom,
   groupAllowFrom,
@@ -252,6 +255,8 @@ export function registerGatewayRestartCommand({
       await bot.api.sendMessage(chatId, decision.message);
       return;
     }
+
+    await onUpdateProcessed?.(ctx.update.update_id);
 
     const sentinelPayload: RestartSentinelPayload = {
       kind: "restart",

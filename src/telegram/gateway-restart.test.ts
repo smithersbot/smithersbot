@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const triggerMoltbotRestartMock = vi.fn();
 const scheduleGatewaySigusr1RestartMock = vi.fn();
 const writeRestartSentinelMock = vi.fn();
+const onUpdateProcessedMock = vi.fn();
 
 vi.mock("../infra/restart.js", () => ({
   scheduleGatewaySigusr1Restart: (...args: unknown[]) => scheduleGatewaySigusr1RestartMock(...args),
@@ -36,7 +37,11 @@ type AuditEntry = {
 let testStateDir = "";
 let previousStateDir: string | undefined;
 
-function createHarness(params?: { allowFrom?: Array<string | number>; accountId?: string }) {
+function createHarness(params?: {
+  allowFrom?: Array<string | number>;
+  accountId?: string;
+  onUpdateProcessed?: (updateId: number) => void | Promise<void>;
+}) {
   const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const bot = {
@@ -50,6 +55,7 @@ function createHarness(params?: { allowFrom?: Array<string | number>; accountId?
     bot,
     cfg: {} as MoltbotConfig,
     accountId: params?.accountId ?? "test-account",
+    onUpdateProcessed: params?.onUpdateProcessed ?? onUpdateProcessedMock,
     telegramCfg: {} as TelegramAccountConfig,
     allowFrom: params?.allowFrom ?? [AUTHORIZED_USER_ID],
     groupAllowFrom: [],
@@ -74,9 +80,17 @@ function createHarness(params?: { allowFrom?: Array<string | number>; accountId?
   return { handler, sendMessage };
 }
 
-function createCtx(params?: { chatId?: number; chatType?: string; userId?: number }) {
+function createCtx(params?: {
+  chatId?: number;
+  chatType?: string;
+  userId?: number;
+  updateId?: number;
+}) {
   const userId = params?.userId;
   return {
+    update: {
+      update_id: params?.updateId ?? 1,
+    },
     message: {
       chat: {
         id: params?.chatId ?? 123,
@@ -122,6 +136,8 @@ describe("gateway_restart telegram command", () => {
     triggerMoltbotRestartMock.mockReturnValue({ ok: true, method: "systemd", tried: [] });
     writeRestartSentinelMock.mockReset();
     writeRestartSentinelMock.mockResolvedValue(undefined);
+    onUpdateProcessedMock.mockReset();
+    onUpdateProcessedMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -193,9 +209,16 @@ describe("gateway_restart telegram command", () => {
     const { handler, sendMessage } = createHarness();
     const authorizedUserId = AUTHORIZED_USER_ID;
 
-    await handler(createCtx({ chatId: 88, userId: authorizedUserId }));
+    await handler(createCtx({ chatId: 88, userId: authorizedUserId, updateId: 9001 }));
 
     expect(sendMessage).not.toHaveBeenCalled();
+    expect(onUpdateProcessedMock).toHaveBeenCalledWith(9001);
+    expect(writeRestartSentinelMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      onUpdateProcessedMock.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(triggerMoltbotRestartMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      onUpdateProcessedMock.mock.invocationCallOrder[0] ?? 0,
+    );
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
     expect(writeRestartSentinelMock).toHaveBeenCalledWith({
       kind: "restart",

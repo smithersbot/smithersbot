@@ -81,7 +81,12 @@ type RegisterTelegramNativeCommandsParams = {
     messageThreadId?: number,
   ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
-  opts: { token: string };
+  opts: {
+    token: string;
+    updateOffset?: {
+      onUpdateId?: (updateId: number) => void | Promise<void>;
+    };
+  };
   commandFragmentBuffer?: CommandFragmentBuffer;
 };
 
@@ -502,6 +507,7 @@ export const registerTelegramNativeCommands = ({
           bot,
           cfg,
           accountId,
+          onUpdateProcessed: (updateId) => opts.updateOffset?.onUpdateId?.(updateId),
           telegramCfg,
           allowFrom,
           groupAllowFrom,
