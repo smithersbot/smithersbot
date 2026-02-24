@@ -65,6 +65,8 @@
 - Framework: Vitest with V8 coverage thresholds (70% lines/branches/functions/statements).
 - Naming: match source names with `*.test.ts`; e2e in `*.e2e.test.ts`.
 - Run `pnpm test` (or `pnpm test:coverage`) before pushing when you touch logic.
+- For goal-system work, prefer targeted runs: `pnpm vitest run src/goal/` (or specific changed files).
+- Bare `pnpm test` is acceptable under scoped worker mode: `MOLTBOT_GOAL_TEST_SCOPE=1 pnpm test`.
 - Do not set test workers above 16; tried already.
 - Live tests (real keys): `CLAWDBOT_LIVE_TEST=1 pnpm test:live` (Moltbot-only) or `LIVE=1 pnpm test:live` (includes provider live tests). Docker: `pnpm test:docker:live-models`, `pnpm test:docker:live-gateway`. Onboarding Docker E2E: `pnpm test:docker:onboard`.
 - Full kit + what’s covered: `docs/testing.md`.
@@ -184,6 +186,12 @@ If you make a change that affects the behavior of any command in the `/goal` fam
 
 Verification means executing the command paths whose behavior you modified and observing the actual runtime behavior, not reasoning about the code.
 
+Run this verification sequence before marking `/goal` work complete:
+- `pnpm build`
+- `pnpm vitest run src/goal/` (or the specific changed goal test file)
+- `pnpm lint`
+- Run the affected CLI flow with `node scripts/run-node.mjs <args>`
+
 ### How to Run the CLI
 
 Run all commands from the repository root using the local Node entrypoint:
@@ -232,5 +240,4 @@ If the CLI behavior is incorrect, incomplete, or unexpected:
 4. Repeat until the behavior matches intent.
 
 Do not mark work as complete unless the modified `/goal` behavior has been exercised and confirmed through real execution.
-
 
