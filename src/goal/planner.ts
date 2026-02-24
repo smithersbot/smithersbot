@@ -25,7 +25,7 @@ GRANULARITY RULES (strict):
 - Target 5–30 minutes of agent runtime work per step. Avoid human-time estimates like 30–120 minutes.
 - DO NOT create separate steps for "explore the repo", "understand the code", "read the files", or "plan the approach". Fold exploration and understanding into the implementation step that needs it.
 - DO NOT split "write code" and "write tests" into separate steps. Implementation + tests belong in the same step.
-- DO NOT create a standalone "run tests" or "verify" step at the end. Each step must verify its own work before completing.
+- DO NOT create a standalone "run tests", "verify", or "review" step at the end. A system-level code review runs automatically after all steps complete. Each step must verify its own work before completing.
 - When in doubt, merge steps. Fewer, meatier steps are always better than many tiny ones.
 
 BACKEND SELECTION RULES (strict):

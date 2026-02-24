@@ -49,6 +49,7 @@ const REVIEW_INSTRUCTION = [
   "assumptions or fixture creation details), since the executing agent has full codebase access.",
   "If core implementation steps are correct and well-specified, approve the plan even if",
   "ancillary steps have minor environmental assumptions.",
+  "A system-level code review runs automatically after execution, so plans do not need a final review/polish step.",
   "",
   "## 5. OUTPUT FORMAT",
   'Respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
