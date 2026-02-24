@@ -58,7 +58,7 @@ ${PLAN_SYSTEM_PROMPT}
 
 Additional requirements:
 - Keep dependency structure aligned with ${SCOUT_REPORT_FILE}.
-- Every step id must map to an existing scout node id.
+- Every step id must map to an existing scout node id, except bootstrap step id "create-conventions".
 - If clarification is required, create ${SCOUT_NEEDS_CLARIFICATION_FILE} and return:
   { "blocked": true, "question": "The specific question you need answered" }`;
 

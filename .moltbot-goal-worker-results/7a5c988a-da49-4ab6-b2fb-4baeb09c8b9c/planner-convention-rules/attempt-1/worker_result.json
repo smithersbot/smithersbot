@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Updated PLAN_SYSTEM_PROMPT with convention-aware planning rules (respect CLAUDE.md/AGENTS.md, avoid toolchain assumptions, and require first-step create-conventions bootstrap behavior) and adjusted PLAN_AND_SCOUT_APPENDIX so step IDs must map to scout nodes except bootstrap id create-conventions. Verified with pnpm build, pnpm vitest run src/goal/, and pnpm lint."
+}

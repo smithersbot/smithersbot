@@ -44,6 +44,20 @@ STRUCTURED PLANNING REQUIREMENTS (strict):
 - For Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
 - For non-code projects, set buildGate.commands to [].
 
+CONVENTION FILE RULES (strict):
+- Respect project convention files (CLAUDE.md, AGENTS.md) for build/test/lint commands, coding standards, and workflow.
+- Do NOT assume pnpm, Vitest, or any specific toolchain unless project conventions explicitly say so.
+- If scout indicates no CLAUDE.md in the target project, insert a first step with id "create-conventions".
+- "create-conventions" must create BOTH CLAUDE.md and AGENTS.md using scout findings.
+- CLAUDE.md best practices:
+  - First line: one sentence describing what the project does.
+  - Include a commands section with build/test/lint commands.
+  - Keep under 100 lines.
+  - Use pointers to deeper docs (for example, "When modifying X, read: docs/ARCHITECTURE.md") instead of large inline dumps.
+  - Include project-specific stack, conventions, structure, and gotchas; avoid generic coding advice.
+- AGENTS.md must mirror the same project-specific conventions in Codex-compatible format.
+- "create-conventions" must be first in step order with dependsOn: [], and no other step should list it in dependsOn.
+
 Step schema:
 - id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
 - description: clear, actionable description of what the agent should do, including what "done" looks like
