@@ -150,6 +150,7 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
 
     proc.on("error", (err) => {
       stderr += `\nProcess error: ${err.message}`;
+      if (stderrStream) stderrStream.write(Buffer.from(`\nProcess error: ${err.message}`));
       finish(1, null);
     });
   });
