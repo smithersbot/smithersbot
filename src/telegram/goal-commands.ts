@@ -40,9 +40,11 @@ import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
 import { renderMermaidToPng } from "../goal/mermaid-png.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { acquireGoalOpLock, forceReleaseGoalOpLock } from "../goal/goal-lock.js";
 import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
+import { formatAge } from "../infra/channel-summary.js";
 import type {
   ManualTestSuggestion,
   Plan,
@@ -97,6 +99,7 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   },
   { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
+  { command: "goal_lessons", description: "List or clear persistent goal lessons" },
   { command: "goal_github_push", description: "Toggle auto GitHub push + PR for completed runs" },
 ];
 
@@ -163,6 +166,7 @@ function serializedStepResultsToMap(
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
 const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
+const GOAL_LESSONS_USAGE = "Usage: /goal\\_lessons \\[clear \\[workingDir\\]\\]";
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
@@ -1423,6 +1427,86 @@ export async function handleGoalFeedback(
 }
 
 const GOAL_LIST_LIMIT = 15;
+
+type GoalLessonsAction =
+  | { kind: "list" }
+  | { kind: "clear"; workingDir?: string }
+  | { kind: "invalid" };
+
+function parseTimestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseGoalLessonsAction(rawArg: string): GoalLessonsAction {
+  const raw = rawArg.trim();
+  if (!raw) return { kind: "list" };
+
+  const clearMatch = /^clear(?:\s+(.+))?$/i.exec(raw);
+  if (!clearMatch) return { kind: "invalid" };
+  const rawWorkingDir = clearMatch[1]?.trim();
+  if (!rawWorkingDir) return { kind: "clear" };
+  return {
+    kind: "clear",
+    workingDir: rawWorkingDir === "*" ? "*" : resolveUserPath(rawWorkingDir),
+  };
+}
+
+function formatGoalLessonAge(createdAt: string): string {
+  const createdAtMs = parseTimestamp(createdAt);
+  if (!createdAtMs) return "unknown";
+  return formatAge(Math.max(0, Date.now() - createdAtMs));
+}
+
+function formatGoalLessonsList(): string {
+  const lessons = loadLessons();
+  if (lessons.length === 0) return "No lessons recorded yet.";
+
+  const sortedLessons = [...lessons].sort(
+    (a, b) => parseTimestamp(b.createdAt) - parseTimestamp(a.createdAt),
+  );
+  const grouped = new Map<string, typeof sortedLessons>();
+  for (const lesson of sortedLessons) {
+    const existing = grouped.get(lesson.workingDir);
+    if (existing) existing.push(lesson);
+    else grouped.set(lesson.workingDir, [lesson]);
+  }
+
+  const workingDirs = [...grouped.keys()].sort((a, b) => {
+    if (a === "*") return -1;
+    if (b === "*") return 1;
+    return a.localeCompare(b);
+  });
+
+  const lines: string[] = ["Lessons by working directory:"];
+  for (const workingDir of workingDirs) {
+    lines.push("");
+    lines.push(`**${workingDir === "*" ? "*" : shortenHomePath(workingDir)}**`);
+    for (const lesson of grouped.get(workingDir) ?? []) {
+      lines.push(
+        `- **${lesson.pattern}**: ${lesson.lesson} _(${formatGoalLessonAge(lesson.createdAt)})_`,
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+export async function handleGoalLessons(rawArg: string): Promise<string> {
+  const action = parseGoalLessonsAction(rawArg);
+  if (action.kind === "invalid") return GOAL_LESSONS_USAGE;
+
+  if (action.kind === "clear") {
+    const removed = clearLessons(action.workingDir);
+    if (action.workingDir) {
+      const displayDir = action.workingDir === "*" ? "*" : shortenHomePath(action.workingDir);
+      return `Cleared ${removed} lesson(s) for \`${displayDir}\`.`;
+    }
+    return `Cleared ${removed} lesson(s) across all working directories.`;
+  }
+
+  return formatGoalLessonsList();
+}
 
 /** /goal_list -- list recent goal runs (Telegram-formatted code block). */
 export async function handleGoalList(): Promise<string> {
@@ -3483,6 +3567,21 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const reply = await handleGoalList();
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      reply,
+      runtime,
+      resolved.threadIdForSend,
+      ctx.message?.message_id,
+    );
+  });
+
+  // /goal_lessons [clear [workingDir]]
+  bot.command("goal_lessons", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const reply = await handleGoalLessons(ctx.match?.trim() ?? "");
     await sendGoalReply(
       bot,
       resolved.chatId,
