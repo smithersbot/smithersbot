@@ -38,10 +38,37 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("echo `npm publish`")).not.toBeNull();
   });
 
+  it("blocks denied commands inside process substitution", () => {
+    expect(checkCommandDeny("diff <(sudo whoami) file")).not.toBeNull();
+    expect(
+      checkCommandDeny("cat <(bash -lc 'echo ok') >(dd if=/dev/zero of=/tmp/out)"),
+    ).not.toBeNull();
+  });
+
+  it("checks each process substitution stream", () => {
+    const command = "cat <(npm publish) >(dd if=/dev/zero of=/tmp/out)";
+    expect(
+      checkCommandDeny(command, [
+        { pattern: "npm publish", reason: "Publishing not permitted", type: "command" },
+      ]),
+    ).not.toBeNull();
+    expect(
+      checkCommandDeny(command, [
+        { pattern: "dd if=", reason: "Raw disk writes not permitted", type: "command" },
+      ]),
+    ).not.toBeNull();
+  });
+
+  it("blocks denied commands in nested process substitutions", () => {
+    expect(checkCommandDeny('cat <(bash -c "sudo test")')).not.toBeNull();
+  });
+
   it("does not flag quoted text that only mentions denied commands", () => {
     expect(checkCommandDeny("echo 'sudo rm -rf /'")).toBeNull();
     expect(checkCommandDeny('echo "npm publish && vercel"')).toBeNull();
     expect(checkCommandDeny("echo '$(sudo whoami)'")).toBeNull();
+    expect(checkCommandDeny("echo '<(sudo whoami)'")).toBeNull();
+    expect(checkCommandDeny('echo "<(sudo whoami)"')).toBeNull();
   });
 
   it("allows normal safe commands", () => {

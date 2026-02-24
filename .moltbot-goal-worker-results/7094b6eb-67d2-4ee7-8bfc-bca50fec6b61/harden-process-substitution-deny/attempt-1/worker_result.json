@@ -1,0 +1,4 @@
+{
+  "status": "complete",
+  "summary": "Extended hard-deny substitution parsing to extract unquoted bash process substitutions (<(...) and >(...)) and recurse into their contents, while preserving quote-context behavior so single- and double-quoted process-substitution text is ignored. Added tests for unquoted detection (including nested shell command content), dual-stream process substitution coverage, and quote exclusion. Verification passed: pnpm vitest run src/goal/hard-deny.test.ts, pnpm build, pnpm vitest run src/goal/, pnpm lint, and node scripts/run-node.mjs goal --help."
+}

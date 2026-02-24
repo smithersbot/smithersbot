@@ -353,6 +353,68 @@ function readDollarSubstitution(
   return null;
 }
 
+function readProcessSubstitution(
+  command: string,
+  startIndex: number,
+): { content: string; endIndex: number } | null {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  for (let i = startIndex + 2; i < command.length; i++) {
+    const ch = command[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch as "'" | '"';
+      continue;
+    }
+
+    if ((ch === "<" || ch === ">") && command[i + 1] === "(") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "$" && command[i + 1] === "(") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          content: command.slice(startIndex + 2, i),
+          endIndex: i,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 function extractCommandSubstitutions(command: string): string[] {
   const substitutions: string[] = [];
   let quote: "'" | '"' | null = null;
@@ -410,6 +472,15 @@ function extractCommandSubstitutions(command: string): string[] {
 
     if (ch === "$" && command[i + 1] === "(") {
       const parsed = readDollarSubstitution(command, i);
+      if (parsed) {
+        substitutions.push(parsed.content);
+        i = parsed.endIndex;
+      }
+      continue;
+    }
+
+    if ((ch === "<" || ch === ">") && command[i + 1] === "(") {
+      const parsed = readProcessSubstitution(command, i);
       if (parsed) {
         substitutions.push(parsed.content);
         i = parsed.endIndex;
