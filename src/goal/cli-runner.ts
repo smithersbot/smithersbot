@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import type { GoalBackendId, GoalWorkerOutput } from "./backend-types.js";
 import { executeTaskWithCliWorker } from "./cli-worker.js";
@@ -32,6 +34,8 @@ export class CliTaskRunner implements TaskRunner {
       pattern: lesson.pattern,
       lesson: lesson.lesson,
     }));
+    const projectConventions =
+      this.backend === "codex" ? readProjectConventions(context.workingDir) : undefined;
 
     const cliResult = await executeTaskWithCliWorker({
       backend: this.backend,
@@ -52,6 +56,7 @@ export class CliTaskRunner implements TaskRunner {
       attemptNumber,
       previousAttempt,
       claudeCodeAuth: this.claudeCodeAuth,
+      projectConventions,
     });
 
     const output = cliResult.output;
@@ -65,6 +70,16 @@ export class CliTaskRunner implements TaskRunner {
     }
 
     return mapWorkerOutput(output, cliResult.turnsUsed);
+  }
+}
+
+function readProjectConventions(workingDir: string): string | undefined {
+  try {
+    const conventionsPath = path.join(workingDir, "CLAUDE.md");
+    const conventions = fs.readFileSync(conventionsPath, "utf8").trim();
+    return conventions.length > 0 ? conventions : undefined;
+  } catch {
+    return undefined;
   }
 }
 

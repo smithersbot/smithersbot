@@ -23,6 +23,7 @@ import {
   writeDenyFile,
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
+import { WORKER_CONTEXT } from "./worker-context.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -283,9 +284,12 @@ describe("cli-worker", () => {
         prompt: "do the task",
         workingDir,
         denyFilePath,
+        projectConventions: "These conventions should be ignored by Claude Code args",
       });
 
       expect(args).not.toContain("--cwd");
+      expect(args[args.length - 1]).toBe("do the task");
+      expect(args.join(" ")).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });
 
     it("does not include --output-schema for codex workers", () => {
@@ -297,6 +301,36 @@ describe("cli-worker", () => {
       });
 
       expect(args).not.toContain("--output-schema");
+    });
+
+    it("prepends project conventions before worker context for codex workers", () => {
+      const args = buildCliArgs({
+        backend: "codex",
+        prompt: "do the task",
+        workingDir: "/tmp",
+        denyFilePath: "/tmp/deny",
+        projectConventions: "Use yarn test\nNo force-push",
+      });
+
+      const prompt = args[args.length - 1]!;
+      const conventionsHeader = "PROJECT CONVENTIONS (from CLAUDE.md):";
+      expect(prompt).toContain(conventionsHeader);
+      expect(prompt).toContain("Use yarn test\nNo force-push");
+      expect(prompt.indexOf(conventionsHeader)).toBeLessThan(prompt.indexOf(WORKER_CONTEXT));
+      expect(prompt.indexOf(WORKER_CONTEXT)).toBeLessThan(prompt.indexOf("do the task"));
+    });
+
+    it("skips project conventions when codex input is empty", () => {
+      const args = buildCliArgs({
+        backend: "codex",
+        prompt: "do the task",
+        workingDir: "/tmp",
+        denyFilePath: "/tmp/deny",
+        projectConventions: "   ",
+      });
+
+      const prompt = args[args.length - 1]!;
+      expect(prompt).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });
   });
 

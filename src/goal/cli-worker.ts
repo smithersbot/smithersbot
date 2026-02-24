@@ -54,6 +54,8 @@ export type CliWorkerParams = {
   previousAttempt?: string | null;
   /** How Claude Code workers authenticate: subscription (default) or api_key. */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /** Optional project conventions from CLAUDE.md for Codex worker prompts. */
+  projectConventions?: string;
 };
 
 function resolveWorkspaceResultPath(params: {
@@ -144,6 +146,7 @@ export async function executeTaskWithCliWorker(
     attemptNumber = 1,
     previousAttempt,
     claudeCodeAuth = "subscription",
+    projectConventions,
   } = params;
 
   const workerDir = resolveWorkerDir(runId, step.id);
@@ -186,6 +189,7 @@ export async function executeTaskWithCliWorker(
     workingDir,
     denyFilePath,
     model,
+    projectConventions,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -631,12 +635,20 @@ export function buildCliArgs(params: {
   workingDir: string;
   denyFilePath: string;
   model?: string;
+  projectConventions?: string;
 }): string[] {
-  const { backend, prompt, workingDir, denyFilePath, model } = params;
+  const { backend, prompt, workingDir, denyFilePath, model, projectConventions } = params;
 
   if (backend === "codex") {
-    // Codex has no --append-system-prompt; prepend WORKER_CONTEXT to the prompt itself.
-    const fullPrompt = WORKER_CONTEXT ? `${WORKER_CONTEXT}\n\n${prompt}` : prompt;
+    // Codex has no --append-system-prompt; prepend context directly to the prompt.
+    const promptParts: string[] = [];
+    const trimmedProjectConventions = projectConventions?.trim();
+    if (trimmedProjectConventions) {
+      promptParts.push(`PROJECT CONVENTIONS (from CLAUDE.md):\n${trimmedProjectConventions}`);
+    }
+    if (WORKER_CONTEXT) promptParts.push(WORKER_CONTEXT);
+    promptParts.push(prompt);
+    const fullPrompt = promptParts.join("\n\n");
     const codexAskForApproval = getCodexAskForApprovalPlacement();
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
