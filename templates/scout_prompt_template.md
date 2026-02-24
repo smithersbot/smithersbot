@@ -46,6 +46,13 @@ Do NOT use single-letter ids like A, B, C.
 - HOWEVER: Do not create extra nodes purely to increase parallelism. Keep nodes milestone-sized.
 - Only split into parallel nodes when each node is independently shippable and verifiable.
 
+## Convention File Check
+
+- Check whether `CLAUDE.md` exists at the project root.
+- If it exists, summarize key conventions under a `Project Conventions` heading in your report.
+- Also note whether `AGENTS.md` exists at the project root.
+- If `CLAUDE.md` does not exist, include exactly: `No CLAUDE.md found — recommend creating it as the first execution step.`
+
 
 ## Required Output Files
 
