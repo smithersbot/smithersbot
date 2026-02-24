@@ -568,7 +568,7 @@ Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
 Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
-Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/commands/goal.ts, src/telegram/goal-commands.ts.
+Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/commands/goal.ts, src/telegram/goal-commands.ts.
 Look for:
 - Bugs or logic errors in the happy path
 - Edge cases in blocked/failed/cancelled states and transitions between them
@@ -578,7 +578,7 @@ Look for:
 
 ## 2. Telegram UX integration
 Review how goal commands are wired up in Telegram: command registration, message formatting, button callbacks, thread handling.
-Key files: src/telegram/goal-commands.ts, src/telegram/bot-native-commands.ts, src/telegram/nightwatch-commands.ts.
+Key files: src/telegram/goal-commands.ts, src/telegram/bot-native-commands.ts, src/telegram/nightwatch-commands.ts, src/telegram/goal-router.ts, src/telegram/goal-message-index.ts.
 Look for:
 - Commands that are missing or not properly registered
 - Inconsistent or confusing user-facing messages
