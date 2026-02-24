@@ -34,6 +34,7 @@ import {
   computeCriticalPathScores,
   type CriticalPathScores,
 } from "./plan-order.js";
+import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { generateManualTests } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import { loadRun, resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
@@ -917,6 +918,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         }
       }
     }
+
+    try {
+      const existingLessons = getLessonsForContext(workingDir);
+      const extractedLessons = await extractRunLessons(runId, workingDir, existingLessons);
+      if (extractedLessons.length > 0) {
+        onProgress?.(
+          `  [lessons] Recorded ${extractedLessons.length} lesson${extractedLessons.length === 1 ? "" : "s"}.`,
+        );
+      }
+    } catch {
+      // Fail-open: lesson extraction should never block completion.
+    }
+
     let manualTests: ManualTestSuggestion[] | undefined;
     let manualTestsError: string | undefined;
     try {
