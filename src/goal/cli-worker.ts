@@ -42,6 +42,7 @@ export type CliWorkerParams = {
   abortSignal?: AbortSignal;
   model?: string;
   completedSummaries?: Array<{ id: string; summary: string }>;
+  lessons?: Array<{ pattern: string; lesson: string }>;
   onProgress?: (text: string) => void;
   /** User's answer when resuming a previously-blocked step. */
   resumeAnswer?: string;
@@ -136,6 +137,7 @@ export async function executeTaskWithCliWorker(
     abortSignal,
     model,
     completedSummaries,
+    lessons,
     onProgress,
     resumeAnswer,
     resumeQuestion,
@@ -168,6 +170,7 @@ export async function executeTaskWithCliWorker(
     goal,
     hardDenies,
     completedSummaries,
+    lessons,
     resumeAnswer,
     resumeQuestion,
     resultPath: workspaceResultPath,
@@ -409,6 +412,7 @@ export function buildCliWorkerPrompt(params: {
   goal: string;
   hardDenies: HardDeny[];
   completedSummaries?: Array<{ id: string; summary: string }>;
+  lessons?: Array<{ pattern: string; lesson: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
   resultPath: string;
@@ -420,6 +424,7 @@ export function buildCliWorkerPrompt(params: {
     goal,
     hardDenies,
     completedSummaries,
+    lessons,
     resumeAnswer,
     resumeQuestion,
     resultPath,
@@ -436,6 +441,14 @@ export function buildCliWorkerPrompt(params: {
   lines.push("PLAN CONTEXT:");
   lines.push(formatPlanAsContext(plan));
   lines.push("");
+
+  if (lessons && lessons.length > 0) {
+    lines.push("LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):");
+    for (const entry of lessons) {
+      lines.push(`- [${entry.pattern}]: ${entry.lesson}`);
+    }
+    lines.push("");
+  }
 
   if (completedSummaries && completedSummaries.length > 0) {
     lines.push("COMPLETED TASKS:");

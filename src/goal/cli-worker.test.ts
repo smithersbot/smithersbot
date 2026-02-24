@@ -513,6 +513,57 @@ describe("cli-worker", () => {
       expect(prompt).toContain("Key insight: The codegen step must run before import fixes");
       expect(prompt).toContain("Suggested approach: Run codegen first, then patch import paths");
     });
+
+    it("includes lessons between plan context and completed tasks when lessons exist", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        completedSummaries: [{ id: "step-0", summary: "Set up baseline scaffolding" }],
+        lessons: [
+          {
+            pattern: "vitest-config",
+            lesson: 'Use pool: "forks" to avoid flaky thread behavior in this repo.',
+          },
+          {
+            pattern: "signal-api",
+            lesson: "Include trust-new-identities on initial contact setup.",
+          },
+        ],
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      const planIndex = prompt.indexOf("PLAN CONTEXT:");
+      const lessonsIndex = prompt.indexOf(
+        "LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):",
+      );
+      const completedIndex = prompt.indexOf("COMPLETED TASKS:");
+
+      expect(planIndex).toBeGreaterThanOrEqual(0);
+      expect(lessonsIndex).toBeGreaterThan(planIndex);
+      expect(completedIndex).toBeGreaterThan(lessonsIndex);
+      expect(prompt).toContain(
+        '- [vitest-config]: Use pool: "forks" to avoid flaky thread behavior in this repo.',
+      );
+      expect(prompt).toContain(
+        "- [signal-api]: Include trust-new-identities on initial contact setup.",
+      );
+    });
+
+    it("omits lessons section when no lessons are provided", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).not.toContain(
+        "LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):",
+      );
+    });
   });
 
   describe("writeDenyFile", () => {

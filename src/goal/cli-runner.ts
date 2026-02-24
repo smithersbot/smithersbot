@@ -2,6 +2,7 @@ import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import type { GoalBackendId, GoalWorkerOutput } from "./backend-types.js";
 import { executeTaskWithCliWorker } from "./cli-worker.js";
 import { formatAttemptBundleSummary } from "./attempt-bundle.js";
+import { getLessonsForContext } from "./lessons.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { FailedDetail, PlanStep } from "./types.js";
 
@@ -27,6 +28,10 @@ export class CliTaskRunner implements TaskRunner {
       attemptBundles.length > 0
         ? formatAttemptBundleSummary(attemptBundles[attemptBundles.length - 1]!)
         : null;
+    const lessons = getLessonsForContext(context.workingDir).map((lesson) => ({
+      pattern: lesson.pattern,
+      lesson: lesson.lesson,
+    }));
 
     const cliResult = await executeTaskWithCliWorker({
       backend: this.backend,
@@ -40,6 +45,7 @@ export class CliTaskRunner implements TaskRunner {
       abortSignal: context.abortSignal,
       model: this.model,
       completedSummaries: context.completedSummaries,
+      lessons,
       onProgress: context.onProgress,
       resumeAnswer: context.resumeAnswer,
       resumeQuestion: context.resumeQuestion,
