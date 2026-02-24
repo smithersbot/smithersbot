@@ -706,6 +706,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
   const backend = params.mode;
   const autocheckRoot = path.join(params.runDir, "autocheck");
   fs.mkdirSync(autocheckRoot, { recursive: true });
+  fs.mkdirSync(params.workingDir, { recursive: true });
 
   let currentPlan = params.plan;
   let autocheckRounds = 0;
