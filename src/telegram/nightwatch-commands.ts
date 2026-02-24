@@ -131,12 +131,16 @@ export function registerTelegramNightwatchCommand({
   resolveTelegramGroupConfig,
   shouldSkipUpdate,
 }: RegisterTelegramNightwatchCommandParams): void {
-  async function sendReply(chatId: number, text: string, threadId?: number): Promise<void> {
-    if (threadId != null) {
-      await bot.api.sendMessage(chatId, text, { message_thread_id: threadId });
-      return;
-    }
-    await bot.api.sendMessage(chatId, text);
+  async function sendReply(
+    chatId: number,
+    text: string,
+    threadId?: number,
+    replyToMessageId?: number,
+  ): Promise<void> {
+    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    const replyParams =
+      replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
+    await bot.api.sendMessage(chatId, text, { ...threadParams, ...replyParams });
   }
 
   async function authAndResolve(ctx: TelegramNightwatchCommandContext) {
@@ -158,19 +162,30 @@ export function registerTelegramNightwatchCommand({
     if (!auth) return null;
     const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;
     const threadIdForSend = auth.isGroup ? auth.resolvedThreadId : messageThreadId;
+    const replyToMessageId = typeof msg.message_id === "number" ? msg.message_id : undefined;
     return {
       chatId: auth.chatId,
       threadIdForSend,
       messageThreadId,
       commandChatId: msg.chat.id,
+      replyToMessageId,
     };
   }
 
-  async function canWriteConfig(chatId: number, threadId?: number): Promise<boolean> {
+  async function canWriteConfig(
+    chatId: number,
+    threadId?: number,
+    replyToMessageId?: number,
+  ): Promise<boolean> {
     if (resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
       return true;
     }
-    await sendReply(chatId, "Config writes are disabled for this Telegram account.", threadId);
+    await sendReply(
+      chatId,
+      "Config writes are disabled for this Telegram account.",
+      threadId,
+      replyToMessageId,
+    );
     return false;
   }
 
@@ -194,6 +209,7 @@ export function registerTelegramNightwatchCommand({
         resolved.chatId,
         formatNightwatchStatus(nightwatchCfg),
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
@@ -202,23 +218,39 @@ export function registerTelegramNightwatchCommand({
     const subcommand = (subcommandRaw ?? "").toLowerCase();
 
     if (subcommand === "on") {
-      if (!(await canWriteConfig(resolved.chatId, resolved.threadIdForSend))) return;
+      if (
+        !(await canWriteConfig(
+          resolved.chatId,
+          resolved.threadIdForSend,
+          resolved.replyToMessageId,
+        ))
+      )
+        return;
       const nextNightwatch = await writeNightwatchPatch({ enabled: true });
       await sendReply(
         resolved.chatId,
         `Nightwatch enabled.\n\n${formatNightwatchStatus(nextNightwatch)}`,
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
 
     if (subcommand === "off") {
-      if (!(await canWriteConfig(resolved.chatId, resolved.threadIdForSend))) return;
+      if (
+        !(await canWriteConfig(
+          resolved.chatId,
+          resolved.threadIdForSend,
+          resolved.replyToMessageId,
+        ))
+      )
+        return;
       const nextNightwatch = await writeNightwatchPatch({ enabled: false });
       await sendReply(
         resolved.chatId,
         `Nightwatch disabled.\n\n${formatNightwatchStatus(nextNightwatch)}`,
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
@@ -231,10 +263,18 @@ export function registerTelegramNightwatchCommand({
           resolved.chatId,
           `Invalid time: "${timeRaw}". Use HH:MM in 24-hour format.\n${NIGHTWATCH_USAGE}`,
           resolved.threadIdForSend,
+          resolved.replyToMessageId,
         );
         return;
       }
-      if (!(await canWriteConfig(resolved.chatId, resolved.threadIdForSend))) return;
+      if (
+        !(await canWriteConfig(
+          resolved.chatId,
+          resolved.threadIdForSend,
+          resolved.replyToMessageId,
+        ))
+      )
+        return;
       const nextNightwatch = await writeNightwatchPatch({
         cronExpr: toDailyCronExpr(parsed),
       });
@@ -242,6 +282,7 @@ export function registerTelegramNightwatchCommand({
         resolved.chatId,
         `Nightwatch schedule updated.\n\n${formatNightwatchStatus(nextNightwatch)}`,
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
@@ -253,6 +294,7 @@ export function registerTelegramNightwatchCommand({
           resolved.chatId,
           `Timezone is required.\n${NIGHTWATCH_USAGE}`,
           resolved.threadIdForSend,
+          resolved.replyToMessageId,
         );
         return;
       }
@@ -263,21 +305,37 @@ export function registerTelegramNightwatchCommand({
           resolved.chatId,
           `Invalid timezone: "${timezone}".`,
           resolved.threadIdForSend,
+          resolved.replyToMessageId,
         );
         return;
       }
-      if (!(await canWriteConfig(resolved.chatId, resolved.threadIdForSend))) return;
+      if (
+        !(await canWriteConfig(
+          resolved.chatId,
+          resolved.threadIdForSend,
+          resolved.replyToMessageId,
+        ))
+      )
+        return;
       const nextNightwatch = await writeNightwatchPatch({ timezone });
       await sendReply(
         resolved.chatId,
         `Nightwatch timezone updated.\n\n${formatNightwatchStatus(nextNightwatch)}`,
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
 
     if (subcommand === "chat") {
-      if (!(await canWriteConfig(resolved.chatId, resolved.threadIdForSend))) return;
+      if (
+        !(await canWriteConfig(
+          resolved.chatId,
+          resolved.threadIdForSend,
+          resolved.replyToMessageId,
+        ))
+      )
+        return;
       const patch: Partial<NightwatchConfig> = {
         telegramChatId: String(resolved.commandChatId),
         telegramAccountId: accountId,
@@ -290,10 +348,16 @@ export function registerTelegramNightwatchCommand({
         resolved.chatId,
         `Nightwatch plans will be sent to this chat.\n\n${formatNightwatchStatus(nextNightwatch)}`,
         resolved.threadIdForSend,
+        resolved.replyToMessageId,
       );
       return;
     }
 
-    await sendReply(resolved.chatId, NIGHTWATCH_USAGE, resolved.threadIdForSend);
+    await sendReply(
+      resolved.chatId,
+      NIGHTWATCH_USAGE,
+      resolved.threadIdForSend,
+      resolved.replyToMessageId,
+    );
   });
 }

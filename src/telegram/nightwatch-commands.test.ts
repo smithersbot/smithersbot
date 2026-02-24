@@ -107,6 +107,20 @@ function latestSentText(sendMessage: ReturnType<typeof vi.fn>): string {
   return String(sendMessage.mock.calls.at(-1)?.[1] ?? "");
 }
 
+function latestSentOptions(sendMessage: ReturnType<typeof vi.fn>):
+  | {
+      message_thread_id?: number;
+      reply_parameters?: { message_id: number };
+    }
+  | undefined {
+  return sendMessage.mock.calls.at(-1)?.[2] as
+    | {
+        message_thread_id?: number;
+        reply_parameters?: { message_id: number };
+      }
+    | undefined;
+}
+
 function baseNightwatchConfig(): MoltbotConfig {
   return {
     cron: {
@@ -195,6 +209,58 @@ describe("nightwatch Telegram command", () => {
 
     expect(harness.sendMessage).not.toHaveBeenCalled();
     expect(mockWriteConfigFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "",
+    "on",
+    "off",
+    "time 03:00",
+    "time abc",
+    "tz America/New_York",
+    "tz",
+    "chat",
+    "unknown-subcommand",
+  ])("forwards reply-to message id for '%s' replies", async (match) => {
+    mockLoadConfig.mockReturnValue(baseNightwatchConfig());
+    const harness = makeHarness();
+
+    await harness.handler(makeCtx({ match }));
+
+    const options = latestSentOptions(harness.sendMessage);
+    expect(options?.reply_parameters).toEqual({ message_id: 7 });
+  });
+
+  it("forwards reply-to message id when config writes are disabled", async () => {
+    mockResolveChannelConfigWrites.mockReturnValue(false);
+    mockLoadConfig.mockReturnValue(baseNightwatchConfig());
+    const harness = makeHarness();
+
+    await harness.handler(makeCtx({ match: "on" }));
+
+    const options = latestSentOptions(harness.sendMessage);
+    expect(options?.reply_parameters).toEqual({ message_id: 7 });
+  });
+
+  it("forwards reply-to and resolved thread id together", async () => {
+    mockResolveTelegramCommandAuth.mockResolvedValue({
+      chatId: 42,
+      isGroup: true,
+      isForum: true,
+      resolvedThreadId: 55,
+      senderId: "42",
+      senderUsername: "tester",
+      commandAuthorized: true,
+    });
+    const harness = makeHarness();
+
+    await harness.handler(makeCtx({ messageThreadId: 99 }));
+
+    const options = latestSentOptions(harness.sendMessage);
+    expect(options).toMatchObject({
+      message_thread_id: 55,
+      reply_parameters: { message_id: 7 },
+    });
   });
 
   it.each([
