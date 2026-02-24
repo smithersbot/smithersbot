@@ -629,6 +629,7 @@ async function runReviewerAttempt(params: {
   const procResult = await runCliProcess({
     command,
     args,
+    // Run reviewers from the project workspace so CLAUDE.md/AGENTS.md discovery stays consistent.
     cwd: params.workingDir,
     timeoutMs: params.timeoutMs,
     stdoutPath: params.stdoutPath,

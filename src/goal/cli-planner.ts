@@ -443,6 +443,7 @@ export async function runCliPlanRevision(
     claudeCodeAuth,
   } = params;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
+  // Keep revision subprocesses in the project workspace so convention files are discovered natively.
   const plannerCwd = params.cwd ?? process.cwd();
 
   const plannerBackends = resolvePlannerBackends(params.enabledWorkers);
