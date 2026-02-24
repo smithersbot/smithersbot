@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, rmSync } from "node:f
 import path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { addLesson } from "./lessons.js";
 import { resolveWorkingFile } from "./run-store.js";
 
 export type TurnTracker = {
@@ -267,6 +268,33 @@ export function createGoalTools(
 
   // delete_path: safe filesystem deletion within the workspace
   if (workingDir) {
+    const recordLesson: ToolDefinition = {
+      name: "record_lesson",
+      label: "Record Lesson",
+      description:
+        "Use this when you discover something non-obvious that would help future tasks in this project. " +
+        "Pattern: short keyword (e.g. vitest-config, auth-flow). Lesson: 1-3 sentences.",
+      parameters: Type.Object({
+        pattern: Type.String({ description: "Short keyword tag (for example, vitest-config)" }),
+        lesson: Type.String({ description: "Insight text in 1-3 sentences" }),
+      }),
+      async execute(_toolCallId: string, params: { pattern: string; lesson: string }) {
+        addLesson({
+          workingDir: workingDir ?? "*",
+          pattern: params.pattern,
+          lesson: params.lesson,
+          source: "worker",
+          runId: runId ?? "unknown",
+          ...(activeTaskId ? { stepId: activeTaskId } : {}),
+        });
+        return {
+          content: [{ type: "text", text: "Lesson recorded." }],
+          details: {},
+        };
+      },
+    };
+    tools.push(recordLesson);
+
     const deletePath: ToolDefinition = {
       name: "delete_path",
       label: "Delete Path",

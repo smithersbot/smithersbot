@@ -15,11 +15,12 @@ describe("goal-tools", () => {
       expect(tools[3]!.name).toBe("update_working_notes");
     });
 
-    it("returns five tool definitions with workingDir", () => {
+    it("returns six tool definitions with workingDir", () => {
       const dir = mkdtempSync(path.join(tmpdir(), "goal-tools-"));
       const { tools } = createGoalTools(dir);
-      expect(tools).toHaveLength(5);
-      expect(tools[4]!.name).toBe("delete_path");
+      expect(tools).toHaveLength(6);
+      expect(tools[4]!.name).toBe("record_lesson");
+      expect(tools[5]!.name).toBe("delete_path");
     });
 
     it("signal is null initially", () => {
