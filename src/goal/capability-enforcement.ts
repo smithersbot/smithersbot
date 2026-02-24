@@ -1,5 +1,6 @@
 // Tool wrapping for hard-deny enforcement.
 
+import fs from "node:fs";
 import path from "node:path";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { createCodingTools } from "@mariozechner/pi-coding-agent";
@@ -96,16 +97,41 @@ function wrapFsTool(
 
     if (filePath) {
       const resolved = path.resolve(workingDir, filePath);
-      const deny = checkPathDeny(resolved, hardDenies);
-      if (deny) {
-        onDenied?.({ type: operation, path: resolved, reason: deny.reason });
-        return deniedResult(deny.reason);
+      const pathsToCheck = getDenyCheckPaths(resolved);
+
+      for (const candidatePath of pathsToCheck) {
+        const deny = checkPathDeny(candidatePath, hardDenies);
+        if (deny) {
+          onDenied?.({ type: operation, path: candidatePath, reason: deny.reason });
+          return deniedResult(deny.reason);
+        }
       }
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return originalExecute(toolCallId, params, ...(rest as [any, any]));
   };
+}
+
+function getDenyCheckPaths(resolvedPath: string): string[] {
+  const pathsToCheck = [resolvedPath];
+
+  try {
+    // Check the canonical filesystem path so symlink targets cannot bypass denies.
+    const realPath = fs.realpathSync(resolvedPath);
+    if (realPath !== resolvedPath) {
+      pathsToCheck.push(realPath);
+    }
+  } catch (error) {
+    // Missing files are expected for new writes; fall back to lexical path checks.
+    const errno = error as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") {
+      return pathsToCheck;
+    }
+    return pathsToCheck;
+  }
+
+  return pathsToCheck;
 }
 
 /** Create default BashOperations that execute locally via child_process. */

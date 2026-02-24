@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
   createEnforcedBashOperations,
@@ -7,6 +9,10 @@ import {
 import { HARD_DENIES, checkCommandDeny, checkPathDeny } from "./hard-deny.js";
 
 const WORKING_DIR = "/home/user/project";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
   createCodingTools: () => [
@@ -27,6 +33,12 @@ function mockBashOps(): BashOperations & { calls: string[] } {
       return { exitCode: 0 };
     },
   };
+}
+
+function createEnoentError(): NodeJS.ErrnoException {
+  const error = new Error("ENOENT") as NodeJS.ErrnoException;
+  error.code = "ENOENT";
+  return error;
 }
 
 describe("hard deny helpers", () => {
@@ -87,5 +99,48 @@ describe("createEnforcedCodingTools", () => {
     const result = await readTool!.execute("1", { path: ".env" });
     const text = result.content?.[0]?.text ?? "";
     expect(text).toContain("Denied:");
+  });
+
+  it("denies path access when realpath resolves to a denied target", async () => {
+    vi.spyOn(fs, "realpathSync").mockReturnValue("/home/user/.ssh/id_rsa");
+
+    const tools = createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    const readTool = tools.find((t) => t.name === "Read");
+    expect(readTool).toBeTruthy();
+
+    const result = await readTool!.execute("1", { path: "data/file.txt" });
+    const text = result.content?.[0]?.text ?? "";
+    expect(text).toContain("Denied:");
+    expect(fs.realpathSync).toHaveBeenCalledWith(path.resolve(WORKING_DIR, "data/file.txt"));
+  });
+
+  it("still denies direct denied paths when realpath matches the original path", async () => {
+    vi.spyOn(fs, "realpathSync").mockReturnValue(path.resolve(WORKING_DIR, ".env"));
+
+    const tools = createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    const readTool = tools.find((t) => t.name === "Read");
+    expect(readTool).toBeTruthy();
+
+    const result = await readTool!.execute("1", { path: ".env" });
+    const text = result.content?.[0]?.text ?? "";
+    expect(text).toContain("Denied:");
+  });
+
+  it("falls back to resolved path checks when realpathSync returns ENOENT", async () => {
+    vi.spyOn(fs, "realpathSync").mockImplementation(() => {
+      throw createEnoentError();
+    });
+
+    const tools = createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    const writeTool = tools.find((t) => t.name === "Write");
+    expect(writeTool).toBeTruthy();
+
+    const result = await writeTool!.execute("1", {
+      path: "notes/new-file.txt",
+      content: "hello",
+    });
+    const text = result.content?.[0]?.text ?? "";
+    expect(text).toBe("ok");
+    expect(fs.realpathSync).toHaveBeenCalledWith(path.resolve(WORKING_DIR, "notes/new-file.txt"));
   });
 });
