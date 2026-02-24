@@ -2,75 +2,41 @@
 // Embedded as string constants so tsc doesn't need to copy .md files to dist/.
 // Source-of-truth files: src/goal/worker-context/{CLAUDE,AGENTS}.md
 
-const WORKER_CLAUDE_MD = `# Moltbot — Project Reference
+const WORKER_CLAUDE_MD = `# Project Reference
 
 ## Coding Standards
 
-- Language: TypeScript (ESM). Use strict typing; avoid \`any\`.
-- Keep files concise (~500 LOC guideline). Extract helpers rather than duplicating code.
-- Add brief comments for tricky or non-obvious logic.
-- Naming: use \`moltbot\` for CLI commands, package references, paths, and config keys.
+- Use strict typing where possible; avoid \`any\` unless unavoidable and documented.
+- Keep files focused and reasonably concise; extract helpers instead of duplicating logic.
+- Add brief comments only when behavior is non-obvious.
 
-## Testing
+## Verification
 
-- Framework: Vitest. Colocated test files: \`*.test.ts\`.
-- Prefer targeted runs: \`pnpm vitest run <targets>\` (for example \`pnpm vitest run src/goal/\`).
-- Bare \`pnpm test\` is only acceptable under scoped worker mode (\`MOLTBOT_GOAL_TEST_SCOPE=1\`). Outside scoped mode it runs the full suite and is too slow for goal tasks.
-- Coverage target: 70% lines/branches/functions/statements.
-- Do not set test workers above 16.
-
-## Verifying /goal Changes
-
-If your task modifies code in the \`/goal\` family, you must verify your changes:
-
-1. \`pnpm build\` — confirm TypeScript compiles.
-2. \`pnpm vitest run src/goal/\` — run goal-system tests (or the specific test file for your changes).
-3. \`pnpm lint\` — no lint errors.
-4. Run the affected CLI commands from the repository root: \`node scripts/run-node.mjs <args>\`. Do not assume a global \`moltbot\` binary is on PATH.
-
-- If behavior is incorrect: inspect the output, fix the implementation, re-run, and repeat until the behavior matches intent.
-- Do not mark the task complete unless the modified behavior has been exercised and confirmed.
-- **Do NOT restart the gateway service.** You are running inside the gateway process — restarting it will kill your own session. If your change requires a gateway restart to verify, mark the task as blocked and note that the operator must restart and confirm after your task completes.
-
-## Build and Lint
-
-- Type-check: \`pnpm build\` (tsc).
-- Lint: \`pnpm lint\` (oxlint). Fix lint errors before completing. Run after making changes to catch issues early.
-- Format: \`pnpm format\` (oxfmt).
+- Run the target project's build, test, and lint commands before reporting completion.
+- If behavior is incorrect, inspect output, fix the implementation, and re-run verification.
+- Do not mark the task complete until the modified behavior has been exercised.
+- **Do NOT restart the gateway service during goal execution.** If verification requires a restart, mark the task blocked and ask the operator to restart.
 
 ## Git
 
-- Concise, action-oriented commit messages (e.g., \`CLI: add verbose flag to send\`).
-- Group related changes; avoid bundling unrelated refactors.
-- Never force-push, reset --hard, or run destructive git commands.
-- Commit only the files you changed. Do not stage unrelated files.
-- Use \`scripts/committer "<msg>" <file...>\` if available; otherwise \`git add <specific-files> && git commit -m "<msg>"\`.
-- Large / generated files: If your task creates bulky data directories, model weights, virtual environments, or other large artifacts (>5 MB total), add a \`.gitignore\` at the repo root before generating the files. At minimum ignore the output directories (e.g. \`data/\`, \`venv/\`, \`__pycache__/\`). The goal system checkpoints via \`git add -A\`; un-ignored large files will slow down checkpoints.
-- Commit after each logical unit of work (e.g., after implementing a feature, after adding its tests). Do not wait until the entire task is done to make your first commit.
+- Make small, scoped commits with clear action-oriented messages.
+- Stage and commit only files related to your task.
+- Avoid destructive history rewrites unless explicitly requested.
 
 ## Security
 
-- Never commit secrets, API keys, tokens, credentials, real phone numbers, or live config values.
+- Never commit secrets, credentials, tokens, private keys, or live configuration values.
 - Use fake placeholders in tests and examples.
-- Do not edit: \`.env*\`, \`*.pem\`, \`*.key\`, \`credentials*\`, \`.aws/**\`, \`.ssh/**\`.
+- Do not edit sensitive files such as \`.env*\`, \`*.pem\`, \`*.key\`, \`credentials*\`, \`.aws/**\`, or \`.ssh/**\`.
 
 ## File Operations
 
 - Prefer editing existing files over creating new ones.
-- Do not edit anything under \`node_modules/\`.
-- Do not create documentation files (README, *.md) unless the task explicitly requires it.
+- Do not edit \`node_modules/\`.
 
 ## Dependencies
 
-- Do not add, remove, or update dependencies unless the task explicitly requires it.
-- Patched dependencies (\`pnpm.patchedDependencies\`) must use exact versions (no \`^\`/\`~\`).
-- Patching dependencies requires explicit approval.
-
-## Project Structure
-
-- Source: \`src/\` — CLI wiring: \`src/cli/\`, commands: \`src/commands/\`, goal system: \`src/goal/\`, infra: \`src/infra/\`
-- Tests: colocated \`*.test.ts\`
-- Extensions/plugins: \`extensions/*\``;
+- Do not add, remove, or upgrade dependencies unless the task explicitly requires it.`;
 
 const WORKER_AGENTS_MD = `# Goal Worker — Execution Guidelines
 
