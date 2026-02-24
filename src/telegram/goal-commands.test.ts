@@ -2442,6 +2442,100 @@ describe("goal-commands telegram adapter", () => {
       expect(updated?.workingDir).toBe(newDir);
     });
 
+    it.each(["workingDir: string", "workingDirectory: string"])(
+      "does not parse camelCase identifiers as working dir instructions: %s",
+      async (instructionText) => {
+        const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-camel-"));
+        saveRunFixture(makeRun({ workingDir: originalDir }));
+
+        mockRunCliPlanRevision.mockResolvedValue({
+          plan: {
+            goal: "Test goal",
+            workingDir: originalDir,
+            summary: "Revised plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        });
+        mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+        const { handleGoalEdit } = await import("./goal-commands.js");
+        const result = await handleGoalEdit("test-run", instructionText);
+
+        expect(result.text).not.toContain("Could not resolve working directory");
+        expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cwd: originalDir,
+          }),
+        );
+        expect(mockEnsureWorkingDir).not.toHaveBeenCalled();
+
+        const updated = loadRun("test-run-id-1234", testGoalsDir);
+        expect(updated?.workingDir).toBe(originalDir);
+      },
+    );
+
+    it.each([
+      {
+        instructionText: "working dir should be /home/user/project",
+        expectedDir: "/home/user/project",
+      },
+      {
+        instructionText: "set working directory to /tmp/build",
+        expectedDir: "/tmp/build",
+      },
+      {
+        instructionText: "workdir: /opt/app",
+        expectedDir: "/opt/app",
+      },
+      {
+        instructionText: "Working Directory: /var/data",
+        expectedDir: "/var/data",
+      },
+    ])("parses supported working dir instruction phrase: $instructionText", async (testCase) => {
+      const originalDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-positive-"));
+      saveRunFixture(makeRun({ workingDir: originalDir }));
+
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          goal: "Test goal",
+          workingDir: testCase.expectedDir,
+          summary: "Revised plan",
+          steps: [
+            {
+              id: "1",
+              description: "Step one",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+      });
+      mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+      const { handleGoalEdit } = await import("./goal-commands.js");
+      const result = await handleGoalEdit("test-run", testCase.instructionText);
+
+      expect(result.text).toContain("Working dir:");
+      expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cwd: testCase.expectedDir,
+        }),
+      );
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(testCase.expectedDir);
+
+      const updated = loadRun("test-run-id-1234", testGoalsDir);
+      expect(updated?.workingDir).toBe(testCase.expectedDir);
+    });
+
     async function expectWorkingDirInstructionResolves(
       instructionValue: string,
       resolvedPath: string,
