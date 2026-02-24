@@ -1,8 +1,10 @@
 import { resolveAnnounceTargetFromKey } from "../agents/tools/sessions-send-helpers.js";
 import { normalizeChannelId } from "../channels/plugins/index.js";
 import type { CliDeps } from "../cli/deps.js";
+import { createOutboundSendDeps } from "../cli/outbound-send-deps.js";
 import { agentCommand } from "../commands/agent.js";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
+import { runMessageAction } from "../infra/outbound/message-action-runner.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
 import {
   consumeRestartSentinel,
@@ -12,6 +14,7 @@ import {
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { defaultRuntime } from "../runtime.js";
 import { deliveryContextFromSession, mergeDeliveryContext } from "../utils/delivery-context.js";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { loadSessionEntry } from "./session-utils.js";
 
 export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
@@ -82,6 +85,31 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     parsedTarget?.threadId ?? // From resolveAnnounceTargetFromKey (extracts :topic:N)
     sessionThreadId ??
     (origin?.threadId != null ? String(origin.threadId) : undefined);
+
+  if (payload.kind === "restart" && payload.message) {
+    try {
+      const outboundDeps = createOutboundSendDeps(params.deps);
+      await runMessageAction({
+        cfg,
+        action: "send",
+        params: {
+          channel,
+          to: resolved.to,
+          message: payload.message,
+          accountId: origin?.accountId,
+          threadId,
+        },
+        deps: outboundDeps,
+        gateway: {
+          clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+          mode: GATEWAY_CLIENT_MODES.BACKEND,
+        },
+      });
+      return;
+    } catch {
+      // Best-effort direct send for restart confirmations; fall back to agent delivery.
+    }
+  }
 
   try {
     await agentCommand(
