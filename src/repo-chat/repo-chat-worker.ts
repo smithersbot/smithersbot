@@ -9,6 +9,8 @@ const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
 const MAX_ERROR_DETAIL_CHARS = 1_000;
+const MAX_FALLBACK_TEXT_CHARS = 8_000;
+const FALLBACK_TRUNCATION_NOTICE = "\n\n[Output truncated]";
 
 type ParsedRepoChatOutput = {
   text: string;
@@ -91,6 +93,12 @@ function shouldIncludeFallbackEventText(parsed: Record<string, unknown>): boolea
   return false;
 }
 
+function truncateFallbackText(text: string): string {
+  if (text.length <= MAX_FALLBACK_TEXT_CHARS) return text;
+  const maxBodyChars = Math.max(0, MAX_FALLBACK_TEXT_CHARS - FALLBACK_TRUNCATION_NOTICE.length);
+  return `${text.slice(0, maxBodyChars)}${FALLBACK_TRUNCATION_NOTICE}`;
+}
+
 export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
   const lines = parseJsonLines(raw);
 
@@ -122,8 +130,9 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
     }
   }
 
+  const fallbackText = truncateFallbackText(textParts.join("\n"));
   return {
-    text: (finalResultText ?? textParts.join("\n")).trim(),
+    text: (finalResultText ?? fallbackText).trim(),
     cliSessionId,
   };
 }
@@ -159,8 +168,9 @@ function parseRepoChatStreamJsonError(raw: string): ParsedRepoChatOutput {
     }
   }
 
+  const fallbackText = truncateFallbackText(textParts.join("\n"));
   return {
-    text: (errorResultText ?? textParts.join("\n")).trim(),
+    text: (errorResultText ?? fallbackText).trim(),
     cliSessionId,
   };
 }
