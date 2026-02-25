@@ -381,6 +381,40 @@ export async function executeTaskWithCliWorker(
   // Check stdout JSONL stream for structured error info (billing, auth, rate limit)
   const streamError = parseClaudeCodeStreamError(stdout, stderr);
 
+  if (
+    !output &&
+    !timedOut &&
+    !streamError &&
+    resultRead.error &&
+    (resultRead.error.kind === "invalid_json" || resultRead.error.kind === "invalid_schema")
+  ) {
+    const repairTargetPath = fs.existsSync(workspaceResultPath)
+      ? workspaceResultPath
+      : canonicalResultPath;
+    onProgress?.(`  [cli-worker] attempting result-file repair (${resultRead.error.kind})`);
+    const repaired = await repairResultFile({
+      backend,
+      resultFilePath: repairTargetPath,
+      workerDir,
+      attemptNumber,
+      model,
+      onProgress,
+      abortSignal: localAbortController.signal,
+      workingDir,
+      hardDenies,
+    });
+    if (repaired) {
+      output = repaired;
+      persistCanonicalWorkerResult({
+        sourcePath: repairTargetPath,
+        canonicalResultPath,
+      });
+      onProgress?.("  [cli-worker] repaired worker_result.json");
+    } else {
+      onProgress?.("  [cli-worker] worker_result.json repair failed");
+    }
+  }
+
   if (!output) {
     if (timedOut) {
       output = makeFailureOutput(

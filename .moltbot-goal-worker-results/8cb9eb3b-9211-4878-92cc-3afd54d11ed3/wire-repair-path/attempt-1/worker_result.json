@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Wired a single guarded repair attempt into executeTaskWithCliWorker for invalid_json/invalid_schema result files (skipped for timeout/stream/missing), and on successful repair now sets output and persists the repaired file to canonical path. Verified with pnpm build."}
