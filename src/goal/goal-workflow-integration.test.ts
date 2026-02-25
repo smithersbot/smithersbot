@@ -639,8 +639,9 @@ describe("goal workflow integration tests", () => {
       expect(step2.status).toBe("blocked");
       expect(step2.blockedReason).toBe("out_of_credits");
 
-      // Step 3 depends on step 1, which isn't done, so it stays pending
-      expect(step3.status).toBe("pending");
+      // Global fatal block marks all remaining pending tasks blocked.
+      expect(step3.status).toBe("blocked");
+      expect(step3.blockedReason).toBe("out_of_credits");
 
       // Only one task should have been executed
       expect(mockCliExecute).toHaveBeenCalledOnce();
