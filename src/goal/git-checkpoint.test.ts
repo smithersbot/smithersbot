@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   autosaveIfDirty,
+  buildRunBranchName,
   canRunGit,
   ensureWorkingDir,
   ensureRunBranch,
@@ -52,15 +53,23 @@ const shouldRunGit = process.env.MOLTBOT_TEST_GIT === "1" && canRunGit();
 const describeGit = shouldRunGit ? describe : describe.skip;
 
 describeGit("git-checkpoint", () => {
+  it("buildRunBranchName prefixes UTC timestamp before run id", () => {
+    expect(buildRunBranchName("run1", "2026-02-25T15:04:05.999Z")).toBe(
+      "claw/run/20260225-150405Z-run1",
+    );
+  });
+
   it("ensureRunBranch creates run branch", () => {
     const dir = tracked(initRepo());
-    const result = ensureRunBranch(dir, "run1");
+    const runId = "run1";
+    const runBranchName = buildRunBranchName(runId, "2026-02-25T15:04:05.999Z");
+    const result = ensureRunBranch(dir, runId, runBranchName);
     expect(result.success).toBe(true);
     const branch = execSync("git branch --show-current", {
       cwd: dir,
       encoding: "utf8",
     }).trim();
-    expect(branch).toBe("claw/run/run1");
+    expect(branch).toBe(runBranchName);
   });
 
   it("autosaveIfDirty commits when dirty", () => {

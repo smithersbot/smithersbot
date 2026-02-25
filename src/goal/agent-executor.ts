@@ -21,6 +21,7 @@ import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
   autosaveIfDirty,
+  buildRunBranchName,
   canRunGit,
   createRunPullRequest,
   ensureRunBranch,
@@ -663,6 +664,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   };
   persistBuildGateFixCounts();
 
+  const runBranchName = buildRunBranchName(runId, params.serializedRun?.createdAt);
+
   // --- Git setup (branch + autosave) ---
   if (gitCheckpointConfig?.enabled) {
     if (!canRunGit() || !isGitRepo(workingDir)) {
@@ -694,7 +697,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       }
     }
 
-    const branchResult = ensureRunBranch(workingDir, runId);
+    const branchResult = ensureRunBranch(workingDir, runId, runBranchName);
     if (!branchResult.success) {
       const msg = `Git run branch failed: ${branchResult.error}`;
       session.state = "blocked";
@@ -1407,7 +1410,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         onProgress?.("  [warn] GitHub push skipped: working repository is not private.");
       } else {
         const remote = githubPushConfig.remote ?? "origin";
-        const pushResult = pushRunBranch(workingDir, runId, remote);
+        const pushResult = pushRunBranch(workingDir, runId, remote, runBranchName);
         if (!pushResult.success) {
           onProgress?.(`  [warn] GitHub push failed: ${pushResult.error}`);
         } else {
@@ -1419,6 +1422,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               runId,
               session.goal,
               baseBranch,
+              runBranchName,
             );
             if (pullRequestResult.ok) {
               prUrl = pullRequestResult.prUrl;

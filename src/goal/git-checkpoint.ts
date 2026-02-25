@@ -8,6 +8,8 @@ export type GitResult = { success: true; sha: string } | { success: false; error
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
 export type GitPullRequestResult = { ok: true; prUrl: string } | { ok: false; error: string };
 
+const RUN_BRANCH_PREFIX = "claw/run";
+
 const INITIAL_WORKING_DIR_GITIGNORE = `venv/
 .venv/
 node_modules/
@@ -85,6 +87,27 @@ function hasHeadCommit(cwd: string): boolean {
   } catch {
     return false;
   }
+}
+
+function formatUtcBranchTimestamp(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  const seconds = String(date.getUTCSeconds()).padStart(2, "0");
+  return `${year}${month}${day}-${hours}${minutes}${seconds}Z`;
+}
+
+function resolveBranchTimestamp(createdAt?: string): Date {
+  if (!createdAt) return new Date();
+  const parsed = new Date(createdAt);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+export function buildRunBranchName(runId: string, createdAt?: string): string {
+  const timestamp = formatUtcBranchTimestamp(resolveBranchTimestamp(createdAt));
+  return `${RUN_BRANCH_PREFIX}/${timestamp}-${runId}`;
 }
 
 export function ensureWorkingDir(cwd: string): void {
@@ -165,12 +188,15 @@ export function getHeadSha(cwd: string): GitResult {
   }
 }
 
-export function ensureRunBranch(cwd: string, runId: string): GitResult {
+export function ensureRunBranch(
+  cwd: string,
+  runId: string,
+  runBranchName = buildRunBranchName(runId),
+): GitResult {
   if (!canRunGit()) return { success: false, error: "git not available" };
   if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
   try {
-    const branchName = `claw/run/${runId}`;
-    execFileSync("git", ["-C", cwd, "checkout", "-B", branchName], {
+    execFileSync("git", ["-C", cwd, "checkout", "-B", runBranchName], {
       encoding: "utf8",
       timeout: 10000,
     });
@@ -180,7 +206,12 @@ export function ensureRunBranch(cwd: string, runId: string): GitResult {
   return getHeadSha(cwd);
 }
 
-export function pushRunBranch(cwd: string, runId: string, remote = "origin"): GitResult {
+export function pushRunBranch(
+  cwd: string,
+  runId: string,
+  remote = "origin",
+  runBranchName = buildRunBranchName(runId),
+): GitResult {
   if (!canRunGit()) return { success: false, error: "git not available" };
   if (!isGitRepo(cwd)) return { success: false, error: "Not a git repo" };
 
@@ -193,7 +224,7 @@ export function pushRunBranch(cwd: string, runId: string, remote = "origin"): Gi
   }
 
   try {
-    execFileSync("git", ["-C", cwd, "push", "-u", remote, `claw/run/${runId}`], {
+    execFileSync("git", ["-C", cwd, "push", "-u", remote, runBranchName], {
       encoding: "utf8",
       timeout: 60_000,
     });
@@ -209,12 +240,13 @@ export function createRunPullRequest(
   runId: string,
   goalTitle: string,
   baseBranch = "main",
+  runBranchName = buildRunBranchName(runId),
 ): GitPullRequestResult {
   const title = goalTitle.trim() || `Goal run ${runId}`;
   const body = [
     "Automated goal run artifact PR created by Moltbot.",
     "",
-    `Run branch: claw/run/${runId}`,
+    `Run branch: ${runBranchName}`,
   ].join("\n");
 
   try {
@@ -224,7 +256,7 @@ export function createRunPullRequest(
         "pr",
         "create",
         "--head",
-        `claw/run/${runId}`,
+        runBranchName,
         "--base",
         baseBranch,
         "--title",

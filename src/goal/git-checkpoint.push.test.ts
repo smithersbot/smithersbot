@@ -37,6 +37,7 @@ describe("git-checkpoint push/pr", () => {
     const dir = makeRepoDir();
     dirs.push(dir);
     const runId = "run-123";
+    const runCreatedAt = "2026-02-25T15:04:05.999Z";
     const sha = "1234567890123456789012345678901234567890";
 
     mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
@@ -54,15 +55,16 @@ describe("git-checkpoint push/pr", () => {
       throw new Error(`Unexpected args for ${String(command)}: ${argv.join(" ")}`);
     });
 
-    const { pushRunBranch } = await import("./git-checkpoint.js");
-    const result = pushRunBranch(dir, runId);
+    const { buildRunBranchName, pushRunBranch } = await import("./git-checkpoint.js");
+    const runBranchName = buildRunBranchName(runId, runCreatedAt);
+    const result = pushRunBranch(dir, runId, "origin", runBranchName);
 
     expect(result).toEqual({ success: true, sha });
     const pushCall = mockExecFileSync.mock.calls.find(
       (call) => call[0] === "git" && argvFrom(call[1])[2] === "push",
     );
     expect(pushCall).toBeTruthy();
-    expect(pushCall?.[1]).toEqual(["-C", dir, "push", "-u", "origin", `claw/run/${runId}`]);
+    expect(pushCall?.[1]).toEqual(["-C", dir, "push", "-u", "origin", runBranchName]);
   });
 
   it("pushRunBranch fails closed when repo is not private", async () => {
@@ -99,6 +101,7 @@ describe("git-checkpoint push/pr", () => {
   it("createRunPullRequest returns the created PR URL", async () => {
     const dir = makeRepoDir();
     dirs.push(dir);
+    const runId = "run-42";
 
     mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
       const argv = argvFrom(args);
@@ -109,8 +112,9 @@ describe("git-checkpoint push/pr", () => {
       throw new Error(`Unexpected args for ${String(command)}: ${argv.join(" ")}`);
     });
 
-    const { createRunPullRequest } = await import("./git-checkpoint.js");
-    const result = createRunPullRequest(dir, "run-42", "Ship it", "main");
+    const { buildRunBranchName, createRunPullRequest } = await import("./git-checkpoint.js");
+    const runBranchName = buildRunBranchName(runId, "2026-02-25T15:04:05.999Z");
+    const result = createRunPullRequest(dir, runId, "Ship it", "main", runBranchName);
 
     expect(result).toEqual({ ok: true, prUrl: "https://github.com/owner/repo/pull/42" });
 
@@ -119,8 +123,11 @@ describe("git-checkpoint push/pr", () => {
         call[0] === "gh" && argvFrom(call[1])[0] === "pr" && argvFrom(call[1])[1] === "create",
     );
     expect(createCall).toBeTruthy();
-    expect(createCall?.[1]).toContain("Ship it");
-    expect(createCall?.[1]).toContain("claw/run/run-42");
+    const createArgv = argvFrom(createCall?.[1]);
+    expect(createArgv).toContain("Ship it");
+    expect(createArgv).toContain(runBranchName);
+    const bodyArg = createArgv.find((arg) => arg.includes("Run branch:"));
+    expect(bodyArg).toContain(`Run branch: ${runBranchName}`);
   });
 
   it("createRunPullRequest returns an error when gh pr create fails", async () => {
@@ -138,8 +145,9 @@ describe("git-checkpoint push/pr", () => {
       throw new Error(`Unexpected args for ${String(command)}: ${argv.join(" ")}`);
     });
 
-    const { createRunPullRequest } = await import("./git-checkpoint.js");
-    const result = createRunPullRequest(dir, "run-empty", "No changes", "main");
+    const { buildRunBranchName, createRunPullRequest } = await import("./git-checkpoint.js");
+    const runBranchName = buildRunBranchName("run-empty", "2026-02-25T15:04:05.999Z");
+    const result = createRunPullRequest(dir, "run-empty", "No changes", "main", runBranchName);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {

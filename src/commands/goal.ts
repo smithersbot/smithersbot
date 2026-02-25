@@ -352,6 +352,7 @@ export async function goalCommand(
       timeoutMs: 300_000,
       gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
       serializedRun: {
+        createdAt,
         backendOverride: opts.backend,
         plannerBackendUsed,
         plannerDegradedReason,
