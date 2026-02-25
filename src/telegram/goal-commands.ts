@@ -2645,7 +2645,13 @@ export function registerTelegramGoalCommands({
     // --- Plan buttons: ga/gD/gr/ge:<runIdPrefix>:<revision> ---
     const planMatch = /^(ga|gD|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
     if (planMatch) {
-      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer plan callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
       const [, action, runIdPrefix] = planMatch;
       const chatId = ctx.callbackQuery.message?.chat.id;
       if (!chatId) return;
@@ -2664,7 +2670,13 @@ export function registerTelegramGoalCommands({
               : "\u270D"; // ✍ for edit
         await bot.api
           .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
-          .catch(() => {});
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set plan reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
       }
 
       if (action === "ge") {
@@ -2681,7 +2693,13 @@ export function registerTelegramGoalCommands({
               input_field_placeholder: "Describe your changes...",
             },
           })
-          .catch(() => undefined);
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to send edit prompt: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
         // Track the prompt message so the router can map replies back to GOAL_EDIT
         if (sent?.message_id && runIdPrefix) {
           const resolvedId = resolveRunId(runIdPrefix);
@@ -2738,7 +2756,13 @@ export function registerTelegramGoalCommands({
     // --- Done buttons: gTD/gIF:<runIdPrefix> ---
     const doneMatch = /^(gTD|gIF):([a-f0-9-]+)$/.exec(data);
     if (doneMatch) {
-      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer done callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
       const [, action, runIdPrefix] = doneMatch;
       const chatId = ctx.callbackQuery.message?.chat.id;
       if (!chatId) return;
@@ -2760,7 +2784,14 @@ export function registerTelegramGoalCommands({
       }
       const run = loadRun(resolvedId);
       if (!run) {
-        await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          messageId,
+        );
         return;
       }
 
@@ -2788,7 +2819,13 @@ export function registerTelegramGoalCommands({
             input_field_placeholder: "Describe your feedback or what needs to change...",
           },
         })
-        .catch(() => undefined);
+        .catch((err) => {
+          runtime.error?.(
+            `[goal-callback] failed to send feedback prompt: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
       if (sent?.message_id) {
         persistFeedbackPromptMessage({
           runId: resolvedId,
@@ -2803,7 +2840,13 @@ export function registerTelegramGoalCommands({
     // --- Blocked message detail button: gAD:<runIdPrefix> ---
     const blockedDetailsMatch = /^gAD:([a-f0-9-]+)$/.exec(data);
     if (blockedDetailsMatch) {
-      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer blocked detail callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
       const [, runIdPrefix] = blockedDetailsMatch;
       const chatId = ctx.callbackQuery.message?.chat.id;
       if (!chatId) return;
@@ -2826,7 +2869,14 @@ export function registerTelegramGoalCommands({
 
       const run = loadRun(resolvedId);
       if (!run) {
-        await sendGoalReply(bot, chatId, `Run file missing: ${resolvedId}`, runtime, threadId);
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          messageId,
+        );
         return;
       }
 
@@ -2841,7 +2891,13 @@ export function registerTelegramGoalCommands({
             input_field_placeholder: "Describe your answer...",
           },
         })
-        .catch(() => undefined);
+        .catch((err) => {
+          runtime.error?.(
+            `[goal-callback] failed to send blocked answer prompt: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
       if (sent?.message_id) {
         persistTelegramQuestionMessage({
           runId: resolvedId,
@@ -2857,7 +2913,13 @@ export function registerTelegramGoalCommands({
     // --- Blocked buttons: gResume/gStop:<runIdPrefix> ---
     const blockedMatch = /^(gResume|gStop):([a-f0-9-]+)$/.exec(data);
     if (blockedMatch) {
-      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch(() => {});
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer blocked action callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
       const [, action, runIdPrefix] = blockedMatch;
       const chatId = ctx.callbackQuery.message?.chat.id;
       if (!chatId) return;
@@ -2885,7 +2947,13 @@ export function registerTelegramGoalCommands({
           action === "gResume" ? "\uD83D\uDC4D" : "\uD83D\uDC4E";
         await bot.api
           .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
-          .catch(() => {});
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set blocked action reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
       }
 
       if (action === "gStop") {
