@@ -27,6 +27,7 @@ const LOG_EXCERPT_CHARS = 2048;
 const WORKER_RESULT_WORKSPACE_DIR = ".moltbot-goal-worker-results";
 const RESULT_POLL_INTERVAL_MS = 4_000;
 const RESULT_GRACE_PERIOD_MS = 10_000;
+export const REPAIR_TIMEOUT_MS = 60_000;
 
 // --- Public API ---
 
@@ -116,6 +117,81 @@ export function buildGoalWorkerEnv(
 ): Record<string, string | undefined> {
   const base = backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
   return { ...base, MOLTBOT_GOAL_TEST_SCOPE: "1" };
+}
+
+/**
+ * Re-run a CLI worker for one turn to repair an invalid worker_result.json.
+ * Returns validated output after repair, or null if still invalid.
+ */
+export async function repairResultFile(params: {
+  backend: GoalBackendId;
+  resultFilePath: string;
+  workerDir: string;
+  attemptNumber: number;
+  model?: string;
+  onProgress?: (text: string) => void;
+  abortSignal?: AbortSignal;
+  workingDir: string;
+  hardDenies: HardDeny[];
+}): Promise<GoalWorkerOutput | null> {
+  const {
+    backend,
+    resultFilePath,
+    workerDir,
+    attemptNumber,
+    model,
+    onProgress,
+    abortSignal,
+    workingDir,
+    hardDenies,
+  } = params;
+
+  const initialRead = readWorkerResultFile({ primaryPath: resultFilePath });
+  const initialErrorKind = initialRead.error?.kind;
+  const resultIssue =
+    initialErrorKind === "invalid_schema"
+      ? "does not match the expected schema"
+      : "contains invalid JSON";
+
+  const repairPrompt = [
+    `The file at ${resultFilePath} ${resultIssue}.`,
+    "Read the file, fix it, and write it back to the same path.",
+    "Do not change the meaning of the result. Only fix JSON syntax/schema shape issues.",
+    "",
+    "Expected valid schema shapes:",
+    '1. {"status":"complete","summary":"<brief summary of what was done>"}',
+    '2. {"status":"blocked","question":"<what you need from the user>"}',
+    '3. {"status":"ralph","approachTried":"...","specificErrors":"...","keyInsight":"...","suggestedApproach":"..."}',
+    '4. {"status":"failed","reason":"...","whatTried":"...","errorType":"...","suggestedNext":"...","needsRevert":false}',
+  ].join("\n");
+
+  const denyFilePath = writeDenyFile(hardDenies, workerDir);
+  const args = buildCliArgs({
+    backend,
+    prompt: repairPrompt,
+    workingDir,
+    denyFilePath,
+    model,
+  });
+
+  const command = backend === "codex" ? "codex" : "claude";
+  const stdoutPath = path.join(workerDir, `attempt-${attemptNumber}.repair.stdout.txt`);
+  const stderrPath = path.join(workerDir, `attempt-${attemptNumber}.repair.stderr.txt`);
+
+  onProgress?.(`  [cli-worker:${backend}] repairing invalid worker_result.json`);
+
+  await runCliProcess({
+    command,
+    args,
+    cwd: workingDir,
+    timeoutMs: REPAIR_TIMEOUT_MS,
+    abortSignal,
+    stdoutPath,
+    stderrPath,
+  });
+
+  const repairedRead = readWorkerResultFile({ primaryPath: resultFilePath });
+  return repairedRead.output;
 }
 
 /**
