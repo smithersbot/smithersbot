@@ -65,6 +65,32 @@ function parseJsonLines(raw: string): Array<Record<string, unknown>> {
     .filter((entry): entry is Record<string, unknown> => isRecord(entry));
 }
 
+function isCodexMessageItemEvent(parsed: Record<string, unknown>): boolean {
+  const type = typeof parsed.type === "string" ? parsed.type.trim() : "";
+  if (type) return false;
+  return isRecord(parsed.item) && parsed.item.type === "message";
+}
+
+function isAssistantContentBlockDeltaEvent(parsed: Record<string, unknown>): boolean {
+  if (parsed.type !== "content_block_delta") return false;
+  if (!isRecord(parsed.delta)) return false;
+
+  const deltaType = typeof parsed.delta.type === "string" ? parsed.delta.type : "";
+  if (deltaType && deltaType !== "text_delta") {
+    return false;
+  }
+
+  return collectText(parsed.delta).trim().length > 0;
+}
+
+function shouldIncludeFallbackEventText(parsed: Record<string, unknown>): boolean {
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type === "assistant") return true;
+  if (isAssistantContentBlockDeltaEvent(parsed)) return true;
+  if (isCodexMessageItemEvent(parsed)) return true;
+  return false;
+}
+
 export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
   const lines = parseJsonLines(raw);
 
@@ -83,6 +109,9 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
       if (resultText) {
         finalResultText = resultText;
       }
+      continue;
+    }
+    if (!shouldIncludeFallbackEventText(parsed)) {
       continue;
     }
 
@@ -117,6 +146,9 @@ function parseRepoChatStreamJsonError(raw: string): ParsedRepoChatOutput {
       if (resultText) {
         errorResultText = resultText;
       }
+      continue;
+    }
+    if (!shouldIncludeFallbackEventText(parsed)) {
       continue;
     }
 
