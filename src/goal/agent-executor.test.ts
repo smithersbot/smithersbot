@@ -341,6 +341,39 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.blocked?.requiredInputKey).toBe("task:1:input");
   });
 
+  it("blocks all pending steps when a fatal task error triggers global block", async () => {
+    const step1 = makeStep({ id: "1", backend: "codex" });
+    const step2 = makeStep({ id: "2", backend: "codex", dependsOn: ["1"] });
+    const step3 = makeStep({ id: "3", backend: "codex", dependsOn: ["2"] });
+    const plan = makePlan([step1, step2, step3]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Out of credits",
+      blockedReason: "out_of_credits",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-fatal-global-block",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(session.state).toBe("blocked");
+    expect(step1.status).toBe("blocked");
+    expect(step2.status).toBe("blocked");
+    expect(step3.status).toBe("blocked");
+    expect(step2.blockedReason).toBe("out_of_credits");
+    expect(step3.blockedReason).toBe("out_of_credits");
+    expect(step2.blockedQuestion).toBe("Out of credits");
+    expect(step3.blockedQuestion).toBe("Out of credits");
+    expect(mockCliExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("retries on PI timeout and succeeds on second attempt", async () => {
     const step = makeStep({ backend: "pi" });
     const plan = makePlan([step]);
@@ -724,7 +757,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockSpawnSync).not.toHaveBeenCalled();
   });
 
-  it("runs final build gate even when runBetweenSteps is false", async () => {
+  it("blocks on final build gate failure without mutating done step status", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: false };
@@ -750,9 +783,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("blocked");
-    expect(step.status).toBe("blocked");
-    expect(step.blockedReason).toBe("task_failed");
-    expect(step.blockedQuestion).toContain("Final build gate failed.");
+    expect(step.status).toBe("done");
+    expect(step.blockedReason).toBeUndefined();
+    expect(step.blockedQuestion).toBeUndefined();
+    expect(outcome.question).toContain("Final build gate failed.");
+    expect(session.lastError).toContain("Final build gate failed on pnpm build.");
     expect(session.buildGateResults?.__final__?.passed).toBe(false);
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });

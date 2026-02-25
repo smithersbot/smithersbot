@@ -730,6 +730,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   let stopAllTasks = false;
   let globalBlock: { kind: PlanStep["blockedReason"]; message: string } | null = null;
   let globalBlockApplied = false;
+  let finalBuildGateFailurePrompt: string | null = null;
 
   const availability = detectBackendAvailability();
   const backendOverride = params.serializedRun?.backendOverride;
@@ -1111,11 +1112,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     if (stopAllTasks && globalBlock && !globalBlockApplied) {
       for (const step of orderedSteps) {
         if (step.status !== "pending") continue;
-        const depsReady = step.dependsOn.every((depId) => {
-          const dep = orderedSteps.find((s) => s.id === depId);
-          return dep?.status === "done";
-        });
-        if (!depsReady) continue;
         step.status = "blocked";
         step.blockedReason = globalBlock.kind;
         step.blockedQuestion = globalBlock.message;
@@ -1140,39 +1136,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         output: finalGateResult.output,
         timestamp,
       };
-
-      const fallbackStep = orderedSteps.at(-1);
-      const targetStep =
-        (lastExecutedId ? orderedSteps.find((step) => step.id === lastExecutedId) : undefined) ??
-        fallbackStep;
-
-      if (targetStep) {
-        const detail = makeBuildGateFailurePrompt(
-          finalGateResult.failedCommand,
-          finalGateResult.output,
-        );
-        targetStep.status = "blocked";
-        targetStep.blockedReason = "task_failed";
-        targetStep.blockedQuestion = `Final build gate failed.\n${detail}`;
-        targetStep.failedDetail = {
-          whatTried: detail,
-          errorType: "build_gate_failed",
-          suggestedNext: "Fix the build-gate failures and retry the goal step.",
-          needsRevert: false,
-        };
-        appendGoalWorkingEntry(
-          runId,
-          targetStep.id,
-          "failed",
-          `Final build gate failed on ${finalGateResult.failedCommand}.`,
-        );
-        recordTaskResult(session, targetStep, Date.now(), onTaskUpdate);
-      }
+      const detail = makeBuildGateFailurePrompt(
+        finalGateResult.failedCommand,
+        finalGateResult.output,
+      );
+      finalBuildGateFailurePrompt = `Final build gate failed.\n${detail}`;
+      session.lastError = `Final build gate failed on ${finalGateResult.failedCommand}.`;
     }
   }
 
   const allDone = orderedSteps.every((s) => s.status === "done");
-  if (allDone) {
+  if (allDone && !finalBuildGateFailurePrompt) {
     session.state = "done";
     let postExecutionReviewNote: string | undefined;
     const shouldRunPostExecutionReview = plan.buildGate?.postExecutionReview !== false;
@@ -1486,7 +1460,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   }
 
   const aggregated =
-    aggregateBlockedDetails(orderedSteps) ??
+    (finalBuildGateFailurePrompt
+      ? ({
+          blockedAt: "execution",
+          prompt: finalBuildGateFailurePrompt,
+          requiredInputKey: "none",
+        } as const)
+      : aggregateBlockedDetails(orderedSteps)) ??
     ({ blockedAt: "execution", prompt: "All tasks completed.", requiredInputKey: "none" } as const);
   session.state = "blocked";
   session.blocked = aggregated;
