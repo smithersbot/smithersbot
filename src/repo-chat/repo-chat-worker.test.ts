@@ -92,6 +92,49 @@ describe("repo-chat-worker", () => {
       });
     });
 
+    it("excludes tool use and tool result events from fallback text", () => {
+      const output = [
+        JSON.stringify({
+          type: "assistant",
+          session_id: "claude-2",
+          message: { content: [{ type: "text", text: "assistant summary" }] },
+        }),
+        JSON.stringify({
+          type: "tool_use",
+          name: "Read",
+          input: { path: "src/repo-chat/repo-chat-worker.ts", text: "file body" },
+        }),
+        JSON.stringify({
+          type: "tool_result",
+          content: [{ type: "text", text: "grep output and file contents" }],
+        }),
+      ].join("\n");
+
+      expect(parseRepoChatStreamJson(output)).toEqual({
+        text: "assistant summary",
+        cliSessionId: "claude-2",
+      });
+    });
+
+    it("includes assistant events and assistant text deltas in fallback text", () => {
+      const output = [
+        JSON.stringify({
+          type: "assistant",
+          session_id: "claude-3",
+          message: { content: [{ type: "text", text: "first assistant line" }] },
+        }),
+        JSON.stringify({
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "second assistant line" },
+        }),
+      ].join("\n");
+
+      expect(parseRepoChatStreamJson(output)).toEqual({
+        text: "first assistant line\nsecond assistant line",
+        cliSessionId: "claude-3",
+      });
+    });
+
     it("falls back to assistant/item text when no result event exists", () => {
       const output = [
         '{"thread_id":"thread-2","item":{"type":"message","text":"part 1"}}',
@@ -101,6 +144,20 @@ describe("repo-chat-worker", () => {
         text: "part 1\npart 2",
         cliSessionId: "thread-2",
       });
+    });
+
+    it("truncates fallback text when it exceeds the cap", () => {
+      const longText = "a".repeat(9_000);
+      const output = JSON.stringify({
+        type: "assistant",
+        session_id: "claude-4",
+        message: { content: [{ type: "text", text: longText }] },
+      });
+
+      const parsed = parseRepoChatStreamJson(output);
+      expect(parsed.cliSessionId).toBe("claude-4");
+      expect(parsed.text).toHaveLength(8_000);
+      expect(parsed.text.endsWith("[Output truncated]")).toBe(true);
     });
   });
 
