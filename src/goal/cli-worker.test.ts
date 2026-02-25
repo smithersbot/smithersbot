@@ -18,7 +18,9 @@ import {
   buildCliWorkerPrompt,
   executeTaskWithCliWorker,
   parseClaudeCodeStreamError,
+  REPAIR_TIMEOUT_MS,
   readWorkerResultFile,
+  repairResultFile,
   validateWorkerOutput,
   writeDenyFile,
 } from "./cli-worker.js";
@@ -334,6 +336,107 @@ describe("cli-worker", () => {
     });
   });
 
+  describe("repairResultFile", () => {
+    it("repairs invalid JSON and returns validated output", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-repair-success-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(resultPath, "{not json", "utf8");
+      const repairedOutput = {
+        status: "complete",
+        summary: "Repaired worker result",
+      } as const;
+
+      runCliProcessMock.mockImplementationOnce(async ({ stdoutPath, stderrPath }) => {
+        if (stdoutPath) fs.writeFileSync(stdoutPath, "repair stdout", "utf8");
+        if (stderrPath) fs.writeFileSync(stderrPath, "repair stderr", "utf8");
+        fs.writeFileSync(resultPath, JSON.stringify(repairedOutput), "utf8");
+        return {
+          stdout: "repair stdout",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 25,
+        };
+      });
+
+      const result = await repairResultFile({
+        backend: "codex",
+        resultFilePath: resultPath,
+        workerDir: dir,
+        attemptNumber: 1,
+        workingDir: dir,
+        hardDenies: HARD_DENIES.slice(0, 1),
+      });
+
+      expect(result).toEqual(repairedOutput);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns null when file remains invalid after repair run", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-repair-fail-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(resultPath, "{not json", "utf8");
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      });
+
+      const result = await repairResultFile({
+        backend: "codex",
+        resultFilePath: resultPath,
+        workerDir: dir,
+        attemptNumber: 2,
+        workingDir: dir,
+        hardDenies: HARD_DENIES.slice(0, 1),
+      });
+
+      expect(result).toBeNull();
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("writes repair logs to attempt-scoped repair files", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-repair-logs-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      fs.writeFileSync(resultPath, "{not json", "utf8");
+      const onProgress = vi.fn();
+
+      runCliProcessMock.mockImplementationOnce(async ({ stdoutPath, stderrPath, timeoutMs }) => {
+        expect(timeoutMs).toBe(REPAIR_TIMEOUT_MS);
+        expect(stdoutPath).toBe(path.join(dir, "attempt-7.repair.stdout.txt"));
+        expect(stderrPath).toBe(path.join(dir, "attempt-7.repair.stderr.txt"));
+        fs.writeFileSync(resultPath, JSON.stringify({ status: "complete", summary: "ok" }), "utf8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 15,
+        };
+      });
+
+      await repairResultFile({
+        backend: "codex",
+        resultFilePath: resultPath,
+        workerDir: dir,
+        attemptNumber: 7,
+        workingDir: dir,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        onProgress,
+      });
+
+      expect(onProgress).toHaveBeenCalledWith(
+        "  [cli-worker:codex] repairing invalid worker_result.json",
+      );
+    });
+  });
+
   describe("executeTaskWithCliWorker", () => {
     it("terminates a hanging process once worker_result.json is detected", async () => {
       vi.useFakeTimers();
@@ -468,6 +571,169 @@ describe("cli-worker", () => {
       expect(result.output).toEqual(expectedOutput);
       expect(onProgress).not.toHaveBeenCalledWith(EARLY_RESULT_PROGRESS_MESSAGE);
       expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal?.aborted).toBe(false);
+    });
+
+    it("repairs invalid worker_result.json and returns repaired output", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-repair-"));
+      const runId = "run-repair";
+      const stepId = "step-repair";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const onProgress = vi.fn();
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      const canonicalResultPath = path.join(workerDir, "worker_result.json");
+      const repairedOutput = {
+        status: "complete",
+        summary: "Repaired after invalid JSON",
+      } as const;
+
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(workspaceResultPath, "{not json", "utf8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 50,
+          };
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(workspaceResultPath, JSON.stringify(repairedOutput), "utf8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 35,
+          };
+        });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Repair invalid worker output",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        onProgress,
+      });
+
+      expect(result.output).toEqual(repairedOutput);
+      expect(result.output.status).toBe("complete");
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(onProgress).toHaveBeenCalledWith(
+        "  [cli-worker] attempting result-file repair (invalid_json)",
+      );
+      expect(onProgress).toHaveBeenCalledWith("  [cli-worker] repaired worker_result.json");
+      expect(readWorkerResultFile({ primaryPath: canonicalResultPath }).output).toEqual(
+        repairedOutput,
+      );
+    });
+
+    it("does not attempt repair when the worker process times out", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-timeout-"));
+      const runId = "run-timeout";
+      const stepId = "step-timeout";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const onProgress = vi.fn();
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+        exitCode: null,
+        signal: null,
+        durationMs: 30_000,
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify timeout does not trigger repair",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        onProgress,
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(result.output.status).toBe("failed");
+      expect(result.output.errorType).toBe("timeout");
+      expect(
+        onProgress.mock.calls.some(
+          ([message]) =>
+            typeof message === "string" && message.includes("attempting result-file repair"),
+        ),
+      ).toBe(false);
+    });
+
+    it("does not attempt repair when worker_result.json is missing", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-missing-"));
+      const runId = "run-missing";
+      const stepId = "step-missing";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const onProgress = vi.fn();
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 22,
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify missing file does not trigger repair",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        onProgress,
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(result.output.status).toBe("failed");
+      expect(result.output.errorType).toBe("missing_result");
+      expect(
+        onProgress.mock.calls.some(
+          ([message]) =>
+            typeof message === "string" && message.includes("attempting result-file repair"),
+        ),
+      ).toBe(false);
     });
   });
 
