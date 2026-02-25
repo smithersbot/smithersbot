@@ -568,7 +568,7 @@ Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
 Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
-Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/commands/goal.ts, src/telegram/goal-commands.ts.
+Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/telegram/goal-commands.ts.
 Look for:
 - Bugs or logic errors in the happy path
 - Edge cases in blocked/failed/cancelled states and transitions between them
@@ -602,7 +602,7 @@ This is one example pattern — look broadly for any good practice that exists i
 
 ## 5. Security concerns
 Review security posture across goal, gateway, and channel flows.
-Key files: src/security/audit.ts, src/security/audit-extra.ts, src/goal/hard-deny.ts, src/goal/capability-enforcement.ts.
+Key files: src/security/audit.ts, src/security/audit-extra.ts, src/security/audit-fs.ts, src/goal/hard-deny.ts, src/goal/capability-enforcement.ts, src/goal/capability-types.ts.
 Look for:
 - Input validation gaps or unsafe parsing of untrusted input
 - Command or path injection risks in shell/file/process boundaries
