@@ -746,6 +746,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               } satisfies PlanStep);
             if (!existingPolishStep) {
               plan.steps.push(polishStep);
+              orderedSteps.push(polishStep);
             } else {
               existingPolishStep.description = polishDescription;
               existingPolishStep.shortSummary = "Apply review polish";
@@ -1059,9 +1060,10 @@ function findRunnableTasks(
   answers?: Record<string, string>,
   retryableBlockedIds?: Set<string>,
 ): PlanStep[] {
+  const stepMap = new Map(steps.map((step) => [step.id, step]));
   return steps.filter((step) => {
     const depsReady = step.dependsOn.every((depId) => {
-      const dep = steps.find((s) => s.id === depId);
+      const dep = stepMap.get(depId);
       return dep?.status === "done";
     });
     if (!depsReady) return false;

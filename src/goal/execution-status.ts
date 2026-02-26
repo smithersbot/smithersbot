@@ -71,10 +71,11 @@ export function isFullyBlocked(steps: PlanStep[]): boolean {
 
 /** Runnable = pending AND all deps are done. */
 export function findRunnableSteps(steps: PlanStep[]): PlanStep[] {
+  const stepMap = new Map(steps.map((step) => [step.id, step]));
   return steps.filter((step) => {
     if (step.status !== "pending") return false;
     return step.dependsOn.every((depId) => {
-      const dep = steps.find((s) => s.id === depId);
+      const dep = stepMap.get(depId);
       return dep?.status === "done";
     });
   });
