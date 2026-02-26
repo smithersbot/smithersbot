@@ -7,6 +7,7 @@ import {
   extractJson,
   generatePlan,
   generatePlanRevision,
+  parsePlanResultFromText,
   PlanParseError,
 } from "./planner.js";
 import type { ScoutResult } from "./scout.js";
@@ -642,6 +643,36 @@ describe("planner", () => {
         expect(err).toBeInstanceOf(PlanParseError);
         expect((err as PlanParseError).rawResponse).toBe("some LLM prose response");
       }
+    });
+  });
+
+  describe("parsePlanResultFromText", () => {
+    it("parses valid plan JSON with an extra trailing brace", () => {
+      const result = parsePlanResultFromText(
+        '{"workingDir":"/tmp/moltbot","summary":"Repair parse","steps":[{"id":"repair-parse","description":"Handle malformed JSON output","dependsOn":[],"backend":"codex"}]}}',
+        "Repair parse",
+      );
+
+      expect("blocked" in result).toBe(false);
+      if ("blocked" in result) return;
+      expect(result.workingDir).toBe("/tmp/moltbot");
+      expect(result.steps).toHaveLength(1);
+      expect(result.steps[0]?.id).toBe("repair-parse");
+    });
+
+    it("parses fenced plan JSON with an extra trailing brace", () => {
+      const result = parsePlanResultFromText(
+        "```json\n" +
+          '{"workingDir":"/tmp/moltbot","summary":"Fence repair","steps":[{"id":"fence-repair","description":"Handle fenced malformed JSON output","dependsOn":[],"backend":"codex"}]}}\n' +
+          "```",
+        "Fence repair",
+      );
+
+      expect("blocked" in result).toBe(false);
+      if ("blocked" in result) return;
+      expect(result.summary).toBe("Fence repair");
+      expect(result.steps).toHaveLength(1);
+      expect(result.steps[0]?.id).toBe("fence-repair");
     });
   });
 

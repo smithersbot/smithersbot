@@ -8,6 +8,7 @@ import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 import { normalizeLabel } from "./mermaid-render.js";
 import { collapseWhitespace, parseShortSummary } from "./plan-text.js";
+import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 
 export const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
@@ -260,6 +261,33 @@ export function extractJson(text: string): Record<string, unknown> {
       if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
     } catch {
       // Fall through
+    }
+  }
+
+  // Repair malformed raw JSON (for example, an extra trailing brace).
+  try {
+    const repaired = repairJsonText(trimmed);
+    const result = JSON.parse(repaired);
+    if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
+  } catch {
+    // Fall through
+  }
+
+  // Final fallback: extract JSON object candidates from prose/fences.
+  for (const candidate of extractJsonObjectCandidates(trimmed)) {
+    try {
+      const result = JSON.parse(candidate);
+      if (typeof result === "object" && result !== null) return result as Record<string, unknown>;
+    } catch {
+      try {
+        const repaired = repairJsonText(candidate);
+        const repairedResult = JSON.parse(repaired);
+        if (typeof repairedResult === "object" && repairedResult !== null) {
+          return repairedResult as Record<string, unknown>;
+        }
+      } catch {
+        // Continue to next candidate.
+      }
     }
   }
 
