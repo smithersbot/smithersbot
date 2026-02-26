@@ -8,6 +8,7 @@ import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { computeCpm } from "./cpm.js";
 import { computeDisplayStatuses } from "./execution-status.js";
 import { formatPlanOutput } from "./format-output.js";
+import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 import { renderMermaid } from "./mermaid-render.js";
 import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
@@ -176,7 +177,11 @@ function parseJsonLines(raw: string): Array<Record<string, unknown>> {
       try {
         return JSON.parse(line) as unknown;
       } catch {
-        return null;
+        try {
+          return JSON.parse(repairJsonText(line)) as unknown;
+        } catch {
+          return null;
+        }
       }
     })
     .filter((entry): entry is Record<string, unknown> => isRecord(entry));
@@ -224,52 +229,6 @@ function parseDecisionRecord(raw: Record<string, unknown>): AutocheckDecision | 
   return { approved: false, editInstructions };
 }
 
-function extractJsonObjectCandidates(text: string): string[] {
-  const candidates: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaping = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (!ch) continue;
-
-    if (inString) {
-      if (escaping) {
-        escaping = false;
-      } else if (ch === "\\") {
-        escaping = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-      continue;
-    }
-
-    if (ch === "}") {
-      if (depth === 0) continue;
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return candidates;
-}
-
 function parseDecisionFromText(raw: string): AutocheckDecision | undefined {
   const text = raw.trim();
   if (!text) return undefined;
@@ -291,7 +250,14 @@ function parseDecisionFromText(raw: string): AutocheckDecision | undefined {
       const decision = parseDecisionRecord(parsed);
       if (decision) return decision;
     } catch {
-      continue;
+      try {
+        const parsed = JSON.parse(repairJsonText(trimmed)) as unknown;
+        if (!isRecord(parsed)) continue;
+        const decision = parseDecisionRecord(parsed);
+        if (decision) return decision;
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -302,7 +268,14 @@ function parseDecisionFromText(raw: string): AutocheckDecision | undefined {
       const decision = parseDecisionRecord(parsed);
       if (decision) return decision;
     } catch {
-      continue;
+      try {
+        const parsed = JSON.parse(repairJsonText(candidate)) as unknown;
+        if (!isRecord(parsed)) continue;
+        const decision = parseDecisionRecord(parsed);
+        if (decision) return decision;
+      } catch {
+        continue;
+      }
     }
   }
 

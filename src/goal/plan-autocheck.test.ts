@@ -683,4 +683,54 @@ describe("runPlanAutocheck", () => {
     expect(result.approved).toBe(true);
     expect(result.autocheckRounds).toBe(1);
   });
+
+  it("repairs malformed direct decision JSON with trailing brace", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: '{"approved":true}}\n',
+      }),
+    );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Codex repaired direct decision", "1", "codex"),
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-codex-repair-direct"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result).toMatchObject({
+      approved: true,
+      exhausted: false,
+      autocheckRounds: 0,
+      backend: "codex",
+    });
+    expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+  });
+
+  it("repairs malformed JSONL lines with trailing braces", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: '{"type":"result","result":{"approved":true}}}\n',
+      }),
+    );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Claude repaired jsonl line", "1", "claude_code"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-repair-jsonl"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result).toMatchObject({
+      approved: true,
+      exhausted: false,
+      autocheckRounds: 0,
+      backend: "claude_code",
+    });
+    expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+  });
 });
