@@ -203,58 +203,91 @@ export async function runRepoChatWorker(
   params: RepoChatWorkerParams,
 ): Promise<RepoChatWorkerResult> {
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const responseFilePath = path.join(os.tmpdir(), `moltbot-rc-${crypto.randomUUID()}.md`);
+  const responseFileInstruction = buildResponseFileInstruction(responseFilePath);
+  const augmentedPrompt = `${responseFileInstruction}\n\n---\n\nUser question:\n${params.prompt}`;
   const command = params.backend === "claude_code" ? "claude" : "codex";
   const args =
     params.backend === "claude_code"
       ? buildClaudeRepoChatArgs({
-          prompt: params.prompt,
+          prompt: augmentedPrompt,
           cliSessionId: params.cliSessionId,
           model: params.model,
         })
       : buildCodexRepoChatArgs({
-          prompt: params.prompt,
+          prompt: augmentedPrompt,
           workingDir: params.workingDir,
           cliSessionId: params.cliSessionId,
           model: params.model,
         });
+  const env =
+    params.backend === "claude_code"
+      ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
+      : { ...process.env };
 
-  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
-    command,
-    args,
-    cwd: params.workingDir,
-    timeoutMs,
-    abortSignal: params.abortSignal,
-    env:
-      params.backend === "claude_code"
-        ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
-        : { ...process.env },
-  });
+  try {
+    const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
+      command,
+      args,
+      cwd: params.workingDir,
+      timeoutMs,
+      abortSignal: params.abortSignal,
+      env,
+    });
 
-  if (timedOut) {
-    throw new Error(`Repo chat worker timed out after ${timeoutMs}ms.`);
+    if (timedOut) {
+      throw new Error(`Repo chat worker timed out after ${timeoutMs}ms.`);
+    }
+
+    if (exitCode !== 0) {
+      const details =
+        truncateErrorDetail(stderr.trim() || stdout.trim()) || `signal=${signal ?? "none"}`;
+      throw new Error(
+        `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"}): ${details}`,
+      );
+    }
+
+    const cliSessionId = extractSessionIdFromStdout(stdout) ?? params.cliSessionId;
+    let responseText = "";
+
+    try {
+      responseText = fs.readFileSync(responseFilePath, "utf-8").trim();
+    } catch {}
+
+    if (!responseText) {
+      const resumeArgs = buildResumeArgs({
+        backend: params.backend,
+        args,
+        cliSessionId,
+      });
+
+      responseText = await repairResponseFile({
+        responseFilePath,
+        command,
+        args: resumeArgs,
+        cwd: params.workingDir,
+        env,
+        abortSignal: params.abortSignal,
+      });
+    }
+
+    if (!responseText) {
+      throw new Error(
+        "Repo chat worker completed but did not write a response file, even after repair attempt.",
+      );
+    }
+
+    return {
+      backend: params.backend,
+      text: responseText,
+      cliSessionId,
+      durationMs,
+      stdout,
+      stderr,
+    };
+  } finally {
+    cleanupResponseFile(responseFilePath);
   }
-
-  if (exitCode !== 0) {
-    const details =
-      truncateErrorDetail(stderr.trim() || stdout.trim()) || `signal=${signal ?? "none"}`;
-    throw new Error(
-      `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"}): ${details}`,
-    );
-  }
-
-  const text = stdout.trim();
-  if (!text) {
-    throw new Error("Repo chat worker completed without a response message.");
-  }
-
-  return {
-    backend: params.backend,
-    text,
-    cliSessionId: params.cliSessionId,
-    durationMs,
-    stdout,
-    stderr,
-  };
 }
 
 export const REPO_CHAT_READ_ONLY_PROMPT = CLAUDE_READ_ONLY_PROMPT;
