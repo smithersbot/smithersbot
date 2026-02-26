@@ -6,6 +6,7 @@ import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
+import { repairJsonText } from "./json-repair.js";
 import { extractJson } from "./planner.js";
 import { loadRun } from "./run-store.js";
 import { resolveClaudeBinary } from "./scout.js";
@@ -179,7 +180,12 @@ function parseJsonLines(text: string): Record<string, unknown>[] {
       const value = JSON.parse(trimmed) as unknown;
       if (isRecord(value)) parsed.push(value);
     } catch {
-      // Ignore non-JSON lines.
+      try {
+        const repairedValue = JSON.parse(repairJsonText(trimmed)) as unknown;
+        if (isRecord(repairedValue)) parsed.push(repairedValue);
+      } catch {
+        // Ignore non-JSON lines.
+      }
     }
   }
   return parsed;

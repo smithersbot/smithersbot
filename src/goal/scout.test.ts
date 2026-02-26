@@ -232,6 +232,19 @@ describe("validateScoutOutput", () => {
     expect((result as { error: string }).error).toContain("not valid JSON");
   });
 
+  it("repairs scout_report.json with trailing extra brace", () => {
+    writeValidScoutOutput(tmpDir, { goalId: "x", nodeIds: ["node-a"] });
+    const reportPath = path.join(tmpDir, "scout_report.json");
+    const report = fs.readFileSync(reportPath, "utf8");
+    fs.writeFileSync(reportPath, `${report}}`, "utf8");
+
+    const result = validateScoutOutput(tmpDir);
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("Expected success");
+    expect(result.report.goal_id).toBe("x");
+    expect(result.report.nodes).toHaveLength(1);
+  });
+
   it("returns error when scout_report.json has no nodes", () => {
     fs.writeFileSync(
       path.join(tmpDir, "plan_draft.md"),

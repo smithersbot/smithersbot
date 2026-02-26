@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { RATE_LIMIT_RE } from "./error-patterns.js";
+import { repairJsonText } from "./json-repair.js";
 import { resolveRunDir } from "./run-store.js";
 
 // ---------------------------------------------------------------------------
@@ -199,14 +200,19 @@ export function validateScoutOutput(scoutDir: string): ScoutResult {
   }
 
   let report: ScoutReport;
+  const reportRaw = fs.readFileSync(reportPath, "utf8");
   try {
-    report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as ScoutReport;
+    report = JSON.parse(reportRaw) as ScoutReport;
   } catch {
-    return {
-      status: "error",
-      error: `${SCOUT_REPORT_FILE} is not valid JSON`,
-      errorKind: "validation",
-    };
+    try {
+      report = JSON.parse(repairJsonText(reportRaw)) as ScoutReport;
+    } catch {
+      return {
+        status: "error",
+        error: `${SCOUT_REPORT_FILE} is not valid JSON`,
+        errorKind: "validation",
+      };
+    }
   }
 
   if (!report.goal_id) {

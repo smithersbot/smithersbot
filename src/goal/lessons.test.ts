@@ -368,6 +368,44 @@ describe("extractRunLessons", () => {
     expect(stored[0]).toEqual(recorded[0]);
   });
 
+  it("repairs malformed JSONL lines when parsing extracted lessons", async () => {
+    const runId = "extract-run-jsonl-repair";
+    const workingDir = "/repo/project-jsonl";
+    saveExtractionRun({
+      runId,
+      workingDir,
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "pnpm test failed",
+          error: "Intermittent parser failure",
+          durationMs: 40,
+        },
+      },
+    });
+
+    mockRunCliProcess.mockResolvedValueOnce(
+      makeCliResult({
+        stdout: [
+          '{"type":"event","message":"starting extraction"}',
+          '{"result":{"lessons":[{"pattern":"jsonl-repair","lesson":"Attempt JSON repair for malformed structured lines.","stepId":"step-alpha"}]}}}',
+        ].join("\n"),
+      }),
+    );
+
+    const recorded = await extractRunLessons(runId, workingDir, []);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      pattern: "jsonl-repair",
+      lesson: "Attempt JSON repair for malformed structured lines.",
+      stepId: "step-alpha",
+      source: "autocheck",
+      runId,
+      workingDir,
+    });
+  });
+
   it.each([
     {
       scenario: "timeout",
