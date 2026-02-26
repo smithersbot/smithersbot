@@ -81,10 +81,11 @@ describe("repo-chat-worker", () => {
   });
 
   describe("parseRepoChatStreamJson", () => {
-    it("prefers successful result text and extracts session id", () => {
+    it("prefers last assistant text over result text and extracts session id", () => {
       const output = [
         '{"type":"assistant","session_id":"claude-1","message":{"content":[{"type":"text","text":"draft"}]}}',
-        '{"type":"result","is_error":false,"result":"final answer"}',
+        '{"type":"assistant","session_id":"claude-1","message":{"content":[{"type":"text","text":"final answer"}]}}',
+        '{"type":"result","is_error":false,"result":"full transcript text"}',
       ].join("\n");
       expect(parseRepoChatStreamJson(output)).toEqual({
         text: "final answer",
@@ -116,7 +117,7 @@ describe("repo-chat-worker", () => {
       });
     });
 
-    it("includes assistant events and assistant text deltas in fallback text", () => {
+    it("uses only the last assistant event in multi-turn sessions", () => {
       const output = [
         JSON.stringify({
           type: "assistant",
@@ -124,20 +125,46 @@ describe("repo-chat-worker", () => {
           message: { content: [{ type: "text", text: "first assistant line" }] },
         }),
         JSON.stringify({
-          type: "content_block_delta",
-          delta: { type: "text_delta", text: "second assistant line" },
+          type: "assistant",
+          session_id: "claude-3",
+          message: { content: [{ type: "text", text: "second assistant line" }] },
         }),
+        JSON.stringify({
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "delta ignored because assistant exists" },
+        }),
+        JSON.stringify({ type: "result", is_error: false, result: "full transcript text" }),
       ].join("\n");
 
       expect(parseRepoChatStreamJson(output)).toEqual({
-        text: "first assistant line\nsecond assistant line",
+        text: "second assistant line",
         cliSessionId: "claude-3",
       });
     });
 
-    it("falls back to assistant/item text when no result event exists", () => {
+    it("excludes thinking blocks from assistant messages", () => {
+      const output = JSON.stringify({
+        type: "assistant",
+        session_id: "claude-4",
+        message: {
+          content: [
+            { type: "thinking", text: "do not show" },
+            { type: "text", text: "visible text" },
+            { type: "thinking", thinking: "also hidden" },
+            { type: "text", text: " only" },
+          ],
+        },
+      });
+
+      expect(parseRepoChatStreamJson(output)).toEqual({
+        text: "visible text only",
+        cliSessionId: "claude-4",
+      });
+    });
+
+    it("falls back to codex message items when no assistant exists", () => {
       const output = [
-        '{"thread_id":"thread-2","item":{"type":"message","text":"part 1"}}',
+        '{"thread_id":"thread-2","item":{"type":"message","content":[{"type":"thinking","text":"skip me"},{"type":"text","text":"part 1"}]}}',
         '{"thread_id":"thread-2","item":{"type":"message","text":"part 2"}}',
       ].join("\n");
       expect(parseRepoChatStreamJson(output)).toEqual({
@@ -146,16 +173,26 @@ describe("repo-chat-worker", () => {
       });
     });
 
-    it("truncates fallback text when it exceeds the cap", () => {
+    it("falls back to result text when no assistant event exists", () => {
+      const output =
+        '{"type":"result","is_error":false,"session_id":"claude-5","result":"final-only"}';
+      expect(parseRepoChatStreamJson(output)).toEqual({
+        text: "final-only",
+        cliSessionId: "claude-5",
+      });
+    });
+
+    it("truncates result fallback text when it exceeds the cap", () => {
       const longText = "a".repeat(9_000);
       const output = JSON.stringify({
-        type: "assistant",
-        session_id: "claude-4",
-        message: { content: [{ type: "text", text: longText }] },
+        type: "result",
+        session_id: "claude-6",
+        is_error: false,
+        result: longText,
       });
 
       const parsed = parseRepoChatStreamJson(output);
-      expect(parsed.cliSessionId).toBe("claude-4");
+      expect(parsed.cliSessionId).toBe("claude-6");
       expect(parsed.text).toHaveLength(8_000);
       expect(parsed.text.endsWith("[Output truncated]")).toBe(true);
     });
@@ -166,6 +203,7 @@ describe("repo-chat-worker", () => {
       runCliProcessMock.mockResolvedValueOnce({
         stdout: [
           '{"type":"assistant","session_id":"claude-session-42","message":{"content":[{"type":"text","text":"draft"}]}}',
+          '{"type":"assistant","session_id":"claude-session-42","message":{"content":[{"type":"text","text":"Repository answer"}]}}',
           '{"type":"result","is_error":false,"result":"Repository answer"}',
         ].join("\n"),
         stderr: "",

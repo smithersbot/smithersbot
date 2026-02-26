@@ -93,6 +93,35 @@ function shouldIncludeFallbackEventText(parsed: Record<string, unknown>): boolea
   return false;
 }
 
+function extractTextBlocks(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+
+  const textParts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) continue;
+    const blockType = typeof block.type === "string" ? block.type : "";
+    if (blockType === "thinking") continue;
+    if (blockType !== "text") continue;
+    if (typeof block.text !== "string") continue;
+    textParts.push(block.text);
+  }
+  return textParts.join("");
+}
+
+function extractAssistantMessageText(parsed: Record<string, unknown>): string {
+  if (!isRecord(parsed.message)) return "";
+  return extractTextBlocks(parsed.message.content).trim();
+}
+
+function extractCodexMessageItemText(parsed: Record<string, unknown>): string {
+  if (!isCodexMessageItemEvent(parsed)) return "";
+  if (!isRecord(parsed.item)) return "";
+  if (Array.isArray(parsed.item.content)) {
+    return extractTextBlocks(parsed.item.content).trim();
+  }
+  return collectText(parsed.item).trim();
+}
+
 function truncateFallbackText(text: string): string {
   if (text.length <= MAX_FALLBACK_TEXT_CHARS) return text;
   const maxBodyChars = Math.max(0, MAX_FALLBACK_TEXT_CHARS - FALLBACK_TRUNCATION_NOTICE.length);
@@ -103,7 +132,8 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
   const lines = parseJsonLines(raw);
 
   let cliSessionId: string | undefined;
-  let finalResultText: string | undefined;
+  let resultEventText: string | undefined;
+  let lastAssistantEvent: Record<string, unknown> | undefined;
   const textParts: string[] = [];
 
   for (const parsed of lines) {
@@ -112,10 +142,15 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
     const type = typeof parsed.type === "string" ? parsed.type : "";
     const isError = parsed.is_error === true;
 
+    if (type === "assistant") {
+      lastAssistantEvent = parsed;
+      continue;
+    }
+
     if (type === "result" && !isError) {
       const resultText = collectText(parsed.result).trim();
       if (resultText) {
-        finalResultText = resultText;
+        resultEventText = resultText;
       }
       continue;
     }
@@ -123,16 +158,25 @@ export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
       continue;
     }
 
-    const eventText = collectText(parsed).trim();
+    const eventText = isCodexMessageItemEvent(parsed)
+      ? extractCodexMessageItemText(parsed)
+      : collectText(parsed).trim();
     if (!eventText) continue;
     if (textParts.at(-1) !== eventText) {
       textParts.push(eventText);
     }
   }
 
-  const fallbackText = truncateFallbackText(textParts.join("\n"));
+  if (lastAssistantEvent) {
+    return {
+      text: extractAssistantMessageText(lastAssistantEvent),
+      cliSessionId,
+    };
+  }
+
+  const fallbackText = resultEventText ?? textParts.join("\n");
   return {
-    text: (finalResultText ?? fallbackText).trim(),
+    text: truncateFallbackText(fallbackText).trim(),
     cliSessionId,
   };
 }
