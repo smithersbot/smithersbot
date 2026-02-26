@@ -209,6 +209,48 @@ describe("runPlanAutocheck", () => {
     expect(secondCall.args).toContain("session-resume");
   });
 
+  it("returns exhausted when plan revision throws", async () => {
+    const originalPlan = makePlan("Revision failure", "1", "claude_code");
+    const runDir = runPath(tmpDir, "run-revision-throws");
+
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: claudeStdout({
+          decision: { approved: false, editInstructions: "Need changes" },
+          sessionId: "session-revision-throw",
+        }),
+      }),
+    );
+    mockRunCliPlanRevision.mockRejectedValueOnce(new Error("revision boom"));
+
+    const commitRevision = vi.fn();
+    const result = await runPlanAutocheck({
+      plan: originalPlan,
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir,
+      commitRevision,
+    });
+
+    expect(result).toMatchObject({
+      plan: originalPlan,
+      autocheckRounds: 0,
+      autocheckMaxRounds: 3,
+      approved: false,
+      exhausted: true,
+      sessionId: "session-revision-throw",
+      backend: "claude_code",
+    });
+    expect(mockRunCliPlanRevision).toHaveBeenCalledOnce();
+    expect(commitRevision).not.toHaveBeenCalled();
+
+    const revisionErrorPath = path.join(runDir, "autocheck", "round-1", "revision_error.txt");
+    expect(fs.existsSync(revisionErrorPath)).toBe(true);
+    expect(fs.readFileSync(revisionErrorPath, "utf8")).toContain("Autocheck revision failed");
+    expect(fs.readFileSync(revisionErrorPath, "utf8")).toContain("revision boom");
+  });
+
   it("forwards only earlier rounds as priorFeedback when revising", async () => {
     const plan1 = makePlan("Plan 1", "1", "claude_code");
     const plan2 = makePlan("Plan 2", "2", "claude_code");

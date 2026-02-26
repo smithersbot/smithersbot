@@ -833,18 +833,33 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     }
 
     const { runId, goalsDir } = resolveRunIdentity(params.runDir);
-    const revision = await runCliPlanRevision({
-      runId,
-      goalsDir,
-      goalText: params.goalText,
-      currentPlan,
-      editInstructions: result.decision.editInstructions,
-      priorFeedback: feedbackHistory.slice(0, -1),
-      cwd: params.workingDir,
-      model: params.model,
-      claudeCodeAuth: params.claudeCodeAuth,
-      ...(params.enabledWorkers ? { enabledWorkers: params.enabledWorkers } : {}),
-    });
+    let revision: Awaited<ReturnType<typeof runCliPlanRevision>>;
+    try {
+      revision = await runCliPlanRevision({
+        runId,
+        goalsDir,
+        goalText: params.goalText,
+        currentPlan,
+        editInstructions: result.decision.editInstructions,
+        priorFeedback: feedbackHistory.slice(0, -1),
+        cwd: params.workingDir,
+        model: params.model,
+        claudeCodeAuth: params.claudeCodeAuth,
+        ...(params.enabledWorkers ? { enabledWorkers: params.enabledWorkers } : {}),
+      });
+    } catch (err) {
+      const revisionError = `Autocheck revision failed: ${describeError(err)}`;
+      writeTextArtifact(path.join(roundDir, "revision_error.txt"), `${revisionError}\n`);
+      return {
+        plan: currentPlan,
+        autocheckRounds,
+        autocheckMaxRounds: maxRounds,
+        approved: false,
+        exhausted: true,
+        sessionId,
+        backend,
+      };
+    }
 
     if ("blocked" in revision.plan) {
       writeTextArtifact(
