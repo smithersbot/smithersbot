@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { type Bot, type Context } from "grammy";
 import type { ReactionTypeEmoji } from "grammy/types";
@@ -16,7 +14,6 @@ import { goalStatusCommand } from "../commands/goal-status.js";
 import { loadConfig, type MoltbotConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { writeConfigFile } from "../config/io.js";
-import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import type {
   TelegramAccountConfig,
   TelegramGroupConfig,
@@ -24,7 +21,6 @@ import type {
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { resolveEnabledWorkers } from "../goal/backend-types.js";
-import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
 import { AUTH_RE } from "../goal/error-patterns.js";
 import { formatGoalError } from "../goal/errors.js";
@@ -36,25 +32,35 @@ import { formatPlanOutput } from "../goal/format-output.js";
 import { generateManualTests } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
-import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { acquireGoalOpLock, forceReleaseGoalOpLock } from "../goal/goal-lock.js";
-import { listRuns, loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
-import { formatAge } from "../infra/channel-summary.js";
-import type {
-  ManualTestSuggestion,
-  Plan,
-  PlanStep,
-  SerializedRun,
-  StepResult,
-} from "../goal/types.js";
+import { loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
+import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import {
+  buildGoalDoneInlineKeyboard,
+  buildOnStatusChange,
+  buildDoneSummaryWithManualTests,
+  formatManualTestDetails,
+  formatGoalWorkers,
+  formatTaskDetailSections,
+  getGoalExecutionPreface,
+  handleGoalLessons,
+  handleGoalList,
+  isPlanAutocheckBackend,
+  parseGoalPlanAutocheckMode,
+  parseGoalWorkersArg,
+  parseWorkingDirInstruction,
+  PLANNING_PREFACE,
+  RESUME_PREFACE,
+  resolveBlockedRequiredInputKey,
+  serializedStepResultsToMap,
+  START_PREFACE,
+} from "./goal-formatting.js";
 import {
   formatPlannerFallbackNotice,
   persistEditPromptMessage,
   persistFeedbackPromptMessage,
-  persistManualTests,
-  persistTelegramDoneMessage,
   persistTelegramPlanMessage,
   persistTelegramQuestionMessage,
   sendDagPng,
@@ -62,9 +68,8 @@ import {
   sendGoalPlanResult,
   sendGoalReply,
 } from "./goal-sending.js";
-import { buildInlineKeyboard } from "./send.js";
 import { findRunByPlanMessageIdIndexed } from "./goal-message-index.js";
-import { resolveUserPath, shortenHomePath } from "../utils.js";
+import { shortenHomePath } from "../utils.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 import {
   buildCommandFragmentKey,
@@ -73,6 +78,16 @@ import {
 } from "./command-fragments.js";
 
 export { sendGoalBackgroundResult, sendGoalPlanResult, sendGoalReply };
+export {
+  buildGoalDoneInlineKeyboard,
+  buildOnStatusChange,
+  getGoalExecutionPreface,
+  handleGoalLessons,
+  handleGoalList,
+  PLANNING_PREFACE,
+  RESUME_PREFACE,
+  START_PREFACE,
+};
 
 // ---------------------------------------------------------------------------
 // Telegram command menu entries for the goal subsystem
@@ -166,15 +181,8 @@ export type GoalPlanResult = {
   autocheckSkipped?: boolean;
 };
 
-function serializedStepResultsToMap(
-  run: SerializedRun | undefined,
-): ReadonlyMap<string, StepResult> {
-  return new Map(Object.entries(run?.stepResults ?? {}));
-}
-
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
 const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
-const GOAL_LESSONS_USAGE = "Usage: /goal\\_lessons \\[clear \\[workingDir\\]\\]";
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
@@ -183,34 +191,6 @@ type PlanAutocheckDisplayInfo = {
   maxRounds: number;
   exhausted: boolean;
 };
-
-function parseGoalPlanAutocheckMode(raw: string): PlanAutocheckMode | undefined {
-  const normalized = raw.trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized === "codex" || normalized === "claude_code" || normalized === "off") {
-    return normalized;
-  }
-  return undefined;
-}
-
-function parseGoalWorkersArg(raw: string): CliWorkerId[] | undefined {
-  const normalized = raw.trim().toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized === "codex") return ["codex"];
-  if (normalized === "claude_code") return ["claude_code"];
-  if (normalized === "both" || normalized === "all") return ["codex", "claude_code"];
-  return undefined;
-}
-
-function formatGoalWorkers(workers: CliWorkerId[]): string {
-  return workers.join(", ");
-}
-
-function isPlanAutocheckBackend(
-  mode: PlanAutocheckMode | undefined,
-): mode is Exclude<PlanAutocheckMode, "off"> {
-  return mode === "codex" || mode === "claude_code";
-}
 
 function commitPlanRevision(params: {
   run: SerializedRun;
@@ -342,169 +322,6 @@ function trackBlockedStatusChange(
 }
 
 // ---------------------------------------------------------------------------
-// Inline keyboard builder
-// ---------------------------------------------------------------------------
-
-function resolveBlockedRequiredInputKey(run: SerializedRun): string | undefined {
-  if (run.blocked?.requiredInputKey?.trim()) {
-    return run.blocked.requiredInputKey;
-  }
-  const firstBlockedStep = run.plan?.steps.find((step) => step.status === "blocked");
-  return firstBlockedStep ? `task:${firstBlockedStep.id}:input` : undefined;
-}
-
-/** Inline keyboard for blocked/failed goal messages: Add Details + Resume + Stop. */
-function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [
-      { text: "\u25B6\uFE0F Resume Goal", callback_data: `gResume:${runIdPrefix}` },
-      { text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` },
-    ],
-  ]);
-}
-
-/** Inline keyboard for task-blocked goal messages: Add Details + Stop. */
-function buildTaskBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [{ text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` }],
-  ]);
-}
-
-/** Inline keyboard for done goal messages: test details + feedback loop. */
-export function buildGoalDoneInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "🔍 Test Detail", callback_data: `gTD:${runIdPrefix}` }],
-    [{ text: "🔄 Incorporate Feedback", callback_data: `gIF:${runIdPrefix}` }],
-  ]);
-}
-
-function clampCriticality(value: number): number {
-  return Math.max(1, Math.min(10, Math.round(value)));
-}
-
-function splitStructuredDetailLines(value: string | undefined): string[] {
-  if (!value) return [];
-  const normalized = value.replace(/\r\n/g, "\n").trim();
-  if (!normalized) return [];
-
-  return normalized
-    .split(/\n+/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
-}
-
-function formatTaskDetailSections(plan: Plan): string {
-  if (plan.steps.length === 0) return "";
-  const lines: string[] = ["", "**Tasks**", ""];
-
-  plan.steps.forEach((step, index) => {
-    const taskTitle =
-      (typeof step.shortSummary === "string" ? step.shortSummary.trim() : "") || step.id;
-    lines.push(`**Task ${index + 1}: ${taskTitle}**`);
-    const descriptionBullets = splitStructuredDetailLines(step.description);
-    if (descriptionBullets.length > 0) {
-      for (const bullet of descriptionBullets) {
-        lines.push(`• ${bullet}`);
-      }
-    } else {
-      lines.push("• No description provided.");
-    }
-    if (step.dependsOn.length > 0) {
-      lines.push(`• Depends on: ${step.dependsOn.join(", ")}`);
-    }
-    if (index < plan.steps.length - 1) lines.push("");
-  });
-
-  return lines.join("\n");
-}
-
-function formatManualTestDetails(
-  runIdPrefix: string,
-  tests: ManualTestSuggestion[] | null | undefined,
-  manualTestsError?: string,
-): string {
-  if (Array.isArray(tests) && tests.length === 0) {
-    return [
-      "No manual tests needed — all functionality was verified automatically.",
-      "",
-      'Use "Incorporate Feedback" if you notice any issues.',
-    ].join("\n");
-  }
-  if (!tests) {
-    const lines = [`Manual test details are unavailable for run ${runIdPrefix}.`];
-    if (manualTestsError?.trim()) {
-      lines.push(`Reason: ${manualTestsError.trim()}`);
-    } else {
-      lines.push(
-        "Manual test generation did not return suggestions. This can happen when model auth fails or no valid response is produced.",
-      );
-    }
-    lines.push('Use "Incorporate Feedback" to share what failed and what you expected.');
-    return lines.join("\n");
-  }
-  const lines = [`Manual test details for ${runIdPrefix}:`, ""];
-  tests.forEach((test, index) => {
-    const description = test.description.trim() || "Manual test";
-    lines.push(
-      `**Test ${index + 1}: ${description} [${clampCriticality(test.criticality)}/10 Critical]**`,
-    );
-    const reason = test.reason?.trim();
-    if (reason) {
-      lines.push(`_Reason: ${reason}_`);
-    }
-    const detail = test.detail
-      .replace(/\r\n/g, "\n")
-      .trim()
-      // Normalize both plain and already-bold Step markers so Telegram output is consistent.
-      .replace(/(?:\*\*)?\bStep (\d+)\.(?:\*\*)?/g, "**Step $1.**");
-    lines.push("");
-    lines.push(detail || "No additional detail provided.");
-    if (index < tests.length - 1) lines.push("");
-  });
-  return lines.join("\n");
-}
-
-function appendGoalIdFooter(summary: string, runId: string): string {
-  return `${summary.trimEnd()}\n**Goal ID:** ${runId.slice(0, 8)}`;
-}
-
-const MANUAL_TEST_GENERATION_FAILED_NOTICE = "Note: Manual test generation failed.";
-
-function appendManualTestGenerationFailureNotice(
-  summary: string,
-  manualTestsError?: string,
-): string {
-  if (!manualTestsError?.trim()) return summary;
-  if (summary.includes(MANUAL_TEST_GENERATION_FAILED_NOTICE)) return summary;
-  return `${summary.trimEnd()}\n${MANUAL_TEST_GENERATION_FAILED_NOTICE}`;
-}
-
-function buildDoneSummaryWithManualTests(run: SerializedRun): string {
-  const summary = formatCompactGoalCompletionSummary({
-    title:
-      run.plan && typeof run.plan.shortSummary === "string"
-        ? run.plan.shortSummary.trim() || run.goal
-        : run.goal,
-    steps:
-      run.plan?.steps.map((step) => ({
-        id: step.id,
-        description: step.description,
-        summary: step.taskSummary,
-        status: step.status,
-        turnsUsed: step.turnsUsed,
-      })) ?? [],
-    channel: "telegram",
-    manualTests: run.manualTests,
-  }).text;
-  return appendGoalIdFooter(
-    appendManualTestGenerationFailureNotice(summary, run.manualTestsError),
-    run.runId,
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Typing indicator helpers (loop logic lives in typing-loop.ts)
 // ---------------------------------------------------------------------------
 
@@ -524,139 +341,6 @@ export async function withChatAction<T>(params: {
   } finally {
     loop.stop();
   }
-}
-
-// ---------------------------------------------------------------------------
-// Planning feedback: preface message + delayed typing
-// ---------------------------------------------------------------------------
-
-export const PLANNING_PREFACE = "Right away, sir.";
-export const START_PREFACE = "Right away, sir. Starting the goal now.";
-export const RESUME_PREFACE = "Right away, sir. Resuming the goal now.";
-
-export function getGoalExecutionPreface(state: SerializedRun["state"] | undefined): string {
-  if (state === "awaiting_approval" || state === "cancelled") {
-    return START_PREFACE;
-  }
-  return RESUME_PREFACE;
-}
-
-type WorkingDirInstructionHint = {
-  requestedPath: string;
-  resolvedPath?: string;
-};
-
-// Word boundaries + trailing lookaheads avoid camelCase false matches (e.g. workingDir, workingDirectory).
-const WORKING_DIR_INSTRUCTION_PATTERNS = [
-  /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
-  /set\s+(?:the\s+)?(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+to\s+([^\n]+)/i,
-  /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
-];
-const WORKING_DIR_INSTRUCTION_PREFIX_PATTERN =
-  /^(?:(?:in|at)\s+)?(?:(?:a|an|the)\s+)?(?:new\s+)?(?:folder|directory|dir)\b(?:\s+(?:called|named))?(?:\s*[:=-])?\s+/i;
-
-function cleanWorkingDirInstructionPath(rawPath: string): string {
-  let value = rawPath.trim();
-  value = value.replace(/\s*\(.*$/, "").trim();
-  value = value.replace(/\s+\b(?:when|where|which)\b.*$/i, "").trim();
-  value = value.replace(/\s+\b(?:and|but)\b\s+(?:it\s+)?should\s+be\b.*$/i, "").trim();
-  value = value
-    .replace(/^[`'"]+/, "")
-    .replace(/[`'"]+$/, "")
-    .trim();
-  value = value.replace(/[.,;:!?]+$/, "").trim();
-  value = value.replace(WORKING_DIR_INSTRUCTION_PREFIX_PATTERN, "").trim();
-  if (/^~[^/\\]/.test(value)) {
-    value = `~/${value.slice(1)}`;
-  }
-  return value;
-}
-
-function normalizeDirectoryToken(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function resolveByNormalizedDirectoryName(value: string, roots: string[]): string | undefined {
-  const target = normalizeDirectoryToken(value);
-  if (!target) return undefined;
-
-  for (const root of new Set(roots)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (normalizeDirectoryToken(entry.name) !== target) continue;
-        return path.join(root, entry.name);
-      }
-    } catch {
-      // Ignore missing/inaccessible roots.
-    }
-  }
-
-  return undefined;
-}
-
-function resolveWorkingDirInstructionPath(
-  value: string,
-  currentWorkingDir: string,
-): string | undefined {
-  if (!value) return undefined;
-  if (value.startsWith("~") || path.isAbsolute(value)) {
-    return resolveUserPath(value);
-  }
-
-  const candidates = new Set<string>();
-  candidates.add(path.resolve(currentWorkingDir, value));
-  candidates.add(path.resolve(process.cwd(), value));
-  candidates.add(path.resolve(path.dirname(currentWorkingDir), value));
-  candidates.add(path.resolve(path.dirname(process.cwd()), value));
-  candidates.add(path.resolve(os.homedir(), value));
-
-  for (const candidate of candidates) {
-    try {
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
-        return candidate;
-      }
-    } catch {
-      // Keep trying candidates.
-    }
-  }
-
-  // Fuzzy fallback for conversational directory names, e.g. "earnlayermarketing"
-  // matching sibling folder "earnlayer-marketing".
-  if (
-    !value.startsWith("~") &&
-    !path.isAbsolute(value) &&
-    !value.includes("/") &&
-    !value.includes("\\")
-  ) {
-    return resolveByNormalizedDirectoryName(value, [
-      currentWorkingDir,
-      process.cwd(),
-      path.dirname(currentWorkingDir),
-      path.dirname(process.cwd()),
-      os.homedir(),
-    ]);
-  }
-
-  return undefined;
-}
-
-function parseWorkingDirInstruction(
-  instructions: string,
-  currentWorkingDir: string,
-): WorkingDirInstructionHint | undefined {
-  for (const pattern of WORKING_DIR_INSTRUCTION_PATTERNS) {
-    const match = pattern.exec(instructions);
-    if (!match?.[1]) continue;
-    const requestedPath = cleanWorkingDirInstructionPath(match[1]);
-    if (!requestedPath) continue;
-    return {
-      requestedPath,
-      resolvedPath: resolveWorkingDirInstructionPath(requestedPath, currentWorkingDir),
-    };
-  }
-  return undefined;
 }
 
 /**
@@ -1422,108 +1106,6 @@ export async function handleGoalFeedback(
   }
 }
 
-const GOAL_LIST_LIMIT = 15;
-
-type GoalLessonsAction =
-  | { kind: "list" }
-  | { kind: "clear"; workingDir?: string }
-  | { kind: "invalid" };
-
-function parseTimestamp(value: string): number {
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function parseGoalLessonsAction(rawArg: string): GoalLessonsAction {
-  const raw = rawArg.trim();
-  if (!raw) return { kind: "list" };
-
-  const clearMatch = /^clear(?:\s+(.+))?$/i.exec(raw);
-  if (!clearMatch) return { kind: "invalid" };
-  const rawWorkingDir = clearMatch[1]?.trim();
-  if (!rawWorkingDir) return { kind: "clear" };
-  return {
-    kind: "clear",
-    workingDir: rawWorkingDir === "*" ? "*" : resolveUserPath(rawWorkingDir),
-  };
-}
-
-function formatGoalLessonAge(createdAt: string): string {
-  const createdAtMs = parseTimestamp(createdAt);
-  if (!createdAtMs) return "unknown";
-  return formatAge(Math.max(0, Date.now() - createdAtMs));
-}
-
-function formatGoalLessonsList(): string {
-  const lessons = loadLessons();
-  if (lessons.length === 0) return "No lessons recorded yet.";
-
-  const sortedLessons = [...lessons].sort(
-    (a, b) => parseTimestamp(b.createdAt) - parseTimestamp(a.createdAt),
-  );
-  const grouped = new Map<string, typeof sortedLessons>();
-  for (const lesson of sortedLessons) {
-    const existing = grouped.get(lesson.workingDir);
-    if (existing) existing.push(lesson);
-    else grouped.set(lesson.workingDir, [lesson]);
-  }
-
-  const workingDirs = [...grouped.keys()].sort((a, b) => {
-    if (a === "*") return -1;
-    if (b === "*") return 1;
-    return a.localeCompare(b);
-  });
-
-  const lines: string[] = ["Lessons by working directory:"];
-  for (const workingDir of workingDirs) {
-    lines.push("");
-    lines.push(`**${workingDir === "*" ? "*" : shortenHomePath(workingDir)}**`);
-    for (const lesson of grouped.get(workingDir) ?? []) {
-      lines.push(
-        `- **${lesson.pattern}**: ${lesson.lesson} _(${formatGoalLessonAge(lesson.createdAt)})_`,
-      );
-    }
-  }
-
-  return lines.join("\n");
-}
-
-export async function handleGoalLessons(rawArg: string): Promise<string> {
-  const action = parseGoalLessonsAction(rawArg);
-  if (action.kind === "invalid") return GOAL_LESSONS_USAGE;
-
-  if (action.kind === "clear") {
-    const removed = clearLessons(action.workingDir);
-    if (action.workingDir) {
-      const displayDir = action.workingDir === "*" ? "*" : shortenHomePath(action.workingDir);
-      return `Cleared ${removed} lesson(s) for \`${displayDir}\`.`;
-    }
-    return `Cleared ${removed} lesson(s) across all working directories.`;
-  }
-
-  return formatGoalLessonsList();
-}
-
-/** /goal_list -- list recent goal runs (Telegram-formatted code block). */
-export async function handleGoalList(): Promise<string> {
-  const runs = listRuns().slice(0, GOAL_LIST_LIMIT);
-  if (runs.length === 0) return "No goal runs found.";
-
-  const lines: string[] = ["```"];
-  lines.push("ID       State               Steps Goal");
-  lines.push("\u2500".repeat(58));
-  for (const run of runs) {
-    const id = run.runId.slice(0, 8);
-    const state = run.state.padEnd(20);
-    const steps =
-      run.stepCount > 0 ? `${run.completedSteps}/${run.stepCount}`.padEnd(6) : "\u2014".padEnd(6);
-    const goal = run.goal.length > 43 ? `${run.goal.slice(0, 40)}...` : run.goal;
-    lines.push(`${id} ${state} ${steps}${goal}`);
-  }
-  lines.push("```");
-  return lines.join("\n");
-}
-
 /** /goal_stop <runId> -- stop a running goal execution. */
 export async function handleGoalStop(rawId: string, force?: boolean): Promise<string> {
   if (!rawId.trim()) {
@@ -1716,157 +1298,6 @@ export async function handleGoalEdit(
     }
     return { text: formatGoalError(err, resolvedId) };
   }
-}
-
-// Sending/persistence helpers are extracted to goal-sending.ts.
-
-/** Build an onStatusChange callback wired to a specific Telegram chat. */
-export function buildOnStatusChange(params: {
-  bot: Bot;
-  chatId: number;
-  threadId?: number;
-  runtime: RuntimeEnv;
-  runId: string;
-}): (event: GoalStatusChangeEvent) => Promise<void> {
-  const { bot, chatId, threadId, runtime, runId } = params;
-  const prefix = runId.slice(0, 8);
-  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  return async (event: GoalStatusChangeEvent) => {
-    const run = loadRun(runId);
-    const plan = run?.plan;
-    if (!plan) return;
-    const stepResults = serializedStepResultsToMap(run);
-    const sendDeliveryFallback = async () => {
-      const msg = `⚠️ Goal ${prefix}: ${event.type} - update delivery failed, check /goal_status`;
-      await bot.api.sendMessage(chatId, msg, { ...threadParams }).catch(() => {});
-    };
-
-    if (event.type === "step_blocked") {
-      try {
-        const caption = [
-          `**TASK BLOCKED** (${prefix}): Step ${event.stepId} needs input`,
-          "",
-          event.question,
-          "",
-          `**Next:** I will continue to complete tasks that aren't dependent on this blocked task.`,
-        ].join("\n");
-        const sentId = await sendDagPng({
-          bot,
-          chatId,
-          threadId,
-          runtime,
-          plan,
-          steps: event.steps,
-          stepResults,
-          caption,
-          replyMarkup: buildTaskBlockedInlineKeyboard(prefix),
-        });
-        // Persist the photo message ID so reply-to routing works
-        if (sentId != null) {
-          persistTelegramQuestionMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-            requiredInputKey: `task:${event.stepId}:input`,
-          });
-        }
-      } catch {
-        await sendDeliveryFallback();
-      }
-    } else if (event.type === "fully_blocked") {
-      try {
-        const lines: string[] = [
-          `**GOAL BLOCKED** (${prefix}): no runnable steps — waiting for answers.`,
-        ];
-        const blocked = event.steps.filter((s) => s.status === "blocked");
-        if (blocked.length > 0) {
-          lines.push("");
-          for (const s of blocked.slice(0, 3)) {
-            lines.push(`• Step ${s.id}: ${s.blockedQuestion ?? s.blockedReason ?? "needs input"}`);
-          }
-          if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
-        }
-        const sentId = await sendDagPng({
-          bot,
-          chatId,
-          threadId,
-          runtime,
-          plan,
-          steps: event.steps,
-          stepResults,
-          caption: lines.join("\n"),
-          replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
-        });
-        if (sentId != null) {
-          const blockedSteps =
-            blocked.length > 0 ? blocked : event.steps.filter((s) => s.status === "blocked");
-          const requiredInputKey =
-            blockedSteps.length <= 1
-              ? blockedSteps[0]
-                ? `task:${blockedSteps[0].id}:input`
-                : undefined
-              : `tasks:${blockedSteps.map((s) => s.id).join(",")}:input`;
-          persistTelegramQuestionMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-            requiredInputKey,
-          });
-        }
-      } catch {
-        await sendDeliveryFallback();
-      }
-    } else if (event.type === "plan_revised") {
-      try {
-        await sendDagPng({
-          bot,
-          chatId,
-          threadId,
-          runtime,
-          plan,
-          steps: event.steps,
-          stepResults,
-          caption: event.summary,
-        });
-      } catch {
-        await sendDeliveryFallback();
-      }
-    } else if (event.type === "all_done") {
-      try {
-        persistManualTests(runId, event.manualTests, event.manualTestsError);
-        const baseCaption = appendManualTestGenerationFailureNotice(
-          event.summary,
-          event.manualTestsError,
-        );
-        const caption = event.prUrl
-          ? `${baseCaption}\n\n📎 Review on GitHub: ${event.prUrl}`
-          : baseCaption;
-        const sentId = await sendDagPng({
-          bot,
-          chatId,
-          threadId,
-          runtime,
-          plan,
-          steps: event.steps,
-          stepResults,
-          caption,
-          replyMarkup: buildGoalDoneInlineKeyboard(prefix),
-        });
-        if (sentId != null) {
-          persistTelegramDoneMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-          });
-        }
-      } catch {
-        await sendDeliveryFallback();
-      }
-    }
-  };
 }
 
 // ---------------------------------------------------------------------------
