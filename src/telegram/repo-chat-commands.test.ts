@@ -192,4 +192,54 @@ describe("repo-chat-commands", () => {
       expect(resumedSession?.cliSessionId).toBe("session-2");
     });
   });
+
+  it("caps repo-chat replies to 8 chunks and appends a truncation notice", async () => {
+    runRepoChatWorkerMock.mockResolvedValue({
+      text: "very long worker output",
+      cliSessionId: "session-cap",
+    });
+
+    markdownToTelegramChunksMock.mockReturnValue(
+      Array.from({ length: 12 }, (_, index) => ({
+        html: `<b>chunk ${index + 1}</b>`,
+        text: `chunk ${index + 1}`,
+      })),
+    );
+
+    let nextMessageId = 1000;
+    const sendMessageMock = vi.fn().mockImplementation(async () => ({
+      message_id: ++nextMessageId,
+    }));
+    const bot = { api: { sendMessage: sendMessageMock } };
+
+    const started = dispatchTelegramRepoChatForInboundText({
+      bot: bot as never,
+      runtime: buildRuntime(),
+      telegramCfg: buildTelegramCfg(),
+      chatId: 303,
+      prompt: "Return long output",
+      sourceMessageId: 999,
+      replyToMessageId: undefined,
+      claudeCodeAuth: "subscription",
+    });
+
+    expect(started).toBe(true);
+
+    await waitForAssertion(() => {
+      expect(sendMessageMock).toHaveBeenCalledTimes(8);
+      const lastCall = sendMessageMock.mock.calls.at(-1);
+      expect(lastCall?.[1]).toBe("[Response truncated]");
+
+      const session = findRepoChatSessionByMessageId({ chatId: 303, messageId: 1008 });
+      expect(session).toBeDefined();
+      expect(session?.messageRefs).toEqual(
+        expect.arrayContaining([
+          { chatId: 303, messageId: 999 },
+          { chatId: 303, messageId: 1001 },
+          { chatId: 303, messageId: 1008 },
+        ]),
+      );
+      expect(session?.messageRefs).toHaveLength(9);
+    });
+  });
 });

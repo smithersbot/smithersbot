@@ -46,6 +46,7 @@ const CHAT_BACKEND_USAGE = "Usage: /chat_backend <codex|claude_code|off>";
 const REPO_CHAT_DISABLED_MESSAGE =
   "Repo chat is disabled. Enable it with /chat_backend codex or /chat_backend claude_code.";
 const MAX_SESSION_MESSAGE_REFS = 200;
+const MAX_REPLY_CHUNKS = 8;
 
 type TelegramRepoChatCommandContext = Context & { match?: string };
 
@@ -175,8 +176,15 @@ async function sendRepoChatReply(params: {
 }): Promise<number[]> {
   const markdown = params.text.trim() ? params.text : "No output.";
   const chunks = markdownToTelegramChunks(markdown, 4000);
+  const replyChunks =
+    chunks.length > MAX_REPLY_CHUNKS
+      ? [
+          ...chunks.slice(0, MAX_REPLY_CHUNKS - 1),
+          { html: "[Response truncated]", text: "[Response truncated]" },
+        ]
+      : chunks;
   const messageIds: number[] = [];
-  for (const chunk of chunks) {
+  for (const chunk of replyChunks) {
     const threadParams = params.threadId != null ? { message_thread_id: params.threadId } : {};
     const sendParams = {
       parse_mode: "HTML" as const,
