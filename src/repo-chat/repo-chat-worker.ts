@@ -22,6 +22,8 @@ export function buildClaudeRepoChatArgs(params: {
 }): string[] {
   const args = [
     "-p",
+    "--output-format",
+    "json",
     "--verbose",
     "--allowedTools",
     CLAUDE_ALLOWED_TOOLS,
