@@ -265,7 +265,7 @@ describe("generateManualTests", () => {
     expect(call.command).toBe("/usr/bin/claude");
     expect(call.args).toEqual(["-p", "--output-format", "json", "--max-turns", "1"]);
     expect(call.cwd).toBe(process.cwd());
-    expect(call.timeoutMs).toBe(120_000);
+    expect(call.timeoutMs).toBe(300_000);
     expect(call.env).toEqual({ CLAUDE_AUTH: "subscription" });
     expect(call.stdin).toContain("## System Prompt");
     expect(call.stdin).toContain("You are a QA assistant");

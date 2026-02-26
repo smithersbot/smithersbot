@@ -7,7 +7,7 @@ import type { GoalSession, PlanStep } from "./types.js";
 
 export { extractJsonObjectCandidates } from "./json-repair.js";
 
-export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 120_000;
+export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 300_000;
 export const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
 export const POST_EXECUTION_REVIEW_ERROR_MAX_CHARS = 400;
 export const CLAUDE_REVIEW_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";

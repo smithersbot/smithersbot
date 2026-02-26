@@ -62,7 +62,7 @@ Bad example (do NOT generate tests like these):
 
 const DEFAULT_MIN_TESTS = 0;
 const DEFAULT_MAX_TESTS = 5;
-const MANUAL_TESTS_TIMEOUT_MS = 120_000;
+const MANUAL_TESTS_TIMEOUT_MS = 300_000;
 
 export type GenerateManualTestsParams = {
   goal: string;
