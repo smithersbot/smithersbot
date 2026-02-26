@@ -87,6 +87,24 @@ export function runBuildGateCommands(commands: string[], workingDir: string): Bu
   return { passed: true };
 }
 
+export function buildDefaultSastCommand(workingDir: string): string | null {
+  const semgrepCheck = spawnSync("which", ["semgrep"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (semgrepCheck.error || semgrepCheck.status !== 0) {
+    return null;
+  }
+
+  const resolvedPath = typeof semgrepCheck.stdout === "string" ? semgrepCheck.stdout.trim() : "";
+  if (!resolvedPath) {
+    return null;
+  }
+
+  return `semgrep scan --config auto --error --quiet --timeout 30 ${workingDir}`;
+}
+
 export function resetToTaskBaseSha(
   workingDir: string,
   checkpointSha: string | undefined,

@@ -23,6 +23,7 @@ import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
 import {
+  buildDefaultSastCommand,
   formatExecError,
   makeBuildGateFailurePrompt,
   resetToTaskBaseSha,
@@ -514,7 +515,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       plan.buildGate?.runBetweenSteps === true &&
       gateCommands.length > 0
     ) {
-      const gateResult = runBuildGateCommands(gateCommands, workingDir);
+      const sastCommand = buildDefaultSastCommand(workingDir);
+      const commandsForThisStep = sastCommand ? [sastCommand, ...gateCommands] : gateCommands;
+      if (sastCommand) {
+        onProgress?.("  [sast] Running semgrep scan...");
+      }
+
+      const gateResult = runBuildGateCommands(commandsForThisStep, workingDir);
       const timestamp = new Date().toISOString();
       if (gateResult.passed) {
         session.buildGateResults[task.id] = { passed: true, timestamp };
