@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPostExecutionReviewPrompt,
   parsePostExecutionReviewDecision,
   parsePostExecutionReviewDecisionFromText,
 } from "./post-execution-review.js";
+import type { PlanStep } from "./types.js";
+
+function createPlanStep(overrides: Partial<PlanStep> = {}): PlanStep {
+  return {
+    id: "step-1",
+    description: "Implement feature",
+    shortSummary: "Implement feature",
+    dependsOn: [],
+    status: "pending",
+    ...overrides,
+  };
+}
 
 describe("parsePostExecutionReviewDecisionFromText", () => {
   it("parses valid JSON decisions", () => {
@@ -49,5 +62,51 @@ describe("parsePostExecutionReviewDecision", () => {
     const decision = parsePostExecutionReviewDecision(stdout);
 
     expect(decision).toEqual({ approved: true, issues: [] });
+  });
+});
+
+describe("buildPostExecutionReviewPrompt", () => {
+  it("includes per-step success criteria when present", () => {
+    const prompt = buildPostExecutionReviewPrompt({
+      goal: "Ship feature",
+      diff: "diff --git a/a b/a",
+      steps: [
+        createPlanStep({
+          id: "step-ship",
+          shortSummary: "Ship the feature",
+          successCriteria: "Feature is reachable from CLI",
+          taskSummary: "Added command and tests",
+        }),
+      ],
+    });
+
+    expect(prompt).toContain("Success criteria: Feature is reachable from CLI");
+  });
+
+  it("omits success criteria line when a step does not define it", () => {
+    const prompt = buildPostExecutionReviewPrompt({
+      goal: "Ship feature",
+      diff: "diff --git a/a b/a",
+      steps: [
+        createPlanStep({
+          id: "step-ship",
+          shortSummary: "Ship the feature",
+          successCriteria: undefined,
+          taskSummary: "Added command and tests",
+        }),
+      ],
+    });
+
+    expect(prompt).not.toContain("Success criteria:");
+  });
+
+  it("mentions verifying success criteria in the review instructions", () => {
+    const prompt = buildPostExecutionReviewPrompt({
+      goal: "Ship feature",
+      diff: "",
+      steps: [createPlanStep()],
+    });
+
+    expect(prompt).toContain("verify that per-step success criteria were met");
   });
 });
