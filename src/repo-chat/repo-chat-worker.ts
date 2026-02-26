@@ -9,215 +9,6 @@ const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
 const MAX_ERROR_DETAIL_CHARS = 1_000;
-const MAX_FALLBACK_TEXT_CHARS = 8_000;
-const FALLBACK_TRUNCATION_NOTICE = "\n\n[Output truncated]";
-
-type ParsedRepoChatOutput = {
-  text: string;
-  cliSessionId?: string;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function collectText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
-  if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (Array.isArray(value.content))
-    return value.content.map((entry) => collectText(entry)).join("");
-  if (isRecord(value.message)) return collectText(value.message);
-  if (isRecord(value.delta)) return collectText(value.delta);
-  if (isRecord(value.item)) return collectText(value.item);
-  return "";
-}
-
-function pickSessionId(parsed: Record<string, unknown>): string | undefined {
-  const fields = [
-    "session_id",
-    "sessionId",
-    "conversation_id",
-    "conversationId",
-    "thread_id",
-    "threadId",
-  ];
-  for (const field of fields) {
-    const value = parsed[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function parseJsonLines(raw: string): Array<Record<string, unknown>> {
-  return raw
-    .split(/\r?\n/g)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line) as unknown;
-      } catch {
-        return null;
-      }
-    })
-    .filter((entry): entry is Record<string, unknown> => isRecord(entry));
-}
-
-function isCodexMessageItemEvent(parsed: Record<string, unknown>): boolean {
-  const type = typeof parsed.type === "string" ? parsed.type.trim() : "";
-  if (type) return false;
-  return isRecord(parsed.item) && parsed.item.type === "message";
-}
-
-function isAssistantContentBlockDeltaEvent(parsed: Record<string, unknown>): boolean {
-  if (parsed.type !== "content_block_delta") return false;
-  if (!isRecord(parsed.delta)) return false;
-
-  const deltaType = typeof parsed.delta.type === "string" ? parsed.delta.type : "";
-  if (deltaType && deltaType !== "text_delta") {
-    return false;
-  }
-
-  return collectText(parsed.delta).trim().length > 0;
-}
-
-function shouldIncludeFallbackEventText(parsed: Record<string, unknown>): boolean {
-  const type = typeof parsed.type === "string" ? parsed.type : "";
-  if (type === "assistant") return true;
-  if (isAssistantContentBlockDeltaEvent(parsed)) return true;
-  if (isCodexMessageItemEvent(parsed)) return true;
-  return false;
-}
-
-function extractTextBlocks(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-
-  const textParts: string[] = [];
-  for (const block of content) {
-    if (!isRecord(block)) continue;
-    const blockType = typeof block.type === "string" ? block.type : "";
-    if (blockType === "thinking") continue;
-    if (blockType !== "text") continue;
-    if (typeof block.text !== "string") continue;
-    textParts.push(block.text);
-  }
-  return textParts.join("");
-}
-
-function extractAssistantMessageText(parsed: Record<string, unknown>): string {
-  if (!isRecord(parsed.message)) return "";
-  return extractTextBlocks(parsed.message.content).trim();
-}
-
-function extractCodexMessageItemText(parsed: Record<string, unknown>): string {
-  if (!isCodexMessageItemEvent(parsed)) return "";
-  if (!isRecord(parsed.item)) return "";
-  if (Array.isArray(parsed.item.content)) {
-    return extractTextBlocks(parsed.item.content).trim();
-  }
-  return collectText(parsed.item).trim();
-}
-
-function truncateFallbackText(text: string): string {
-  if (text.length <= MAX_FALLBACK_TEXT_CHARS) return text;
-  const maxBodyChars = Math.max(0, MAX_FALLBACK_TEXT_CHARS - FALLBACK_TRUNCATION_NOTICE.length);
-  return `${text.slice(0, maxBodyChars)}${FALLBACK_TRUNCATION_NOTICE}`;
-}
-
-export function parseRepoChatStreamJson(raw: string): ParsedRepoChatOutput {
-  const lines = parseJsonLines(raw);
-
-  let cliSessionId: string | undefined;
-  let resultEventText: string | undefined;
-  let lastAssistantEvent: Record<string, unknown> | undefined;
-  const textParts: string[] = [];
-
-  for (const parsed of lines) {
-    cliSessionId = cliSessionId ?? pickSessionId(parsed);
-
-    const type = typeof parsed.type === "string" ? parsed.type : "";
-    const isError = parsed.is_error === true;
-
-    if (type === "assistant") {
-      lastAssistantEvent = parsed;
-      continue;
-    }
-
-    if (type === "result" && !isError) {
-      const resultText = collectText(parsed.result).trim();
-      if (resultText) {
-        resultEventText = resultText;
-      }
-      continue;
-    }
-    if (!shouldIncludeFallbackEventText(parsed)) {
-      continue;
-    }
-
-    const eventText = isCodexMessageItemEvent(parsed)
-      ? extractCodexMessageItemText(parsed)
-      : collectText(parsed).trim();
-    if (!eventText) continue;
-    if (textParts.at(-1) !== eventText) {
-      textParts.push(eventText);
-    }
-  }
-
-  if (lastAssistantEvent) {
-    return {
-      text: extractAssistantMessageText(lastAssistantEvent),
-      cliSessionId,
-    };
-  }
-
-  const fallbackText = resultEventText ?? textParts.join("\n");
-  return {
-    text: truncateFallbackText(fallbackText).trim(),
-    cliSessionId,
-  };
-}
-
-function parseRepoChatStreamJsonError(raw: string): ParsedRepoChatOutput {
-  const lines = parseJsonLines(raw);
-
-  let cliSessionId: string | undefined;
-  let errorResultText: string | undefined;
-  const textParts: string[] = [];
-
-  for (const parsed of lines) {
-    cliSessionId = cliSessionId ?? pickSessionId(parsed);
-
-    const type = typeof parsed.type === "string" ? parsed.type : "";
-    const isError = parsed.is_error === true;
-
-    if (type === "result" && isError) {
-      const resultText = collectText(parsed.result).trim();
-      if (resultText) {
-        errorResultText = resultText;
-      }
-      continue;
-    }
-    if (!shouldIncludeFallbackEventText(parsed)) {
-      continue;
-    }
-
-    const eventText = collectText(parsed).trim();
-    if (!eventText) continue;
-    if (textParts.at(-1) !== eventText) {
-      textParts.push(eventText);
-    }
-  }
-
-  const fallbackText = truncateFallbackText(textParts.join("\n"));
-  return {
-    text: (errorResultText ?? fallbackText).trim(),
-    cliSessionId,
-  };
-}
 
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
@@ -227,8 +18,6 @@ export function buildClaudeRepoChatArgs(params: {
   const args = [
     "-p",
     "--verbose",
-    "--output-format",
-    "stream-json",
     "--allowedTools",
     CLAUDE_ALLOWED_TOOLS,
     "--append-system-prompt",
@@ -277,28 +66,9 @@ export function buildCodexRepoChatArgs(params: {
   return args;
 }
 
-function parseRepoChatOutput(rawStdout: string): ParsedRepoChatOutput {
-  const parsed = parseRepoChatStreamJson(rawStdout);
-  if (parsed.text) return parsed;
-  return { text: rawStdout.trim(), cliSessionId: parsed.cliSessionId };
-}
-
 function truncateErrorDetail(detail: string): string {
   if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
   return `${detail.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
-}
-
-function parseRepoChatErrorDetails(stdout: string, stderr: string): string {
-  const parsedStdout = parseRepoChatStreamJsonError(stdout);
-  if (parsedStdout.text) return truncateErrorDetail(parsedStdout.text);
-
-  const parsedStderr = parseRepoChatStreamJsonError(stderr);
-  if (parsedStderr.text) return truncateErrorDetail(parsedStderr.text);
-
-  const plainDetail = stderr.trim() || stdout.trim();
-  if (plainDetail) return truncateErrorDetail(plainDetail);
-
-  return "";
 }
 
 export async function runRepoChatWorker(
@@ -337,21 +107,22 @@ export async function runRepoChatWorker(
   }
 
   if (exitCode !== 0) {
-    const details = parseRepoChatErrorDetails(stdout, stderr) || `signal=${signal ?? "none"}`;
+    const details =
+      truncateErrorDetail(stderr.trim() || stdout.trim()) || `signal=${signal ?? "none"}`;
     throw new Error(
       `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"}): ${details}`,
     );
   }
 
-  const parsed = parseRepoChatOutput(stdout);
-  if (!parsed.text) {
+  const text = stdout.trim();
+  if (!text) {
     throw new Error("Repo chat worker completed without a response message.");
   }
 
   return {
     backend: params.backend,
-    text: parsed.text,
-    cliSessionId: parsed.cliSessionId ?? params.cliSessionId,
+    text,
+    cliSessionId: params.cliSessionId,
     durationMs,
     stdout,
     stderr,
