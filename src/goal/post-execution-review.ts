@@ -1,8 +1,11 @@
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
+import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { GoalSession, PlanStep } from "./types.js";
+
+export { extractJsonObjectCandidates } from "./json-repair.js";
 
 export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 120_000;
 export const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
@@ -63,48 +66,6 @@ export function collectText(value: unknown): string {
   return "";
 }
 
-export function extractJsonObjectCandidates(text: string): string[] {
-  const candidates: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaping = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (!ch) continue;
-    if (inString) {
-      if (escaping) {
-        escaping = false;
-      } else if (ch === "\\") {
-        escaping = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-      continue;
-    }
-    if (ch === "}") {
-      if (depth === 0) continue;
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return candidates;
-}
-
 export function normalizeReviewIssues(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const normalized = raw
@@ -131,7 +92,13 @@ export function parsePostExecutionReviewDecisionFromText(
     const decision = parsePostExecutionReviewDecisionRecord(parsed);
     if (decision) return decision;
   } catch {
-    // Fall through to lenient extraction.
+    try {
+      const parsed = JSON.parse(repairJsonText(trimmed)) as unknown;
+      const decision = parsePostExecutionReviewDecisionRecord(parsed);
+      if (decision) return decision;
+    } catch {
+      // Fall through to lenient extraction.
+    }
   }
 
   for (const line of trimmed.split(/\r?\n/g)) {
@@ -142,7 +109,13 @@ export function parsePostExecutionReviewDecisionFromText(
       const decision = parsePostExecutionReviewDecisionRecord(parsed);
       if (decision) return decision;
     } catch {
-      continue;
+      try {
+        const parsed = JSON.parse(repairJsonText(candidate)) as unknown;
+        const decision = parsePostExecutionReviewDecisionRecord(parsed);
+        if (decision) return decision;
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -152,7 +125,13 @@ export function parsePostExecutionReviewDecisionFromText(
       const decision = parsePostExecutionReviewDecisionRecord(parsed);
       if (decision) return decision;
     } catch {
-      continue;
+      try {
+        const parsed = JSON.parse(repairJsonText(candidate)) as unknown;
+        const decision = parsePostExecutionReviewDecisionRecord(parsed);
+        if (decision) return decision;
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -165,23 +144,33 @@ export function parsePostExecutionReviewDecision(
   const fromText = parsePostExecutionReviewDecisionFromText(stdout);
   if (fromText) return fromText;
 
+  const parseStreamRecord = (raw: unknown): PostExecutionReviewDecision | undefined => {
+    const direct = parsePostExecutionReviewDecisionRecord(raw);
+    if (direct) return direct;
+    const viaResult = isRecord(raw)
+      ? parsePostExecutionReviewDecisionRecord(raw.result)
+      : undefined;
+    if (viaResult) return viaResult;
+    const text = collectText(raw).trim();
+    if (!text) return undefined;
+    return parsePostExecutionReviewDecisionFromText(text);
+  };
+
   for (const line of stdout.split(/\r?\n/g)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
     try {
       const parsed = JSON.parse(trimmed) as unknown;
-      const direct = parsePostExecutionReviewDecisionRecord(parsed);
-      if (direct) return direct;
-      const viaResult = isRecord(parsed)
-        ? parsePostExecutionReviewDecisionRecord(parsed.result)
-        : undefined;
-      if (viaResult) return viaResult;
-      const text = collectText(parsed).trim();
-      if (!text) continue;
-      const fromLineText = parsePostExecutionReviewDecisionFromText(text);
-      if (fromLineText) return fromLineText;
+      const fromLine = parseStreamRecord(parsed);
+      if (fromLine) return fromLine;
     } catch {
-      continue;
+      try {
+        const parsed = JSON.parse(repairJsonText(trimmed)) as unknown;
+        const fromLine = parseStreamRecord(parsed);
+        if (fromLine) return fromLine;
+      } catch {
+        continue;
+      }
     }
   }
 
