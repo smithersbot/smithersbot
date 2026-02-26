@@ -1,6 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 import type { MoltbotConfig } from "../config/config.js";
 import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
@@ -11,10 +9,27 @@ import {
   writeAttemptBundle,
   type AttemptBundle,
 } from "./attempt-bundle.js";
+import {
+  applyTaskResult,
+  buildGoalSummary,
+  buildSuccessorMap,
+  clampBackendForEnabledWorkers,
+  pickNextTask,
+  recordTaskResult,
+  resolveBackendForStep,
+  shouldRetry,
+} from "./agent-executor-helpers.js";
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
-import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
+import {
+  formatExecError,
+  makeBuildGateFailurePrompt,
+  resetToTaskBaseSha,
+  runBuildGateCommands,
+  truncateForPrompt,
+} from "./build-gate.js";
+import type { GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
@@ -30,11 +45,7 @@ import {
   startTaskCheckpoint,
 } from "./git-checkpoint.js";
 import { isRepoPrivate } from "./git-privacy.js";
-import {
-  orderStepsCriticalPathFirst,
-  computeCriticalPathScores,
-  type CriticalPathScores,
-} from "./plan-order.js";
+import { orderStepsCriticalPathFirst, computeCriticalPathScores } from "./plan-order.js";
 import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { generateManualTests } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
@@ -43,7 +54,13 @@ import {
   resolvePostExecutionReviewBaseSha,
   truncateSingleLine,
 } from "./post-execution-review.js";
-import { loadRun, resolveGoalWorkingFile, resolveWorkingFile } from "./run-store.js";
+import {
+  appendGoalWorkingEntry,
+  appendRalphContext,
+  appendRetryContext,
+  buildRalphHistorySummary,
+} from "./run-journal.js";
+import { loadRun } from "./run-store.js";
 import type {
   GitCheckpointConfig,
   GoalLlmClient,
@@ -64,8 +81,6 @@ const DEFAULT_MAX_RALPH_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_BACKEND: CliWorkerId = "claude_code";
 const DEFAULT_MAX_BUILD_GATE_FIX_CYCLES = 2;
-const BUILD_GATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
-const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 
 const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
@@ -131,205 +146,6 @@ export type ExecuteGoalParams = {
   /** Output channel for formatting the completion summary. */
   channel?: GoalOutputChannel;
 };
-
-/** Append a summary line to the top-level WORKING.md for this goal run. */
-function appendGoalWorkingEntry(
-  runId: string,
-  stepId: string,
-  status: string,
-  detail: string,
-): void {
-  try {
-    const filePath = resolveGoalWorkingFile(runId);
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const entry = `\n## ${stepId} — ${status}\n${detail}\n`;
-    fs.appendFileSync(filePath, entry, "utf8");
-  } catch {
-    // Best-effort; don't mask task execution errors.
-  }
-}
-
-function appendRetryContext(
-  runId: string,
-  stepId: string,
-  summary: string,
-  attemptNumber: number,
-): void {
-  try {
-    const filePath = resolveWorkingFile(runId, stepId);
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const entry = [
-      `\n## Retry Context Attempt ${attemptNumber} (${new Date().toISOString()})`,
-      summary,
-      "",
-    ].join("\n");
-    fs.appendFileSync(filePath, entry, "utf8");
-  } catch {
-    // Best-effort
-  }
-}
-
-function appendRalphContext(
-  runId: string,
-  stepId: string,
-  attemptNumber: number,
-  detail: {
-    approachTried: string;
-    specificErrors: string;
-    keyInsight: string;
-    suggestedApproach: string;
-  },
-): void {
-  try {
-    const filePath = resolveWorkingFile(runId, stepId);
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const timestamp = new Date().toISOString();
-    const entry = [
-      `\n## Ralph (attempt ${attemptNumber}) — ${timestamp}`,
-      "### Approach tried",
-      detail.approachTried,
-      "### Errors encountered",
-      detail.specificErrors,
-      "### Key insight",
-      detail.keyInsight,
-      "### Suggested approach for next attempt",
-      detail.suggestedApproach,
-      "",
-    ].join("\n");
-    fs.appendFileSync(filePath, entry, "utf8");
-  } catch {
-    // Best-effort; don't mask task execution errors.
-  }
-}
-
-type BuildGateResult = { passed: true } | { passed: false; failedCommand: string; output: string };
-
-function truncateForPrompt(text: string): string {
-  if (!text) return "";
-  const trimmed = text.trim();
-  if (trimmed.length <= BUILD_GATE_OUTPUT_MAX_CHARS) return trimmed;
-  return trimmed.slice(-BUILD_GATE_OUTPUT_MAX_CHARS);
-}
-
-function formatExecError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const maybeStdout = (error as { stdout?: Buffer | string }).stdout;
-  const maybeStderr = (error as { stderr?: Buffer | string }).stderr;
-  const stdout =
-    typeof maybeStdout === "string"
-      ? maybeStdout
-      : maybeStdout instanceof Buffer
-        ? maybeStdout.toString("utf8")
-        : "";
-  const stderr =
-    typeof maybeStderr === "string"
-      ? maybeStderr
-      : maybeStderr instanceof Buffer
-        ? maybeStderr.toString("utf8")
-        : "";
-  return [error.message, stdout, stderr]
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-function runBuildGateCommands(commands: string[], workingDir: string): BuildGateResult {
-  for (const command of commands) {
-    const trimmed = command.trim();
-    if (!trimmed) continue;
-
-    const result = spawnSync("bash", ["-lc", trimmed], {
-      cwd: workingDir,
-      encoding: "utf8",
-      timeout: BUILD_GATE_COMMAND_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    const stdout = typeof result.stdout === "string" ? result.stdout : "";
-    const stderr = typeof result.stderr === "string" ? result.stderr : "";
-    const output = truncateForPrompt([stdout, stderr].filter(Boolean).join("\n"));
-
-    if (result.error) {
-      const message = truncateForPrompt(
-        [output, `Build gate command failed to execute: ${formatExecError(result.error)}`]
-          .filter(Boolean)
-          .join("\n"),
-      );
-      return {
-        passed: false,
-        failedCommand: trimmed,
-        output: message || "Build gate command failed with an unknown process error.",
-      };
-    }
-
-    if (result.status !== 0) {
-      const statusBits = [
-        result.status != null ? `exit code ${result.status}` : null,
-        result.signal ? `signal ${result.signal}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const message = truncateForPrompt(
-        [output, statusBits ? `Build gate command failed with ${statusBits}.` : ""]
-          .filter(Boolean)
-          .join("\n"),
-      );
-      return {
-        passed: false,
-        failedCommand: trimmed,
-        output: message || "Build gate command exited non-zero with no output.",
-      };
-    }
-  }
-
-  return { passed: true };
-}
-
-function resetToTaskBaseSha(
-  workingDir: string,
-  checkpointSha: string | undefined,
-): { success: true } | { success: false; error: string } {
-  if (!checkpointSha) {
-    return { success: false, error: "No task checkpoint base SHA was recorded for this step." };
-  }
-  try {
-    execFileSync("git", ["-C", workingDir, "reset", "--hard", checkpointSha], {
-      encoding: "utf8",
-      timeout: 15_000,
-    });
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: formatExecError(error) };
-  }
-}
-
-function buildRalphHistorySummary(stepId: string, bundles: AttemptBundle[]): string {
-  const entries = bundles.filter((bundle) => bundle.ralphDetail);
-  if (entries.length === 0) return `Task ${stepId} ralphed repeatedly but no detail was captured.`;
-
-  const lines: string[] = [];
-  for (const [index, bundle] of entries.entries()) {
-    const detail = bundle.ralphDetail!;
-    lines.push(`**Ralph ${index + 1} (attempt ${bundle.attemptNumber}):**`);
-    lines.push(`• **Approach tried:** ${detail.approachTried}`);
-    lines.push(`• **Errors:** ${detail.specificErrors}`);
-    lines.push(`• **Key insight:** ${detail.keyInsight}`);
-    lines.push(`• **Suggested approach:** ${detail.suggestedApproach}`);
-    if (index < entries.length - 1) lines.push("");
-  }
-  return lines.join("\n");
-}
-
-function makeBuildGateFailurePrompt(command: string, output: string): string {
-  return [
-    `The build gate (${command}) failed after you reported complete.`,
-    "Fix the errors.",
-    "Here is the output:",
-    output,
-  ].join("\n");
-}
 
 function resolveTaskTimeoutMs(durationMinutes: number | undefined, fallbackMs: number): number {
   if (!durationMinutes || durationMinutes <= 0) return Math.max(fallbackMs, MIN_TASK_TIMEOUT_MS);
@@ -602,7 +418,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       const latestBundles = loadAttemptBundles(workerDir);
 
-      if (shouldRetry(result, backend, workerDir) && attempt < maxAttempts) {
+      if (shouldRetry(result, backend, workerDir, PI_RETRYABLE) && attempt < maxAttempts) {
         const latestAttempt = latestBundles.at(-1);
         if (latestAttempt) {
           appendRetryContext(
@@ -1195,119 +1011,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   };
 }
 
-function resolveBackendForStep(
-  step: PlanStep,
-  override: GoalBackendId | undefined,
-  fallback: GoalBackendId,
-): GoalBackendId {
-  if (override) return override;
-  if (step.executedBackend) return step.executedBackend;
-  if (step.backend) return step.backend;
-  return fallback;
-}
-
-function clampBackendForEnabledWorkers(
-  backend: GoalBackendId,
-  enabledWorkers: CliWorkerId[],
-): GoalBackendId {
-  if (backend === "pi") return backend;
-  if (enabledWorkers.includes(backend)) return backend;
-  return enabledWorkers.length === 1 ? enabledWorkers[0]! : backend;
-}
-
-function applyTaskResult(
-  task: PlanStep,
-  result: TaskRunnerResult,
-  onProgress?: (text: string) => void,
-): void {
-  task.turnsUsed = result.turnsUsed;
-  if (result.status === "complete") {
-    task.status = "done";
-    task.taskSummary = result.summary;
-    task.ralphDetail = undefined;
-    onProgress?.(`  [done] ${result.summary ?? "completed"}`);
-    return;
-  }
-
-  if (result.status === "failed") {
-    task.status = "blocked";
-    task.blockedReason = "task_failed";
-    task.blockedQuestion = result.question ?? "Task failed.";
-    task.failedDetail = result.failedDetail;
-    task.ralphDetail = undefined;
-    onProgress?.(`  [failed] ${task.blockedQuestion}`);
-    return;
-  }
-
-  if (result.status === "ralph") {
-    task.status = "pending";
-    task.ralphDetail = result.ralphDetail;
-    task.blockedReason = undefined;
-    task.blockedQuestion = undefined;
-    task.failedDetail = undefined;
-    task.taskSummary = undefined;
-    return;
-  }
-
-  task.status = "blocked";
-  task.blockedReason = result.blockedReason ?? "other";
-  task.blockedQuestion = result.question ?? "Task blocked.";
-  task.ralphDetail = undefined;
-  onProgress?.(`  [blocked] ${task.blockedQuestion}`);
-}
-
-function shouldRetry(result: TaskRunnerResult, backend: GoalBackendId, workerDir: string): boolean {
-  if (backend === "pi") {
-    return result.status === "blocked" && PI_RETRYABLE.includes(result.blockedReason ?? "other");
-  }
-
-  const attempts = loadAttemptBundles(workerDir);
-  const latest = attempts.at(-1);
-  if (!latest) return false;
-  return (
-    latest.outcome === "timeout" || latest.outcome === "crash" || latest.outcome === "rate_limit"
-  );
-}
-
-function recordTaskResult(
-  session: GoalSession,
-  task: PlanStep,
-  taskStartMs: number,
-  onTaskUpdate?: (result: TaskExecutionResult) => void,
-): void {
-  const elapsedMs = Math.max(0, Date.now() - taskStartMs);
-  const previous = session.stepResults.get(task.id);
-  const durationMs = normalizeDurationMs(previous?.durationMs) + elapsedMs;
-  session.stepResults.set(task.id, {
-    stepId: task.id,
-    success: task.status === "done",
-    output: task.taskSummary ?? "",
-    error: task.status !== "done" ? (task.blockedQuestion ?? "Task did not complete.") : undefined,
-    durationMs,
-  });
-
-  const result: TaskExecutionResult = {
-    taskId: task.id,
-    turnsUsed: task.turnsUsed ?? 0,
-    durationMs,
-    outcome:
-      task.status === "done"
-        ? "done"
-        : task.blockedReason === "task_failed"
-          ? "task_failed"
-          : "blocked",
-    summary: task.taskSummary,
-    blockedQuestion: task.blockedQuestion,
-    blockedReason: task.blockedReason,
-  };
-  onTaskUpdate?.(result);
-}
-
-function normalizeDurationMs(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
-  return value;
-}
-
 function hasAnswerForTask(taskId: string, answers: Record<string, string>): boolean {
   if (answers[`task:${taskId}:input`] != null) return true;
   for (const key of Object.keys(answers)) {
@@ -1369,76 +1072,4 @@ function findRunnableTasks(
     }
     return false;
   });
-}
-
-function buildGoalSummary(params: {
-  goal: string;
-  goalHeadline?: string;
-  runId: string;
-  steps: PlanStep[];
-  maxTurnsPerTask?: number;
-  manualTests?: ManualTestSuggestion[];
-  channel?: GoalOutputChannel;
-}): string {
-  const summary = formatCompactGoalCompletionSummary({
-    title: params.goalHeadline?.trim() || params.goal,
-    steps: params.steps.map((step) => ({
-      id: step.id,
-      description: step.description,
-      summary: step.taskSummary,
-      status: step.status,
-      turnsUsed: step.turnsUsed,
-    })),
-    attemptsTotal: params.maxTurnsPerTask,
-    resolveStepAttemptsUsed: (stepId) =>
-      loadAttemptBundles(resolveWorkerDir(params.runId, stepId)).length,
-    manualTests: params.manualTests,
-    channel: params.channel ?? "cli",
-  }).text;
-  return `${summary.trimEnd()}\n**Goal ID:** ${params.runId.slice(0, 8)}`;
-}
-
-function buildSuccessorMap(steps: PlanStep[]): Map<string, Set<string>> {
-  const successors = new Map<string, Set<string>>();
-  for (const step of steps) {
-    successors.set(step.id, new Set());
-  }
-  for (const step of steps) {
-    for (const dep of step.dependsOn) {
-      const list = successors.get(dep);
-      if (list) list.add(step.id);
-    }
-  }
-  return successors;
-}
-
-function pickNextTask(
-  runnable: PlanStep[],
-  scores: CriticalPathScores,
-  orderIndex: Map<string, number>,
-  successors: Map<string, Set<string>>,
-  lastExecutedId: string | null,
-): PlanStep {
-  if (runnable.length <= 1) return runnable[0]!;
-
-  let maxScore = Number.NEGATIVE_INFINITY;
-  for (const step of runnable) {
-    const score = scores.get(step.id) ?? 0;
-    if (score > maxScore) maxScore = score;
-  }
-
-  let candidates = runnable.filter((step) => (scores.get(step.id) ?? 0) === maxScore);
-  if (lastExecutedId) {
-    const successorSet = successors.get(lastExecutedId);
-    if (successorSet && successorSet.size > 0) {
-      const successorCandidates = candidates.filter((step) => successorSet.has(step.id));
-      if (successorCandidates.length > 0) candidates = successorCandidates;
-    }
-  }
-
-  candidates.sort((a, b) => {
-    return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
-  });
-
-  return candidates[0]!;
 }
