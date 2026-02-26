@@ -35,7 +35,7 @@ import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { acquireGoalOpLock, forceReleaseGoalOpLock } from "../goal/goal-lock.js";
 import { loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
-import type { Plan, PlanStep, SerializedRun, StepResult } from "../goal/types.js";
+import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildGoalDoneInlineKeyboard,
@@ -61,7 +61,6 @@ import {
   formatPlannerFallbackNotice,
   persistEditPromptMessage,
   persistFeedbackPromptMessage,
-  persistTelegramPlanMessage,
   persistTelegramQuestionMessage,
   sendDagPng,
   sendGoalBackgroundResult,
