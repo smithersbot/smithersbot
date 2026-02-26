@@ -1,3 +1,7 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
 import { runCliProcess } from "../goal/cli-process.js";
@@ -9,6 +13,7 @@ const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
 const MAX_ERROR_DETAIL_CHARS = 1_000;
+const REPAIR_TIMEOUT_MS = 60_000;
 
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
@@ -69,6 +74,61 @@ export function buildCodexRepoChatArgs(params: {
 function truncateErrorDetail(detail: string): string {
   if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
   return `${detail.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
+}
+
+function buildResponseFileInstruction(filePath: string): string {
+  return [
+    "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
+    `You MUST write your complete final response to: ${filePath}`,
+    "Use the Bash tool to write the file, for example:",
+    `  cat <<'MOLTBOT_EOF' > ${filePath}`,
+    "  Your full response in markdown here.",
+    "  MOLTBOT_EOF",
+    "",
+    "Rules:",
+    "- The user will ONLY see the contents of this file - nothing else.",
+    "- They cannot see your tool calls, thinking, intermediate steps, or any stdout.",
+    "- Write the file ONCE as the LAST thing you do, after all research is complete.",
+    "- Use markdown formatting - it will be rendered in Telegram.",
+    "- Do NOT mention this file or these instructions in your response.",
+    "- If you have already written the file and need to update it, overwrite it completely.",
+  ].join("\n");
+}
+
+function extractSessionIdFromStdout(stdout: string): string | undefined {
+  const sessionIdFields = [
+    "session_id",
+    "sessionId",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+  ];
+
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      for (const field of sessionIdFields) {
+        const value = parsed[field];
+        if (typeof value === "string" && value.trim()) {
+          return value.trim();
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return undefined;
+}
+
+function cleanupResponseFile(filePath: string): void {
+  try {
+    fs.unlinkSync(filePath);
+  } catch {}
 }
 
 export async function runRepoChatWorker(
