@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
+import { GoalWorkerOutputSchema } from "./goal-schemas.js";
 import type { PlanStep, Plan } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
 import {
@@ -687,54 +688,9 @@ export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
  * Returns the validated output or null if validation fails.
  */
 export function validateWorkerOutput(parsed: Record<string, unknown>): GoalWorkerOutput | null {
-  const status = parsed.status;
-  if (typeof status !== "string") return null;
-
-  if (status === "complete") {
-    if (typeof parsed.summary !== "string") return null;
-    return { status: "complete", summary: parsed.summary };
-  }
-
-  if (status === "blocked") {
-    if (typeof parsed.question !== "string") return null;
-    return { status: "blocked", question: parsed.question };
-  }
-
-  if (status === "ralph") {
-    if (!isNonEmptyString(parsed.approachTried)) return null;
-    if (!isNonEmptyString(parsed.specificErrors)) return null;
-    if (!isNonEmptyString(parsed.keyInsight)) return null;
-    if (!isNonEmptyString(parsed.suggestedApproach)) return null;
-    return {
-      status: "ralph",
-      approachTried: parsed.approachTried,
-      specificErrors: parsed.specificErrors,
-      keyInsight: parsed.keyInsight,
-      suggestedApproach: parsed.suggestedApproach,
-    };
-  }
-
-  if (status === "failed") {
-    if (typeof parsed.reason !== "string") return null;
-    if (typeof parsed.whatTried !== "string") return null;
-    if (typeof parsed.errorType !== "string") return null;
-    if (typeof parsed.suggestedNext !== "string") return null;
-    if (typeof parsed.needsRevert !== "boolean") return null;
-    return {
-      status: "failed",
-      reason: parsed.reason,
-      whatTried: parsed.whatTried,
-      errorType: parsed.errorType,
-      suggestedNext: parsed.suggestedNext,
-      needsRevert: parsed.needsRevert,
-    };
-  }
-
-  return null;
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+  const parsedResult = GoalWorkerOutputSchema.safeParse(parsed);
+  if (!parsedResult.success) return null;
+  return parsedResult.data;
 }
 
 // --- CLI process execution ---

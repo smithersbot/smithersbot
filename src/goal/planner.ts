@@ -4,6 +4,7 @@ import path from "node:path";
 import { GoalLlmError, classifyGoalError } from "./errors.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalBackendId } from "./backend-types.js";
+import { PlanInputSchema } from "./goal-schemas.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 import { normalizeLabel } from "./mermaid-render.js";
@@ -346,11 +347,71 @@ function parseBuildGate(raw: unknown): Plan["buildGate"] {
   };
 }
 
+function normalizePlanInput(raw: Record<string, unknown>, goal: string): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...raw, goal };
+  if (!raw.buildGate || typeof raw.buildGate !== "object") {
+    return normalized;
+  }
+
+  const buildGate = { ...(raw.buildGate as Record<string, unknown>) };
+  if ("postExecutionReview" in buildGate && typeof buildGate.postExecutionReview !== "boolean") {
+    delete buildGate.postExecutionReview;
+  }
+
+  normalized.buildGate = buildGate;
+  return normalized;
+}
+
+function resolveStepIdForIssue(raw: Record<string, unknown>, stepIndex: unknown): string {
+  if (!Array.isArray(raw.steps) || typeof stepIndex !== "number" || !raw.steps[stepIndex]) {
+    return "unknown";
+  }
+  const rawStep = raw.steps[stepIndex];
+  if (!rawStep || typeof rawStep !== "object") return "unknown";
+  const rawId = (rawStep as Record<string, unknown>).id;
+  if (typeof rawId === "number") return `${rawId}`;
+  if (typeof rawId === "string" && rawId.length > 0) return rawId;
+  return "unknown";
+}
+
 function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
-  const summary = typeof raw.summary === "string" ? raw.summary : goal;
-  const shortSummary = parseShortSummary(raw.shortSummary, summary, PLAN_SHORT_SUMMARY_MAX_CHARS);
-  const buildGate = parseBuildGate(raw.buildGate);
-  const rawWorkingDir = typeof raw.workingDir === "string" ? raw.workingDir.trim() : "";
+  const parsedPlan = PlanInputSchema.safeParse(normalizePlanInput(raw, goal));
+  if (!parsedPlan.success) {
+    const issue = parsedPlan.error.issues[0];
+    if (!issue) throw new Error("Plan is invalid");
+
+    if (issue.path[0] === "workingDir") {
+      throw new Error("Plan must include a non-empty workingDir");
+    }
+    if (issue.path[0] === "steps" && issue.path.length === 1) {
+      throw new Error("Plan must contain at least one step");
+    }
+    if (issue.path[0] === "steps" && issue.path[2] === "id") {
+      throw new Error("Each step must have a non-empty id");
+    }
+    if (issue.path[0] === "steps" && issue.path[2] === "description") {
+      const stepId = resolveStepIdForIssue(raw, issue.path[1]);
+      throw new Error(`Step ${stepId}: description is required`);
+    }
+    if (issue.path[0] === "steps" && issue.path[2] === "backend") {
+      const stepId = resolveStepIdForIssue(raw, issue.path[1]);
+      throw new Error(
+        `Step ${stepId}: backend is required (codex | claude_code | pi) and must be valid`,
+      );
+    }
+
+    throw new Error(`Plan failed schema validation: ${issue.message}`);
+  }
+
+  const parsed = parsedPlan.data;
+  const summary = typeof parsed.summary === "string" ? parsed.summary : goal;
+  const shortSummary = parseShortSummary(
+    parsed.shortSummary,
+    summary,
+    PLAN_SHORT_SUMMARY_MAX_CHARS,
+  );
+  const buildGate = parseBuildGate(parsed.buildGate);
+  const rawWorkingDir = parsed.workingDir.trim();
   if (!rawWorkingDir) {
     throw new Error("Plan must include a non-empty workingDir");
   }
@@ -360,23 +421,21 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       : rawWorkingDir.startsWith("~/")
         ? path.join(os.homedir(), rawWorkingDir.slice(2))
         : rawWorkingDir;
-  if (!Array.isArray(raw.steps) || raw.steps.length === 0) {
+  if (parsed.steps.length === 0) {
     throw new Error("Plan must contain at least one step");
   }
 
   const steps: PlanStep[] = [];
   const seenIds = new Set<string>();
 
-  for (const rawStep of raw.steps) {
-    const step = rawStep as Record<string, unknown>;
+  for (const step of parsed.steps) {
     const rawId = step.id;
     const id = typeof rawId === "string" ? rawId : typeof rawId === "number" ? `${rawId}` : "";
     if (!id) throw new Error("Each step must have a non-empty id");
     if (seenIds.has(id)) throw new Error(`Duplicate step id: ${id}`);
     seenIds.add(id);
 
-    const rawDesc = step.description;
-    const description = typeof rawDesc === "string" ? rawDesc : "";
+    const description = step.description;
     if (!description) throw new Error(`Step ${id}: description is required`);
     const shortStepSummary = parseShortSummary(
       step.shortSummary,

@@ -1,4 +1,6 @@
+import { z } from "zod";
 import type { CliWorkerId, GoalConfig } from "../config/types.goal.js";
+import { GoalWorkerOutputSchema } from "./goal-schemas.js";
 
 // Types for CLI worker backends used by /goal execution.
 
@@ -24,24 +26,7 @@ export type BackendAvailability = {
 };
 
 /** Structured output from any CLI worker, validated against a JSON schema. */
-export type GoalWorkerOutput =
-  | { status: "complete"; summary: string }
-  | { status: "blocked"; question: string }
-  | {
-      status: "ralph";
-      approachTried: string;
-      specificErrors: string;
-      keyInsight: string;
-      suggestedApproach: string;
-    }
-  | {
-      status: "failed";
-      reason: string;
-      whatTried: string;
-      errorType: string;
-      suggestedNext: string;
-      needsRevert: boolean;
-    };
+export type GoalWorkerOutput = z.infer<typeof GoalWorkerOutputSchema>;
 
 /** Result of running a CLI worker for a single step. */
 export type BackendTaskResult = {
