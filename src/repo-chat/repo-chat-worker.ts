@@ -131,6 +131,74 @@ function cleanupResponseFile(filePath: string): void {
   } catch {}
 }
 
+function buildResumeArgs(params: {
+  backend: RepoChatWorkerParams["backend"];
+  args: string[];
+  cliSessionId?: string;
+}): string[] {
+  const repairArgs = [...params.args];
+
+  if (params.backend === "claude_code") {
+    if (params.cliSessionId && !repairArgs.includes("--resume")) {
+      repairArgs.splice(repairArgs.length - 1, 0, "--resume", params.cliSessionId);
+    }
+    return repairArgs;
+  }
+
+  const jsonIndex = repairArgs.indexOf("--json");
+  if (jsonIndex >= 0) {
+    repairArgs.splice(jsonIndex, 1);
+  }
+
+  if (!params.cliSessionId || repairArgs.includes("resume")) {
+    return repairArgs;
+  }
+
+  const execIndex = repairArgs.indexOf("exec");
+  if (execIndex >= 0) {
+    repairArgs.splice(execIndex + 1, 0, "resume", params.cliSessionId);
+  }
+
+  return repairArgs;
+}
+
+async function repairResponseFile(params: {
+  responseFilePath: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  abortSignal?: AbortSignal;
+}): Promise<string> {
+  const repairPrompt = [
+    `Your response file was not written or is empty: ${params.responseFilePath}`,
+    "You MUST write your complete response to this file now.",
+    "Use the Bash tool:",
+    `  cat <<'MOLTBOT_EOF' > ${params.responseFilePath}`,
+    "  Your full response in markdown here.",
+    "  MOLTBOT_EOF",
+    "",
+    "Write the file and nothing else.",
+  ].join("\n");
+
+  const repairArgs = [...params.args.slice(0, -1), repairPrompt];
+
+  await runCliProcess({
+    command: params.command,
+    args: repairArgs,
+    cwd: params.cwd,
+    timeoutMs: REPAIR_TIMEOUT_MS,
+    abortSignal: params.abortSignal,
+    env: params.env,
+  });
+
+  try {
+    return fs.readFileSync(params.responseFilePath, "utf-8").trim();
+  } catch {
+    return "";
+  }
+}
+
 export async function runRepoChatWorker(
   params: RepoChatWorkerParams,
 ): Promise<RepoChatWorkerResult> {
