@@ -47,6 +47,7 @@ run on host, set an explicit per-agent override:
 - **Recommended:** Brave Search API key for web search. Easiest path:
   `moltbot configure --section web` (stores `tools.web.search.apiKey`).
   See [Web tools](/tools/web).
+- Recommended: [semgrep](https://semgrep.dev) for automatic security scanning of agent-generated code. Install: `pip3 install semgrep`. Goal runs will automatically run semgrep SAST scans when it's available on PATH; skipped silently if not installed.
 
 macOS: if you plan to build the apps, install Xcode / CLT. For the CLI + gateway only, Node is enough.
 Windows: use **WSL2** (Ubuntu recommended). WSL2 is strongly recommended; native Windows is untested, more problematic, and has poorer tool compatibility. Install WSL2 first, then run the Linux steps inside WSL. See [Windows (WSL2)](/platforms/windows).
