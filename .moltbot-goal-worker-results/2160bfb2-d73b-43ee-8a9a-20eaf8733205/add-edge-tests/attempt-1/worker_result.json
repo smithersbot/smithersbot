@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Added repo-chat worker edge-case tests for missing/empty response-file repair, repair failure error, temp-file cleanup on success/error/timeout, timeout error, and non-zero exit stderr propagation in src/repo-chat/repo-chat-worker.test.ts. Verification passed with pnpm vitest run src/repo-chat/ and pnpm lint." }

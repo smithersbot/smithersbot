@@ -158,6 +158,202 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("claude-session-42");
     });
 
+    it("repairs when response file is missing", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: '{"session_id":"claude-session-repair"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 44,
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered response", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 55,
+          };
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "Need repair path",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
+        timeoutMs: number;
+        args: string[];
+      };
+      expect(repairCall.timeoutMs).toBe(60_000);
+      expect(repairCall.args).toContain("--resume");
+      expect(repairCall.args).toContain("claude-session-repair");
+      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
+      expect(result.text).toBe("Recovered response");
+    });
+
+    it("repairs when response file is empty", async () => {
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "  \n", "utf-8");
+          return {
+            stdout: '{"thread_id":"codex-thread-1"}',
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 25,
+          };
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered from empty file", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 26,
+          };
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "Need codex repair path",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
+        args: string[];
+      };
+      expect(repairCall.args).toContain("resume");
+      expect(repairCall.args).toContain("codex-thread-1");
+      expect(repairCall.args).not.toContain("--json");
+      expect(repairCall.args.at(-1)).toContain("Write the file and nothing else.");
+      expect(result.text).toBe("Recovered from empty file");
+    });
+
+    it("throws when repair also fails to produce a response file", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: '{"session_id":"claude-session-repair-fail"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 41,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 42,
+        });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "repair should fail",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow(
+        "Repo chat worker completed but did not write a response file, even after repair attempt.",
+      );
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("cleans up temp response file on success", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "cleanup success", "utf-8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 9,
+        };
+      });
+
+      await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "cleanup check",
+        workingDir: "/repo",
+      });
+
+      expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+    });
+
+    it("cleans up temp response file on error", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "cleanup error", "utf-8");
+        throw new Error("cli launch failed");
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "cleanup error check",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow("cli launch failed");
+
+      expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+    });
+
+    it("throws on timeout and still cleans up temp file", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "timeout path", "utf-8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: true,
+          exitCode: null,
+          signal: "SIGTERM",
+          durationMs: 100,
+        };
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "timeout check",
+          workingDir: "/repo",
+          timeoutMs: 2_000,
+        }),
+      ).rejects.toThrow("Repo chat worker timed out after 2000ms.");
+
+      expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+    });
+
+    it("throws on non-zero exit and includes stderr details", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "repo chat cli failed hard",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 19,
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "non-zero exit check",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow("Repo chat worker failed (claude exit 1): repo chat cli failed hard");
+    });
+
     it("extracts session id from stdout json line", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
