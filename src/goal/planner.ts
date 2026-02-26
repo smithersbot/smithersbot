@@ -7,6 +7,7 @@ import type { GoalBackendId } from "./backend-types.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 import { resolveRunDir } from "./run-store.js";
 import { normalizeLabel } from "./mermaid-render.js";
+import { collapseWhitespace, parseShortSummary } from "./plan-text.js";
 
 export const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
@@ -271,22 +272,6 @@ export function extractJson(text: string): Record<string, unknown> {
 const VALID_BACKEND_IDS: GoalBackendId[] = ["pi", "codex", "claude_code"];
 const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
 const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
-
-function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function truncateSummary(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  const keep = Math.max(0, maxChars - 3);
-  return `${value.slice(0, keep).trimEnd()}...`;
-}
-
-function parseShortSummary(raw: unknown, fallback: string, maxChars: number): string {
-  const rawString = typeof raw === "string" ? collapseWhitespace(raw) : "";
-  if (rawString.length > 0) return truncateSummary(rawString, maxChars);
-  return truncateSummary(collapseWhitespace(fallback), maxChars);
-}
 
 /** Parse and validate backend from raw LLM output. */
 function parseBackend(raw: unknown): GoalBackendId | undefined {

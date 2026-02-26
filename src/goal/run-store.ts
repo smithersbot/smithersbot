@@ -260,6 +260,103 @@ export function resolveRunId(
   return undefined;
 }
 
+type CarryForwardMode = "falsy" | "nullish";
+type CarryForwardFieldKey =
+  | "planRevision"
+  | "activePlanRevision"
+  | "planHistory"
+  | "telegramPlanMessage"
+  | "telegramQuestionMessages"
+  | "telegramEditPromptMessages"
+  | "telegramDoneMessage"
+  | "telegramFeedbackPromptMessages"
+  | "agentSessionFile"
+  | "agentSessionId"
+  | "agentMaxTurnsPerTask"
+  | "scoutStatus"
+  | "backendOverride"
+  | "plannerBackendUsed"
+  | "plannerDegradedReason"
+  | "plannerDegradedResetHint"
+  | "autocheckRounds"
+  | "autocheckMaxRounds"
+  | "autocheckBackend"
+  | "autocheckSessionId"
+  | "manualTests"
+  | "manualTestsError"
+  | "taskCheckpoints"
+  | "buildGateConfig"
+  | "stepRalphCounts"
+  | "buildGateFixCounts"
+  | "buildGateResults";
+
+type CarryForwardField<K extends CarryForwardFieldKey = CarryForwardFieldKey> = {
+  key: K;
+  mode: CarryForwardMode;
+  onCarry?: (serialized: SerializedRun, previous: SerializedRun) => void;
+};
+
+const carryForwardFields: readonly CarryForwardField[] = [
+  { key: "planRevision", mode: "nullish" },
+  { key: "activePlanRevision", mode: "nullish" },
+  { key: "planHistory", mode: "falsy" },
+  { key: "telegramPlanMessage", mode: "falsy" },
+  { key: "telegramQuestionMessages", mode: "falsy" },
+  { key: "telegramEditPromptMessages", mode: "falsy" },
+  { key: "telegramDoneMessage", mode: "falsy" },
+  { key: "telegramFeedbackPromptMessages", mode: "falsy" },
+  { key: "agentSessionFile", mode: "falsy" },
+  { key: "agentSessionId", mode: "falsy" },
+  { key: "agentMaxTurnsPerTask", mode: "falsy" },
+  {
+    key: "scoutStatus",
+    mode: "falsy",
+    onCarry: (serialized, previous) => {
+      serialized.scoutSkipReason ??= previous.scoutSkipReason;
+    },
+  },
+  { key: "backendOverride", mode: "falsy" },
+  { key: "plannerBackendUsed", mode: "falsy" },
+  { key: "plannerDegradedReason", mode: "falsy" },
+  { key: "plannerDegradedResetHint", mode: "falsy" },
+  { key: "autocheckRounds", mode: "nullish" },
+  { key: "autocheckMaxRounds", mode: "nullish" },
+  { key: "autocheckBackend", mode: "falsy" },
+  { key: "autocheckSessionId", mode: "falsy" },
+  { key: "manualTests", mode: "falsy" },
+  { key: "manualTestsError", mode: "falsy" },
+  { key: "taskCheckpoints", mode: "falsy" },
+  { key: "buildGateConfig", mode: "falsy" },
+  { key: "stepRalphCounts", mode: "falsy" },
+  { key: "buildGateFixCounts", mode: "falsy" },
+  { key: "buildGateResults", mode: "falsy" },
+];
+
+function shouldCarryForwardValue(
+  mode: CarryForwardMode,
+  currentValue: unknown,
+  previousValue: unknown,
+): boolean {
+  if (mode === "nullish") {
+    return currentValue == null && previousValue != null;
+  }
+  return !currentValue && Boolean(previousValue);
+}
+
+function carryForwardField<K extends CarryForwardFieldKey>(params: {
+  serialized: SerializedRun;
+  previous: SerializedRun;
+  field: CarryForwardField<K>;
+}): void {
+  const { serialized, previous, field } = params;
+  const currentValue = serialized[field.key];
+  const previousValue = previous[field.key];
+  if (!shouldCarryForwardValue(field.mode, currentValue, previousValue)) return;
+
+  serialized[field.key] = previousValue;
+  field.onCarry?.(serialized, previous);
+}
+
 /** Convert an in-memory GoalSession to a serializable run record. */
 export function sessionToSerialized(params: {
   session: GoalSession;
@@ -337,80 +434,12 @@ export function sessionToSerialized(params: {
   const previous = params.previousRun;
   if (!previous) return serialized;
 
-  if (previous.planRevision != null) serialized.planRevision = previous.planRevision;
-  if (previous.activePlanRevision != null)
-    serialized.activePlanRevision = previous.activePlanRevision;
-  if (previous.planHistory) serialized.planHistory = previous.planHistory;
-  if (previous.telegramPlanMessage) serialized.telegramPlanMessage = previous.telegramPlanMessage;
-  if (previous.telegramQuestionMessages) {
-    serialized.telegramQuestionMessages = previous.telegramQuestionMessages;
-  }
-  if (previous.telegramEditPromptMessages) {
-    serialized.telegramEditPromptMessages = previous.telegramEditPromptMessages;
-  }
-  if (!serialized.telegramDoneMessage && previous.telegramDoneMessage) {
-    serialized.telegramDoneMessage = previous.telegramDoneMessage;
-  }
-  if (!serialized.telegramFeedbackPromptMessages && previous.telegramFeedbackPromptMessages) {
-    serialized.telegramFeedbackPromptMessages = previous.telegramFeedbackPromptMessages;
-  }
-  if (!serialized.agentSessionFile && previous.agentSessionFile) {
-    serialized.agentSessionFile = previous.agentSessionFile;
-  }
-  if (!serialized.agentSessionId && previous.agentSessionId) {
-    serialized.agentSessionId = previous.agentSessionId;
-  }
-  if (!serialized.agentMaxTurnsPerTask && previous.agentMaxTurnsPerTask) {
-    serialized.agentMaxTurnsPerTask = previous.agentMaxTurnsPerTask;
-  }
-  if (!serialized.scoutStatus && previous.scoutStatus) {
-    serialized.scoutStatus = previous.scoutStatus;
-    serialized.scoutSkipReason ??= previous.scoutSkipReason;
-  }
-  if (!serialized.backendOverride && previous.backendOverride) {
-    serialized.backendOverride = previous.backendOverride;
-  }
-  if (!serialized.plannerBackendUsed && previous.plannerBackendUsed) {
-    serialized.plannerBackendUsed = previous.plannerBackendUsed;
-  }
-  if (!serialized.plannerDegradedReason && previous.plannerDegradedReason) {
-    serialized.plannerDegradedReason = previous.plannerDegradedReason;
-  }
-  if (!serialized.plannerDegradedResetHint && previous.plannerDegradedResetHint) {
-    serialized.plannerDegradedResetHint = previous.plannerDegradedResetHint;
-  }
-  if (serialized.autocheckRounds == null && previous.autocheckRounds != null) {
-    serialized.autocheckRounds = previous.autocheckRounds;
-  }
-  if (serialized.autocheckMaxRounds == null && previous.autocheckMaxRounds != null) {
-    serialized.autocheckMaxRounds = previous.autocheckMaxRounds;
-  }
-  if (!serialized.autocheckBackend && previous.autocheckBackend) {
-    serialized.autocheckBackend = previous.autocheckBackend;
-  }
-  if (!serialized.autocheckSessionId && previous.autocheckSessionId) {
-    serialized.autocheckSessionId = previous.autocheckSessionId;
-  }
-  if (!serialized.manualTests && previous.manualTests) {
-    serialized.manualTests = previous.manualTests;
-  }
-  if (!serialized.manualTestsError && previous.manualTestsError) {
-    serialized.manualTestsError = previous.manualTestsError;
-  }
-  if (!serialized.taskCheckpoints && previous.taskCheckpoints) {
-    serialized.taskCheckpoints = previous.taskCheckpoints;
-  }
-  if (!serialized.buildGateConfig && previous.buildGateConfig) {
-    serialized.buildGateConfig = previous.buildGateConfig;
-  }
-  if (!serialized.stepRalphCounts && previous.stepRalphCounts) {
-    serialized.stepRalphCounts = previous.stepRalphCounts;
-  }
-  if (!serialized.buildGateFixCounts && previous.buildGateFixCounts) {
-    serialized.buildGateFixCounts = previous.buildGateFixCounts;
-  }
-  if (!serialized.buildGateResults && previous.buildGateResults) {
-    serialized.buildGateResults = previous.buildGateResults;
+  for (const field of carryForwardFields) {
+    carryForwardField({
+      serialized,
+      previous,
+      field,
+    });
   }
   return serialized;
 }
