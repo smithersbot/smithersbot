@@ -503,6 +503,10 @@ describe("session serialization", () => {
       buildGateFixCounts: {
         "step-1": 2,
       },
+      buildGateFixSignatures: {
+        "step-1":
+          "semgrep scan --config auto --error --quiet --timeout 30 src/example.ts\npnpm build",
+      },
       buildGateResults: {
         "step-1": {
           passed: false,
@@ -528,12 +532,20 @@ describe("session serialization", () => {
     });
     expect(serialized.stepRalphCounts).toEqual({ "step-1": 1 });
     expect(serialized.buildGateFixCounts).toEqual({ "step-1": 2 });
+    expect(serialized.buildGateFixSignatures).toEqual({
+      "step-1":
+        "semgrep scan --config auto --error --quiet --timeout 30 src/example.ts\npnpm build",
+    });
     expect(serialized.buildGateResults?.["step-1"]?.failedCommand).toBe("pnpm build");
 
     const restored = serializedToSession(serialized);
     expect(restored.buildGateConfig?.commands).toEqual(["pnpm build"]);
     expect(restored.stepRalphCounts).toEqual({ "step-1": 1 });
     expect(restored.buildGateFixCounts).toEqual({ "step-1": 2 });
+    expect(restored.buildGateFixSignatures).toEqual({
+      "step-1":
+        "semgrep scan --config auto --error --quiet --timeout 30 src/example.ts\npnpm build",
+    });
     expect(restored.buildGateResults?.["step-1"]?.output).toBe("Cannot find module");
   });
 
@@ -555,6 +567,7 @@ describe("session serialization", () => {
     const restored = serializedToSession(serialized);
     expect(restored.stepRalphCounts).toEqual({});
     expect(restored.buildGateFixCounts).toEqual({});
+    expect(restored.buildGateFixSignatures).toEqual({});
     expect(restored.buildGateResults).toEqual({});
     expect(restored.buildGateConfig).toBeUndefined();
   });
@@ -611,6 +624,9 @@ describe("session serialization", () => {
       buildGateFixCounts: {
         "step-1": 1,
       },
+      buildGateFixSignatures: {
+        "step-1": "pnpm build",
+      },
       buildGateResults: {
         "step-1": {
           passed: true,
@@ -644,6 +660,7 @@ describe("session serialization", () => {
     expect(serialized.buildGateConfig?.commands).toEqual(["pnpm build"]);
     expect(serialized.stepRalphCounts).toEqual({ "step-1": 2 });
     expect(serialized.buildGateFixCounts).toEqual({ "step-1": 1 });
+    expect(serialized.buildGateFixSignatures).toEqual({ "step-1": "pnpm build" });
     expect(serialized.buildGateResults?.["step-1"]?.passed).toBe(true);
   });
 });

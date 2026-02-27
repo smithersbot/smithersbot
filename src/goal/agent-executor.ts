@@ -27,6 +27,7 @@ import {
   formatExecError,
   makeBuildGateFailurePrompt,
   resetToTaskBaseSha,
+  resolveChangedFilesSinceCheckpoint,
   runBuildGateCommands,
   truncateForPrompt,
 } from "./build-gate.js";
@@ -180,6 +181,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   session.buildGateConfig = plan.buildGate;
   session.stepRalphCounts ??= {};
   session.buildGateFixCounts ??= {};
+  session.buildGateFixSignatures ??= {};
   session.buildGateResults ??= {};
 
   const effectiveAbort = abortSignal ?? new AbortController().signal;
@@ -190,10 +192,14 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const buildGateFixCounts = new Map<string, number>(
     Object.entries(params.serializedRun?.buildGateFixCounts ?? session.buildGateFixCounts),
   );
-  const persistBuildGateFixCounts = (): void => {
+  const buildGateFixSignatures = new Map<string, string>(
+    Object.entries(params.serializedRun?.buildGateFixSignatures ?? session.buildGateFixSignatures),
+  );
+  const persistBuildGateFixState = (): void => {
     session.buildGateFixCounts = Object.fromEntries(buildGateFixCounts);
+    session.buildGateFixSignatures = Object.fromEntries(buildGateFixSignatures);
   };
-  persistBuildGateFixCounts();
+  persistBuildGateFixState();
 
   const runBranchName = buildRunBranchName(runId, params.serializedRun?.createdAt);
 
@@ -515,18 +521,36 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       plan.buildGate?.runBetweenSteps === true &&
       gateCommands.length > 0
     ) {
-      const sastCommand = buildDefaultSastCommand(workingDir);
+      const checkpointBaseSha = session.taskCheckpoints?.[task.id]?.baseSha;
+      const changedFilesSinceCheckpoint = resolveChangedFilesSinceCheckpoint({
+        workingDir,
+        baseSha: checkpointBaseSha,
+      });
+      if (changedFilesSinceCheckpoint && changedFilesSinceCheckpoint.length === 0) {
+        onProgress?.("  [sast] No changed files since checkpoint; skipping semgrep scan.");
+      }
+      const sastCommand = buildDefaultSastCommand({
+        workingDir,
+        targetPaths: changedFilesSinceCheckpoint ?? undefined,
+      });
       const commandsForThisStep = sastCommand ? [sastCommand, ...gateCommands] : gateCommands;
       if (sastCommand) {
         onProgress?.("  [sast] Running semgrep scan...");
       }
+      const gateSignature = commandsForThisStep.join("\n");
+      const previousGateSignature = buildGateFixSignatures.get(task.id);
+      if (previousGateSignature && previousGateSignature !== gateSignature) {
+        buildGateFixCounts.delete(task.id);
+      }
+      buildGateFixSignatures.set(task.id, gateSignature);
+      persistBuildGateFixState();
 
       const gateResult = runBuildGateCommands(commandsForThisStep, workingDir);
       const timestamp = new Date().toISOString();
       if (gateResult.passed) {
         session.buildGateResults[task.id] = { passed: true, timestamp };
         buildGateFixCounts.delete(task.id);
-        persistBuildGateFixCounts();
+        persistBuildGateFixState();
       } else {
         session.buildGateResults[task.id] = {
           passed: false,
@@ -535,70 +559,87 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           timestamp,
         };
 
-        const fixCount = (buildGateFixCounts.get(task.id) ?? 0) + 1;
-        buildGateFixCounts.set(task.id, fixCount);
-        persistBuildGateFixCounts();
-
-        if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
+        if (gateResult.failureKind === "infra_failed") {
           const detail = makeBuildGateFailurePrompt(gateResult.failedCommand, gateResult.output);
           task.status = "blocked";
           task.blockedReason = "task_failed";
-          task.blockedQuestion = `Build gate failed after ${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES} retry cycles.\n${detail}`;
+          task.blockedQuestion = `Build gate infrastructure failed.\n${detail}`;
           task.failedDetail = {
             whatTried: detail,
-            errorType: "build_gate_failed",
+            errorType: "build_gate_infra_failed",
             suggestedNext:
-              "Review the build-gate output and provide guidance for the next attempt.",
+              "Fix SAST/build-gate infrastructure (for example semgrep network/auth/timeouts), then retry the step.",
             needsRevert: false,
           };
         } else {
-          const reset = resetToTaskBaseSha(workingDir, session.taskCheckpoints?.[task.id]?.baseSha);
-          if (!reset.success) {
+          const fixCount = (buildGateFixCounts.get(task.id) ?? 0) + 1;
+          buildGateFixCounts.set(task.id, fixCount);
+          persistBuildGateFixState();
+
+          if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
+            const detail = makeBuildGateFailurePrompt(gateResult.failedCommand, gateResult.output);
             task.status = "blocked";
             task.blockedReason = "task_failed";
-            task.blockedQuestion = `Build gate reset failed: ${reset.error}`;
+            task.blockedQuestion = `Build gate failed after ${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES} retry cycles.\n${detail}`;
             task.failedDetail = {
-              whatTried: gateResult.output,
-              errorType: "build_gate_reset_failed",
-              suggestedNext: "Fix git checkpoint state and retry the task.",
+              whatTried: detail,
+              errorType: "build_gate_failed",
+              suggestedNext:
+                "Review the build-gate output and provide guidance for the next attempt.",
               needsRevert: false,
             };
           } else {
-            const outputForRetry = makeBuildGateFailurePrompt(
-              gateResult.failedCommand,
-              gateResult.output,
+            const reset = resetToTaskBaseSha(
+              workingDir,
+              session.taskCheckpoints?.[task.id]?.baseSha,
             );
-            const attemptNumber = (loadAttemptBundles(workerDir).at(-1)?.attemptNumber ?? 0) + 1;
-            const syntheticBundle: AttemptBundle = {
-              attemptNumber,
-              backend,
-              outcome: "failed",
-              errorClassification: "build_gate_failure",
-              durationMs: 0,
-              buildGateFailure: {
-                failedCommand: gateResult.failedCommand,
-                output: outputForRetry,
-              },
-              logExcerpt: truncateForPrompt(outputForRetry),
-            };
-            writeAttemptBundle(workerDir, syntheticBundle);
-            appendRetryContext(
-              runId,
-              task.id,
-              formatAttemptBundleSummary(syntheticBundle),
-              syntheticBundle.attemptNumber,
-            );
-            appendGoalWorkingEntry(
-              runId,
-              task.id,
-              "build-gate",
-              `Build gate failed (${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) on ${gateResult.failedCommand}. Retrying after reset.`,
-            );
-            task.status = "pending";
-            task.blockedReason = undefined;
-            task.blockedQuestion = undefined;
-            task.failedDetail = undefined;
-            task.taskSummary = undefined;
+            if (!reset.success) {
+              task.status = "blocked";
+              task.blockedReason = "task_failed";
+              task.blockedQuestion = `Build gate reset failed: ${reset.error}`;
+              task.failedDetail = {
+                whatTried: gateResult.output,
+                errorType: "build_gate_reset_failed",
+                suggestedNext: "Fix git checkpoint state and retry the task.",
+                needsRevert: false,
+              };
+            } else {
+              const outputForRetry = makeBuildGateFailurePrompt(
+                gateResult.failedCommand,
+                gateResult.output,
+              );
+              const attemptNumber = (loadAttemptBundles(workerDir).at(-1)?.attemptNumber ?? 0) + 1;
+              const syntheticBundle: AttemptBundle = {
+                attemptNumber,
+                backend,
+                outcome: "failed",
+                errorClassification: "build_gate_failure",
+                durationMs: 0,
+                buildGateFailure: {
+                  failedCommand: gateResult.failedCommand,
+                  output: outputForRetry,
+                },
+                logExcerpt: truncateForPrompt(outputForRetry),
+              };
+              writeAttemptBundle(workerDir, syntheticBundle);
+              appendRetryContext(
+                runId,
+                task.id,
+                formatAttemptBundleSummary(syntheticBundle),
+                syntheticBundle.attemptNumber,
+              );
+              appendGoalWorkingEntry(
+                runId,
+                task.id,
+                "build-gate",
+                `Build gate failed (${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) on ${gateResult.failedCommand}. Retrying after reset.`,
+              );
+              task.status = "pending";
+              task.blockedReason = undefined;
+              task.blockedQuestion = undefined;
+              task.failedDetail = undefined;
+              task.taskSummary = undefined;
+            }
           }
         }
       }

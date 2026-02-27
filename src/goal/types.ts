@@ -29,6 +29,7 @@ export type GoalSession = {
   buildGateConfig?: PlanBuildGate;
   stepRalphCounts?: Record<string, number>;
   buildGateFixCounts?: Record<string, number>;
+  buildGateFixSignatures?: Record<string, string>;
   buildGateResults?: {
     [stepId: string]: {
       passed: boolean;
@@ -271,6 +272,8 @@ export type SerializedRun = {
   stepRalphCounts?: Record<string, number>;
   /** Build-gate fix cycle count per step (key = step id). */
   buildGateFixCounts?: Record<string, number>;
+  /** Build-gate command signature per step (key = step id). */
+  buildGateFixSignatures?: Record<string, string>;
   /** Most recent build-gate result per step. */
   buildGateResults?: {
     [stepId: string]: {

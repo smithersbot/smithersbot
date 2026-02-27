@@ -288,6 +288,7 @@ type CarryForwardFieldKey =
   | "buildGateConfig"
   | "stepRalphCounts"
   | "buildGateFixCounts"
+  | "buildGateFixSignatures"
   | "buildGateResults";
 
 type CarryForwardField<K extends CarryForwardFieldKey = CarryForwardFieldKey> = {
@@ -329,6 +330,7 @@ const carryForwardFields: readonly CarryForwardField[] = [
   { key: "buildGateConfig", mode: "falsy" },
   { key: "stepRalphCounts", mode: "falsy" },
   { key: "buildGateFixCounts", mode: "falsy" },
+  { key: "buildGateFixSignatures", mode: "falsy" },
   { key: "buildGateResults", mode: "falsy" },
 ];
 
@@ -429,6 +431,9 @@ export function sessionToSerialized(params: {
     ...(session.buildGateConfig ? { buildGateConfig: session.buildGateConfig } : {}),
     ...(session.stepRalphCounts ? { stepRalphCounts: session.stepRalphCounts } : {}),
     ...(session.buildGateFixCounts ? { buildGateFixCounts: session.buildGateFixCounts } : {}),
+    ...(session.buildGateFixSignatures
+      ? { buildGateFixSignatures: session.buildGateFixSignatures }
+      : {}),
     ...(session.buildGateResults ? { buildGateResults: session.buildGateResults } : {}),
   };
   const previous = params.previousRun;
@@ -483,6 +488,7 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     buildGateConfig: run.buildGateConfig,
     stepRalphCounts: run.stepRalphCounts ?? {},
     buildGateFixCounts: run.buildGateFixCounts ?? {},
+    buildGateFixSignatures: run.buildGateFixSignatures ?? {},
     buildGateResults: run.buildGateResults ?? {},
   };
 }

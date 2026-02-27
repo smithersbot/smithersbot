@@ -2,10 +2,22 @@ import { execFileSync, spawnSync } from "node:child_process";
 
 export const BUILD_GATE_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
+const BUILD_GATE_GIT_TIMEOUT_MS = 15_000;
+
+export type BuildGateFailureKind = "command_failed" | "infra_failed";
 
 export type BuildGateResult =
   | { passed: true }
-  | { passed: false; failedCommand: string; output: string };
+  | { passed: false; failedCommand: string; output: string; failureKind: BuildGateFailureKind };
+
+const SEMGREP_INFRA_FAILURE_PATTERNS: RegExp[] = [
+  /Build gate command failed to execute:/i,
+  /\bETIMEDOUT\b/i,
+  /\bConnectionError\b/i,
+  /Failed to resolve ['"]?semgrep\.dev['"]?/i,
+  /\bNameResolutionError\b/i,
+  /Max retries exceeded with url:\s*\/c\/auto/i,
+];
 
 export function truncateForPrompt(text: string): string {
   if (!text) return "";
@@ -36,6 +48,18 @@ export function formatExecError(error: unknown): string {
     .join("\n");
 }
 
+function isSemgrepScanCommand(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return normalized.startsWith("semgrep ") || normalized.includes(" semgrep ");
+}
+
+export function classifyBuildGateFailure(command: string, output: string): BuildGateFailureKind {
+  if (!isSemgrepScanCommand(command)) return "command_failed";
+  return SEMGREP_INFRA_FAILURE_PATTERNS.some((pattern) => pattern.test(output))
+    ? "infra_failed"
+    : "command_failed";
+}
+
 export function runBuildGateCommands(commands: string[], workingDir: string): BuildGateResult {
   for (const command of commands) {
     const trimmed = command.trim();
@@ -61,6 +85,7 @@ export function runBuildGateCommands(commands: string[], workingDir: string): Bu
         passed: false,
         failedCommand: trimmed,
         output: message || "Build gate command failed with an unknown process error.",
+        failureKind: classifyBuildGateFailure(trimmed, message),
       };
     }
 
@@ -80,6 +105,7 @@ export function runBuildGateCommands(commands: string[], workingDir: string): Bu
         passed: false,
         failedCommand: trimmed,
         output: message || "Build gate command exited non-zero with no output.",
+        failureKind: classifyBuildGateFailure(trimmed, message),
       };
     }
   }
@@ -87,7 +113,52 @@ export function runBuildGateCommands(commands: string[], workingDir: string): Bu
   return { passed: true };
 }
 
-export function buildDefaultSastCommand(workingDir: string): string | null {
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function parsePathLines(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+export function resolveChangedFilesSinceCheckpoint(params: {
+  workingDir: string;
+  baseSha?: string;
+}): string[] | null {
+  const baseSha = params.baseSha?.trim();
+  if (!baseSha) return null;
+  try {
+    const trackedRaw = execFileSync(
+      "git",
+      ["-C", params.workingDir, "diff", "--name-only", "--diff-filter=ACMRTUXB", baseSha],
+      {
+        encoding: "utf8",
+        timeout: BUILD_GATE_GIT_TIMEOUT_MS,
+      },
+    );
+    const untrackedRaw = execFileSync(
+      "git",
+      ["-C", params.workingDir, "ls-files", "--others", "--exclude-standard"],
+      {
+        encoding: "utf8",
+        timeout: BUILD_GATE_GIT_TIMEOUT_MS,
+      },
+    );
+    return Array.from(
+      new Set([...parsePathLines(trackedRaw), ...parsePathLines(untrackedRaw)]),
+    ).sort();
+  } catch {
+    return null;
+  }
+}
+
+export function buildDefaultSastCommand(params: {
+  workingDir: string;
+  targetPaths?: string[];
+}): string | null {
   const semgrepCheck = spawnSync("which", ["semgrep"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -102,7 +173,17 @@ export function buildDefaultSastCommand(workingDir: string): string | null {
     return null;
   }
 
-  return `semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' ${workingDir}`;
+  const targetPaths = params.targetPaths;
+  if (targetPaths && targetPaths.length === 0) return null;
+  const targetArgs =
+    targetPaths && targetPaths.length > 0
+      ? targetPaths
+          .map((target) => (target.startsWith("-") ? `./${target}` : target))
+          .map(shellQuote)
+          .join(" ")
+      : shellQuote(params.workingDir);
+
+  return `semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' ${targetArgs}`;
 }
 
 export function resetToTaskBaseSha(

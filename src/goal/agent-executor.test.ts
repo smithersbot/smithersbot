@@ -131,6 +131,13 @@ function appendAttemptBundle(bundle: AttemptBundle, dir = WORKER_DIR): void {
   attemptBundlesByDir.set(dir, [...current, bundle]);
 }
 
+function getGitResetCalls() {
+  return mockExecFileSync.mock.calls.filter((call) => {
+    const argv = call[1];
+    return Array.isArray(argv) && argv.includes("reset") && argv.includes("--hard");
+  });
+}
+
 describe("agent-executor (TaskRunner orchestration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -607,6 +614,12 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     mockSpawnSync
       .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+      })
+      .mockReturnValueOnce({
         status: 1,
         signal: null,
         stdout: "",
@@ -690,7 +703,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.blockedReason).toBe("task_failed");
     expect(step.blockedQuestion).toContain("Build gate failed after 2 retry cycles.");
     expect(mockCliExecute).toHaveBeenCalledTimes(3);
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(getGitResetCalls()).toHaveLength(2);
   });
 
   it("respects persisted build-gate fix counts when resuming", async () => {
@@ -730,8 +743,96 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.blockedReason).toBe("task_failed");
     expect(step.blockedQuestion).toContain("Build gate failed after 2 retry cycles.");
     expect(mockCliExecute).toHaveBeenCalledTimes(1);
-    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(getGitResetCalls()).toHaveLength(0);
     expect(session.buildGateFixCounts?.["1"]).toBe(3);
+  });
+
+  it("resets persisted build-gate fix counts when gate signature changes", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-signature" } };
+
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "TS2307: Cannot find module ./generated/client",
+    });
+
+    mockCliExecute.mockResolvedValue({
+      status: "complete",
+      summary: "Reported complete",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-build-gate-signature-reset",
+      workingDir: "/tmp/moltbot-goal-test",
+      serializedRun: {
+        buildGateFixCounts: { "1": 2 },
+        buildGateFixSignatures: { "1": "pnpm build --old-signature" },
+      } as unknown as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.blockedReason).toBe("task_failed");
+    expect(step.blockedQuestion).toContain("Build gate failed after 2 retry cycles.");
+    expect(mockCliExecute).toHaveBeenCalledTimes(3);
+    expect(getGitResetCalls()).toHaveLength(2);
+  });
+
+  it("blocks immediately on semgrep infrastructure failures without consuming fix cycles", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    mockSpawnSync
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        stdout: "/usr/local/bin/semgrep\n",
+        stderr: "",
+      })
+      .mockReturnValueOnce({
+        status: 2,
+        signal: null,
+        stdout: "",
+        stderr: "Failed to resolve 'semgrep.dev' while downloading auto config",
+      });
+
+    mockCliExecute.mockResolvedValue({
+      status: "complete",
+      summary: "Reported complete",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-build-gate-semgrep-infra",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("task_failed");
+    expect(step.blockedQuestion).toContain("Build gate infrastructure failed.");
+    expect(mockCliExecute).toHaveBeenCalledTimes(1);
+    expect(session.buildGateFixCounts?.["1"]).toBeUndefined();
+    expect(getGitResetCalls()).toHaveLength(0);
   });
 
   it("skips build gate when commands are empty", async () => {
