@@ -65,7 +65,8 @@ describe("repo-chat-worker", () => {
       const appendedPrompt = args[appendIdx + 1] ?? "";
       expect(appendedPrompt).toContain(REPO_CHAT_READ_ONLY_PROMPT);
       expect(appendedPrompt).toContain("Moltbot");
-      expect(args).not.toContain("--output-format");
+      expect(args).toContain("--output-format");
+      expect(args).toContain("json");
       expect(args).not.toContain("stream-json");
     });
 
@@ -374,6 +375,28 @@ describe("repo-chat-worker", () => {
       });
 
       expect(result.cliSessionId).toBe("claude-session-99");
+    });
+
+    it("extracts session id from multiline stdout json object", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: '{\n  "session_id": "sess-multiline-456",\n  "result": "some text"\n}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 22,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "status?",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBe("sess-multiline-456");
     });
   });
 });
