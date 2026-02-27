@@ -293,6 +293,10 @@ export function formatGoalWorkers(workers: CliWorkerId[]): string {
   return workers.join(", ");
 }
 
+export function formatGoalLockedMessage(runId: string, existingLabel?: string): string {
+  return `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel ?? "unknown"}).`;
+}
+
 export function isPlanAutocheckBackend(
   mode: PlanAutocheckMode | undefined,
 ): mode is Exclude<PlanAutocheckMode, "off"> {

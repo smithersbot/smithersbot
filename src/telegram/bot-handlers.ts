@@ -26,6 +26,7 @@ import {
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import {
+  formatGoalLockedMessage,
   buildOnStatusChange,
   handleGoalAnswer,
   handleGoalEdit,
@@ -515,7 +516,7 @@ export const registerTelegramHandlers = ({
             void sendGoalReply(
               bot,
               chatId,
-              `Goal \`${runId.slice(0, 8)}\` is already being processed (${editLock.existingLabel ?? "unknown"}).`,
+              formatGoalLockedMessage(runId, editLock.existingLabel),
               runtime,
               params.threadId,
             );
@@ -551,7 +552,7 @@ export const registerTelegramHandlers = ({
             void sendGoalReply(
               bot,
               chatId,
-              `Goal \`${runId.slice(0, 8)}\` is already being processed (${answerLock.existingLabel ?? "unknown"}).`,
+              formatGoalLockedMessage(runId, answerLock.existingLabel),
               runtime,
               params.threadId,
             );
@@ -594,7 +595,7 @@ export const registerTelegramHandlers = ({
             void sendGoalReply(
               bot,
               chatId,
-              `Goal \`${runId.slice(0, 8)}\` is already being processed (${feedbackLock.existingLabel ?? "unknown"}).`,
+              formatGoalLockedMessage(runId, feedbackLock.existingLabel),
               runtime,
               params.threadId,
             );

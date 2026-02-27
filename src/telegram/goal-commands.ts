@@ -41,6 +41,7 @@ import {
   buildGoalDoneInlineKeyboard,
   buildOnStatusChange,
   buildDoneSummaryWithManualTests,
+  formatGoalLockedMessage,
   formatManualTestDetails,
   formatGoalWorkers,
   formatTaskDetailSections,
@@ -80,6 +81,7 @@ export { sendGoalBackgroundResult, sendGoalPlanResult, sendGoalReply };
 export {
   buildGoalDoneInlineKeyboard,
   buildOnStatusChange,
+  formatGoalLockedMessage,
   getGoalExecutionPreface,
   handleGoalLessons,
   handleGoalList,
@@ -1403,7 +1405,7 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         chatId,
-        `Goal \`${resolvedId.slice(0, 8)}\` is already being processed (${lockResult.existingLabel ?? "unknown"}).`,
+        formatGoalLockedMessage(resolvedId, lockResult.existingLabel),
         runtime,
         threadId,
         replyToMessageId,
@@ -1831,7 +1833,7 @@ export function registerTelegramGoalCommands({
         await sendGoalReply(
           bot,
           chatId,
-          `Goal \`${run.runId.slice(0, 8)}\` is already being processed (${lockResult.existingLabel ?? "unknown"}).`,
+          formatGoalLockedMessage(run.runId, lockResult.existingLabel),
           runtime,
           threadId,
         );
@@ -2236,7 +2238,7 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal \`${editRunId.slice(0, 8)}\` is already being processed (${editLock.existingLabel ?? "unknown"}).`,
+        formatGoalLockedMessage(editRunId, editLock.existingLabel),
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
@@ -2334,7 +2336,7 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal \`${answerRunId.slice(0, 8)}\` is already being processed (${answerLock.existingLabel ?? "unknown"}).`,
+        formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
         runtime,
         resolved.threadIdForSend,
       );
@@ -2400,7 +2402,7 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal \`${feedbackRunId.slice(0, 8)}\` is already being processed (${feedbackLock.existingLabel ?? "unknown"}).`,
+        formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel),
         runtime,
         resolved.threadIdForSend,
       );
