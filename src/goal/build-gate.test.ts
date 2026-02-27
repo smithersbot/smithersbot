@@ -49,7 +49,7 @@ describe("buildDefaultSastCommand", () => {
 
     const command = buildDefaultSastCommand({ workingDir: "/tmp/moltbot" });
     expect(command).toBe(
-      "semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' '/tmp/moltbot'",
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' '/tmp/moltbot'",
     );
   });
 
@@ -65,7 +65,7 @@ describe("buildDefaultSastCommand", () => {
       targetPaths: ["src/a.ts", "ui/path with space.ts"],
     });
     expect(command).toBe(
-      "semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' 'src/a.ts' 'ui/path with space.ts'",
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' 'src/a.ts' 'ui/path with space.ts'",
     );
   });
 
