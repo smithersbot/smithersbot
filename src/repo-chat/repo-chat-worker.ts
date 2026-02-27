@@ -124,6 +124,21 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
     }
   }
 
+  const wholeStdout = stdout.trim();
+  if (!wholeStdout) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(wholeStdout) as Record<string, unknown>;
+    for (const field of sessionIdFields) {
+      const value = parsed[field];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+  } catch {}
+
   return undefined;
 }
 
