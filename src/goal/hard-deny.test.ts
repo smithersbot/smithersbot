@@ -27,6 +27,16 @@ describe("checkCommandDeny", () => {
     ).not.toBeNull();
   });
 
+  it("handles env unset and split-string flags", () => {
+    expect(checkCommandDeny("env -u PATH sudo ls")?.pattern).toBe("sudo");
+    expect(checkCommandDeny("env --unset=PATH sudo ls")?.pattern).toBe("sudo");
+    expect(checkCommandDeny("env -S 'sudo ls'")?.pattern).toBe("sudo");
+    expect(checkCommandDeny("env --split-string='npm publish' echo safe")?.pattern).toBe(
+      "npm publish",
+    );
+    expect(checkCommandDeny("env -u SAFE echo hello")).toBeNull();
+  });
+
   it("blocks denied commands hidden behind shell -c wrappers", () => {
     expect(checkCommandDeny("bash -c 'sudo rm -rf /'")).not.toBeNull();
     expect(checkCommandDeny('/bin/sh -c "npm publish"')).not.toBeNull();

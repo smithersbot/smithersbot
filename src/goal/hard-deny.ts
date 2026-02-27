@@ -252,12 +252,39 @@ function stripEnvPrefix(tokens: string[]): string[] {
   if (normalizeCommandToken(tokens[0]!) !== "env") return tokens;
 
   let i = 1;
+  const splitStringTokens: string[] = [];
   while (i < tokens.length) {
     const token = tokens[i]!;
     if (token === "--") {
       i += 1;
       break;
     }
+
+    if (token === "-u" || token === "--unset") {
+      i += i + 1 < tokens.length ? 2 : 1;
+      continue;
+    }
+
+    if (token === "-S" || token === "--split-string") {
+      const splitValue = tokens[i + 1];
+      if (splitValue) {
+        splitStringTokens.push(...splitValue.split(/\s+/).filter(Boolean));
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (token.startsWith("-S=") || token.startsWith("--split-string=")) {
+      const splitValue = token.split("=", 2)[1] ?? "";
+      if (splitValue) {
+        splitStringTokens.push(...splitValue.split(/\s+/).filter(Boolean));
+      }
+      i += 1;
+      continue;
+    }
+
     if (token.startsWith("-") || isEnvAssignment(token)) {
       i += 1;
       continue;
@@ -265,7 +292,8 @@ function stripEnvPrefix(tokens: string[]): string[] {
     break;
   }
 
-  return tokens.slice(i);
+  if (splitStringTokens.length === 0) return tokens.slice(i);
+  return [...splitStringTokens, ...tokens.slice(i)];
 }
 
 function readBacktickSubstitution(
