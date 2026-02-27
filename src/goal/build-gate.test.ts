@@ -42,6 +42,8 @@ describe("buildDefaultSastCommand", () => {
     });
 
     const command = buildDefaultSastCommand("/tmp/moltbot");
-    expect(command).toBe("semgrep scan --config auto --error --quiet --timeout 30 /tmp/moltbot");
+    expect(command).toBe(
+      "semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' /tmp/moltbot",
+    );
   });
 });

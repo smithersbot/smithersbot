@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
 
-export const BUILD_GATE_COMMAND_TIMEOUT_MS = 5 * 60_000;
+export const BUILD_GATE_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 
 export type BuildGateResult =
@@ -102,7 +102,7 @@ export function buildDefaultSastCommand(workingDir: string): string | null {
     return null;
   }
 
-  return `semgrep scan --config auto --error --quiet --timeout 30 ${workingDir}`;
+  return `semgrep scan --config auto --error --quiet --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' ${workingDir}`;
 }
 
 export function resetToTaskBaseSha(
