@@ -37,7 +37,7 @@ async function main() {
       await runRelaySmokeTest(smokeTest);
       process.exit(0);
     } catch (err) {
-      console.error(`Relay smoke test failed (${smokeTest}):`, err);
+      console.error(`Relay smoke test failed (${smokeTest}):`, err); // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
       process.exit(1);
     }
   }

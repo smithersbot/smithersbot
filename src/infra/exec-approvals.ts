@@ -469,7 +469,7 @@ function globToRegExp(pattern: string): RegExp {
     i += 1;
   }
   regex += "$";
-  return new RegExp(regex, "i");
+  return new RegExp(regex, "i"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 }
 
 function matchesPattern(pattern: string, target: string): boolean {

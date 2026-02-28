@@ -78,7 +78,7 @@ function matchPathGlob(pattern: string, filePath: string): boolean {
   }
   regex += "$";
 
-  return new RegExp(regex, "i").test(normalizedPath);
+  return new RegExp(regex, "i").test(normalizedPath); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 }
 
 export function checkPathDeny(

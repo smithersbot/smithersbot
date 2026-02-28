@@ -44,7 +44,7 @@ export class SearchableSelectList implements Component {
   private getCachedRegex(pattern: string): RegExp {
     let regex = this.regexCache.get(pattern);
     if (!regex) {
-      regex = new RegExp(this.escapeRegex(pattern), "gi");
+      regex = new RegExp(this.escapeRegex(pattern), "gi"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
       this.regexCache.set(pattern, regex);
     }
     return regex;

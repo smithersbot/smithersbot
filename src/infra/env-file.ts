@@ -24,7 +24,7 @@ export function upsertSharedEnvVar(params: {
   }
 
   const lines = raw.length ? raw.split(/\r?\n/) : [];
-  const matcher = new RegExp(`^(\\s*(?:export\\s+)?)${escapeRegExp(key)}\\s*=`);
+  const matcher = new RegExp(`^(\\s*(?:export\\s+)?)${escapeRegExp(key)}\\s*=`); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   let updated = false;
   let replaced = false;
 

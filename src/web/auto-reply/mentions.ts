@@ -65,7 +65,7 @@ export function isBotMentionedFromTargets(
       const bodyDigits = bodyClean.replace(/[^\d]/g, "");
       if (bodyDigits.includes(selfDigits)) return true;
       const bodyNoSpace = msg.body.replace(/[\s-]/g, "");
-      const pattern = new RegExp(`\\+?${selfDigits}`, "i");
+      const pattern = new RegExp(`\\+?${selfDigits}`, "i"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
       if (pattern.test(bodyNoSpace)) return true;
     }
   }

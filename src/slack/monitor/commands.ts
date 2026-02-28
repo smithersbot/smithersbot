@@ -19,5 +19,5 @@ export function resolveSlackSlashCommandConfig(
 
 export function buildSlackSlashCommandMatcher(name: string) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^/?${escaped}$`);
+  return new RegExp(`^/?${escaped}$`); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 }

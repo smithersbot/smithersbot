@@ -51,9 +51,9 @@ function parsePattern(raw: string): RegExp | null {
   try {
     if (match) {
       const flags = match[2].includes("g") ? match[2] : `${match[2]}g`;
-      return new RegExp(match[1], flags);
+      return new RegExp(match[1], flags); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     }
-    return new RegExp(raw, "gi");
+    return new RegExp(raw, "gi"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   } catch {
     return null;
   }

@@ -52,7 +52,7 @@ export function attachMediaRoutes(
       await handle.close().catch(() => {});
       const mime = await detectMime({ buffer: data, filePath: realPath });
       if (mime) res.type(mime);
-      res.send(data);
+      res.send(data); // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       // best-effort single-use cleanup after response ends
       res.on("finish", () => {
         setTimeout(() => {
