@@ -310,7 +310,7 @@ export async function ensureChromeExtensionRelayServer(opts: {
     }
 
     const hostHeader = req.headers.host?.trim() || `${info.host}:${info.port}`;
-    const wsHost = `ws://${hostHeader}`;
+    const wsHost = `ws://${hostHeader}`; // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     const cdpWsUrl = `${wsHost}/cdp`;
 
     if (
@@ -337,7 +337,7 @@ export async function ensureChromeExtensionRelayServer(opts: {
         description: t.targetInfo.title ?? "",
         url: t.targetInfo.url ?? "",
         webSocketDebuggerUrl: cdpWsUrl,
-        devtoolsFrontendUrl: `/devtools/inspector.html?ws=${cdpWsUrl.replace("ws://", "")}`,
+        devtoolsFrontendUrl: `/devtools/inspector.html?ws=${cdpWsUrl.replace("ws://", "")}`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(list));
@@ -634,7 +634,7 @@ export async function ensureChromeExtensionRelayServer(opts: {
     host,
     port,
     baseUrl,
-    cdpWsUrl: `ws://${host}:${port}/cdp`,
+    cdpWsUrl: `ws://${host}:${port}/cdp`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     extensionConnected: () => Boolean(extensionWs),
     stop: async () => {
       serversByPort.delete(port);

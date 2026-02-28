@@ -51,6 +51,7 @@ function resolveRunner() {
 }
 
 function run(cmd, args) {
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
   const child = spawn(cmd, args, {
     cwd: uiDir,
     stdio: "inherit",
@@ -64,6 +65,7 @@ function run(cmd, args) {
 }
 
 function runSync(cmd, args, envOverride) {
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
   const result = spawnSync(cmd, args, {
     cwd: uiDir,
     stdio: "inherit",

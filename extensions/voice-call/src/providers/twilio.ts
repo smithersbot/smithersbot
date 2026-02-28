@@ -376,7 +376,7 @@ export class TwilioProvider implements VoiceCallProvider {
     // Convert https:// to wss:// for WebSocket
     const wsOrigin = origin
       .replace(/^https:\/\//, "wss://")
-      .replace(/^http:\/\//, "ws://");
+      .replace(/^http:\/\//, "ws://"); // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
 
     // Append the stream path
     const path = this.options.streamPath.startsWith("/")

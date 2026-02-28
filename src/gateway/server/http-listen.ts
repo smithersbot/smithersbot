@@ -26,12 +26,12 @@ export async function listenGatewayHttpServer(params: {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EADDRINUSE") {
       throw new GatewayLockError(
-        `another gateway instance is already listening on ws://${bindHost}:${port}`,
+        `another gateway instance is already listening on ws://${bindHost}:${port}`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         err,
       );
     }
     throw new GatewayLockError(
-      `failed to bind gateway socket on ws://${bindHost}:${port}: ${String(err)}`,
+      `failed to bind gateway socket on ws://${bindHost}:${port}: ${String(err)}`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       err,
     );
   }

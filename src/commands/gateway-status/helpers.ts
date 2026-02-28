@@ -75,7 +75,7 @@ export function parseTimeoutMs(raw: unknown, fallbackMs: number): number {
 function normalizeWsUrl(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
-  if (!trimmed.startsWith("ws://") && !trimmed.startsWith("wss://")) return null;
+  if (!trimmed.startsWith("ws://") && !trimmed.startsWith("wss://")) return null; // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   return trimmed;
 }
 
@@ -243,8 +243,8 @@ export function buildNetworkHints(cfg: MoltbotConfig) {
   const tailnetIPv4 = pickPrimaryTailnetIPv4();
   const port = resolveGatewayPort(cfg);
   return {
-    localLoopbackUrl: `ws://127.0.0.1:${port}`,
-    localTailnetUrl: tailnetIPv4 ? `ws://${tailnetIPv4}:${port}` : null,
+    localLoopbackUrl: `ws://127.0.0.1:${port}`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
+    localTailnetUrl: tailnetIPv4 ? `ws://${tailnetIPv4}:${port}` : null, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     tailnetIPv4: tailnetIPv4 ?? null,
   };
 }

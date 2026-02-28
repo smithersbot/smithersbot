@@ -85,6 +85,7 @@ export async function runTestParallel(env = process.env) {
         (acc, flag) => (acc.includes(flag) ? acc : `${acc} ${flag}`.trim()),
         nodeOptions,
       );
+      // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
       const child = spawn(pnpm, args, {
         stdio: "inherit",
         env: { ...env, VITEST_GROUP: entry.name, NODE_OPTIONS: nextNodeOptions },

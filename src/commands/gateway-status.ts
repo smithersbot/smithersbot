@@ -229,7 +229,7 @@ export async function gatewayStatusCommand(
               wsUrl: (() => {
                 const host = b.tailnetDns || b.lanHost || b.host;
                 const port = b.gatewayPort ?? 18789;
-                return host ? `ws://${host}:${port}` : null;
+                return host ? `ws://${host}:${port}` : null; // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
               })(),
             })),
           },

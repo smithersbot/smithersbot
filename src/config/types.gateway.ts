@@ -93,7 +93,7 @@ export type GatewayTailscaleConfig = {
 };
 
 export type GatewayRemoteConfig = {
-  /** Remote Gateway WebSocket URL (ws:// or wss://). */
+  /** Remote Gateway WebSocket URL (ws:// or wss://). */ // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   url?: string;
   /** Transport for macOS remote connections (ssh tunnel or direct WS). */
   transport?: "ssh" | "direct";

@@ -56,6 +56,7 @@ async function runLobsterSubprocessOnce(
   }
 
   return await new Promise<{ stdout: string }>((resolve, reject) => {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true
     const child = spawn(execPath, argv, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],

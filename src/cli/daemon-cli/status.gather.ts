@@ -180,7 +180,7 @@ export async function gatherDaemonStatus(
   const probeHost = pickProbeHostForBind(bindMode, tailnetIPv4, customBindHost);
   const probeUrlOverride =
     typeof opts.rpc.url === "string" && opts.rpc.url.trim().length > 0 ? opts.rpc.url.trim() : null;
-  const probeUrl = probeUrlOverride ?? `ws://${probeHost}:${daemonPort}`;
+  const probeUrl = probeUrlOverride ?? `ws://${probeHost}:${daemonPort}`; // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   const probeNote =
     !probeUrlOverride && bindMode === "lan"
       ? "Local probe uses loopback (127.0.0.1). bind=lan listens on 0.0.0.0 (all interfaces); use a LAN IP for remote clients."

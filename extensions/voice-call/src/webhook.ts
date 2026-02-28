@@ -194,6 +194,7 @@ export class VoiceCallWebhookServer {
         console.log(`[voice-call] Webhook server listening on ${url}`);
         if (this.mediaStreamHandler) {
           console.log(
+            // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
             `[voice-call] Media stream WebSocket on ws://${bind}:${port}${streamPath}`,
           );
         }

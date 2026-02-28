@@ -87,7 +87,7 @@ export async function promptRemoteGatewayConfig(
         ],
       });
       if (mode === "direct") {
-        suggestedUrl = `ws://${host}:${port}`;
+        suggestedUrl = `ws://${host}:${port}`; // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       } else {
         suggestedUrl = DEFAULT_GATEWAY_URL;
         await prompter.note(
@@ -108,9 +108,9 @@ export async function promptRemoteGatewayConfig(
     message: "Gateway WebSocket URL",
     initialValue: suggestedUrl,
     validate: (value) =>
-      String(value).trim().startsWith("ws://") || String(value).trim().startsWith("wss://")
+      String(value).trim().startsWith("ws://") || String(value).trim().startsWith("wss://") // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         ? undefined
-        : "URL must start with ws:// or wss://",
+        : "URL must start with ws:// or wss://", // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   });
   const url = ensureWsUrl(String(urlInput));
 

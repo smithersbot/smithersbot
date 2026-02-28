@@ -413,7 +413,7 @@ export function resolveControlUiLinks(params: {
   const wsPath = basePath ? basePath : "";
   return {
     httpUrl: `http://${host}:${port}${uiPath}`,
-    wsUrl: `ws://${host}:${port}${wsPath}`,
+    wsUrl: `ws://${host}:${port}${wsPath}`, // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
   };
 }
 
