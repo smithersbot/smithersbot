@@ -614,16 +614,16 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     mockSpawnSync
       .mockReturnValueOnce({
-        status: 0,
-        signal: null,
-        stdout: "",
-        stderr: "",
-      })
-      .mockReturnValueOnce({
         status: 1,
         signal: null,
         stdout: "",
         stderr: "TS2307: Cannot find module ./generated/client",
+      })
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
       })
       .mockReturnValueOnce({
         status: 0,
@@ -793,25 +793,18 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     plan.buildGate = {
-      commands: ["pnpm build"],
+      commands: ["semgrep scan --config auto --error .", "pnpm build"],
       runBetweenSteps: true,
       postExecutionReview: false,
     };
     const session = makeSession(plan);
 
-    mockSpawnSync
-      .mockReturnValueOnce({
-        status: 0,
-        signal: null,
-        stdout: "/usr/local/bin/semgrep\n",
-        stderr: "",
-      })
-      .mockReturnValueOnce({
-        status: 2,
-        signal: null,
-        stdout: "",
-        stderr: "Failed to resolve 'semgrep.dev' while downloading auto config",
-      });
+    mockSpawnSync.mockReturnValueOnce({
+      status: 2,
+      signal: null,
+      stdout: "",
+      stderr: "Failed to resolve 'semgrep.dev' while downloading auto config",
+    });
 
     mockCliExecute.mockResolvedValue({
       status: "complete",

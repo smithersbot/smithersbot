@@ -3,6 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 export const BUILD_GATE_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 const BUILD_GATE_GIT_TIMEOUT_MS = 15_000;
+// Temporary kill-switch: keep default semgrep SAST disabled until blocked goal flows are fixed.
+const DEFAULT_SAST_SEMGREP_ENABLED = false;
 
 export type BuildGateFailureKind = "command_failed" | "infra_failed";
 
@@ -159,6 +161,10 @@ export function buildDefaultSastCommand(params: {
   workingDir: string;
   targetPaths?: string[];
 }): string | null {
+  if (!DEFAULT_SAST_SEMGREP_ENABLED) {
+    return null;
+  }
+
   const semgrepCheck = spawnSync("which", ["semgrep"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
