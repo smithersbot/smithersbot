@@ -22,13 +22,7 @@ describe("buildDefaultSastCommand", () => {
     vi.clearAllMocks();
   });
 
-  it("returns null while default semgrep SAST is disabled", () => {
-    const command = buildDefaultSastCommand({ workingDir: "/tmp/moltbot" });
-    expect(command).toBeNull();
-    expect(mockSpawnSync).not.toHaveBeenCalled();
-  });
-
-  it("returns null even when semgrep is available", () => {
+  it("returns a semgrep command when semgrep is available", () => {
     mockSpawnSync.mockReturnValue({
       status: 0,
       stdout: "/usr/local/bin/semgrep\n",
@@ -36,11 +30,16 @@ describe("buildDefaultSastCommand", () => {
     });
 
     const command = buildDefaultSastCommand({ workingDir: "/tmp/moltbot" });
-    expect(command).toBeNull();
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    expect(command).toBe(
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' '/tmp/moltbot'",
+    );
+    expect(mockSpawnSync).toHaveBeenCalledWith("which", ["semgrep"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   });
 
-  it("returns null when target paths are provided", () => {
+  it("returns a semgrep command scoped to target paths", () => {
     mockSpawnSync.mockReturnValue({
       status: 0,
       stdout: "/usr/local/bin/semgrep\n",
@@ -49,10 +48,24 @@ describe("buildDefaultSastCommand", () => {
 
     const command = buildDefaultSastCommand({
       workingDir: "/tmp/moltbot",
-      targetPaths: ["src/a.ts", "ui/path with space.ts"],
+      targetPaths: ["src/a.ts", "ui/path with space.ts", "-leading-dash.ts"],
     });
+    expect(command).toBe(
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' 'src/a.ts' 'ui/path with space.ts' './-leading-dash.ts'",
+    );
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns null when semgrep is not available on PATH", () => {
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: "",
+      stderr: "not found",
+    });
+
+    const command = buildDefaultSastCommand({ workingDir: "/tmp/moltbot" });
     expect(command).toBeNull();
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
   it("returns null when targetPaths is explicitly empty", () => {
@@ -67,7 +80,7 @@ describe("buildDefaultSastCommand", () => {
       targetPaths: [],
     });
     expect(command).toBeNull();
-    expect(mockSpawnSync).not.toHaveBeenCalled();
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 });
 

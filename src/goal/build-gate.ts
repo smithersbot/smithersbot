@@ -3,8 +3,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 export const BUILD_GATE_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 const BUILD_GATE_GIT_TIMEOUT_MS = 15_000;
-// Temporary kill-switch: keep default semgrep SAST disabled until blocked goal flows are fixed.
-const DEFAULT_SAST_SEMGREP_ENABLED = false;
+// Default Semgrep SAST is enabled now that baseline suppressions are in place.
+const DEFAULT_SAST_SEMGREP_ENABLED = true;
 
 export type BuildGateFailureKind = "command_failed" | "infra_failed";
 

@@ -617,7 +617,19 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         status: 1,
         signal: null,
         stdout: "",
+        stderr: "semgrep not found",
+      })
+      .mockReturnValueOnce({
+        status: 1,
+        signal: null,
+        stdout: "",
         stderr: "TS2307: Cannot find module ./generated/client",
+      })
+      .mockReturnValueOnce({
+        status: 1,
+        signal: null,
+        stdout: "",
+        stderr: "semgrep not found",
       })
       .mockReturnValueOnce({
         status: 0,
@@ -625,7 +637,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         stdout: "",
         stderr: "",
       })
-      .mockReturnValueOnce({
+      .mockReturnValue({
         status: 0,
         signal: null,
         stdout: "",
@@ -799,6 +811,12 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     };
     const session = makeSession(plan);
 
+    mockSpawnSync.mockReturnValueOnce({
+      status: 0,
+      signal: null,
+      stdout: "/usr/local/bin/semgrep\n",
+      stderr: "",
+    });
     mockSpawnSync.mockReturnValueOnce({
       status: 2,
       signal: null,
