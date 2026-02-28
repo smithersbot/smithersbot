@@ -26,7 +26,7 @@ export function isBotMentioned(messageText: string, botShipName: string): boolea
   if (!messageText || !botShipName) return false;
   const normalizedBotShip = normalizeShip(botShipName);
   const escapedShip = normalizedBotShip.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const mentionPattern = new RegExp(`(^|\\s)${escapedShip}(?=\\s|$)`, "i");
+  const mentionPattern = new RegExp(`(^|\\s)${escapedShip}(?=\\s|$)`, "i"); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   return mentionPattern.test(messageText);
 }
 
