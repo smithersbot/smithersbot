@@ -25,6 +25,7 @@ export const NIGHTWATCH_JOB_NAME = "nightwatch-daily";
 const NIGHTWATCH_SENTINEL_MESSAGE = "__nightwatch__";
 const LESSON_CONDENSE_TIMEOUT_MS = 120_000;
 const MAX_CONDENSED_LESSONS_PER_DIR = 25;
+const MAX_CONDENSED_GLOBAL_LESSONS = 25;
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const nightwatchLogger = getChildLogger({ module: "cron-nightwatch" });
@@ -38,6 +39,7 @@ type CondensedLesson = {
   pattern: string;
   lesson: string;
   scope?: "global" | "project";
+  category?: "already-fixed-bug" | "flaky-path-workaround" | "cant-control" | "genuine";
   sourceLessonIds: string[];
 };
 
@@ -157,6 +159,22 @@ function normalizeSourceLessonIds(value: unknown, validIds: Set<string>): string
   return [...unique];
 }
 
+function normalizeCondenseCategory(
+  value: unknown,
+): "already-fixed-bug" | "flaky-path-workaround" | "cant-control" | "genuine" | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = collapseWhitespace(value).toLowerCase();
+  if (
+    normalized === "already-fixed-bug" ||
+    normalized === "flaky-path-workaround" ||
+    normalized === "cant-control" ||
+    normalized === "genuine"
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
 export function normalizeCondensedLesson(
   value: unknown,
   validIds: Set<string>,
@@ -188,8 +206,11 @@ export function normalizeCondensedLesson(
         : lessonIdsAlias;
 
   const scope = value.scope === "global" ? "global" : "project";
+  const category = normalizeCondenseCategory(
+    value.category ?? value.phase1Category ?? value.classification,
+  );
 
-  return { pattern, lesson, scope, sourceLessonIds };
+  return { pattern, lesson, scope, category, sourceLessonIds };
 }
 
 function parseCondensedLessonsFromUnknown(
@@ -456,16 +477,43 @@ function groupLessonsByWorkingDir(lessons: Lesson[]): Map<string, Lesson[]> {
   return groups;
 }
 
-export async function pruneAndCondenseLessons(): Promise<void> {
+type LessonCondenseDeps = {
+  resolveClaudeBinary: () => string | undefined;
+  runClaudeLessonCondense: (params: {
+    claudeBinary: string;
+    workingDir: string;
+    prompt: string;
+    validIds: Set<string>;
+  }) => Promise<CondensedLesson[]>;
+  runCodexLessonCondense: (params: {
+    workingDir: string;
+    prompt: string;
+    validIds: Set<string>;
+  }) => Promise<CondensedLesson[]>;
+};
+
+export async function pruneAndCondenseLessons(
+  deps: Partial<LessonCondenseDeps> = {},
+): Promise<void> {
   const lessons = loadLessons();
   if (lessons.length === 0) return;
 
   const groups = groupLessonsByWorkingDir(lessons);
-  const claudeBinary = resolveClaudeBinary();
+  const resolveClaudeBinaryFn = deps.resolveClaudeBinary ?? resolveClaudeBinary;
+  const runClaudeCondenseFn = deps.runClaudeLessonCondense ?? runClaudeLessonCondense;
+  const runCodexCondenseFn = deps.runCodexLessonCondense ?? runCodexLessonCondense;
+  const claudeBinary = resolveClaudeBinaryFn();
 
   let totalPruned = 0;
   let totalMerged = 0;
   let processedGroups = 0;
+  const condensedByGroup: Array<{
+    workingDir: string;
+    group: Lesson[];
+    genuineLessons: CondensedLesson[];
+    keptProjectLessons: CondensedLesson[];
+    globalCandidates: CondensedLesson[];
+  }> = [];
 
   for (const [workingDir, group] of groups) {
     const validIds = new Set(group.map((lesson) => lesson.id));
@@ -475,7 +523,7 @@ export async function pruneAndCondenseLessons(): Promise<void> {
     let condensed: CondensedLesson[] | undefined;
     if (claudeBinary) {
       try {
-        condensed = await runClaudeLessonCondense({
+        condensed = await runClaudeCondenseFn({
           claudeBinary,
           workingDir: condenseWorkingDir,
           prompt,
@@ -494,7 +542,7 @@ export async function pruneAndCondenseLessons(): Promise<void> {
 
     if (!condensed) {
       try {
-        condensed = await runCodexLessonCondense({
+        condensed = await runCodexCondenseFn({
           workingDir: condenseWorkingDir,
           prompt,
           validIds,
@@ -511,13 +559,54 @@ export async function pruneAndCondenseLessons(): Promise<void> {
       }
     }
 
-    const capped = condensed.slice(0, MAX_CONDENSED_LESSONS_PER_DIR);
-    const lessonsById = new Map(group.map((lesson) => [lesson.id, lesson] as const));
-    const mostRecentLesson = pickMostRecentLesson(group);
-    const removed = removeLessons(group.map((lesson) => lesson.id));
+    const genuineLessons = condensed.filter(
+      (entry) => !entry.category || entry.category === "genuine",
+    );
+    const keptProjectLessons: CondensedLesson[] = [];
+    const globalCandidates: CondensedLesson[] = [];
+    for (const entry of genuineLessons) {
+      if (entry.scope === "global") {
+        globalCandidates.push(entry);
+        continue;
+      }
+      if (keptProjectLessons.length < MAX_CONDENSED_LESSONS_PER_DIR) {
+        keptProjectLessons.push(entry);
+      }
+    }
+
+    condensedByGroup.push({
+      workingDir,
+      group,
+      genuineLessons,
+      keptProjectLessons,
+      globalCandidates,
+    });
+    processedGroups += 1;
+  }
+
+  const selectedGlobalByGroup = new Map<string, CondensedLesson[]>();
+  let globalCount = 0;
+  for (const group of condensedByGroup) {
+    const selected: CondensedLesson[] = [];
+    for (const entry of group.globalCandidates) {
+      if (globalCount >= MAX_CONDENSED_GLOBAL_LESSONS) break;
+      selected.push(entry);
+      globalCount += 1;
+    }
+    selectedGlobalByGroup.set(group.workingDir, selected);
+  }
+
+  for (const groupResult of condensedByGroup) {
+    const selectedGlobals = selectedGlobalByGroup.get(groupResult.workingDir) ?? [];
+    const keptSet = new Set([...groupResult.keptProjectLessons, ...selectedGlobals]);
+    const kept = groupResult.genuineLessons.filter((entry) => keptSet.has(entry));
+
+    const lessonsById = new Map(groupResult.group.map((lesson) => [lesson.id, lesson] as const));
+    const mostRecentLesson = pickMostRecentLesson(groupResult.group);
+    const removed = removeLessons(groupResult.group.map((lesson) => lesson.id));
     let mergedCount = 0;
 
-    for (const entry of capped) {
+    for (const entry of kept) {
       const sourceLessons = entry.sourceLessonIds
         .map((sourceId) => lessonsById.get(sourceId))
         .filter((candidate): candidate is Lesson => Boolean(candidate));
@@ -526,7 +615,7 @@ export async function pruneAndCondenseLessons(): Promise<void> {
         sourceLessons.length > 0 ? pickMostRecentLesson(sourceLessons) : mostRecentLesson;
 
       addLesson({
-        workingDir,
+        workingDir: groupResult.workingDir,
         pattern: entry.pattern,
         lesson: entry.lesson,
         scope: entry.scope,
@@ -536,16 +625,15 @@ export async function pruneAndCondenseLessons(): Promise<void> {
       });
     }
 
-    const prunedCount = Math.max(removed - capped.length, 0);
+    const prunedCount = Math.max(removed - kept.length, 0);
     totalPruned += prunedCount;
     totalMerged += mergedCount;
-    processedGroups += 1;
 
     nightwatchLogger.info(
       {
-        workingDir,
-        before: group.length,
-        after: capped.length,
+        workingDir: groupResult.workingDir,
+        before: groupResult.group.length,
+        after: kept.length,
         pruned: prunedCount,
         merged: mergedCount,
       },

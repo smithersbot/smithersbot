@@ -2,6 +2,21 @@ import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoltbotConfig } from "../config/config.js";
 import type { NightwatchConfig } from "../config/types.cron.js";
+
+const mockAddLesson = vi.fn();
+const mockLoadLessons = vi.fn(() => []);
+const mockRemoveLessons = vi.fn(() => 0);
+vi.mock("../goal/lessons.js", () => ({
+  addLesson: (...args: unknown[]) => mockAddLesson(...args),
+  loadLessons: (...args: unknown[]) => mockLoadLessons(...args),
+  removeLessons: (...args: unknown[]) => mockRemoveLessons(...args),
+}));
+
+const mockResolveClaudeBinary = vi.fn();
+vi.mock("../goal/scout.js", () => ({
+  resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
+}));
+
 import {
   NIGHTWATCH_DEFAULTS,
   NIGHTWATCH_JOB_NAME,
@@ -11,6 +26,7 @@ import {
   checkGitChanges,
   expandTilde,
   normalizeCondensedLesson,
+  pruneAndCondenseLessons,
   registerNightwatchJob,
   runNightwatch,
 } from "./nightwatch.js";
@@ -87,6 +103,9 @@ describe("nightwatch cron", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(os, "homedir").mockReturnValue("/home/tester");
+    mockLoadLessons.mockReturnValue([]);
+    mockRemoveLessons.mockReturnValue(0);
+    mockResolveClaudeBinary.mockReturnValue(undefined);
   });
 
   afterEach(() => {
@@ -235,6 +254,158 @@ describe("nightwatch cron", () => {
         validIds,
       );
       expect(projectDefault?.scope).toBe("project");
+    });
+  });
+
+  describe("pruneAndCondenseLessons", () => {
+    it("caps project lessons per workingDir and global lessons across all directories", async () => {
+      mockLoadLessons.mockReturnValue([
+        {
+          id: "a-1",
+          workingDir: "/repo/a",
+          pattern: "a-pattern-1",
+          lesson: "a lesson 1",
+          source: "worker",
+          runId: "run-a",
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+        {
+          id: "a-2",
+          workingDir: "/repo/a",
+          pattern: "a-pattern-2",
+          lesson: "a lesson 2",
+          source: "worker",
+          runId: "run-a",
+          createdAt: "2026-03-01T00:01:00.000Z",
+        },
+        {
+          id: "b-1",
+          workingDir: "/repo/b",
+          pattern: "b-pattern-1",
+          lesson: "b lesson 1",
+          source: "worker",
+          runId: "run-b",
+          createdAt: "2026-03-01T00:02:00.000Z",
+        },
+        {
+          id: "b-2",
+          workingDir: "/repo/b",
+          pattern: "b-pattern-2",
+          lesson: "b lesson 2",
+          source: "worker",
+          runId: "run-b",
+          createdAt: "2026-03-01T00:03:00.000Z",
+        },
+      ]);
+      mockRemoveLessons.mockImplementation((ids: string[]) => ids.length);
+
+      const groupAProject = Array.from({ length: 30 }, (_, index) => ({
+        pattern: `a-project-${index + 1}`,
+        lesson: `A project lesson ${index + 1}`,
+        scope: "project",
+        sourceLessonIds: ["a-1"],
+      }));
+      const groupAGlobal = Array.from({ length: 20 }, (_, index) => ({
+        pattern: `a-global-${index + 1}`,
+        lesson: `A global lesson ${index + 1}`,
+        scope: "global",
+        sourceLessonIds: ["a-1"],
+      }));
+      const groupBProject = Array.from({ length: 30 }, (_, index) => ({
+        pattern: `b-project-${index + 1}`,
+        lesson: `B project lesson ${index + 1}`,
+        scope: "project",
+        sourceLessonIds: ["b-1"],
+      }));
+      const groupBGlobal = Array.from({ length: 20 }, (_, index) => ({
+        pattern: `b-global-${index + 1}`,
+        lesson: `B global lesson ${index + 1}`,
+        scope: "global",
+        sourceLessonIds: ["b-1"],
+      }));
+
+      const runCodexLessonCondenseMock = vi
+        .fn()
+        .mockResolvedValueOnce([...groupAProject, ...groupAGlobal])
+        .mockResolvedValueOnce([...groupBProject, ...groupBGlobal]);
+      await pruneAndCondenseLessons({
+        resolveClaudeBinary: () => undefined,
+        runCodexLessonCondense: runCodexLessonCondenseMock,
+      });
+
+      const savedLessons = mockAddLesson.mock.calls.map((call) => call[0]);
+      const projectCountDirA = savedLessons.filter(
+        (lesson) => lesson.workingDir === "/repo/a" && lesson.scope === "project",
+      ).length;
+      const projectCountDirB = savedLessons.filter(
+        (lesson) => lesson.workingDir === "/repo/b" && lesson.scope === "project",
+      ).length;
+      const globalCount = savedLessons.filter((lesson) => lesson.scope === "global").length;
+
+      expect(projectCountDirA).toBe(25);
+      expect(projectCountDirB).toBe(25);
+      expect(globalCount).toBe(25);
+      expect(savedLessons).toHaveLength(75);
+      expect(runCodexLessonCondenseMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops non-genuine categorized lessons before saving", async () => {
+      mockLoadLessons.mockReturnValue([
+        {
+          id: "a-1",
+          workingDir: "/repo/a",
+          pattern: "a-pattern-1",
+          lesson: "a lesson 1",
+          source: "worker",
+          runId: "run-a",
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+      ]);
+      mockRemoveLessons.mockImplementation((ids: string[]) => ids.length);
+      const runCodexLessonCondenseMock = vi.fn().mockResolvedValueOnce([
+        {
+          pattern: "keep-genuine",
+          lesson: "Keep this lesson.",
+          scope: "project",
+          category: "genuine",
+          sourceLessonIds: ["a-1"],
+        },
+        {
+          pattern: "drop-fixed",
+          lesson: "Drop already-fixed lesson.",
+          scope: "project",
+          category: "already-fixed-bug",
+          sourceLessonIds: ["a-1"],
+        },
+        {
+          pattern: "drop-flaky",
+          lesson: "Drop flaky workaround.",
+          scope: "project",
+          category: "flaky-path-workaround",
+          sourceLessonIds: ["a-1"],
+        },
+        {
+          pattern: "drop-control",
+          lesson: "Drop can't-control guidance.",
+          scope: "global",
+          category: "cant-control",
+          sourceLessonIds: ["a-1"],
+        },
+      ]);
+
+      await pruneAndCondenseLessons({
+        resolveClaudeBinary: () => undefined,
+        runCodexLessonCondense: runCodexLessonCondenseMock,
+      });
+
+      expect(mockAddLesson).toHaveBeenCalledTimes(1);
+      expect(mockAddLesson).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workingDir: "/repo/a",
+          pattern: "keep-genuine",
+          scope: "project",
+        }),
+      );
     });
   });
 
