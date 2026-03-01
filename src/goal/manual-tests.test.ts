@@ -163,6 +163,61 @@ describe("generateManualTests", () => {
     ).rejects.toThrow(/authentication_error/i);
   });
 
+  it("retries once when the first response is unparseable and then succeeds", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const complete = vi
+      .fn()
+      .mockResolvedValueOnce({ text: "not valid json" })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          tests: [
+            {
+              description: "Verify timeout warning and renewal",
+              criticality: 8,
+              reason: "Needs an idle real browser session",
+              detail:
+                "Stay idle until timeout warning appears, then renew and confirm session persists.",
+            },
+          ],
+        }),
+      });
+    const client: GoalLlmClient = { complete };
+
+    try {
+      const pending = generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+        client,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(complete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(complete).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const manualTests = await pending;
+
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("retrying in 2000ms");
+      expect(manualTests).toEqual([
+        {
+          description: "Verify timeout warning and renewal",
+          criticality: 8,
+          reason: "Needs an idle real browser session",
+          detail:
+            "Stay idle until timeout warning appears, then renew and confirm session persists.",
+        },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("throws when the claude binary cannot be resolved and no client is injected", async () => {
     resolveClaudeBinaryMock.mockReturnValueOnce(null);
 

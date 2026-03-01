@@ -1,6 +1,6 @@
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
-import { extractJson } from "./planner.js";
+import { extractJson, PlanParseError } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { GoalLlmClient, ManualTestSuggestion, PlanStep } from "./types.js";
 
@@ -63,6 +63,8 @@ Bad example (do NOT generate tests like these):
 const DEFAULT_MIN_TESTS = 0;
 const DEFAULT_MAX_TESTS = 5;
 const MANUAL_TESTS_TIMEOUT_MS = 300_000;
+const MANUAL_TESTS_PARSE_MAX_ATTEMPTS = 2;
+const MANUAL_TESTS_PARSE_RETRY_DELAY_MS = 2_000;
 
 export type GenerateManualTestsParams = {
   goal: string;
@@ -349,23 +351,42 @@ export async function generateManualTests(
   if (doneSteps.length === 0) return [];
 
   const userMessage = buildManualTestsUserPrompt(params.goal, doneSteps);
-  let modelResponseText: string;
+  let parsed: Record<string, unknown> | undefined;
 
-  if (params.client) {
-    const response = await params.client.complete({
-      systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
-      userMessage,
-      maxTokens: 900,
-    });
-    modelResponseText = response.text;
-  } else {
-    if (isTestEnv()) {
-      throw new Error("Manual test generation requires an injected client in tests.");
+  for (let attempt = 1; attempt <= MANUAL_TESTS_PARSE_MAX_ATTEMPTS; attempt += 1) {
+    let modelResponseText: string;
+    if (params.client) {
+      const response = await params.client.complete({
+        systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
+        userMessage,
+        maxTokens: 900,
+      });
+      modelResponseText = response.text;
+    } else {
+      if (isTestEnv()) {
+        throw new Error("Manual test generation requires an injected client in tests.");
+      }
+      modelResponseText = await generateManualTestsViaCli(userMessage);
     }
-    modelResponseText = await generateManualTestsViaCli(userMessage);
+
+    try {
+      parsed = extractJson(modelResponseText);
+      break;
+    } catch (error) {
+      if (!(error instanceof PlanParseError) || attempt >= MANUAL_TESTS_PARSE_MAX_ATTEMPTS) {
+        throw error;
+      }
+      console.warn(
+        `[goal] Manual test JSON parse failed on attempt ${attempt}/${MANUAL_TESTS_PARSE_MAX_ATTEMPTS}; retrying in ${MANUAL_TESTS_PARSE_RETRY_DELAY_MS}ms`,
+        error,
+      );
+      await new Promise((resolve) => setTimeout(resolve, MANUAL_TESTS_PARSE_RETRY_DELAY_MS));
+    }
+  }
+  if (!parsed) {
+    throw new Error("Manual test generation failed to parse model response.");
   }
 
-  const parsed = extractJson(modelResponseText);
   const rawTests = Array.isArray(parsed.tests)
     ? parsed.tests
     : Array.isArray(parsed.manualTests)
