@@ -398,5 +398,27 @@ describe("repo-chat-worker", () => {
 
       expect(result.cliSessionId).toBe("sess-multiline-456");
     });
+
+    it("extracts session id from stderr when stdout is empty", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: "",
+          stderr: '{"session_id":"from-stderr-123"}',
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 23,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "status?",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBe("from-stderr-123");
+    });
   });
 });

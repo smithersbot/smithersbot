@@ -264,7 +264,10 @@ export async function runRepoChatWorker(
       );
     }
 
-    const cliSessionId = extractSessionIdFromStdout(stdout) ?? params.cliSessionId;
+    const cliSessionId =
+      extractSessionIdFromStdout(stdout) ??
+      extractSessionIdFromStdout(stderr) ??
+      params.cliSessionId;
     let responseText = "";
 
     try {
