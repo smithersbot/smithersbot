@@ -505,7 +505,7 @@ describe("session serialization", () => {
       },
       buildGateFixSignatures: {
         "step-1":
-          "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' src/example.ts\npnpm build",
+          "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' --exclude '.moltbot-goal-worker-results' src/example.ts\npnpm build",
       },
       buildGateResults: {
         "step-1": {
@@ -534,7 +534,7 @@ describe("session serialization", () => {
     expect(serialized.buildGateFixCounts).toEqual({ "step-1": 2 });
     expect(serialized.buildGateFixSignatures).toEqual({
       "step-1":
-        "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' src/example.ts\npnpm build",
+        "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' --exclude '.moltbot-goal-worker-results' src/example.ts\npnpm build",
     });
     expect(serialized.buildGateResults?.["step-1"]?.failedCommand).toBe("pnpm build");
 
@@ -544,7 +544,7 @@ describe("session serialization", () => {
     expect(restored.buildGateFixCounts).toEqual({ "step-1": 2 });
     expect(restored.buildGateFixSignatures).toEqual({
       "step-1":
-        "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' src/example.ts\npnpm build",
+        "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' --exclude '.moltbot-goal-worker-results' src/example.ts\npnpm build",
     });
     expect(restored.buildGateResults?.["step-1"]?.output).toBe("Cannot find module");
   });

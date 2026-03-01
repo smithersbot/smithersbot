@@ -31,7 +31,7 @@ describe("buildDefaultSastCommand", () => {
 
     const command = buildDefaultSastCommand({ workingDir: "/tmp/moltbot" });
     expect(command).toBe(
-      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' '/tmp/moltbot'",
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' --exclude '.moltbot-goal-worker-results' '/tmp/moltbot'",
     );
     expect(mockSpawnSync).toHaveBeenCalledWith("which", ["semgrep"], {
       encoding: "utf8",
@@ -51,7 +51,7 @@ describe("buildDefaultSastCommand", () => {
       targetPaths: ["src/a.ts", "ui/path with space.ts", "-leading-dash.ts"],
     });
     expect(command).toBe(
-      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' 'src/a.ts' 'ui/path with space.ts' './-leading-dash.ts'",
+      "semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' --exclude '.moltbot-goal-worker-results' 'src/a.ts' 'ui/path with space.ts' './-leading-dash.ts'",
     );
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
