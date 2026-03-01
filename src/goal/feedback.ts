@@ -93,6 +93,7 @@ export function mergeRevisedPlanWithDoneSteps(params: {
     goal: originalPlan.goal,
     workingDir: revisedPlan.workingDir,
     summary: revisedPlan.summary,
+    buildGate: revisedPlan.buildGate ?? originalPlan.buildGate,
     shortSummary: ensureShortSummary(
       revisedPlan.shortSummary,
       revisedPlan.summary || originalPlan.summary,

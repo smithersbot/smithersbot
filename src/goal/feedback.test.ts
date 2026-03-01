@@ -84,6 +84,129 @@ describe("goal feedback planning helpers", () => {
     expect(step4?.dependsOn).toEqual(["3"]);
   });
 
+  it("preserves buildGate from revised plan when present", () => {
+    const originalPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Original",
+      shortSummary: "Original",
+      buildGate: {
+        commands: ["pnpm test"],
+        runBetweenSteps: false,
+      },
+      steps: [
+        {
+          id: "1",
+          description: "Existing done step",
+          shortSummary: "Existing done step",
+          dependsOn: [],
+          status: "done",
+        },
+      ],
+    };
+
+    const revisedPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Revised",
+      shortSummary: "Revised",
+      buildGate: {
+        commands: ["pnpm lint", "pnpm test"],
+        runBetweenSteps: true,
+      },
+      steps: [
+        {
+          id: "2",
+          description: "New step",
+          shortSummary: "New step",
+          dependsOn: [],
+          status: "pending",
+        },
+      ],
+    };
+
+    const merged = mergeRevisedPlanWithDoneSteps({ originalPlan, revisedPlan });
+    expect(merged.buildGate).toEqual(revisedPlan.buildGate);
+  });
+
+  it("falls back to original buildGate when revised plan omits it", () => {
+    const originalPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Original",
+      shortSummary: "Original",
+      buildGate: {
+        commands: ["pnpm test"],
+        runBetweenSteps: false,
+      },
+      steps: [
+        {
+          id: "1",
+          description: "Existing done step",
+          shortSummary: "Existing done step",
+          dependsOn: [],
+          status: "done",
+        },
+      ],
+    };
+
+    const revisedPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Revised",
+      shortSummary: "Revised",
+      steps: [
+        {
+          id: "2",
+          description: "New step",
+          shortSummary: "New step",
+          dependsOn: [],
+          status: "pending",
+        },
+      ],
+    };
+
+    const merged = mergeRevisedPlanWithDoneSteps({ originalPlan, revisedPlan });
+    expect(merged.buildGate).toEqual(originalPlan.buildGate);
+  });
+
+  it("keeps buildGate undefined when neither plan has one", () => {
+    const originalPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Original",
+      shortSummary: "Original",
+      steps: [
+        {
+          id: "1",
+          description: "Existing done step",
+          shortSummary: "Existing done step",
+          dependsOn: [],
+          status: "done",
+        },
+      ],
+    };
+
+    const revisedPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Revised",
+      shortSummary: "Revised",
+      steps: [
+        {
+          id: "2",
+          description: "New step",
+          shortSummary: "New step",
+          dependsOn: [],
+          status: "pending",
+        },
+      ],
+    };
+
+    const merged = mergeRevisedPlanWithDoneSteps({ originalPlan, revisedPlan });
+    expect(merged.buildGate).toBeUndefined();
+  });
+
   it("preserves all completed steps across iterative feedback rounds", () => {
     const baseDonePlan: Plan = {
       goal: "Fix release",
