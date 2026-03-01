@@ -848,6 +848,56 @@ describe("goal-resume command", () => {
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
     });
 
+    it("returns cancelled and does not save plan when run is stopped during replan", async () => {
+      const runId = "planning-cancelled-during-replan";
+      const plannerWorkingDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "resume-replan-cancelled-planner-ws-"),
+      );
+
+      mockRunCliPlanning.mockImplementationOnce(
+        async ({ runId: plannerRunId }: { runId: string }) => {
+          const existingRun = loadRun(plannerRunId, testGoalsDir);
+          expect(existingRun?.state).toBe("planning");
+          saveRun({ ...existingRun!, state: "cancelled" }, testGoalsDir);
+          return {
+            status: "success",
+            plan: {
+              goal: "Should not persist after stop",
+              workingDir: plannerWorkingDir,
+              summary: "Replanned after stop",
+              steps: [
+                {
+                  id: "replanned-step",
+                  description: "A replanned task",
+                  dependsOn: [],
+                  status: "pending",
+                  durationMinutes: 30,
+                },
+              ],
+            },
+            scoutStatus: "success",
+          };
+        },
+      );
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "planning",
+          goal: "Stop me during replan",
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { replan: true }, rt);
+
+      expect(result).toEqual({ status: "cancelled" });
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.state).toBe("cancelled");
+      expect(persisted?.plan).toBeNull();
+    });
+
     it("updates run.workingDir from replanned plan output", async () => {
       const runId = "replan-workingdir-update";
       const oldWorkingDir = "/tmp/ws-old";
