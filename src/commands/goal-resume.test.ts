@@ -534,6 +534,52 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("preserves external cancellation when onTaskUpdate persists during resume", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-cancel-race-ws-"));
+    const runId = "resume-cancel-race";
+    saveRun(
+      makeRun({
+        runId,
+        state: "cancelled",
+        plan: samplePlan,
+        workingDir: workDir,
+      }),
+    );
+
+    mockExecuteGoalWithAgent.mockImplementationOnce(
+      async (params: { session: { state: string }; onTaskUpdate?: () => void }) => {
+        const persistedBeforeStop = loadRun(runId, testGoalsDir);
+        expect(persistedBeforeStop?.state).toBe("executing");
+
+        // Simulate /goal_stop updating run state externally while execution is in progress.
+        saveRun({
+          ...persistedBeforeStop!,
+          state: "cancelled",
+          updatedAt: new Date().toISOString(),
+        });
+
+        // Simulate a task update callback that triggers goal-resume persistence.
+        params.onTaskUpdate?.();
+
+        const persistedAfterUpdate = loadRun(runId, testGoalsDir);
+        expect(persistedAfterUpdate?.state).toBe("cancelled");
+        expect(params.session.state).toBe("cancelled");
+
+        return { status: "done", summary: "Mock execution complete." };
+      },
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+    expect(result?.status).toBe("done");
+    const persisted = loadRun(runId, testGoalsDir);
+    expect(persisted?.state).toBe("cancelled");
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("resumes a cancelled run interactively — explicit No keeps cancelled", async () => {
     saveRun(
       makeRun({
