@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
+import { extractJsonObjectCandidates, repairJsonText, repairTruncatedJson } from "./json-repair.js";
 
 describe("extractJsonObjectCandidates", () => {
   it("extracts brace-balanced JSON objects from mixed prose", () => {
@@ -110,5 +110,52 @@ describe("repairJsonText", () => {
     expect(parsed.steps).toHaveLength(2);
     expect(parsed.steps[0]?.id).toBe("step-1");
     expect(parsed.steps[1]?.backend).toBe("claude_code");
+  });
+
+  it("repairs truncated JSON via final fallback", () => {
+    const repaired = repairJsonText(
+      '{"tests":[{"description":"first"},{"description":"second","detail":"part',
+    );
+
+    expect(repaired).toBe('{"tests":[{"description":"first"},{"description":"second"}]}');
+    expect(JSON.parse(repaired)).toEqual({
+      tests: [{ description: "first" }, { description: "second" }],
+    });
+  });
+});
+
+describe("repairTruncatedJson", () => {
+  it("repairs JSON truncated mid-string value", () => {
+    const repaired = repairTruncatedJson(
+      '{"tests":[{"description":"first"},{"description":"second","detail":"part',
+    );
+
+    expect(repaired).toBe('{"tests":[{"description":"first"},{"description":"second"}]}');
+    expect(JSON.parse(repaired)).toEqual({
+      tests: [{ description: "first" }, { description: "second" }],
+    });
+  });
+
+  it("repairs JSON truncated mid-array with a partial trailing element", () => {
+    const repaired = repairTruncatedJson('{"tests":[{"id":"1"},{"id":"2"},{"id":"3');
+
+    expect(repaired).toBe('{"tests":[{"id":"1"},{"id":"2"}]}');
+    expect(JSON.parse(repaired)).toEqual({
+      tests: [{ id: "1" }, { id: "2" }],
+    });
+  });
+
+  it("repairs truncated JSON with missing closing braces", () => {
+    const repaired = repairTruncatedJson('{"plan":{"steps":[{"id":"1"},{"id":"2"}]');
+
+    expect(repaired).toBe('{"plan":{"steps":[{"id":"1"},{"id":"2"}]}}');
+    expect(JSON.parse(repaired)).toEqual({
+      plan: { steps: [{ id: "1" }, { id: "2" }] },
+    });
+  });
+
+  it("returns already-valid JSON unchanged", () => {
+    const valid = '{"approved":true,"issues":[]}';
+    expect(repairTruncatedJson(valid)).toBe(valid);
   });
 });
