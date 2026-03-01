@@ -97,4 +97,5 @@ Repo chat sessions are stored at: `~/.moltbot/repo-chats/<sessionId>/session.jso
 - For architecture questions, trace the call chain through the relevant modules.
 - For "how does X work" questions, read the implementation and explain the flow.
 - For debugging questions, check both the source code and any relevant run artifacts.
+- When the user asks for a `/new_goal` command, provide a complete, ready-to-copy-paste command. You are in read-only mode and cannot execute it yourself.
 - If a question is about recent goal runs, check all goal directories (see "Goal Run Artifacts" above) for run state and logs.

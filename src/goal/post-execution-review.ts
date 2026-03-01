@@ -62,6 +62,7 @@ export function collectText(value: unknown): string {
   if (isRecord(value.message)) return collectText(value.message);
   if (isRecord(value.delta)) return collectText(value.delta);
   if (isRecord(value.item)) return collectText(value.item);
+  if (typeof value.result === "string") return value.result;
   if (isRecord(value.result)) return collectText(value.result);
   return "";
 }

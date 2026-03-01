@@ -63,6 +63,14 @@ describe("parsePostExecutionReviewDecision", () => {
 
     expect(decision).toEqual({ approved: true, issues: [] });
   });
+
+  it("parses --output-format json envelopes where result is a JSON string", () => {
+    const decision = parsePostExecutionReviewDecision(
+      '{"type":"result","subtype":"success","result":"{\\"approved\\":true,\\"issues\\":[]}"}',
+    );
+
+    expect(decision).toEqual({ approved: true, issues: [] });
+  });
 });
 
 describe("buildPostExecutionReviewPrompt", () => {
