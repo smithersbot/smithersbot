@@ -104,6 +104,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
     description: "Set plan autocheck backend: codex, claude_code, or off",
   },
   {
+    command: "goal_semgrep",
+    description: "Set semgrep SAST mode: off, step, or goal",
+  },
+  {
     command: "goal_workers",
     description: "Set enabled CLI workers: codex, claude_code, or both",
   },
@@ -182,6 +186,7 @@ export type GoalPlanResult = {
 };
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
+const GOAL_SEMGREP_USAGE = "Usage: /goal_semgrep <off|step|goal>";
 const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
@@ -2003,6 +2008,80 @@ export function registerTelegramGoalCommands({
       nextMode === "off"
         ? "Goal plan autocheck disabled."
         : `Goal plan autocheck set to \`${nextMode}\`.`;
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      confirmation,
+      runtime,
+      resolved.threadIdForSend,
+      replyToMessageId,
+    );
+  });
+
+  // /goal_semgrep [off|step|goal]
+  bot.command("goal_semgrep", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
+
+    const rawMode = ctx.match?.trim() ?? "";
+    if (!rawMode) {
+      const currentMode = cfg.goal?.semgrep ?? "step";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Goal semgrep mode: \`${currentMode}\`.\n${GOAL_SEMGREP_USAGE}`,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const normalized = rawMode.toLowerCase();
+    const nextMode: "off" | "step" | "goal" | undefined =
+      normalized === "off" || normalized === "step" || normalized === "goal"
+        ? normalized
+        : undefined;
+    if (!nextMode) {
+      const currentMode = cfg.goal?.semgrep ?? "step";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Invalid mode: \`${rawMode}\`.\n${GOAL_SEMGREP_USAGE}\nCurrent: \`${currentMode}\``,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Config writes are disabled for this Telegram account.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const nextConfig = loadConfig();
+    nextConfig.goal ??= {};
+    nextConfig.goal.semgrep = nextMode;
+    await writeConfigFile(nextConfig);
+
+    cfg.goal ??= {};
+    cfg.goal.semgrep = nextMode;
+
+    const confirmation =
+      nextMode === "off"
+        ? "Semgrep SAST scanning disabled."
+        : nextMode === "step"
+          ? "Semgrep will run after each completed step."
+          : "Semgrep will run only after the last step completes.";
     await sendGoalReply(
       bot,
       resolved.chatId,

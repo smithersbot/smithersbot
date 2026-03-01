@@ -3128,6 +3128,138 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("registerTelegramGoalCommands /goal_semgrep", () => {
+    function makeCommandHarness(cfg: Record<string, unknown> = {}): {
+      handlers: Record<string, (ctx: unknown) => Promise<void>>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+      config: Record<string, unknown>;
+    } {
+      const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto: vi.fn(),
+          answerCallbackQuery: vi.fn(),
+          setMessageReaction: vi.fn(),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) handlers[entry] = handler;
+            return;
+          }
+          handlers[name] = handler;
+        },
+        on: vi.fn(),
+      } as unknown as import("grammy").Bot;
+
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: cfg as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+
+      return { handlers, sendMessage, register, config: cfg };
+    }
+
+    function makeCommandCtx(match = ""): Record<string, unknown> {
+      return {
+        match,
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: 11,
+          date: 123_456,
+        },
+      };
+    }
+
+    function lastReplyMessageId(sendMessage: ReturnType<typeof vi.fn>): number | undefined {
+      const options = sendMessage.mock.calls.at(-1)?.[2] as
+        | { reply_parameters?: { message_id?: number } }
+        | undefined;
+      return options?.reply_parameters?.message_id;
+    }
+
+    it("shows current semgrep mode and defaults to step when unset", async () => {
+      const harness = makeCommandHarness();
+      await harness.register();
+
+      await harness.handlers.goal_semgrep?.(makeCommandCtx());
+
+      expect(harness.sendMessage).toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal semgrep mode:");
+      expect(sentText).toContain("step");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it("persists a valid semgrep mode and updates in-memory config", async () => {
+      const cfg = { goal: { semgrep: "off" } };
+      mockLoadConfig.mockReturnValue({ goal: {} });
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_semgrep?.(makeCommandCtx("goal"));
+
+      expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: "telegram", accountId: "default" }),
+      );
+      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      expect(mockWriteConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          goal: expect.objectContaining({ semgrep: "goal" }),
+        }),
+      );
+      expect((cfg.goal as { semgrep: string }).semgrep).toBe("goal");
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Semgrep will run only after the last step completes.");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("rejects invalid semgrep mode input", async () => {
+      const harness = makeCommandHarness({ goal: { semgrep: "step" } });
+      await harness.register();
+
+      await harness.handlers.goal_semgrep?.(makeCommandCtx("bad-mode"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Invalid mode");
+      expect(sentText).toContain("goal_semgrep");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+  });
+
   describe("registerTelegramGoalCommands /goal_workers", () => {
     function makeCommandHarness(cfg: Record<string, unknown> = {}): {
       handlers: Record<string, (ctx: unknown) => Promise<void>>;
