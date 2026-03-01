@@ -420,5 +420,49 @@ describe("repo-chat-worker", () => {
 
       expect(result.cliSessionId).toBe("from-stderr-123");
     });
+
+    it("extracts session id from Claude Code JSON array stderr (real format)", async () => {
+      const realStderr = JSON.stringify([
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "797f6446-af22-416e-884d-849f1a06ca61",
+          tools: ["Read", "Glob", "Grep", "Bash"],
+          model: "claude-opus-4-6",
+        },
+        {
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+          session_id: "797f6446-af22-416e-884d-849f1a06ca61",
+        },
+        {
+          type: "result",
+          subtype: "success",
+          result: "hello",
+          session_id: "797f6446-af22-416e-884d-849f1a06ca61",
+          duration_ms: 4426,
+        },
+      ]);
+
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: "",
+          stderr: realStderr,
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 4426,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "say hello",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBe("797f6446-af22-416e-884d-849f1a06ca61");
+    });
   });
 });

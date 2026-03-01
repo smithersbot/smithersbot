@@ -107,18 +107,24 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
     "threadId",
   ];
 
+  function findInObject(obj: Record<string, unknown>): string | undefined {
+    for (const field of sessionIdFields) {
+      const value = obj[field];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
 
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      for (const field of sessionIdFields) {
-        const value = parsed[field];
-        if (typeof value === "string" && value.trim()) {
-          return value.trim();
-        }
-      }
+      const found = findInObject(parsed);
+      if (found) return found;
     } catch {
       continue;
     }
@@ -130,12 +136,21 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
   }
 
   try {
-    const parsed = JSON.parse(wholeStdout) as Record<string, unknown>;
-    for (const field of sessionIdFields) {
-      const value = parsed[field];
-      if (typeof value === "string" && value.trim()) {
-        return value.trim();
+    const parsed = JSON.parse(wholeStdout) as unknown;
+
+    // Handle JSON array (Claude Code --output-format json emits an array of event objects)
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const found = findInObject(item as Record<string, unknown>);
+          if (found) return found;
+        }
       }
+      return undefined;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      return findInObject(parsed as Record<string, unknown>);
     }
   } catch {}
 
