@@ -17,7 +17,7 @@ Each step describes a task that an autonomous coding agent will carry out. The a
 
 DOWNSTREAM AGENT CAPABILITIES:
 - The executing agent has these tools: Read, Edit, Write, Glob, Grep, Bash
-- Each step gets a timeout of: min(2 hours, 2× the step's durationMinutes estimate)
+- Each step gets a timeout of: min(2 hours, 3× the step's durationMinutes estimate)
 - The agent can chain unlimited tool calls per turn — read dozens of files, edit many, run builds and tests all within a single step
 - The agent receives the full project conventions (CLAUDE.md) and can follow existing patterns autonomously
 - You do NOT need to micro-manage the agent — describe WHAT to do, not HOW to use each tool

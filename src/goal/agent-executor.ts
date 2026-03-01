@@ -151,7 +151,7 @@ export type ExecuteGoalParams = {
 
 function resolveTaskTimeoutMs(durationMinutes: number | undefined, fallbackMs: number): number {
   if (!durationMinutes || durationMinutes <= 0) return Math.max(fallbackMs, MIN_TASK_TIMEOUT_MS);
-  const estimateMs = durationMinutes * 2 * 60_000;
+  const estimateMs = durationMinutes * 3 * 60_000;
   return Math.max(MIN_TASK_TIMEOUT_MS, Math.min(estimateMs, MAX_TASK_TIMEOUT_MS));
 }
 

@@ -589,7 +589,7 @@ export function buildCliWorkerPrompt(params: {
   }
 
   const estMinutes = step.durationMinutes || 30;
-  const timeoutMinutes = Math.min(120, 2 * estMinutes);
+  const timeoutMinutes = Math.min(120, 3 * estMinutes);
   lines.push("");
   lines.push(
     `TIME BUDGET: You have an estimated ${estMinutes} minutes for this task (max timeout: ${timeoutMinutes}m). Plan your work accordingly.`,
