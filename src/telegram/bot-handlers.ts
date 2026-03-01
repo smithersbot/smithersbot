@@ -44,6 +44,7 @@ import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
 import { readTelegramAllowFromStore, upsertTelegramPairingRequest } from "./pairing-store.js";
 import { dispatchTelegramRepoChatForInboundText } from "./repo-chat-commands.js";
+import { findRepoChatSessionByMessageId } from "../repo-chat/repo-chat-store.js";
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
@@ -453,6 +454,26 @@ export const registerTelegramHandlers = ({
     const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
       .reply_to_message?.message_id;
     const repoChatEnabled = isRepoChatBackendEnabled(telegramCfg.repoChatBackend);
+
+    if (replyToMessageId != null && repoChatEnabled) {
+      const repoChatSession = findRepoChatSessionByMessageId({
+        chatId,
+        messageId: replyToMessageId,
+      });
+      if (repoChatSession) {
+        return dispatchTelegramRepoChatForInboundText({
+          bot,
+          runtime,
+          telegramCfg,
+          claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+          chatId,
+          threadId: params.threadId,
+          prompt: params.text,
+          sourceMessageId: params.msg.message_id,
+          replyToMessageId,
+        });
+      }
+    }
 
     // Deterministic routing for free-text chat mode:
     // non-command + non-reply text goes directly to repo chat when backend is enabled.
