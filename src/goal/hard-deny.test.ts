@@ -81,6 +81,14 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny('echo "<(sudo whoami)"')).toBeNull();
   });
 
+  it("handles rm short and long force/recursive flags correctly", () => {
+    expect(checkCommandDeny("rm --recursive --force /")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm --verbose --force /")).toBeNull();
+    expect(checkCommandDeny("rm -rf /")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -r -f /")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm --recursive -f /")?.pattern).toBe("rm -rf /");
+  });
+
   it("allows normal safe commands", () => {
     expect(checkCommandDeny("pnpm test")).toBeNull();
     expect(checkCommandDeny('echo "vercel deploy docs"')).toBeNull();

@@ -554,8 +554,20 @@ function isDangerousRm(tokens: string[]): boolean {
   if (tokens.length === 0 || tokens[0] !== "rm") return false;
   const args = tokens.slice(1);
   const flags = args.filter((arg) => arg.startsWith("-"));
-  const hasR = flags.some((flag) => flag.includes("r"));
-  const hasF = flags.some((flag) => flag.includes("f"));
+  let hasR = false;
+  let hasF = false;
+
+  for (const flag of flags) {
+    if (flag.startsWith("--")) {
+      if (flag === "--recursive") hasR = true;
+      if (flag === "--force") hasF = true;
+      continue;
+    }
+
+    if (flag.includes("r")) hasR = true;
+    if (flag.includes("f")) hasF = true;
+  }
+
   if (!hasR || !hasF) return false;
 
   const targets = args.filter((arg) => !arg.startsWith("-"));
