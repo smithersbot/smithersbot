@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Added a post-runCliPlanning cancellation guard in retryPlanning (src/commands/goal-resume.ts) that reloads the run, returns { status: 'cancelled' } when latest state is cancelled, and prevents blocked/success state writes from overwriting a stopped run. Verified with pnpm build and pnpm vitest run src/commands/goal-resume.test.ts." }

@@ -199,6 +199,14 @@ async function retryPlanning(
       }
     }
 
+    // If /goal_stop cancelled this run while planning was in-flight, do not
+    // overwrite cancelled state with planning results.
+    const latestRun = loadRun(run.runId);
+    if (latestRun?.state === "cancelled") {
+      session.state = "cancelled";
+      return { status: "cancelled" };
+    }
+
     // Handle blocked-at-planning (pre-plan clarification)
     run.scoutStatus = planningResult.scoutStatus;
     if (planningResult.scoutSkipReason) {
