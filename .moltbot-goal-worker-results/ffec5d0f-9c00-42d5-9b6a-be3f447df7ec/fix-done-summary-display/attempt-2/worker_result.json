@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Raised Telegram done-summary limits (title 100, step text 120), preserved full criticality suffixes during truncation, switched goal completion summary rendering to Telegram channel, added regression tests, and verified with pnpm vitest run src/goal/compact-output.test.ts."}

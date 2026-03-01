@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Integration verified: pnpm build exits 0 (TypeScript compilation clean), pnpm lint exits 0 (0 warnings/errors on 2600 files), gateway-restart tests all pass (5/5). The full test suite (pnpm exec vitest run) shows 914 passed / 17 failed test files, but all 17 failures are pre-existing and unrelated to the gateway-restart changes — notably bot.test.ts failures stem from a prior refactor renaming 'goal' to 'new_goal', and other failures are in models.list, daemon-install-helpers, onboard-hooks, and goal-commands tests that were already broken before this branch."
-}

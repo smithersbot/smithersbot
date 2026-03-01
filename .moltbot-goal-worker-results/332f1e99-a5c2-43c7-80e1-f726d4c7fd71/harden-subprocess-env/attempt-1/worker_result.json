@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Added defense-in-depth env filtering in src/goal/claude-code-env.ts by stripping credential-bearing keys in both auth modes (exact keys plus OP_SESSION_*, *_SECRET, *_PRIVATE_KEY patterns) while keeping existing subscription-only AUTH_KEYS_TO_STRIP behavior; added src/goal/claude-code-env.test.ts covering required mode-specific stripping/preservation checks; verified with pnpm vitest run src/goal/claude-code-env.test.ts, pnpm build, pnpm lint, and node scripts/run-node.mjs goal list."
-}

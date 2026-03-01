@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Added a new '## 4. Cross-workflow consistency' section to buildNightwatchPrompt() in src/cron/nightwatch.ts (between architecture and output), updated src/cron/nightwatch.test.ts to assert the prompt includes 'Cross-workflow consistency', and verified with pnpm lint, pnpm build, and pnpm vitest run src/cron/nightwatch.test.ts (all passing)." }

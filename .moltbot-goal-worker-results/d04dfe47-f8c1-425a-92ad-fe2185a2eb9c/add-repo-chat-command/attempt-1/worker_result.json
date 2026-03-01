@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added /repo_chat and /chat_backend (with codex|claude_code|off args) to the command registry, added /rc alias for /repo_chat, added telegram config field repoChatBackend (codex|claude_code|null), introduced REPO_CHAT_COMMAND_SPECS for Telegram native menu, wired those specs into native command registration, and verified with pnpm build (success)."}

@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Updated Mermaid DAG rendering to accept optional stepResults and prefer actual elapsed durations for done steps, while retaining CPM estimate labels for non-done steps. Added mermaid-render test coverage for done actual-duration labeling and verified with focused Vitest runs (mermaid-render + format-output)."}

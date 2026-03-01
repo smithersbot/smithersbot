@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Updated src/goal/cli-process.ts error handler to also write process errors to stderrStream (guarded on stream presence) before finish(), while preserving the in-memory stderr append. Verified by running pnpm build and pnpm vitest run src/goal/ (both passed)."}

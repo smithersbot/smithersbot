@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Extended goal status/completion tests with structured hierarchy and attempt-badge assertions, documented compact Telegram/goal output contract in docs and CLI/Telegram help text, and verified with targeted Vitest suites plus pnpm lint and pnpm build." }

@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added SemgrepMode (off|step|goal) to goal config types, added optional goal.semgrep to GoalConfig with JSDoc, updated goal zod schema to accept semgrep enum while preserving strict schema, and verified with pnpm build plus pnpm vitest run src/config/schema.test.ts."}

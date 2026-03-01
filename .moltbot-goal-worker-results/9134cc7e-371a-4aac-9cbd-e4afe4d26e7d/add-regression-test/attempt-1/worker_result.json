@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Added a goal-resume regression test that simulates external /goal_stop during resume execution by writing cancelled state on disk, triggering onTaskUpdate persistence, and asserting persisted state remains cancelled. Verified with pnpm vitest run src/commands/goal-resume.test.ts (40/40 passing) and pnpm build." }

@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Full verification gate passed. pnpm build: clean. pnpm lint: 0 warnings, 0 errors. Goal tests (src/goal/): 515 passed, 9 skipped. Command tests (src/commands/): 424 passed, 7 failed — all 7 failures are pre-existing in unrelated files (channels, models.list, onboard-hooks); goal-resume tests 40/40 pass. CLI goal list and goal stop verified end-to-end: `goal stop 9134cc7e` successfully transitioned an executing run to cancelled on disk. Service restart blocked by hard deny (systemctl --user restart not permitted during goal execution); operator should restart manually after goal completes."
-}

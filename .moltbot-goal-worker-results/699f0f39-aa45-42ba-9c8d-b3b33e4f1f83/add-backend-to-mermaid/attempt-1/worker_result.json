@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Added backend worker labels to Mermaid node duration text (preferring executedBackend over backend), with display names for Claude Code/Codex/Pi, added renderer tests for backend labels and precedence, and verified all goal tests pass via pnpm vitest run src/goal/."
-}

@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Full gate passed: pnpm build (clean), pnpm lint (0 errors), pnpm vitest run on both test files (112 tests passing across goal-stop.test.ts and goal-commands.test.ts). Runtime CLI verification confirmed: (1) goal stop on planning-state run 375730a2 succeeded without --force, (2) awaiting_approval run 85b094a8 correctly shows guidance message and requires --force, (3) blocked run fabc0d0a correctly shows guidance message and requires --force. Service restart was blocked by hard deny rules (systemctl --user restart not permitted during goal execution), but CLI runtime behavior was verified directly via node scripts/run-node.mjs."
-}

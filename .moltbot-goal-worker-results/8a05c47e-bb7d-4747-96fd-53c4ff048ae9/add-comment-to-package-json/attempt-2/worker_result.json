@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Inserted \"//\": \"hello\" as line 2 and first property in package.json; verified package.json remains valid JSON with Node parse." }

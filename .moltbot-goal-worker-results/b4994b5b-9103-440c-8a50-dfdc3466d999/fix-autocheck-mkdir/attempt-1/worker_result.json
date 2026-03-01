@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added fs.mkdirSync(params.workingDir, { recursive: true }) immediately after autocheckRoot creation in runPlanAutocheck() to ensure the working directory exists for greenfield goals. Verified with pnpm build and pnpm vitest run src/goal/plan-autocheck.test.ts (both passed)."}

@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "All verification checks passed. Build (pnpm build): clean compilation. Lint (pnpm lint): 0 warnings, 0 errors across 2597 files. Goal-system tests (pnpm vitest run src/goal/): 17 test files, 299 tests passed. Goal command tests (goal.test.ts + goal-resume.test.ts): 47 tests passed. Manual CLI verification: 'node scripts/run-node.mjs goal \"Create a tiny test artifact\" --plan-only --yes --no-git-checkpoints' produced a valid plan with all expected artifacts (run.json, scout_report.json, plan_draft.md, execution_plan.json, attempt-1.json, node_specs/, planning diagnostics). Goal-resume --replan: successfully loaded cached scout data from canonical filenames, re-ran unified CLI planning, and persisted updated plan in awaiting_approval state. The unified CLI planner is fully functional end-to-end."
-}

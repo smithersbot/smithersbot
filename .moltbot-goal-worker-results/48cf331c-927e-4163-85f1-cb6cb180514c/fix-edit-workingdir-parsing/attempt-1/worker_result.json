@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated goal edit workingDir parsing to strip conversational directory prefixes and normalize bare ~name to ~/name; added regression tests for the new phrasing/normalization cases and kept unresolved relative paths rejected. Verified with pnpm lint, pnpm build, and pnpm vitest run src/telegram/goal-commands.test.ts." }

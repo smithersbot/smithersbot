@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "All verification checks passed: pnpm build completed with zero type errors; command-fragments.test.ts passed all 15 tests; bot.media.downloads-media-file-path-no-file-download.test.ts passed all 12 tests (including new text fragment gap=3 append success and gap=6 rejection tests). No regressions detected." }

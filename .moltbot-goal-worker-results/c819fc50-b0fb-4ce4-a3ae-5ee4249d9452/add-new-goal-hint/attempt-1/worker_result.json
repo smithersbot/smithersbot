@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added the /new_goal read-only copy-paste instruction bullet to the 'How to Answer Questions' section in src/repo-chat/repo-chat-context.ts, src/repo-chat/repo-chat-context/CLAUDE.md, and src/repo-chat/repo-chat-context/AGENTS.md, keeping all three in sync. Verification passed with: pnpm build && pnpm vitest run src/repo-chat/."}

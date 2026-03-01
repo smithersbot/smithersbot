@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated goal-stop output to '**Goal ID:** <prefix>', updated goal-stop test expectation, removed '/goal_resume' resume suffixes from pi-runner executor error messages (out_of_credits/rate_limit/network), and verified with pnpm vitest run src/commands/goal-stop.test.ts plus pnpm build." }

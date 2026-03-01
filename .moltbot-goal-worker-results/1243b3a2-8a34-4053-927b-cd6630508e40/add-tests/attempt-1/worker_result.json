@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added two plan autocheck prompt tests in src/goal/plan-autocheck.test.ts to verify userEditInstructions are included and numbered in both fresh and resume modes, then verified the full file passes with pnpm vitest run src/goal/plan-autocheck.test.ts (15/15 tests)."}

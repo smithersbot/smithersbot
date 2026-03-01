@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Verified /goal_status now routes through sendGoalStatusResponse, which sends Mermaid DAG PNG captions when a plan exists (and text fallback otherwise), including chat-status intent routing. Confirmed with tests (goal-commands + bot-handlers goal routing), pnpm build, and CLI runtime check via node scripts/run-node.mjs goal status nonexistent."}

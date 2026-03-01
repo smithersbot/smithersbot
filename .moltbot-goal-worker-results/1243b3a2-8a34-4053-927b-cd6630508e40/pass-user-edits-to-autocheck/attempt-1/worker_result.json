@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Added optional userEditInstructions to plan autocheck params, rendered a User-requested changes section immediately after goal text in both fresh/resume prompts, threaded userEditInstructions through all runPlanAutocheck prompt builds, extracted user-sourced editInstructions from planHistory in runGoalPlanAutocheck, and verified with pnpm build."
-}

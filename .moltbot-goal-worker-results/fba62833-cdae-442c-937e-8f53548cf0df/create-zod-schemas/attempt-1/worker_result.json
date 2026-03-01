@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added src/goal/goal-schemas.ts with GoalWorkerOutputSchema, PlanStepInputSchema, and PlanInputSchema using Zod 4, plus src/goal/goal-schemas.test.ts covering valid and invalid cases for all three schemas. Verified with pnpm vitest run src/goal/goal-schemas.test.ts and pnpm build (both passed)."}

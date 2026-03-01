@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Persisted buildGateConfig, stepRalphCounts, and buildGateResults in run-store serialization/deserialization (including previousRun forward-carry and {} defaults), added run-store round-trip tests, and verified with pnpm vitest run src/goal/run-store.test.ts (25 passing)."
-}

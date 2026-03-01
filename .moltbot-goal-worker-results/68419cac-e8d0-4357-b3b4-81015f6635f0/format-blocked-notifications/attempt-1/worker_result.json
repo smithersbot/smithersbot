@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Applied markdown formatting updates for blocked notifications: bolded TASK BLOCKED/GOAL BLOCKED caption headers, bolded Ralph headers and label prefixes in ralph history, and added blank-line separation between ralph entries. Verified with pnpm build (passes)." }

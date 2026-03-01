@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Full verification gate passed: pnpm build (clean), pnpm lint (0 warnings), pnpm vitest run src/goal/ (34 test files passed, 516 tests passed, 9 skipped, 1 file skipped). All timeout changes from extend-semgrep-timeout, extend-planner-timeout, and extend-worker-multiplier are consistent and no issues found." }

@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Self-verified workingDir changes via actual CLI flows. (1) Planned a goal targeting ~/test-workingdir-verify — plan JSON correctly included workingDir: '/home/matt/test-workingdir-verify' (~ resolved to homedir), both plan.workingDir and run.workingDir were persisted in run.json, and execution_plan.json artifact included workingDir. Directory was correctly NOT created during plan-only mode. (2) Planned a goal targeting the current repo — workingDir correctly defaulted to /home/matt/moltbot (the cwd). (3) Gateway service restart is blocked by hard deny (systemctl --user restart); operator must restart and verify after task completes. Build compiles cleanly (pnpm build OK). (4) Run artifacts at ~/.clawdbot-dev/goals/<runId>/run.json confirmed workingDir persisted correctly for both test cases. (5) All 537 tests pass (26 test files, 8 skipped). Temp files cleaned up; no test directories were created on disk."
-}

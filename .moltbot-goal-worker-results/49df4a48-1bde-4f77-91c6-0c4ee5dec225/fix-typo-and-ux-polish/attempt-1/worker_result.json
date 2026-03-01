@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated three UX literals in src/telegram/goal-commands.ts: fixed 'dependant' typo to 'dependent', changed feedback ForceReply placeholder to a neutral prompt, and increased goal list truncation from 19 to 40 characters (with matching threshold). Verified with pnpm build (success)." }

@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Passed plan message ID as replyToMessageId for gr callback rejections in src/telegram/goal-commands.ts, added a regression test for gr callback reply threading in src/telegram/goal-commands.test.ts, and verified with pnpm vitest run src/telegram/goal-commands.test.ts (136 passed)."}

@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Updated manual test generation prompt/semantics and tests: zero-min-tests, explicit empty-array support, thrown auth/API/parse errors, automated-check context in user prompt, fallback top-up with human-readable descriptions/varied criticality/reason, and aligned manual-tests + agent-executor tests. Verified with vitest, lint, and build."}

@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated semgrep default timeout from 30 to 600 in src/goal/build-gate.ts and updated matching expectations in src/goal/build-gate.test.ts and src/goal/run-store.test.ts. Verification passed: pnpm build, pnpm vitest run src/goal/build-gate.test.ts src/goal/run-store.test.ts, and pnpm lint." }

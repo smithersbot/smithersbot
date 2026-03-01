@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Added Claude Code --cwd propagation in buildCliArgs with a TODO about sandbox limitations, exported buildCliArgs for direct testing, added cli-worker test coverage asserting --cwd carries workingDir, and verified with pnpm vitest run src/goal/cli-worker.test.ts (33 passing)."
-}

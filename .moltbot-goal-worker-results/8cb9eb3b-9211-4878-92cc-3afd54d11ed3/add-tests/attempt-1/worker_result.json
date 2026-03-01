@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Added 6 new cli-worker tests covering repairResultFile success/failure/log paths and executeTaskWithCliWorker repair wiring plus non-repair timeout/missing cases. Verified with pnpm vitest run src/goal/cli-worker.test.ts, pnpm vitest run src/goal/cli-runner.test.ts, pnpm lint, and pnpm build."}

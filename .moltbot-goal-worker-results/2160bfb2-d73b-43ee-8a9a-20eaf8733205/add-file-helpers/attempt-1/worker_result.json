@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated src/repo-chat/repo-chat-worker.ts to add node imports (crypto/fs/os/path), introduced REPAIR_TIMEOUT_MS = 60000, and added buildResponseFileInstruction(filePath), extractSessionIdFromStdout(stdout), and cleanupResponseFile(filePath) helpers without changing runRepoChatWorker behavior. Verification: pnpm build passed." }

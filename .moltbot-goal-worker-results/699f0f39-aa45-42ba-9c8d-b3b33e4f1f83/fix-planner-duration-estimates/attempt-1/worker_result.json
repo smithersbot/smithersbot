@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated planner prompt guidance in src/goal/planner.ts to use agent-runtime estimates (5–30 minutes) instead of human-time (30–120), including GRANULARITY RULES, durationMinutes schema text, and sample duration value; verified with pnpm vitest run src/goal/planner (21 tests passed)." }

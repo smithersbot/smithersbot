@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated gateway_restart to schedule SIGUSR1 restart first with triggerMoltbotRestart fallback on scheduling failure, changed accepted reply to restart scheduled, added scheduleGatewaySigusr1Restart mocks/tests (including SIGUSR1-failure fallback path), and verified with pnpm vitest run src/telegram/gateway-restart.test.ts plus pnpm build." }

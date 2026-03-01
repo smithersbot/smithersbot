@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Replaced all hardcoded goal resume hints in goal-status and goal-detail with '**Goal ID:** <prefix>', kept /goal_answer hints unchanged, updated affected tests in goal-status.test.ts and goal-detail.test.ts, and verified with targeted Vitest runs plus pnpm build." }

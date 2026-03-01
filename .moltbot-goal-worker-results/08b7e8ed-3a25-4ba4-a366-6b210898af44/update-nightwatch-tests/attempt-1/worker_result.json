@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Updated nightwatch tests for the new zero-arg buildNightwatchPrompt content and changed runNightwatch handleGoal assertion to Nightwatch prompt text; verified with pnpm vitest run src/cron/nightwatch.test.ts (22/22 passing)." }

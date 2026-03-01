@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Updated nightwatch Telegram reply delivery to accept and forward replyToMessageId via reply_parameters, threaded ctx.message.message_id through auth resolution, config-write denial, and every nightwatch handler response path. Added tests that assert reply-to forwarding across multiple subcommands, config-write denial responses, and combined thread+reply delivery. Verification: pnpm vitest run src/telegram/nightwatch-commands.test.ts, pnpm build, pnpm lint."
-}

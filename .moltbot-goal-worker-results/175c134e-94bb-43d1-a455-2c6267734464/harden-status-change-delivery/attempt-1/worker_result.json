@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Wrapped all four buildOnStatusChange event handlers (step_blocked, fully_blocked, plan_revised, all_done) in try/catch and added a direct bot.api.sendMessage fallback with run-prefix + event-type context, swallowing fallback-send errors. Added deterministic failure-injection tests for each event type by forcing renderMermaidToPng -> null and sendMessage failures that make sendGoalReply throw, then asserting the handler does not propagate and fallback text sendMessage is attempted with event type + run prefix. Verified with pnpm vitest run src/telegram/goal-commands.test.ts and oxfmt/oxlint on touched files. Also ran pnpm vitest run src/telegram/, which still reports many pre-existing unrelated bot.create-telegram-bot failures and worker OOM."
-}

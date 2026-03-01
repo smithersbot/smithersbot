@@ -1,4 +1,0 @@
-{
-  "status": "complete",
-  "summary": "Injected lessons into CLI worker prompts by adding optional lessons params in cli-worker, rendering a LESSONS FROM PRIOR RUNS section between PLAN CONTEXT and COMPLETED TASKS only when lessons exist, wiring cli-runner to load all lessons via getLessonsForContext(context.workingDir) and pass mapped {pattern, lesson} entries, and adding prompt tests for inclusion/omission/placement. Verified with pnpm vitest run src/goal/cli-worker.test.ts, pnpm build, and pnpm lint."
-}

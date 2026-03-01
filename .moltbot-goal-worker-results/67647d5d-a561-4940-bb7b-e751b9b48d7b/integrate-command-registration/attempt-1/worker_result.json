@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Verified /gateway_restart integration in Telegram native commands: import added, command spec included in allCommands when nativeEnabled, and registerGatewayRestartCommand invoked after registerTelegramGoalCommands. Confirmed via pnpm exec vitest run src/telegram/gateway-restart.test.ts (5 passing) and pnpm exec tsc --noEmit (success)."}

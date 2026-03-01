@@ -1,1 +1,0 @@
-{"status":"complete","summary":"Removed build-gate onProgress notifications in agent-executor while keeping build-gate execution logic intact; updated executor test expectation to assert build-gate progress text is silent; fixed an existing lint issue in planner.test.ts; verified with pnpm lint, pnpm build, and pnpm vitest run src/goal/agent-executor.test.ts."}

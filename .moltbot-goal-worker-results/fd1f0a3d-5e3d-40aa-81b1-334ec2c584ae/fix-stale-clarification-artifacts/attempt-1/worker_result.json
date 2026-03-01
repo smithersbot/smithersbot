@@ -1,1 +1,0 @@
-{ "status": "complete", "summary": "Implemented stale planner artifact cleanup in runCliPlanning (plan_needs_clarification, plan_draft, scout_report, execution_plan, planning_raw_output, and node_specs removal), added a regression test for two-pass same-run replanning, and verified with pnpm vitest run src/goal/cli-planner.test.ts (10/10 passing)." }
