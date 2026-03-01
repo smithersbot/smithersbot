@@ -211,10 +211,19 @@ export function resetToTaskBaseSha(
 }
 
 export function makeBuildGateFailurePrompt(command: string, output: string): string {
-  return [
+  const basePrompt = [
     `The build gate (${command}) failed after you reported complete.`,
     "Fix the errors.",
     "Here is the output:",
     output,
+  ];
+  if (!isSemgrepScanCommand(command)) {
+    return basePrompt.join("\n");
+  }
+
+  return [
+    ...basePrompt,
+    "Suppress Semgrep findings at exact offending lines with explicit rule IDs (e.g. # nosemgrep: rule-id) instead of broad file-level ignores so rules stay active elsewhere in the file.",
+    "When suppression changes span multiple files, ensure the full gate command passes across all affected files.",
   ].join("\n");
 }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildDefaultSastCommand,
   classifyBuildGateFailure,
+  makeBuildGateFailurePrompt,
   resolveChangedFilesSinceCheckpoint,
 } from "./build-gate.js";
 
@@ -155,5 +156,42 @@ describe("classifyBuildGateFailure", () => {
   it("keeps non-semgrep failures as command failures", () => {
     const kind = classifyBuildGateFailure("pnpm build", "TS2307: Cannot find module");
     expect(kind).toBe("command_failed");
+  });
+});
+
+describe("makeBuildGateFailurePrompt", () => {
+  it("keeps the base prompt structure for non-semgrep failures", () => {
+    const prompt = makeBuildGateFailurePrompt("pnpm build", "TS2307: Cannot find module");
+
+    expect(prompt).toBe(
+      [
+        "The build gate (pnpm build) failed after you reported complete.",
+        "Fix the errors.",
+        "Here is the output:",
+        "TS2307: Cannot find module",
+      ].join("\n"),
+    );
+    expect(prompt).not.toContain("Suppress Semgrep findings at exact offending lines");
+    expect(prompt).not.toContain(
+      "When suppression changes span multiple files, ensure the full gate command passes across all affected files.",
+    );
+  });
+
+  it("adds semgrep suppression guidance for semgrep failures", () => {
+    const command = "pnpm lint && semgrep scan --config auto --error .";
+    const prompt = makeBuildGateFailurePrompt(command, "semgrep findings here");
+
+    expect(prompt).toContain(
+      "Suppress Semgrep findings at exact offending lines with explicit rule IDs (e.g. # nosemgrep: rule-id) instead of broad file-level ignores so rules stay active elsewhere in the file.",
+    );
+    expect(prompt).toContain(
+      "When suppression changes span multiple files, ensure the full gate command passes across all affected files.",
+    );
+    expect(prompt.split("\n").slice(0, 4)).toEqual([
+      `The build gate (${command}) failed after you reported complete.`,
+      "Fix the errors.",
+      "Here is the output:",
+      "semgrep findings here",
+    ]);
   });
 });
