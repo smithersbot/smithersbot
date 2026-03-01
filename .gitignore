@@ -72,3 +72,4 @@ USER.md
 # local tooling
 .serena/
 .moltbot-goal-workspace/
+.moltbot-goal-worker-results/
