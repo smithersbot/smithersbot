@@ -699,6 +699,75 @@ describe("runPlanAutocheck", () => {
     expect(typeof metadata.resumeFailure).toBe("string");
   });
 
+  it("degrades to approve with warning when resume and fresh fallback both fail", async () => {
+    const runDir = runPath(tmpDir, "run-resume-fallback-double-fail");
+
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "resume failed",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "fresh fallback failed",
+          exitCode: 2,
+        }),
+      );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Resume fallback double failure"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir,
+      existingSessionId: "stale-session",
+      existingBackend: "claude_code",
+      commitRevision: vi.fn(),
+    });
+
+    expect(result).toMatchObject({
+      approved: true,
+      exhausted: false,
+      sessionId: undefined,
+      autocheckRounds: 0,
+      backend: "claude_code",
+    });
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
+    expect(firstArgs).toContain("--resume");
+    expect(firstArgs).toContain("stale-session");
+    expect(secondArgs).not.toContain("--resume");
+
+    const roundDir = path.join(runDir, "autocheck", "round-1");
+    const resumeFailurePath = path.join(roundDir, "resume_failure.txt");
+    const freshFallbackFailurePath = path.join(roundDir, "fresh_fallback_failure.txt");
+    const responseTextPath = path.join(roundDir, "response_text.txt");
+    const metadataPath = path.join(roundDir, "metadata.json");
+
+    expect(fs.existsSync(resumeFailurePath)).toBe(true);
+    expect(fs.existsSync(freshFallbackFailurePath)).toBe(true);
+    expect(fs.readFileSync(resumeFailurePath, "utf8")).toContain("Plan autocheck worker failed");
+    expect(fs.readFileSync(freshFallbackFailurePath, "utf8")).toContain(
+      "Plan autocheck worker failed",
+    );
+    expect(fs.readFileSync(responseTextPath, "utf8")).toContain(
+      "fresh reviewer fallback also failed",
+    );
+    expect(fs.readFileSync(responseTextPath, "utf8")).toContain("Auto-approving plan");
+
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(metadata.resumeAttempted).toBe(true);
+    expect(metadata.resumeSucceeded).toBe(false);
+    expect(typeof metadata.resumeFailure).toBe("string");
+    expect(metadata.approved).toBe(true);
+  });
+
   it("extracts codex decision JSON from prose-wrapped output", async () => {
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({

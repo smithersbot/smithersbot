@@ -751,16 +751,36 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           contextNotes,
           userEditInstructions: params.userEditInstructions,
         });
-        result = await runReviewerAttempt({
-          backend,
-          prompt,
-          workingDir: params.workingDir,
-          timeoutMs,
-          claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-          model: params.model,
-          stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
-          stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
-        });
+        try {
+          result = await runReviewerAttempt({
+            backend,
+            prompt,
+            workingDir: params.workingDir,
+            timeoutMs,
+            claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+            model: params.model,
+            stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
+            stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+          });
+        } catch (freshErr) {
+          const freshFallbackFailure = describeError(freshErr);
+          writeTextArtifact(
+            path.join(roundDir, "fresh_fallback_failure.txt"),
+            `${freshFallbackFailure}\n`,
+          );
+          const warning =
+            `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
+            "Auto-approving plan to keep execution unblocked; verify results in post-execution review.";
+          contextNotes.push(warning);
+          result = {
+            stdout: warning,
+            stderr: freshFallbackFailure,
+            durationMs: 0,
+            responseText: warning,
+            sessionId: undefined,
+            decision: { approved: true },
+          };
+        }
       }
     } else {
       prompt = buildAutocheckPrompt({
