@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 /**
  * Security utilities for handling untrusted external content.
  *
@@ -41,11 +43,11 @@ export function detectSuspiciousPatterns(content: string): string[] {
 }
 
 /**
- * Unique boundary markers for external content.
- * Using XML-style tags that are unlikely to appear in legitimate content.
+ * Boundary marker prefixes for external content.
+ * A unique nonce is appended per call to prevent marker-injection escapes.
  */
-const EXTERNAL_CONTENT_START = "<<<EXTERNAL_UNTRUSTED_CONTENT>>>";
-const EXTERNAL_CONTENT_END = "<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>";
+const EXTERNAL_CONTENT_START_PREFIX = "<<<EXTERNAL_UNTRUSTED_CONTENT:";
+const EXTERNAL_CONTENT_END_PREFIX = "<<<END_EXTERNAL_UNTRUSTED_CONTENT:";
 
 /**
  * Security warning prepended to external content.
@@ -94,6 +96,9 @@ export type WrapExternalContentOptions = {
  */
 export function wrapExternalContent(content: string, options: WrapExternalContentOptions): string {
   const { source, sender, subject, includeWarning = true } = options;
+  const boundaryNonce = randomBytes(12).toString("hex");
+  const externalContentStart = `${EXTERNAL_CONTENT_START_PREFIX}${boundaryNonce}>>>`;
+  const externalContentEnd = `${EXTERNAL_CONTENT_END_PREFIX}${boundaryNonce}>>>`;
 
   const sourceLabel = source === "email" ? "Email" : source === "webhook" ? "Webhook" : "External";
   const metadataLines: string[] = [`Source: ${sourceLabel}`];
@@ -108,14 +113,9 @@ export function wrapExternalContent(content: string, options: WrapExternalConten
   const metadata = metadataLines.join("\n");
   const warningBlock = includeWarning ? `${EXTERNAL_CONTENT_WARNING}\n\n` : "";
 
-  return [
-    warningBlock,
-    EXTERNAL_CONTENT_START,
-    metadata,
-    "---",
-    content,
-    EXTERNAL_CONTENT_END,
-  ].join("\n");
+  return [warningBlock, externalContentStart, metadata, "---", content, externalContentEnd].join(
+    "\n",
+  );
 }
 
 /**
