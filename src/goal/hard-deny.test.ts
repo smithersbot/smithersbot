@@ -14,6 +14,23 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("echo ok || flyctl deploy")).not.toBeNull();
   });
 
+  it("blocks privilege escalation command variants", () => {
+    expect(checkCommandDeny("doas whoami")?.pattern).toBe("doas");
+    expect(checkCommandDeny("pkexec id")?.pattern).toBe("pkexec");
+    expect(checkCommandDeny("nsenter --target 1 --mount")?.pattern).toBe("nsenter");
+    expect(checkCommandDeny("unshare --mount /bin/true")?.pattern).toBe("unshare");
+    expect(checkCommandDeny("chroot / /bin/sh")?.pattern).toBe("chroot");
+  });
+
+  it("blocks additional publish command variants", () => {
+    expect(checkCommandDeny("pnpm publish --tag latest")?.pattern).toBe("pnpm publish");
+    expect(checkCommandDeny("yarn publish --new-version 1.2.3")?.pattern).toBe("yarn publish");
+  });
+
+  it("blocks fly deploy alias", () => {
+    expect(checkCommandDeny("fly deploy")?.pattern).toBe("fly deploy");
+  });
+
   it("blocks denied commands in pipelines", () => {
     expect(checkCommandDeny("echo ok | vercel")).not.toBeNull();
   });
@@ -87,6 +104,16 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("rm -rf /")?.pattern).toBe("rm -rf /");
     expect(checkCommandDeny("rm -r -f /")?.pattern).toBe("rm -rf /");
     expect(checkCommandDeny("rm --recursive -f /")?.pattern).toBe("rm -rf /");
+  });
+
+  it("treats home and current-directory rm targets as dangerous", () => {
+    expect(checkCommandDeny("rm -rf ~")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf ~/*")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf $HOME")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf ${HOME}")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf .")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf ./")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("rm -rf ./*")?.pattern).toBe("rm -rf /");
   });
 
   it("allows normal safe commands", () => {
