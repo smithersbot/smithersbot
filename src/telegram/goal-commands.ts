@@ -28,7 +28,7 @@ import {
   buildFeedbackRevisionInstructions,
   mergeRevisedPlanWithDoneSteps,
 } from "../goal/feedback.js";
-import { formatPlanOutput } from "../goal/format-output.js";
+import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { generateManualTests } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
@@ -59,7 +59,6 @@ import {
   START_PREFACE,
 } from "./goal-formatting.js";
 import {
-  formatPlannerFallbackNotice,
   persistEditPromptMessage,
   persistFeedbackPromptMessage,
   persistTelegramQuestionMessage,

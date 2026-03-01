@@ -1,7 +1,7 @@
 import os from "node:os";
 import { computeCpm } from "./cpm.js";
 import { computeDisplayStatuses } from "./execution-status.js";
-import type { DiagramMode, OutputFormat, Plan, StepResult } from "./types.js";
+import type { DiagramMode, OutputFormat, Plan, SerializedRun, StepResult } from "./types.js";
 import { renderAsciiDependencies } from "./dag-render.js";
 import { renderMermaid } from "./mermaid-render.js";
 
@@ -32,6 +32,23 @@ export function formatPlanOutput(
     return formatJson(plan, opts.diagram, opts.workingDir, opts.stepResults);
   }
   return formatMarkdown(plan, opts.diagram, opts.workingDir, opts.stepResults);
+}
+
+export function formatPlannerFallbackNotice(params: {
+  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
+  resetHint?: string;
+}): string {
+  const reasonLabel =
+    params.degradedReason === "anthropic_usage_limit"
+      ? "usage limit"
+      : params.degradedReason === "anthropic_rate_limit"
+        ? "rate limit"
+        : "availability issue";
+  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
+  return (
+    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
+    "Falling back to Codex planning for this run."
+  );
 }
 
 function wantAscii(mode: DiagramMode): boolean {

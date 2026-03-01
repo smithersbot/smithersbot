@@ -87,9 +87,13 @@ vi.mock("../goal/planner.js", () => ({
 }));
 
 const mockFormatPlanOutput = vi.fn();
-vi.mock("../goal/format-output.js", () => ({
-  formatPlanOutput: (...args: unknown[]) => mockFormatPlanOutput(...args),
-}));
+vi.mock("../goal/format-output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/format-output.js")>();
+  return {
+    ...actual,
+    formatPlanOutput: (...args: unknown[]) => mockFormatPlanOutput(...args),
+  };
+});
 
 const mockRenderMermaidToPng = vi.fn(() => Buffer.from("png"));
 vi.mock("../goal/mermaid-png.js", () => ({

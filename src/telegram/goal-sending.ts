@@ -326,23 +326,6 @@ function formatCaptionLabel(label: string, value: string): string {
   return `**${label}:** ${value}`;
 }
 
-export function formatPlannerFallbackNotice(params: {
-  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
-  resetHint?: string;
-}): string {
-  const reasonLabel =
-    params.degradedReason === "anthropic_usage_limit"
-      ? "usage limit"
-      : params.degradedReason === "anthropic_rate_limit"
-        ? "rate limit"
-        : "availability issue";
-  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
-  return (
-    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
-    "Falling back to Codex planning for this run."
-  );
-}
-
 /** Build a metadata caption header for plan messages. */
 function buildCaptionHeader(result: GoalPlanResult): string {
   const lines: string[] = [];

@@ -7,7 +7,7 @@ import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
-import { formatPlanOutput } from "../goal/format-output.js";
+import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import {
   loadRun,
@@ -47,23 +47,6 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
 }
 
 const AUTO_RETRY_EXECUTION_KEYS = new Set(["git", "resume_execution"]);
-
-function formatPlannerFallbackNotice(params: {
-  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
-  resetHint?: string;
-}): string {
-  const reasonLabel =
-    params.degradedReason === "anthropic_usage_limit"
-      ? "usage limit"
-      : params.degradedReason === "anthropic_rate_limit"
-        ? "rate limit"
-        : "availability issue";
-  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
-  return (
-    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
-    "Falling back to Codex planning for this run."
-  );
-}
 
 /**
  * For execution-time blocked runs, only user_input blocks must require

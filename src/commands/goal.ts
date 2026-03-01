@@ -8,7 +8,7 @@ import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent } from "../goal/agent-executor.js";
 import { runCliPlanning } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
-import { formatPlanOutput } from "../goal/format-output.js";
+import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { loadRun, saveRun, sessionToSerialized } from "../goal/run-store.js";
@@ -25,23 +25,6 @@ import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 const DEFAULT_WORKSPACE_DIR = ".moltbot-goal-workspace";
-
-function formatPlannerFallbackNotice(params: {
-  degradedReason: NonNullable<SerializedRun["plannerDegradedReason"]>;
-  resetHint?: string;
-}): string {
-  const reasonLabel =
-    params.degradedReason === "anthropic_usage_limit"
-      ? "usage limit"
-      : params.degradedReason === "anthropic_rate_limit"
-        ? "rate limit"
-        : "availability issue";
-  const resetSuffix = params.resetHint ? ` (${params.resetHint})` : "";
-  return (
-    `Planner notice: Anthropic ${reasonLabel} reached${resetSuffix}. ` +
-    "Falling back to Codex planning for this run."
-  );
-}
 
 export type GoalCommandOptions = {
   goal: string;
