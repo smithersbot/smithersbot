@@ -23,8 +23,10 @@ const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 
 const LESSON_SOURCES = new Set(["ralph", "autocheck", "user_edit", "feedback", "worker"]);
+const LESSON_SCOPES = new Set(["global", "project"]);
 
 export type LessonSource = "ralph" | "autocheck" | "user_edit" | "feedback" | "worker";
+export type LessonScope = "global" | "project";
 
 export type Lesson = {
   id: string;
@@ -32,6 +34,7 @@ export type Lesson = {
   pattern: string;
   lesson: string;
   source: LessonSource;
+  scope?: LessonScope;
   runId: string;
   stepId?: string;
   createdAt: string;
@@ -40,6 +43,7 @@ export type Lesson = {
 type LessonCandidate = {
   pattern: string;
   lesson: string;
+  scope: LessonScope;
   stepId?: string;
 };
 
@@ -72,6 +76,11 @@ function isLesson(value: unknown): value is Lesson {
   if (typeof record.lesson !== "string") return false;
   if (typeof record.runId !== "string") return false;
   if (record.stepId != null && typeof record.stepId !== "string") return false;
+  if (
+    record.scope != null &&
+    (typeof record.scope !== "string" || !LESSON_SCOPES.has(record.scope))
+  )
+    return false;
   if (typeof record.createdAt !== "string") return false;
   if (typeof record.source !== "string" || !LESSON_SOURCES.has(record.source)) return false;
   return true;
@@ -98,6 +107,7 @@ export function saveLessons(lessons: Lesson[]): void {
 export function addLesson(lesson: Omit<Lesson, "id" | "createdAt">): Lesson {
   const next: Lesson = {
     ...lesson,
+    scope: lesson.scope ?? "project",
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
   };
@@ -108,7 +118,11 @@ export function addLesson(lesson: Omit<Lesson, "id" | "createdAt">): Lesson {
 }
 
 export function getLessonsForContext(workingDir: string): Lesson[] {
-  return loadLessons().filter((lesson) => lesson.workingDir === workingDir);
+  return loadLessons().filter((lesson) => {
+    const scope = lesson.scope ?? "project";
+    if (scope === "global") return true;
+    return lesson.workingDir === workingDir;
+  });
 }
 
 export function clearLessons(workingDir?: string): number {
@@ -206,8 +220,9 @@ function normalizeCandidate(value: unknown): LessonCandidate | undefined {
         ? collapseWhitespace(value.text)
         : "";
   if (!pattern || !lesson) return undefined;
+  const scope = value.scope === "global" ? "global" : "project";
   const stepId = typeof value.stepId === "string" ? value.stepId.trim() : "";
-  return { pattern, lesson, ...(stepId ? { stepId } : {}) };
+  return { pattern, lesson, scope, ...(stepId ? { stepId } : {}) };
 }
 
 function parseCandidatesFromUnknown(value: unknown): ParsedLessonCandidates {
@@ -601,6 +616,7 @@ export async function extractRunLessons(
         lesson: candidate.lesson,
         source: "autocheck",
         runId,
+        scope: candidate.scope,
         ...(candidate.stepId ? { stepId: candidate.stepId } : {}),
       });
       recorded.push(added);

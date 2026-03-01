@@ -65,6 +65,7 @@ describe("lessons store", () => {
 
     expect(added.id).toBeTypeOf("string");
     expect(added.id.length).toBeGreaterThan(0);
+    expect(added.scope).toBe("project");
     expect(Number.isNaN(Date.parse(added.createdAt))).toBe(false);
 
     const loaded = loadLessons();
@@ -72,7 +73,21 @@ describe("lessons store", () => {
     expect(loaded[0]).toEqual(added);
   });
 
-  it("filters lessons by exact workingDir only", () => {
+  it("persists explicit lesson scope from addLesson", () => {
+    const added = addLesson({
+      workingDir: "/repo/a",
+      pattern: "cross-project-policy",
+      lesson: "This lesson applies to every workspace.",
+      source: "worker",
+      runId: "run-global-1",
+      scope: "global",
+    });
+
+    expect(added.scope).toBe("global");
+    expect(loadLessons()[0]?.scope).toBe("global");
+  });
+
+  it("returns global lessons and matching project lessons for a workingDir", () => {
     const lessons: Lesson[] = [
       {
         id: "exact",
@@ -81,41 +96,78 @@ describe("lessons store", () => {
         lesson: "Exact match lesson",
         source: "worker",
         runId: "run-1",
+        scope: "project",
         createdAt: "2026-02-24T00:00:00.000Z",
       },
       {
-        id: "ancestor",
-        workingDir: "/repo",
-        pattern: "ancestor",
-        lesson: "Ancestor lesson should not match",
+        id: "legacy-exact",
+        workingDir: "/repo/project",
+        pattern: "legacy-exact",
+        lesson: "Legacy project lesson with no scope still matches this project.",
         source: "feedback",
-        runId: "run-2",
+        runId: "run-legacy",
+        createdAt: "2026-02-24T00:00:00.500Z",
+      },
+      {
+        id: "global",
+        workingDir: "/repo/other",
+        pattern: "global",
+        lesson: "Global lesson should match any workingDir",
+        source: "worker",
+        runId: "run-global",
+        scope: "global",
         createdAt: "2026-02-24T00:00:01.000Z",
       },
       {
-        id: "universal",
-        workingDir: "*",
-        pattern: "universal",
-        lesson: "Universal lesson should not match",
-        source: "ralph",
-        runId: "run-3",
+        id: "other-project",
+        workingDir: "/repo/other",
+        pattern: "other-project",
+        lesson: "Other project lesson should not match",
+        source: "feedback",
+        runId: "run-other",
+        scope: "project",
         createdAt: "2026-02-24T00:00:02.000Z",
       },
       {
-        id: "other",
+        id: "legacy-other",
         workingDir: "/repo/other",
-        pattern: "other",
-        lesson: "Other project lesson should not match",
+        pattern: "legacy-other",
+        lesson: "Legacy project lesson for other directory should not match.",
         source: "autocheck",
-        runId: "run-4",
+        runId: "run-other-legacy",
         createdAt: "2026-02-24T00:00:03.000Z",
       },
     ];
     saveLessons(lessons);
 
     const matched = getLessonsForContext("/repo/project");
-    expect(matched).toHaveLength(1);
-    expect(matched[0]?.id).toBe("exact");
+    expect(matched.map((lesson) => lesson.id)).toEqual(["exact", "legacy-exact", "global"]);
+  });
+
+  it("treats missing lesson scope as project during context lookup", () => {
+    saveLessons([
+      {
+        id: "legacy-a",
+        workingDir: "/repo/a",
+        pattern: "legacy-a",
+        lesson: "Legacy lesson without scope for repo a.",
+        source: "worker",
+        runId: "run-a",
+        createdAt: "2026-02-24T00:00:00.000Z",
+      },
+      {
+        id: "legacy-b",
+        workingDir: "/repo/b",
+        pattern: "legacy-b",
+        lesson: "Legacy lesson without scope for repo b.",
+        source: "worker",
+        runId: "run-b",
+        createdAt: "2026-02-24T00:00:01.000Z",
+      },
+    ]);
+
+    expect(getLessonsForContext("/repo/a").map((lesson) => lesson.id)).toEqual(["legacy-a"]);
+    expect(getLessonsForContext("/repo/b").map((lesson) => lesson.id)).toEqual(["legacy-b"]);
   });
 
   it("clears lessons by workingDir and globally", () => {
@@ -359,6 +411,7 @@ describe("extractRunLessons", () => {
       source: "autocheck",
       runId,
       stepId: "step-alpha",
+      scope: "project",
     });
     expect(recorded[0]?.id.length).toBeGreaterThan(0);
     expect(Number.isNaN(Date.parse(recorded[0]!.createdAt))).toBe(false);
@@ -389,7 +442,7 @@ describe("extractRunLessons", () => {
       makeCliResult({
         stdout: [
           '{"type":"event","message":"starting extraction"}',
-          '{"result":{"lessons":[{"pattern":"jsonl-repair","lesson":"Attempt JSON repair for malformed structured lines.","stepId":"step-alpha"}]}}}',
+          '{"result":{"lessons":[{"pattern":"jsonl-repair","lesson":"Attempt JSON repair for malformed structured lines.","stepId":"step-alpha","scope":"global"}]}}}',
         ].join("\n"),
       }),
     );
@@ -403,6 +456,7 @@ describe("extractRunLessons", () => {
       source: "autocheck",
       runId,
       workingDir,
+      scope: "global",
     });
   });
 
