@@ -1,0 +1,1 @@
+{ "status": "complete", "summary": "Updated planner and autocheck default timeouts from 1_200_000 to 7_200_000 in src/goal/cli-planner.ts and src/goal/plan-autocheck.ts; verified with pnpm build, pnpm vitest run src/goal/cli-planner.test.ts src/goal/plan-autocheck.test.ts, and pnpm lint." }

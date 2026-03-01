@@ -30,7 +30,7 @@ import {
 import type { Plan, PlannerBackendId, PlannerDegradedReason } from "./types.js";
 import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 
-const DEFAULT_PLANNING_TIMEOUT_MS = 1_200_000;
+const DEFAULT_PLANNING_TIMEOUT_MS = 7_200_000;
 const LOG_EXCERPT_CHARS = 2048;
 
 // Canonical planning artifacts live under <run>/scout/ so execution + resume can

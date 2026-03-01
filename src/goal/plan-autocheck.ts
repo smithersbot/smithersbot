@@ -15,7 +15,7 @@ import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
-const DEFAULT_AUTOCHECK_TIMEOUT_MS = 1_200_000;
+const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
 const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const SESSION_NOT_FOUND_RE =
