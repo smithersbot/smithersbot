@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JsonExitError, runCommandWithRuntime } from "../cli/cli-utils.js";
-import { listRuns, loadRun } from "../goal/run-store.js";
+import { listRuns, loadRun, saveRun } from "../goal/run-store.js";
 import type { SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -290,6 +290,49 @@ describe("goal command — early failure persistence", () => {
         cwd: workDir,
       }),
     );
+  });
+
+  it("returns cancelled and does not persist plan when run is stopped during planning", async () => {
+    const runId = "cancelled-during-planning";
+    const plannedWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-planner-selected-"));
+    const planningWorkDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-planning-"));
+
+    mockRunCliPlanning.mockImplementationOnce(
+      async ({ runId: plannerRunId }: { runId: string }) => {
+        const existingRun = loadRun(plannerRunId, testGoalsDir);
+        expect(existingRun?.state).toBe("planning");
+        saveRun({ ...existingRun!, state: "cancelled" }, testGoalsDir);
+        return {
+          status: "success",
+          plan: {
+            goal: "Should not persist",
+            workingDir: plannedWorkDir,
+            summary: "Plan generated after stop",
+            steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+          },
+          scoutStatus: "success",
+        };
+      },
+    );
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+    const outcome = await goalCommand(
+      {
+        runId,
+        goal: "Stop me during planning",
+        workingDir: planningWorkDir,
+        yes: true,
+        planOnly: true,
+      },
+      rt,
+    );
+
+    expect(outcome).toEqual({ status: "cancelled" });
+    const run = loadRun(runId, testGoalsDir);
+    expect(run).toBeDefined();
+    expect(run?.state).toBe("cancelled");
+    expect(run?.plan).toBeNull();
   });
 
   it("persists planner-selected workingDir instead of the pre-resolved planning cwd", async () => {
