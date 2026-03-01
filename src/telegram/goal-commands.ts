@@ -1867,7 +1867,7 @@ export function registerTelegramGoalCommands({
       });
     } else if (hasReject) {
       const reply = await handleGoalReject(run.runId);
-      await sendGoalReply(bot, chatId, reply, runtime, threadId);
+      await sendGoalReply(bot, chatId, reply, runtime, threadId, messageId);
     } else {
       await next?.();
     }
@@ -2315,6 +2315,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_answer", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const raw = ctx.match?.trim() ?? "";
     const spaceIdx = raw.indexOf(" ");
     if (spaceIdx === -1) {
@@ -2364,14 +2365,22 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_answer",
+      replyToMessageId,
       releaseGoalLock: answerLock.release,
       fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb, cfg),
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {
-          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+          await sendGoalReply(
+            bot,
+            resolved.chatId,
+            result,
+            runtime,
+            resolved.threadIdForSend,
+            replyToMessageId,
+          );
         } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
         }
       },
     });
@@ -2381,6 +2390,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_feedback", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const raw = ctx.match?.trim() ?? "";
     const spaceIdx = raw.indexOf(" ");
     if (spaceIdx === -1) {
@@ -2423,6 +2433,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_feedback",
+      replyToMessageId,
       releaseGoalLock: feedbackLock.release,
       fn: () => {
         const statusCb = buildOnStatusChange({
@@ -2437,9 +2448,16 @@ export function registerTelegramGoalCommands({
       onResult: async (result) => {
         if (result == null) return;
         if (typeof result === "string") {
-          await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+          await sendGoalReply(
+            bot,
+            resolved.chatId,
+            result,
+            runtime,
+            resolved.threadIdForSend,
+            replyToMessageId,
+          );
         } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend);
+          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
         }
       },
     });

@@ -3611,12 +3611,16 @@ describe("goal-commands telegram adapter", () => {
     function makeHarness(): {
       commandHandlers: Record<string, (ctx: unknown) => Promise<void>>;
       callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
+      reactionHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
       sendMessage: ReturnType<typeof vi.fn>;
       sendPhoto: ReturnType<typeof vi.fn>;
       register: () => Promise<void>;
     } {
       const commandHandlers: Record<string, (ctx: unknown) => Promise<void>> = {};
       let callbackHandler:
+        | ((ctx: unknown, next?: () => Promise<void>) => Promise<void>)
+        | undefined;
+      let reactionHandler:
         | ((ctx: unknown, next?: () => Promise<void>) => Promise<void>)
         | undefined;
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 600 });
@@ -3642,7 +3646,9 @@ describe("goal-commands telegram adapter", () => {
         ) => {
           if (event === "callback_query:data") {
             callbackHandler = handler;
+            return;
           }
+          if (event === "message_reaction") reactionHandler = handler;
         },
       } as unknown as import("grammy").Bot;
       const runtime = {
@@ -3684,6 +3690,10 @@ describe("goal-commands telegram adapter", () => {
           if (!callbackHandler) throw new Error("callback handler not registered");
           return callbackHandler;
         },
+        get reactionHandler() {
+          if (!reactionHandler) throw new Error("reaction handler not registered");
+          return reactionHandler;
+        },
         sendMessage,
         sendPhoto,
         register,
@@ -3710,6 +3720,19 @@ describe("goal-commands telegram adapter", () => {
           message: {
             chat: { id: 42, type: "private" },
             message_id: messageId,
+          },
+        },
+      };
+    }
+
+    function makeReactionCtx(messageId: number, emoji: string): Record<string, unknown> {
+      return {
+        update: {
+          message_reaction: {
+            chat: { id: 42 },
+            message_id: messageId,
+            old_reaction: [],
+            new_reaction: [{ type: "emoji", emoji }],
           },
         },
       };
@@ -3912,6 +3935,29 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("threads replies for reject emoji reactions", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "awaiting_approval",
+          telegramPlanMessage: {
+            chatId: 42,
+            messageId: 904,
+            threadId: 12,
+          },
+        }),
+      );
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.reactionHandler(makeReactionCtx(904, "👎"));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Plan rejected") && hasReplyMessageId(call, 904),
+        ),
+      ).toBe(true);
+    });
+
     it("threads replies for gD callback detail responses", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(makeRun({ runId, state: "awaiting_approval" }));
@@ -3990,6 +4036,74 @@ describe("goal-commands telegram adapter", () => {
           (call) => String(call[1]).includes("Usage: /goal_edit") && hasReplyMessageId(call, 908),
         ),
       ).toBe(true);
+    });
+
+    it("threads replies for /goal_answer background string results", async () => {
+      saveRunFixture(makeRun({ state: "awaiting_approval" }));
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run continue", 909));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) =>
+              String(call[1]).includes("Run is not awaiting input") && hasReplyMessageId(call, 909),
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it("threads replies for /goal_answer background plan results", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Need a value",
+            requiredInputKey: "db_type",
+          },
+        }),
+      );
+      mockGoalAnswerCommand.mockResolvedValue({ status: "done" });
+      mockGoalResumeCommand.mockResolvedValue({ status: "done" });
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run postgres", 910));
+
+      await waitForAssertion(() => {
+        const hasPhotoReply = harness.sendPhoto.mock.calls.some((call) => {
+          const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
+          return options?.reply_parameters?.message_id === 910;
+        });
+        expect(hasPhotoReply).toBe(true);
+      });
+    });
+
+    it("threads replies for /goal_feedback background string results", async () => {
+      saveRunFixture(makeRun({ state: "done" }));
+      mockRunCliPlanRevision.mockResolvedValue({
+        plan: {
+          blocked: true,
+          question: "Need reproduction steps",
+        },
+      });
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_feedback?.(makeCommandCtx("test-run user feedback", 911));
+
+      await waitForAssertion(() => {
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) =>
+              String(call[1]).includes("Feedback replan blocked: Need reproduction steps") &&
+              hasReplyMessageId(call, 911),
+          ),
+        ).toBe(true);
+      });
     });
 
     it("threads replies for /goal_edit background preface and result", async () => {
