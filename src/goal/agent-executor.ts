@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 import type { MoltbotConfig } from "../config/config.js";
-import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, CliWorkerId, SemgrepMode } from "../config/types.goal.js";
 import {
   loadAttemptBundles,
   resolveWorkerDir,
@@ -176,6 +176,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   const plan = session.plan;
   if (!plan) throw new Error("No plan to execute");
+  const semgrepMode: SemgrepMode = config?.goal?.semgrep ?? "step";
 
   session.state = "executing";
   session.buildGateConfig = plan.buildGate;
@@ -521,21 +522,24 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       plan.buildGate?.runBetweenSteps === true &&
       gateCommands.length > 0
     ) {
-      const checkpointBaseSha = session.taskCheckpoints?.[task.id]?.baseSha;
-      const changedFilesSinceCheckpoint = resolveChangedFilesSinceCheckpoint({
-        workingDir,
-        baseSha: checkpointBaseSha,
-      });
-      if (changedFilesSinceCheckpoint && changedFilesSinceCheckpoint.length === 0) {
-        onProgress?.("  [sast] No changed files since checkpoint; skipping semgrep scan.");
-      }
-      const sastCommand = buildDefaultSastCommand({
-        workingDir,
-        targetPaths: changedFilesSinceCheckpoint ?? undefined,
-      });
-      const commandsForThisStep = sastCommand ? [sastCommand, ...gateCommands] : gateCommands;
-      if (sastCommand) {
-        onProgress?.("  [sast] Running semgrep scan...");
+      let commandsForThisStep = gateCommands;
+      if (semgrepMode === "step") {
+        const checkpointBaseSha = session.taskCheckpoints?.[task.id]?.baseSha;
+        const changedFilesSinceCheckpoint = resolveChangedFilesSinceCheckpoint({
+          workingDir,
+          baseSha: checkpointBaseSha,
+        });
+        if (changedFilesSinceCheckpoint && changedFilesSinceCheckpoint.length === 0) {
+          onProgress?.("  [sast] No changed files since checkpoint; skipping semgrep scan.");
+        }
+        const sastCommand = buildDefaultSastCommand({
+          workingDir,
+          targetPaths: changedFilesSinceCheckpoint ?? undefined,
+        });
+        commandsForThisStep = sastCommand ? [sastCommand, ...gateCommands] : gateCommands;
+        if (sastCommand) {
+          onProgress?.("  [sast] Running semgrep scan...");
+        }
       }
       const gateSignature = commandsForThisStep.join("\n");
       const previousGateSignature = buildGateFixSignatures.get(task.id);
@@ -700,9 +704,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     if (stopAllTasks) break;
   }
 
+  const allDone = orderedSteps.every((s) => s.status === "done");
   const finalGateCommands =
     plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
-  if (orderedSteps.every((s) => s.status === "done") && finalGateCommands.length > 0) {
+  if (allDone && semgrepMode === "goal") {
+    const finalSastCommand = buildDefaultSastCommand({ workingDir });
+    if (finalSastCommand) {
+      finalGateCommands.unshift(finalSastCommand);
+      onProgress?.("  [sast] Running semgrep scan...");
+    }
+  }
+  if (allDone && finalGateCommands.length > 0) {
     const finalGateResult = runBuildGateCommands(finalGateCommands, workingDir);
     const timestamp = new Date().toISOString();
     if (finalGateResult.passed) {
@@ -723,7 +735,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
   }
 
-  const allDone = orderedSteps.every((s) => s.status === "done");
   if (allDone && !finalBuildGateFailurePrompt) {
     session.state = "done";
     let postExecutionReviewNote: string | undefined;

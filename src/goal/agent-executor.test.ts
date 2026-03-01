@@ -3,11 +3,17 @@ import type { GoalLlmClient, GoalSession, Plan, PlanStep, SerializedRun } from "
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
+type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
 const mockPiExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
 const mockLoadAttemptBundles = vi.fn<(dir: string) => AttemptBundle[]>();
 const mockWriteAttemptBundle = vi.fn<(dir: string, bundle: AttemptBundle) => void>();
+const mockBuildDefaultSastCommand = vi.fn<
+  ReturnType<BuildGateModule["buildDefaultSastCommand"]>,
+  Parameters<BuildGateModule["buildDefaultSastCommand"]>
+>();
+let actualBuildDefaultSastCommand: BuildGateModule["buildDefaultSastCommand"] | undefined;
 const mockSpawnSync = vi.fn();
 const mockExecFileSync = vi.fn();
 const mockRunCliProcess = vi.fn();
@@ -60,6 +66,16 @@ vi.mock("./backend-availability.js", () => ({
     return entry.available ? { available: true } : { available: false, reason: entry.reason };
   },
 }));
+
+vi.mock("./build-gate.js", async () => {
+  const actual = await vi.importActual<BuildGateModule>("./build-gate.js");
+  actualBuildDefaultSastCommand = actual.buildDefaultSastCommand;
+  return {
+    ...actual,
+    buildDefaultSastCommand: (...args: Parameters<BuildGateModule["buildDefaultSastCommand"]>) =>
+      mockBuildDefaultSastCommand(...args),
+  };
+});
 
 vi.mock("./attempt-bundle.js", () => ({
   loadAttemptBundles: (dir: string) => mockLoadAttemptBundles(dir),
@@ -143,6 +159,12 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     vi.clearAllMocks();
     mockRunStore.clear();
     attemptBundlesByDir.clear();
+    mockBuildDefaultSastCommand.mockImplementation((...args) => {
+      if (!actualBuildDefaultSastCommand) {
+        throw new Error("buildDefaultSastCommand mock used before actual initialization");
+      }
+      return actualBuildDefaultSastCommand(...args);
+    });
     mockLoadAttemptBundles.mockImplementation((dir) => [...(attemptBundlesByDir.get(dir) ?? [])]);
     mockWriteAttemptBundle.mockImplementation((dir, bundle) => {
       const current = attemptBundlesByDir.get(dir) ?? [];
@@ -867,6 +889,123 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     expect(outcome.status).toBe("done");
     expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("skips semgrep for both step and final gates when goal.semgrep is off", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    mockBuildDefaultSastCommand.mockReturnValue("semgrep scan --config auto --error .");
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-semgrep-mode-off",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockBuildDefaultSastCommand).not.toHaveBeenCalled();
+    const bashCommands = mockSpawnSync.mock.calls
+      .filter((call) => call[0] === "bash")
+      .map((call) => (Array.isArray(call[1]) ? call[1][1] : undefined))
+      .filter((command): command is string => typeof command === "string");
+    expect(bashCommands).toEqual(["pnpm build", "pnpm build"]);
+  });
+
+  it("runs semgrep between steps only when goal.semgrep is step", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    mockBuildDefaultSastCommand.mockReturnValue("semgrep scan --config auto --error .");
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-semgrep-mode-step",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "step" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledTimes(1);
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledWith({
+      workingDir: "/tmp/moltbot-goal-test",
+      targetPaths: undefined,
+    });
+    const bashCommands = mockSpawnSync.mock.calls
+      .filter((call) => call[0] === "bash")
+      .map((call) => (Array.isArray(call[1]) ? call[1][1] : undefined))
+      .filter((command): command is string => typeof command === "string");
+    expect(bashCommands).toEqual([
+      "semgrep scan --config auto --error .",
+      "pnpm build",
+      "pnpm build",
+    ]);
+  });
+
+  it("runs semgrep only in the final gate when goal.semgrep is goal", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    mockBuildDefaultSastCommand.mockReturnValue("semgrep scan --config auto --error .");
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-semgrep-mode-goal",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "goal" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledTimes(1);
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledWith({
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+    const bashCommands = mockSpawnSync.mock.calls
+      .filter((call) => call[0] === "bash")
+      .map((call) => (Array.isArray(call[1]) ? call[1][1] : undefined))
+      .filter((command): command is string => typeof command === "string");
+    expect(bashCommands).toEqual([
+      "pnpm build",
+      "semgrep scan --config auto --error .",
+      "pnpm build",
+    ]);
   });
 
   it("blocks on final build gate failure without mutating done step status", async () => {
