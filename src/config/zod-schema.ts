@@ -463,6 +463,7 @@ export const MoltbotSchema = z
         readOnlyRoots: z.array(z.string()).optional(),
         claudeCodeAuth: z.enum(["subscription", "api_key"]).optional(),
         planAutocheck: z.enum(["codex", "claude_code", "off"]).optional(),
+        semgrep: z.enum(["off", "step", "goal"]).optional(),
         enabledWorkers: z
           .array(z.enum(["codex", "claude_code"]))
           .min(1)
