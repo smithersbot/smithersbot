@@ -469,10 +469,15 @@ export async function goalResumeCommand(
 
   // Reconstruct in-memory session
   const session = serializedToSession(run);
+  let executionStartPersisted = false;
 
   // Helper to persist
   function persistRun(): void {
     const previousRun = loadRun(savedRunId);
+    if (executionStartPersisted && previousRun?.state === "cancelled") {
+      session.state = "cancelled";
+    }
+
     saveRun(
       sessionToSerialized({
         session,
@@ -484,6 +489,10 @@ export async function goalResumeCommand(
         previousRun,
       }),
     );
+
+    if (!executionStartPersisted && session.state === "executing") {
+      executionStartPersisted = true;
+    }
   }
 
   // --- Approval flow: awaiting_approval, cancelled ---
