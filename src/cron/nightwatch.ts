@@ -679,7 +679,7 @@ Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
 Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
-Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/telegram/goal-commands.ts, src/goal/goal-tools.ts, src/goal/build-gate.ts, src/goal/post-execution-review.ts, src/goal/agent-executor-helpers.ts.
+Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/telegram/goal-commands.ts, src/goal/goal-tools.ts, src/goal/build-gate.ts, src/goal/post-execution-review.ts, src/goal/agent-executor-helpers.ts, src/goal/cli-planner.ts, src/goal/scout.ts, src/goal/lessons.ts, src/goal/execution-status.ts, src/goal/manual-tests.ts, src/goal/cli-runner.ts, src/goal/blocked.ts.
 Look for:
 - Bugs or logic errors in the happy path
 - Edge cases in blocked/failed/cancelled states and transitions between them
