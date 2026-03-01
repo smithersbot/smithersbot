@@ -367,6 +367,31 @@ describe("goal-commands telegram adapter", () => {
       expect(result.runId).toBeDefined();
     });
 
+    it("returns stopped message when planning run is externally cancelled", async () => {
+      let createdRunId = "";
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          createdRunId = opts.runId;
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
+          saveRunFixture(makeRun({ runId: opts.runId, state: "cancelled" }));
+          runtime.log("## Plan\n1. Do something");
+          return { status: "cancelled" };
+        },
+      );
+
+      const { handleGoal } = await import("./goal-commands.js");
+      const result = await handleGoal("Build a website", {
+        goal: { planAutocheck: "codex" },
+      } as never);
+
+      expect(result.text).toBe("Goal was stopped.");
+      expect(result.runId).toBe(createdRunId);
+      expect(result.plan).toBeUndefined();
+      expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
+      const persisted = loadRun(createdRunId, testGoalsDir);
+      expect(persisted?.state).toBe("cancelled");
+    });
+
     it("handles error from goalCommand", async () => {
       mockGoalCommand.mockRejectedValue(new Error("API key missing"));
 

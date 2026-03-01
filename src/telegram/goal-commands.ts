@@ -291,11 +291,15 @@ async function runGoalPlanAutocheck(params: {
 }
 
 function markRunAwaitingApproval(run: SerializedRun | undefined): SerializedRun | undefined {
-  if (!run || run.state === "awaiting_approval") return run;
-  run.state = "awaiting_approval";
-  run.updatedAt = new Date().toISOString();
-  saveRun(run);
-  return run;
+  if (!run) return run;
+  const latestRun = loadRun(run.runId) ?? run;
+  if (latestRun.state === "awaiting_approval" || latestRun.state === "cancelled") {
+    return latestRun;
+  }
+  latestRun.state = "awaiting_approval";
+  latestRun.updatedAt = new Date().toISOString();
+  saveRun(latestRun);
+  return latestRun;
 }
 
 function trackBlockedStatusChange(
@@ -500,13 +504,18 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     if (logs) parts.push(logs);
     if (errors) parts.push(errors);
 
+    const latestRun = loadRun(runId);
+    if (outcome?.status === "cancelled" || latestRun?.state === "cancelled") {
+      return { text: "Goal was stopped.", runId };
+    }
+
     if (outcome?.status === "blocked") {
       parts.push(`\nAnswer: /goal_answer ${runId.slice(0, 8)} <your answer>`);
       return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
     }
 
     // Successful plan — load run for PNG rendering in sendGoalPlanResult
-    let run = loadRun(runId);
+    let run = latestRun;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     let autocheckSkipped = false;
     if (run?.plan) {
