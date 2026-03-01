@@ -369,6 +369,8 @@ describe("goal-commands telegram adapter", () => {
 
     it("returns stopped message when planning run is externally cancelled", async () => {
       let createdRunId = "";
+      const runStoreModule = await import("../goal/run-store.js");
+      const saveRunSpy = vi.spyOn(runStoreModule, "saveRun");
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
           createdRunId = opts.runId;
@@ -387,9 +389,17 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toBe("Goal was stopped.");
       expect(result.runId).toBe(createdRunId);
       expect(result.plan).toBeUndefined();
+      expect(result.stepResults).toBeUndefined();
       expect(mockRunPlanAutocheck).not.toHaveBeenCalled();
+      const persistedWrites = saveRunSpy.mock.calls.map(([run]) => run as SerializedRun);
+      expect(
+        persistedWrites.some(
+          (run) => run.runId === createdRunId && run.state === "awaiting_approval",
+        ),
+      ).toBe(false);
       const persisted = loadRun(createdRunId, testGoalsDir);
       expect(persisted?.state).toBe("cancelled");
+      saveRunSpy.mockRestore();
     });
 
     it("handles error from goalCommand", async () => {
