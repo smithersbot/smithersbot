@@ -360,6 +360,105 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("retries execution-time none blocks without requiring /goal_answer", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-none-blocked-ws-"));
+    saveRun(
+      makeRun({
+        runId: "blocked-none-run",
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "No input key retry",
+          steps: [
+            {
+              id: "pending-step",
+              description: "Continue execution",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Final build gate failed.\nCommand: pnpm build",
+          requiredInputKey: "none",
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand("blocked-none-run", { yes: true, quiet: true }, rt);
+
+    expect(result?.status).toBe("done");
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    const persisted = loadRun("blocked-none-run", testGoalsDir);
+    expect(persisted?.state).toBe("done");
+    expect(persisted?.blocked).toBeNull();
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("retries failed final build gate instead of short-circuiting completed steps", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-final-gate-ws-"));
+    const runId = "blocked-final-gate-run";
+    saveRun(
+      makeRun({
+        runId,
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "All steps done but final gate failed",
+          steps: [
+            {
+              id: "done-step",
+              description: "Already done",
+              dependsOn: [],
+              status: "done",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        stepResults: {
+          "done-step": {
+            stepId: "done-step",
+            success: true,
+            output: "Done",
+            durationMs: 1,
+          },
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Final build gate failed.\nCommand: pnpm build",
+          requiredInputKey: "none",
+        },
+        buildGateResults: {
+          __final__: {
+            passed: false,
+            failedCommand: "pnpm build",
+            output: "Build failed",
+            timestamp: "2026-01-30T00:00:00.000Z",
+          },
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+    expect(result).toEqual({ status: "done", summary: "All tasks completed." });
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    const persisted = loadRun(runId, testGoalsDir);
+    expect(persisted?.state).toBe("done");
+    expect(persisted?.blocked).toBeNull();
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("blocked run in JSON mode outputs strict JSON", async () => {
     saveRun(
       makeRun({

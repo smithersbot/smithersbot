@@ -46,7 +46,7 @@ function resolveIsJson(opts: GoalResumeOptions): boolean {
   return Boolean(opts.json);
 }
 
-const AUTO_RETRY_EXECUTION_KEYS = new Set(["git", "resume_execution"]);
+const AUTO_RETRY_EXECUTION_KEYS = new Set(["git", "resume_execution", "none"]);
 
 /**
  * For execution-time blocked runs, only user_input blocks must require
@@ -553,19 +553,27 @@ export async function goalResumeCommand(
   const resumableSteps =
     session.plan?.steps.filter((s) => s.status === "pending" || s.status === "blocked") ?? [];
   if (resumableSteps.length === 0) {
-    session.state = "done";
-    session.blocked = null;
-    persistRun();
-    const outcome: GoalOutcome = {
-      status: "done",
-      summary: "All steps already completed.",
-    };
-    if (isJson) {
-      runtime.log(JSON.stringify(outcome, null, 2));
-    } else if (!quiet) {
-      runtime.log("All steps already completed.");
+    const finalGateFailed =
+      session.buildGateResults?.["__final__"]?.passed === false ||
+      run.blocked?.prompt.startsWith("Final build gate failed") === true;
+    if (finalGateFailed) {
+      // Final build gate failures can be retried without /goal_answer.
+      session.blocked = null;
+    } else {
+      session.state = "done";
+      session.blocked = null;
+      persistRun();
+      const outcome: GoalOutcome = {
+        status: "done",
+        summary: "All steps already completed.",
+      };
+      if (isJson) {
+        runtime.log(JSON.stringify(outcome, null, 2));
+      } else if (!quiet) {
+        runtime.log("All steps already completed.");
+      }
+      return outcome;
     }
-    return outcome;
   }
 
   if (!isJson && !quiet) {
