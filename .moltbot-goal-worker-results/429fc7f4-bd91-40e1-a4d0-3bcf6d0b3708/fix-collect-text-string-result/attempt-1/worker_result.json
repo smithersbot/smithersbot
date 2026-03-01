@@ -1,0 +1,1 @@
+{"status":"complete","summary":"Updated collectText() in src/goal/post-execution-review.ts to return string-valued result envelopes before record traversal, and added a parsePostExecutionReviewDecision test for --output-format json envelopes where result is a JSON string. Verification passed: pnpm vitest run src/goal/post-execution-review.test.ts, pnpm build, and pnpm lint."}
