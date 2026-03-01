@@ -15,7 +15,14 @@ export const HARD_DENIES: HardDeny[] = [
 
   // --- Command denies (token-aware matching) ---
   { pattern: "sudo", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "doas", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "pkexec", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "nsenter", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "unshare", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "chroot", reason: "Elevated privileges not permitted", type: "command" },
   { pattern: "npm publish", reason: "Publishing not permitted", type: "command" },
+  { pattern: "pnpm publish", reason: "Publishing not permitted", type: "command" },
+  { pattern: "yarn publish", reason: "Publishing not permitted", type: "command" },
   { pattern: "rm -rf /", reason: "Recursive root deletion not permitted", type: "command" },
   { pattern: "mkfs", reason: "Filesystem formatting not permitted", type: "command" },
   { pattern: "dd if=", reason: "Raw disk writes not permitted", type: "command" },
@@ -34,6 +41,7 @@ export const HARD_DENIES: HardDeny[] = [
   // Substring globs cause false positives on filenames, echo statements, docs.
   { pattern: "vercel", reason: "Deployment not permitted", type: "command" },
   { pattern: "flyctl deploy", reason: "Deployment not permitted", type: "command" },
+  { pattern: "fly deploy", reason: "Deployment not permitted", type: "command" },
   { pattern: "kubectl apply", reason: "Deployment not permitted", type: "command" },
   { pattern: "helm install", reason: "Deployment not permitted", type: "command" },
   { pattern: "helm upgrade", reason: "Deployment not permitted", type: "command" },
@@ -573,7 +581,22 @@ function isDangerousRm(tokens: string[]): boolean {
   const targets = args.filter((arg) => !arg.startsWith("-"));
   if (targets.length === 0) return true;
 
-  return targets.some((target) => target === "/" || target === "/*");
+  return targets.some((target) => {
+    const normalizedTarget = target === "/" ? target : target.toLowerCase().replace(/\/+$/, "");
+    return (
+      normalizedTarget === "/" ||
+      normalizedTarget === "/*" ||
+      normalizedTarget === "~" ||
+      normalizedTarget === "~/*" ||
+      normalizedTarget === "$home" ||
+      normalizedTarget === "$home/*" ||
+      normalizedTarget === "${home}" ||
+      normalizedTarget === "${home}/*" ||
+      normalizedTarget === "." ||
+      normalizedTarget === "./" ||
+      normalizedTarget === "./*"
+    );
+  });
 }
 
 function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): HardDeny | null {
@@ -594,8 +617,29 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
       case "sudo":
         if (cmd === "sudo") return deny;
         break;
+      case "doas":
+        if (cmd === "doas") return deny;
+        break;
+      case "pkexec":
+        if (cmd === "pkexec") return deny;
+        break;
+      case "nsenter":
+        if (cmd === "nsenter") return deny;
+        break;
+      case "unshare":
+        if (cmd === "unshare") return deny;
+        break;
+      case "chroot":
+        if (cmd === "chroot") return deny;
+        break;
       case "npm publish":
         if (cmd === "npm" && args[0] === "publish") return deny;
+        break;
+      case "pnpm publish":
+        if (cmd === "pnpm" && args[0] === "publish") return deny;
+        break;
+      case "yarn publish":
+        if (cmd === "yarn" && args[0] === "publish") return deny;
         break;
       case "rm -rf /":
         if (isDangerousRm(lowerTokens)) return deny;
@@ -617,6 +661,9 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
         break;
       case "flyctl deploy":
         if (cmd === "flyctl" && args[0] === "deploy") return deny;
+        break;
+      case "fly deploy":
+        if (cmd === "fly" && args[0] === "deploy") return deny;
         break;
       case "kubectl apply":
         if (cmd === "kubectl" && args[0] === "apply") return deny;
