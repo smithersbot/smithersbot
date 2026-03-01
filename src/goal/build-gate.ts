@@ -189,7 +189,7 @@ export function buildDefaultSastCommand(params: {
           .join(" ")
       : shellQuote(params.workingDir);
 
-  return `semgrep scan --config auto --error --quiet --severity ERROR --timeout 30 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' ${targetArgs}`;
+  return `semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude 'node_modules' --exclude 'dist' --exclude '.git' --exclude '.next' --exclude 'build' --exclude '*.test.ts' ${targetArgs}`;
 }
 
 export function resetToTaskBaseSha(
