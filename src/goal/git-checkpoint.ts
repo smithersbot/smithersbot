@@ -17,6 +17,8 @@ __pycache__/
 .pytest_cache/
 .tox/
 .mypy_cache/
+.env
+.env.*
 `;
 
 function describeGitError(error: unknown): string {

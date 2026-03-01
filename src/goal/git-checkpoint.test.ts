@@ -119,7 +119,7 @@ describeGit("git-checkpoint", () => {
     const gitignorePath = path.join(workingDir, ".gitignore");
     expect(fs.existsSync(gitignorePath)).toBe(true);
     expect(fs.readFileSync(gitignorePath, "utf8")).toBe(
-      "venv/\n.venv/\nnode_modules/\n__pycache__/\n.pytest_cache/\n.tox/\n.mypy_cache/\n",
+      "venv/\n.venv/\nnode_modules/\n__pycache__/\n.pytest_cache/\n.tox/\n.mypy_cache/\n.env\n.env.*\n",
     );
 
     const head = execSync("git rev-parse HEAD", {
