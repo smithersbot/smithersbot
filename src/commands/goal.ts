@@ -11,7 +11,7 @@ import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput } from "../goal/format-output.js";
 import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import { saveRun, sessionToSerialized } from "../goal/run-store.js";
+import { loadRun, saveRun, sessionToSerialized } from "../goal/run-store.js";
 import type { GoalBackendId } from "../goal/backend-types.js";
 import type {
   DiagramMode,
@@ -197,6 +197,12 @@ export async function goalCommand(
         progress.done();
       }
     })();
+
+    const latestRun = loadRun(runId);
+    if (latestRun?.state === "cancelled") {
+      session.state = "cancelled";
+      return { status: "cancelled" };
+    }
 
     scoutStatus = planningResult.scoutStatus;
     scoutSkipReason = planningResult.scoutSkipReason;
