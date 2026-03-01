@@ -421,6 +421,79 @@ describe("extractRunLessons", () => {
     expect(stored[0]).toEqual(recorded[0]);
   });
 
+  it("includes hardened worker-only extraction instructions and scope schema in prompts", async () => {
+    const runId = "extract-run-prompt-contract";
+    const workingDir = "/repo/project-prompts";
+    saveExtractionRun({
+      runId,
+      workingDir,
+      planHistory: [
+        {
+          revision: 1,
+          source: "autocheck",
+          editInstructions: "Fix reliability issue from failed parser run",
+          plan: createPlan(workingDir, "Revised plan"),
+        },
+      ],
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "pnpm build failed",
+          error: "Parser emitted malformed JSON",
+          durationMs: 22,
+        },
+      },
+    });
+
+    mockRunCliProcess.mockResolvedValueOnce(makeCliResult({ stdout: '{"lessons":[]}' }));
+
+    const recorded = await extractRunLessons(runId, workingDir, []);
+    expect(recorded).toEqual([]);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(call.stdin).toContain(
+      '{"lessons":[{"pattern":"...","lesson":"...","scope":"project|global","stepId":"optional"}]}',
+    );
+    expect(call.stdin).toContain(
+      '{ "lessons": [{ "pattern": "short-keyword", "lesson": "1-3 sentence insight", "scope": "project|global", "stepId": "optional step id" }] }',
+    );
+    expect(call.stdin).toContain(
+      "Lessons are ONLY for improving the worker prompt (the CLI agent executing individual plan steps).",
+    );
+    expect(call.stdin).toContain(
+      "Do NOT include advice for the planner, plan autocheck/reviewer, manual-test suggester, post-execution reviewer, or any other LLM surface.",
+    );
+    expect(call.stdin).toContain(
+      "Every correction in this summary has ALREADY been applied to the codebase; the code is in its fully fixed, committed state.",
+    );
+    expect(call.stdin).toContain(
+      "Only create a lesson if it captures a forward-looking principle that would NOT be obvious from reading the current source code.",
+    );
+    expect(call.stdin).toContain(
+      "Reject any candidate that merely describes what was changed or fixed in this run.",
+    );
+    expect(call.stdin).toContain(
+      "Reject any candidate that gives advice about things the worker cannot control",
+    );
+    expect(call.stdin).toContain(
+      "Reject any candidate that works around a flaky code path instead of fixing code.",
+    );
+    expect(call.stdin).toContain(
+      "Reject any candidate that restates implementation details already visible in source.",
+    );
+    expect(call.stdin).toContain(
+      "Only include lessons about issues that actually caused problems or confusion in this run.",
+    );
+    expect(call.stdin).toContain(
+      "If unsure whether a lesson should be included, do not include it.",
+    );
+    expect(call.stdin).toContain(
+      'Classify scope for each lesson: "global" for principles that apply to any project, "project" for lessons specific to this working directory.',
+    );
+  });
+
   it("repairs malformed JSONL lines when parsing extracted lessons", async () => {
     const runId = "extract-run-jsonl-repair";
     const workingDir = "/repo/project-jsonl";
