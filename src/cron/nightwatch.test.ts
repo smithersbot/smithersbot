@@ -5,9 +5,12 @@ import type { NightwatchConfig } from "../config/types.cron.js";
 import {
   NIGHTWATCH_DEFAULTS,
   NIGHTWATCH_JOB_NAME,
+  buildClaudeCondensePrompt,
+  buildLessonCondensePrompt,
   buildNightwatchPrompt,
   checkGitChanges,
   expandTilde,
+  normalizeCondensedLesson,
   registerNightwatchJob,
   runNightwatch,
 } from "./nightwatch.js";
@@ -171,6 +174,67 @@ describe("nightwatch cron", () => {
       expect(prompt).toContain("Security concerns");
       expect(prompt).toContain("src/security/audit.ts");
       expect(prompt).toContain("OWASP Top 10");
+    });
+  });
+
+  describe("lesson condensation prompt", () => {
+    it("contains two-phase categorize-then-act instructions and scope schema", () => {
+      const prompt = buildLessonCondensePrompt("/repo/project", [
+        {
+          id: "lesson-1",
+          workingDir: "/repo/project",
+          pattern: "old-pattern",
+          lesson: "Old lesson text",
+          source: "worker",
+          runId: "run-1",
+          createdAt: "2026-03-01T00:00:00.000Z",
+        },
+      ]);
+
+      expect(prompt).toContain("Use a required two-phase process:");
+      expect(prompt).toContain("Phase 1 — Categorize every input lesson");
+      expect(prompt).toContain("already-fixed-bug");
+      expect(prompt).toContain("flaky-path-workaround");
+      expect(prompt).toContain("cant-control");
+      expect(prompt).toContain("genuine");
+      expect(prompt).toContain("Phase 2 — Act on each category:");
+      expect(prompt).toContain("already-fixed-bug: delete.");
+      expect(prompt).toContain("flaky-path-workaround: delete.");
+      expect(prompt).toContain("cant-control: delete.");
+      expect(prompt).toContain("genuine: keep, classify scope, and merge duplicates.");
+      expect(prompt).toContain('"scope":"global|project"');
+    });
+
+    it("requires Claude JSON output schema with scope", () => {
+      const prompt = buildClaudeCondensePrompt("summarize lessons");
+      expect(prompt).toContain('"scope":"global|project"');
+    });
+
+    it("normalizes scope and defaults to project when missing/invalid", () => {
+      const validIds = new Set(["lesson-1"]);
+
+      const global = normalizeCondensedLesson(
+        {
+          pattern: "cross-project",
+          lesson: "Use deterministic tests for flaky integrations.",
+          scope: "global",
+          sourceLessonIds: ["lesson-1"],
+        },
+        validIds,
+      );
+      expect(global?.scope).toBe("global");
+      expect(global?.sourceLessonIds).toEqual(["lesson-1"]);
+
+      const projectDefault = normalizeCondensedLesson(
+        {
+          pattern: "repo-specific",
+          lesson: "Prefer this repo's shared helper for command execution.",
+          scope: "invalid",
+          sourceLessonIds: ["lesson-1"],
+        },
+        validIds,
+      );
+      expect(projectDefault?.scope).toBe("project");
     });
   });
 

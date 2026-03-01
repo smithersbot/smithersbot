@@ -37,6 +37,7 @@ export type NightwatchRunResult =
 type CondensedLesson = {
   pattern: string;
   lesson: string;
+  scope?: "global" | "project";
   sourceLessonIds: string[];
 };
 
@@ -156,7 +157,7 @@ function normalizeSourceLessonIds(value: unknown, validIds: Set<string>): string
   return [...unique];
 }
 
-function normalizeCondensedLesson(
+export function normalizeCondensedLesson(
   value: unknown,
   validIds: Set<string>,
 ): CondensedLesson | undefined {
@@ -186,7 +187,9 @@ function normalizeCondensedLesson(
         ? sourceIdsAlias
         : lessonIdsAlias;
 
-  return { pattern, lesson, sourceLessonIds };
+  const scope = value.scope === "global" ? "global" : "project";
+
+  return { pattern, lesson, scope, sourceLessonIds };
 }
 
 function parseCondensedLessonsFromUnknown(
@@ -294,7 +297,7 @@ function formatCliFailure(stdout: string, stderr: string, signal: NodeJS.Signals
   return "unknown CLI error";
 }
 
-function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): string {
+export function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): string {
   const payload = lessons.map((lesson) => ({
     id: lesson.id,
     pattern: lesson.pattern,
@@ -306,11 +309,30 @@ function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): strin
   return [
     "Condense and curate these project lessons for long-term reuse.",
     `Working directory: ${workingDir}`,
-    `Return at most ${MAX_CONDENSED_LESSONS_PER_DIR} lessons by merging duplicates, dropping low-value entries, and generalizing where helpful.`,
+    "",
+    "Use a required two-phase process:",
+    "Phase 1 — Categorize every input lesson into exactly one category:",
+    "- already-fixed-bug: describes a specific fix that is already committed in the codebase.",
+    "- flaky-path-workaround: tells the worker to work around a code issue instead of fixing the code.",
+    "- cant-control: advises on things the worker cannot control (system config, build-gate policy, etc.).",
+    "- genuine: a forward-looking principle that improves worker decision-making on future tasks.",
+    "",
+    "Phase 2 — Act on each category:",
+    "- already-fixed-bug: delete.",
+    "- flaky-path-workaround: delete.",
+    "- cant-control: delete.",
+    "- genuine: keep, classify scope, and merge duplicates.",
+    "",
+    "Scope classification for kept (genuine) lessons:",
+    "- global: applies across any project/workspace as a general engineering/testing principle.",
+    "- project: only relevant to this working directory.",
+    "",
+    `Return at most ${MAX_CONDENSED_LESSONS_PER_DIR} kept lessons after categorization and deduplication.`,
     "",
     "Output requirements:",
-    'Return ONLY JSON with shape {"lessons":[{"pattern":"short-keyword","lesson":"1-3 sentence insight","sourceLessonIds":["input-id"]}]}',
+    'Return ONLY JSON with shape {"lessons":[{"pattern":"short-keyword","lesson":"1-3 sentence insight","scope":"global|project","sourceLessonIds":["input-id"]}]}',
     "- sourceLessonIds should reference the input IDs that support each output lesson.",
+    '- scope is required for each kept lesson ("global" or "project").',
     `- Output must contain at most ${MAX_CONDENSED_LESSONS_PER_DIR} lessons.`,
     "- Do not invent facts that are not grounded in the input lessons.",
     '- If no lessons should remain, return {"lessons":[]}.',
@@ -320,10 +342,10 @@ function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): strin
   ].join("\n");
 }
 
-function buildClaudeCondensePrompt(userPrompt: string): string {
+export function buildClaudeCondensePrompt(userPrompt: string): string {
   const systemPrompt = [
     "You condense lesson memory for a software project.",
-    'Output only JSON with shape {"lessons":[{"pattern":"...","lesson":"...","sourceLessonIds":["..."]}]}',
+    'Output only JSON with shape {"lessons":[{"pattern":"...","lesson":"...","scope":"global|project","sourceLessonIds":["..."]}]}',
     `Never return more than ${MAX_CONDENSED_LESSONS_PER_DIR} lessons.`,
   ].join(" ");
   return ["## System Prompt", systemPrompt, "", "## User Message", userPrompt].join("\n");
@@ -507,6 +529,7 @@ export async function pruneAndCondenseLessons(): Promise<void> {
         workingDir,
         pattern: entry.pattern,
         lesson: entry.lesson,
+        scope: entry.scope,
         source: source.source,
         runId: source.runId,
         ...(source.stepId ? { stepId: source.stepId } : {}),
