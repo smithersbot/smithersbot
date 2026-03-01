@@ -1905,7 +1905,14 @@ export function registerTelegramGoalCommands({
         onResult: async (result) => {
           if (result == null) return;
           if (typeof result === "string") {
-            await sendGoalReply(bot, resolved.chatId, result, runtime, resolved.threadIdForSend);
+            await sendGoalReply(
+              bot,
+              resolved.chatId,
+              result,
+              runtime,
+              resolved.threadIdForSend,
+              replyToMessageId,
+            );
           } else {
             await sendPlanResult(
               resolved.chatId,
@@ -2227,6 +2234,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_approve", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const rawId = ctx.match?.trim() ?? "";
     if (!rawId) {
       await sendGoalReply(
@@ -2235,6 +2243,7 @@ export function registerTelegramGoalCommands({
         "Usage: /goal_approve <runId>",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2242,7 +2251,7 @@ export function registerTelegramGoalCommands({
       rawId,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
-      replyToMessageId: ctx.message?.message_id,
+      replyToMessageId,
       lockLabel: "approve",
       backgroundLabel: "goal_approve",
     });
@@ -2252,6 +2261,7 @@ export function registerTelegramGoalCommands({
   bot.command("goal_resume", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
     const rawId = ctx.match?.trim() ?? "";
     if (!rawId) {
       await sendGoalReply(
@@ -2260,6 +2270,7 @@ export function registerTelegramGoalCommands({
         "Usage: /goal_resume <runId>",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2267,7 +2278,7 @@ export function registerTelegramGoalCommands({
       rawId,
       chatId: resolved.chatId,
       threadId: resolved.threadIdForSend,
-      replyToMessageId: ctx.message?.message_id,
+      replyToMessageId,
       lockLabel: "resume",
       backgroundLabel: "goal_resume",
     });
@@ -2403,6 +2414,7 @@ export function registerTelegramGoalCommands({
         "Usage: /goal_answer <runId> <value>",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2416,6 +2428,7 @@ export function registerTelegramGoalCommands({
         `Run not found: ${answerRunIdRaw}`,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2427,6 +2440,7 @@ export function registerTelegramGoalCommands({
         formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2478,6 +2492,7 @@ export function registerTelegramGoalCommands({
         "Usage: /goal_feedback <runId> <feedback>",
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2491,6 +2506,7 @@ export function registerTelegramGoalCommands({
         `Run not found: ${feedbackRunIdRaw}`,
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }
@@ -2502,6 +2518,7 @@ export function registerTelegramGoalCommands({
         formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel),
         runtime,
         resolved.threadIdForSend,
+        replyToMessageId,
       );
       return;
     }

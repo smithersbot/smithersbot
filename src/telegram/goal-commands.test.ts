@@ -4023,6 +4023,33 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("threads replies for /goal_approve usage responses", async () => {
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_approve?.(makeCommandCtx("", 803));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Usage: /goal_approve") && hasReplyMessageId(call, 803),
+        ),
+      ).toBe(true);
+    });
+
+    it("threads replies for /goal_resume usage responses", async () => {
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_resume?.(makeCommandCtx("", 804));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Usage: /goal_resume") && hasReplyMessageId(call, 804),
+        ),
+      ).toBe(true);
+    });
+
     it("threads replies for /goal_status and /goal_detail responses", async () => {
       saveRunFixture(makeRun({ plan: null }));
       mockGoalStatusCommand.mockImplementation(
@@ -4172,6 +4199,113 @@ describe("goal-commands telegram adapter", () => {
           (call) => String(call[1]).includes("Usage: /goal_edit") && hasReplyMessageId(call, 908),
         ),
       ).toBe(true);
+    });
+
+    it("threads replies for /goal_answer usage, run-not-found, and lock responses", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need details",
+            requiredInputKey: "task:1:input",
+          },
+        }),
+      );
+      let resolveAnswer: ((value: unknown) => void) | undefined;
+      mockGoalAnswerCommand.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveAnswer = resolve;
+          }),
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run", 912));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]).includes("Usage: /goal_answer") && hasReplyMessageId(call, 912),
+        ),
+      ).toBe(true);
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("missing-answer value", 913));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: missing-answer") &&
+            hasReplyMessageId(call, 913),
+        ),
+      ).toBe(true);
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run value", 914));
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run other", 915));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 915),
+        ),
+      ).toBe(true);
+
+      resolveAnswer?.({ status: "blocked", question: "Need details" });
+      await waitForAssertion(() => {
+        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it("threads replies for /goal_feedback usage, run-not-found, and lock responses", async () => {
+      saveRunFixture(makeRun({ state: "done" }));
+      let resolveRevision: ((value: unknown) => void) | undefined;
+      mockRunCliPlanRevision.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRevision = resolve;
+          }),
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_feedback?.(makeCommandCtx("test-run", 916));
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Usage: /goal_feedback") && hasReplyMessageId(call, 916),
+        ),
+      ).toBe(true);
+
+      await harness.commandHandlers.goal_feedback?.(
+        makeCommandCtx("missing-feedback details", 917),
+      );
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Run not found: missing-feedback") &&
+            hasReplyMessageId(call, 917),
+        ),
+      ).toBe(true);
+
+      await harness.commandHandlers.goal_feedback?.(makeCommandCtx("test-run looks wrong", 918));
+      await harness.commandHandlers.goal_feedback?.(makeCommandCtx("test-run still wrong", 919));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 919),
+        ),
+      ).toBe(true);
+
+      resolveRevision?.({
+        plan: {
+          blocked: true,
+          question: "Need more details",
+        },
+      });
+      await waitForAssertion(() => {
+        expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("threads replies for /goal_answer background string results", async () => {
