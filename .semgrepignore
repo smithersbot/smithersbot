@@ -15,3 +15,5 @@ scripts/e2e/
 
 # Vendored third-party code
 vendor/
+# Goal worker result artifacts (not source code)
+.moltbot-goal-worker-results/
