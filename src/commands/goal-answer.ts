@@ -1,4 +1,5 @@
 import { JsonExitError } from "../cli/cli-utils.js";
+import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { GoalOutcome, OutputFormat } from "../goal/types.js";
@@ -11,6 +12,7 @@ export type GoalAnswerOptions = {
   json?: boolean;
   output?: OutputFormat;
   quiet?: boolean;
+  config?: MoltbotConfig;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
 };
 
@@ -122,6 +124,7 @@ export async function goalAnswerCommand(
         json: isJson,
         output: opts.output,
         quiet: opts.quiet,
+        config: opts.config,
         onStatusChange: opts.onStatusChange,
       },
       runtime,
