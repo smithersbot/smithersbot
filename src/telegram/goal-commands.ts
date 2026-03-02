@@ -1511,12 +1511,21 @@ export function registerTelegramGoalCommands({
               input_field_placeholder: "Describe your changes...",
             },
           })
-          .catch((err) => {
+          .catch(async (err) => {
             runtime.error?.(
               `[goal-callback] failed to send edit prompt: ${
                 err instanceof Error ? err.message : String(err)
               }`,
             );
+            await sendGoalReply(
+              bot,
+              chatId,
+              "Could not open the edit reply prompt. Use /goal_edit RUN_ID CHANGE_REQUEST.",
+              runtime,
+              threadId,
+              messageId,
+            );
+            return undefined;
           });
         // Track the prompt message so the router can map replies back to GOAL_EDIT
         if (sent?.message_id && runIdPrefix) {
@@ -1637,12 +1646,21 @@ export function registerTelegramGoalCommands({
             input_field_placeholder: "Describe your feedback or what needs to change...",
           },
         })
-        .catch((err) => {
+        .catch(async (err) => {
           runtime.error?.(
             `[goal-callback] failed to send feedback prompt: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
+          await sendGoalReply(
+            bot,
+            chatId,
+            "Could not open the feedback reply prompt. Use /goal_feedback RUN_ID FEEDBACK.",
+            runtime,
+            threadId,
+            messageId,
+          );
+          return undefined;
         });
       if (sent?.message_id) {
         persistFeedbackPromptMessage({
@@ -1709,12 +1727,21 @@ export function registerTelegramGoalCommands({
             input_field_placeholder: "Describe your answer...",
           },
         })
-        .catch((err) => {
+        .catch(async (err) => {
           runtime.error?.(
             `[goal-callback] failed to send blocked answer prompt: ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
+          await sendGoalReply(
+            bot,
+            chatId,
+            "Could not open the answer reply prompt. Use /goal_answer RUN_ID YOUR_ANSWER.",
+            runtime,
+            threadId,
+            messageId,
+          );
+          return undefined;
         });
       if (sent?.message_id) {
         persistTelegramQuestionMessage({

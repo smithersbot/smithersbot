@@ -3661,6 +3661,64 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
+    it("sends fallback message when ge force-reply prompt fails", async () => {
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockImplementation(
+        async (
+          _chatId: number,
+          _text: string,
+          options?: { reply_markup?: { force_reply?: boolean } },
+        ) => {
+          if (options?.reply_markup?.force_reply) {
+            throw new Error("force reply failed");
+          }
+          return { message_id: 780 };
+        },
+      );
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("ge:abcdef12:1", 551));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Could not open the edit reply prompt.") &&
+            (call[2] as { reply_parameters?: { message_id?: number } } | undefined)
+              ?.reply_parameters?.message_id === 551,
+        ),
+      ).toBe(true);
+    });
+
+    it("sends fallback message when gIF force-reply prompt fails", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "done" }));
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockImplementation(
+        async (
+          _chatId: number,
+          _text: string,
+          options?: { reply_markup?: { force_reply?: boolean } },
+        ) => {
+          if (options?.reply_markup?.force_reply) {
+            throw new Error("force reply failed");
+          }
+          return { message_id: 781 };
+        },
+      );
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gIF:abcdef12", 552));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Could not open the feedback reply prompt.") &&
+            (call[2] as { reply_parameters?: { message_id?: number } } | undefined)
+              ?.reply_parameters?.message_id === 552,
+        ),
+      ).toBe(true);
+    });
+
     it("routes gAD callback to force-reply prompt and persists question tracking", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(
@@ -3715,6 +3773,46 @@ describe("goal-commands telegram adapter", () => {
         threadId: undefined,
         requiredInputKey: "task:1:input",
       });
+    });
+
+    it("sends fallback message when gAD force-reply prompt fails", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need credentials",
+            requiredInputKey: "task:1:input",
+          },
+        }),
+      );
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockImplementation(
+        async (
+          _chatId: number,
+          _text: string,
+          options?: { reply_markup?: { force_reply?: boolean } },
+        ) => {
+          if (options?.reply_markup?.force_reply) {
+            throw new Error("force reply failed");
+          }
+          return { message_id: 782 };
+        },
+      );
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gAD:abcdef12", 553));
+
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Could not open the answer reply prompt.") &&
+            (call[2] as { reply_parameters?: { message_id?: number } } | undefined)
+              ?.reply_parameters?.message_id === 553,
+        ),
+      ).toBe(true);
     });
 
     it("falls back to persisted done-message id when callback message_id is missing", async () => {
