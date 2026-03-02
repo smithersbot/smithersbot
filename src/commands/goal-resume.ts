@@ -123,6 +123,7 @@ async function retryPlanning(
 ): Promise<GoalOutcome | undefined> {
   const isJson = resolveIsJson(opts);
   const quiet = Boolean(opts.quiet);
+  const claudeCodeAuth = opts.config?.goal?.claudeCodeAuth ?? "subscription";
 
   // Reconstruct in-memory session
   const session = serializedToSession(run);
@@ -172,6 +173,7 @@ async function retryPlanning(
           runId: run.runId,
           goalText,
           cwd: run.workingDir,
+          claudeCodeAuth,
           ...(opts.config?.goal?.enabledWorkers
             ? { enabledWorkers: opts.config.goal.enabledWorkers }
             : {}),
@@ -323,6 +325,7 @@ export async function goalResumeCommand(
 ): Promise<GoalOutcome | undefined> {
   const isJson = resolveIsJson(opts);
   const quiet = Boolean(opts.quiet);
+  const claudeCodeAuth = opts.config?.goal?.claudeCodeAuth ?? "subscription";
 
   const resolvedId = resolveRunId(runId);
   if (!resolvedId) {
@@ -614,6 +617,7 @@ export async function goalResumeCommand(
     timeoutMs: 300_000,
     gitCheckpointConfig: disableCheckpoints ? undefined : { enabled: true },
     serializedRun: run,
+    claudeCodeAuth,
     onTaskUpdate: () => persistRun(),
     onTaskStart: () => persistRun(),
     onProgress: (text) => {

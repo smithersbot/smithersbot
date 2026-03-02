@@ -1037,6 +1037,7 @@ describe("goal-resume command", () => {
         runId,
         goalText: "Original goal text",
         cwd: oldWorkingDir,
+        claudeCodeAuth: "subscription",
         includeScoutArtifacts: true,
       });
       const persisted = loadRun(runId, testGoalsDir);
@@ -1343,6 +1344,7 @@ describe("goal-resume command", () => {
         runId,
         goalText: "Goal text",
         cwd: "/tmp/ws",
+        claudeCodeAuth: "subscription",
         includeScoutArtifacts: true,
       });
 
@@ -1478,6 +1480,7 @@ describe("goal-resume command", () => {
         runId,
         goalText: "Goal text",
         cwd: "/tmp/ws",
+        claudeCodeAuth: "subscription",
         includeScoutArtifacts: false,
       });
       expect(rt.logs.join("\n")).toContain("Replanning (--no-scout mode)...");
