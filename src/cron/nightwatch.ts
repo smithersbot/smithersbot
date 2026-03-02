@@ -679,7 +679,7 @@ Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
 Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
-Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/telegram/goal-commands.ts, src/goal/goal-tools.ts, src/goal/build-gate.ts, src/goal/post-execution-review.ts, src/goal/agent-executor-helpers.ts, src/goal/cli-planner.ts, src/goal/scout.ts, src/goal/lessons.ts, src/goal/execution-status.ts, src/goal/manual-tests.ts, src/goal/cli-runner.ts, src/goal/blocked.ts.
+Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/telegram/goal-commands.ts, src/goal/goal-tools.ts, src/goal/build-gate.ts, src/goal/post-execution-review.ts, src/goal/agent-executor-helpers.ts, src/goal/cli-planner.ts, src/goal/scout.ts, src/goal/lessons.ts, src/goal/execution-status.ts, src/goal/manual-tests.ts, src/goal/cli-runner.ts, src/goal/blocked.ts, src/goal/attempt-bundle.ts, src/goal/task-runner.ts, src/goal/pi-runner.ts, src/goal/worker-context.ts, src/goal/error-patterns.ts, src/goal/claude-code-env.ts.
 Look for:
 - Bugs or logic errors in the happy path
 - Edge cases in blocked/failed/cancelled states and transitions between them
@@ -707,7 +707,7 @@ Look across the goal system and Telegram integration for:
 Look for inconsistencies across workflows where a bug fix, UX pattern, or quality-of-life improvement exists in one place but is missing from analogous workflows that would benefit equally.
 Concrete example:
 - For /new_goal, the "Right away, sir." acknowledgment replies to the user's message so the user sees which goal is being planned.
-- When the user clicks "Approve", the confirmation message is not sent as a reply to the approval button message, making it unclear which plan was just approved.
+- Plan and blocked-action button handlers add emoji reactions to acknowledge clicks, but done-message callbacks (gTD/gIF) do not add reactions, so users get inconsistent visual feedback across similar button workflows.
 Find and prioritize similar patterns where one workflow already has a good practice (like reply-to-message context) and other workflows lack it.
 This is one example pattern — look broadly for any good practice that exists in one workflow but is missing from analogous workflows.
 
