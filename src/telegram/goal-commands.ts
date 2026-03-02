@@ -852,7 +852,7 @@ export async function handleGoalAnswer(
     const prefix = resolvedId.slice(0, 8);
     const cap = createCaptureRuntime();
     try {
-      await goalAnswerCommand(resolvedId, { key, value, quiet: true }, cap.runtime);
+      await goalAnswerCommand(resolvedId, { key, value, quiet: true, config }, cap.runtime);
 
       const answerErrors = cap.getErrors();
       if (answerErrors) return answerErrors;
@@ -904,7 +904,7 @@ export async function handleGoalAnswer(
   try {
     const outcome = await goalAnswerCommand(
       resolvedId,
-      { key, value, quiet: true, onStatusChange },
+      { key, value, quiet: true, config, onStatusChange },
       cap.runtime,
     );
 
