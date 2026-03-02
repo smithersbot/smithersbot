@@ -90,6 +90,19 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny('cat <(bash -c "sudo test")')).not.toBeNull();
   });
 
+  it("denies command substitutions nested beyond the depth limit", () => {
+    let deeplyNestedCommand = "sudo whoami";
+    for (let i = 0; i < 9; i++) {
+      deeplyNestedCommand = `echo $(${deeplyNestedCommand})`;
+    }
+
+    expect(checkCommandDeny(deeplyNestedCommand)).toEqual({
+      pattern: "<command-nesting-depth-limit>",
+      reason: "command nesting too deep to analyze safely",
+      type: "command",
+    });
+  });
+
   it("does not flag quoted text that only mentions denied commands", () => {
     expect(checkCommandDeny("echo 'sudo rm -rf /'")).toBeNull();
     expect(checkCommandDeny('echo "npm publish && vercel"')).toBeNull();

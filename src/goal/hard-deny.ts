@@ -696,7 +696,13 @@ function checkCommandDenyRecursive(
   hardDenies: HardDenyList,
   depth: number,
 ): HardDeny | null {
-  if (depth > 8) return null;
+  if (depth > 8) {
+    return {
+      pattern: "<command-nesting-depth-limit>",
+      reason: "command nesting too deep to analyze safely",
+      type: "command",
+    };
+  }
 
   const segments = splitCompoundCommand(command);
   for (const segment of segments) {
