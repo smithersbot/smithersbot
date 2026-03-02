@@ -113,6 +113,25 @@ describe("goal-answer command", () => {
     expect(goalResumeCommand).toHaveBeenCalled();
   });
 
+  it("forwards config to goalResumeCommand during execution auto-resume", async () => {
+    saveRun(makeBlockedRun());
+    const { goalAnswerCommand } = await import("./goal-answer.js");
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const goalResumeCommandMock = vi.mocked(goalResumeCommand);
+    goalResumeCommandMock.mockClear();
+
+    const rt = mockRuntime();
+    const config = { goal: { claudeCodeAuth: "api_key" } } as const;
+    await goalAnswerCommand("answer-test-run", { key: "db_password", value: "s3cret", config }, rt);
+
+    expect(goalResumeCommandMock).toHaveBeenCalledTimes(1);
+    expect(goalResumeCommandMock).toHaveBeenCalledWith(
+      "answer-test-run",
+      expect.objectContaining({ config }),
+      rt,
+    );
+  });
+
   it("fans out multi-task blocked answers", async () => {
     saveRun(
       makeBlockedRun({

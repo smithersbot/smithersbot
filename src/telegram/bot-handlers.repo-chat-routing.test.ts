@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dispatchTelegramRepoChatForInboundTextMock = vi.hoisted(() => vi.fn());
 const findRepoChatSessionByMessageIdMock = vi.hoisted(() => vi.fn());
@@ -33,6 +33,10 @@ beforeEach(() => {
   dispatchTelegramRepoChatForInboundTextMock.mockReturnValue(true);
   findRepoChatSessionByMessageIdMock.mockReturnValue(undefined);
   routeTelegramTextMock.mockReturnValue({ kind: "CHAT" });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("shouldRouteTelegramTextToRepoChat", () => {
@@ -154,5 +158,90 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       }),
     );
     expect(routeTelegramTextMock).not.toHaveBeenCalled();
+  });
+
+  it("passes cfg to handleGoalAnswer for GOAL_ANSWER routes", async () => {
+    const goalCommands = await import("./goal-commands.js");
+    const handleGoalAnswerSpy = vi
+      .spyOn(goalCommands, "handleGoalAnswer")
+      .mockResolvedValue("Resuming: run-1234...");
+    const runGoalInBackgroundSpy = vi
+      .spyOn(goalCommands, "runGoalInBackground")
+      .mockImplementation((params) => {
+        void params.fn();
+      });
+
+    routeTelegramTextMock.mockReturnValue({ kind: "GOAL_ANSWER", runId: "run-1234" });
+
+    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        messageHandlers.set(event, handler);
+      }),
+      api: {
+        answerCallbackQuery: vi.fn(async () => undefined),
+        editMessageText: vi.fn(async () => ({ message_id: 1 })),
+        sendMessage: vi.fn(async () => ({ message_id: 2 })),
+        setMessageReaction: vi.fn(async () => undefined),
+      },
+    };
+
+    const cfg = { goal: { claudeCodeAuth: "api_key" as const } };
+    registerTelegramHandlers({
+      cfg,
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: null,
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      commandFragmentBuffer: undefined,
+    });
+
+    const messageHandler = messageHandlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    if (!messageHandler) {
+      throw new Error("Expected Telegram message handler to be registered");
+    }
+
+    await messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "details from telegram",
+        message_id: 501,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    await Promise.resolve();
+
+    expect(runGoalInBackgroundSpy).toHaveBeenCalledTimes(1);
+    expect(handleGoalAnswerSpy).toHaveBeenCalledWith(
+      "run-1234",
+      "details from telegram",
+      expect.any(Function),
+      cfg,
+    );
   });
 });

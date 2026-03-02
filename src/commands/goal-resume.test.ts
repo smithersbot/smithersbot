@@ -401,6 +401,54 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("passes config goal.claudeCodeAuth to agent executor", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-auth-propagation-ws-"));
+    saveRun(
+      makeRun({
+        runId: "resume-auth-propagation-run",
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Auth propagation",
+          steps: [
+            {
+              id: "pending-step",
+              description: "Continue execution",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Resume after interruption",
+          requiredInputKey: "none",
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    await goalResumeCommand(
+      "resume-auth-propagation-run",
+      {
+        yes: true,
+        quiet: true,
+        config: { goal: { claudeCodeAuth: "api_key" } },
+      },
+      rt,
+    );
+
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    expect(mockExecuteGoalWithAgent.mock.calls[0]?.[0]).toMatchObject({
+      claudeCodeAuth: "api_key",
+    });
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("retries failed final build gate instead of short-circuiting completed steps", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-final-gate-ws-"));
     const runId = "blocked-final-gate-run";
