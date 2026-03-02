@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { HardDeny } from "./capability-types.js";
 
@@ -54,6 +55,21 @@ function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/");
 }
 
+function resolvePathForDeny(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  const normalizedResolvedPath = normalizePath(resolvedPath);
+
+  try {
+    return normalizePath(fs.realpathSync(resolvedPath));
+  } catch (error) {
+    const errno = error as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") {
+      return normalizedResolvedPath;
+    }
+    return normalizedResolvedPath;
+  }
+}
+
 /** Simple glob matching for path patterns. */
 function matchPathGlob(pattern: string, filePath: string): boolean {
   const normalizedPattern = normalizePath(pattern);
@@ -93,7 +109,7 @@ export function checkPathDeny(
   filePath: string,
   hardDenies: HardDenyList = HARD_DENIES,
 ): HardDeny | null {
-  const resolved = normalizePath(path.resolve(filePath));
+  const resolved = resolvePathForDeny(filePath);
   const base = path.basename(resolved);
 
   for (const deny of hardDenies) {

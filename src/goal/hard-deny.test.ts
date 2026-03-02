@@ -1,5 +1,31 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkCommandDeny } from "./hard-deny.js";
+import { checkCommandDeny, checkPathDeny } from "./hard-deny.js";
+
+describe("checkPathDeny", () => {
+  it("blocks symlink paths that resolve to denied targets", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hard-deny-"));
+    const deniedTargetPath = path.join(tempDir, ".env.secret");
+    const symlinkPath = path.join(tempDir, "safe.txt");
+
+    try {
+      fs.writeFileSync(deniedTargetPath, "secret");
+      fs.symlinkSync(deniedTargetPath, symlinkPath, "file");
+
+      expect(checkPathDeny(symlinkPath)?.pattern).toBe(".env*");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to lexical checks when realpath returns ENOENT", () => {
+    const missingPath = path.join(os.tmpdir(), `hard-deny-missing-${Date.now()}`, ".env.new");
+    expect(() => checkPathDeny(missingPath)).not.toThrow();
+    expect(checkPathDeny(missingPath)?.pattern).toBe(".env*");
+  });
+});
 
 describe("checkCommandDeny", () => {
   it("blocks denied commands in compound ';' commands", () => {
