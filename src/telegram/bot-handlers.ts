@@ -593,7 +593,7 @@ export const registerTelegramHandlers = ({
             runtime,
             label: "goal-router:answer",
             releaseGoalLock: answerLock.release,
-            fn: () => handleGoalAnswer(runId, text, statusCb),
+            fn: () => handleGoalAnswer(runId, text, statusCb, cfg),
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {
