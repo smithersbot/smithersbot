@@ -701,6 +701,82 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.buildGateResults?.["1"]?.passed).toBe(true);
   });
 
+  it("notifies task updates when build-gate reset returns a step to pending", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-pending-notify" } };
+
+    mockSpawnSync
+      .mockReturnValueOnce({
+        status: 1,
+        signal: null,
+        stdout: "",
+        stderr: "TS2307: Cannot find module ./generated/client",
+      })
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+      });
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Initial complete",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Need user input after retry",
+        blockedReason: "user_input",
+        turnsUsed: 1,
+      });
+
+    const updates: Array<{
+      taskId: string;
+      outcome: string;
+      summary?: string;
+      statusSnapshot: PlanStep["status"] | undefined;
+    }> = [];
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-build-gate-pending-notify",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+      onTaskUpdate: (result) => {
+        updates.push({
+          taskId: result.taskId,
+          outcome: result.outcome,
+          summary: result.summary,
+          statusSnapshot: session.plan?.steps.find((candidate) => candidate.id === result.taskId)
+            ?.status,
+        });
+      },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(mockCliExecute).toHaveBeenCalledTimes(2);
+    expect(updates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taskId: "1",
+          outcome: "blocked",
+          summary: "Build-gate reset task to pending for retry.",
+          statusSnapshot: "pending",
+        }),
+      ]),
+    );
+  });
+
   it("marks task blocked when build gate keeps failing after max fix cycles", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);

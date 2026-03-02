@@ -650,6 +650,15 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
 
     if (task.status === "pending") {
+      onTaskUpdate?.({
+        taskId: task.id,
+        turnsUsed: task.turnsUsed ?? 0,
+        durationMs: Math.max(0, Date.now() - taskStartMs),
+        outcome: "blocked",
+        summary: task.ralphDetail
+          ? "Task reset to pending after ralph; retrying."
+          : "Build-gate reset task to pending for retry.",
+      });
       lastExecutedId = task.id;
       continue;
     }
