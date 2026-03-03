@@ -317,6 +317,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       return { status: "cancelled" };
     }
 
+    const resetInProgressStepIds: string[] = [];
+    for (const step of orderedSteps) {
+      if (step.status !== "in_progress") continue;
+      step.status = "pending";
+      resetInProgressStepIds.push(step.id);
+    }
+    if (resetInProgressStepIds.length > 0) {
+      const label = resetInProgressStepIds.length === 1 ? "step" : "steps";
+      onProgress?.(
+        `  [warn] Reset stuck in_progress ${label} to pending: ${resetInProgressStepIds.join(", ")}`,
+      );
+    }
+
     const runnable = findRunnableTasks(orderedSteps, session.answers, retryableBlockedIds);
     if (runnable.length === 0) break;
 
