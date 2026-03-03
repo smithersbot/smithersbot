@@ -6,6 +6,7 @@ import type { Bot } from "grammy";
 import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { formatAge } from "../infra/channel-summary.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
@@ -17,12 +18,8 @@ import {
   persistTelegramDoneMessage,
   persistTelegramQuestionMessage,
   sendDagPng,
+  sendBlockedNotification,
 } from "./goal-sending.js";
-import {
-  buildBlockedCaption,
-  buildGoalBlockedInlineKeyboard,
-  buildTaskBlockedInlineKeyboard,
-} from "./goal-blocked-ui.js";
 import { buildInlineKeyboard } from "./send.js";
 
 type WorkingDirInstructionHint = {
@@ -451,21 +448,31 @@ export function buildOnStatusChange(params: {
     const plan = run?.plan;
     if (!plan) return;
     const stepResults = serializedStepResultsToMap(run);
-    const sendDeliveryFallback = async () => {
+    const sendDeliveryFallback = async (requiredInputKey?: string) => {
       const msg = `⚠️ Goal ${prefix}: ${event.type} - update delivery failed, check /goal_status`;
-      await bot.api.sendMessage(chatId, msg, { ...threadParams }).catch(() => {});
+      const sent = await bot.api
+        .sendMessage(chatId, msg, { ...threadParams })
+        .catch(() => undefined);
+      if (sent?.message_id != null && requiredInputKey) {
+        persistTelegramQuestionMessage({
+          runId,
+          chatId,
+          messageId: sent.message_id,
+          threadId,
+          requiredInputKey,
+        });
+      }
     };
 
     if (event.type === "step_blocked") {
+      const blockedDetail = {
+        blockedAt: "execution",
+        prompt: event.question,
+        requiredInputKey: `task:${event.stepId}:input`,
+        stepId: event.stepId,
+      } as const;
       try {
-        const caption = [
-          `**TASK BLOCKED** (${prefix}): Step ${event.stepId} needs input`,
-          "",
-          event.question,
-          "",
-          `**Next:** I will continue to complete tasks that aren't dependent on this blocked task.`,
-        ].join("\n");
-        const sentId = await sendDagPng({
+        await sendBlockedNotification({
           bot,
           chatId,
           threadId,
@@ -474,33 +481,25 @@ export function buildOnStatusChange(params: {
           plan,
           steps: event.steps,
           stepResults,
-          caption,
-          replyMarkup: buildTaskBlockedInlineKeyboard(prefix),
+          blockedDetail,
         });
-        if (sentId != null) {
-          persistTelegramQuestionMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-            requiredInputKey: `task:${event.stepId}:input`,
-          });
-        }
       } catch {
-        await sendDeliveryFallback();
+        await sendDeliveryFallback(blockedDetail.requiredInputKey);
       }
     } else if (event.type === "fully_blocked") {
+      const aggregateDetail = aggregateBlockedDetails(event.steps);
+      if (!aggregateDetail) {
+        await sendDeliveryFallback("resume_execution");
+        return;
+      }
+      const blockedDetail = {
+        ...aggregateDetail,
+        // fully_blocked events always represent goal-level blockers,
+        // even when only one task is currently blocked.
+        stepId: undefined,
+      };
       try {
-        const lines: string[] = [
-          `**GOAL BLOCKED** (${prefix}): no runnable steps — waiting for answers.`,
-        ];
-        const blocked = event.steps.filter((s) => s.status === "blocked");
-        const blockedCaption = buildBlockedCaption(event.steps);
-        if (blockedCaption) {
-          lines.push("");
-          lines.push(blockedCaption);
-        }
-        const sentId = await sendDagPng({
+        await sendBlockedNotification({
           bot,
           chatId,
           threadId,
@@ -509,28 +508,10 @@ export function buildOnStatusChange(params: {
           plan,
           steps: event.steps,
           stepResults,
-          caption: lines.join("\n"),
-          replyMarkup: buildGoalBlockedInlineKeyboard(prefix),
+          blockedDetail,
         });
-        if (sentId != null) {
-          const blockedSteps =
-            blocked.length > 0 ? blocked : event.steps.filter((s) => s.status === "blocked");
-          const requiredInputKey =
-            blockedSteps.length <= 1
-              ? blockedSteps[0]
-                ? `task:${blockedSteps[0].id}:input`
-                : undefined
-              : `tasks:${blockedSteps.map((s) => s.id).join(",")}:input`;
-          persistTelegramQuestionMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-            requiredInputKey,
-          });
-        }
       } catch {
-        await sendDeliveryFallback();
+        await sendDeliveryFallback(blockedDetail.requiredInputKey);
       }
     } else if (event.type === "plan_revised") {
       try {

@@ -789,6 +789,78 @@ describe("goal-commands telegram adapter", () => {
       expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it("uses blocked notification delivery for blocked runs and persists reply tracking", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need a value",
+            requiredInputKey: "task:1:input",
+            stepId: "1",
+          },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedQuestion: "Need a value",
+              },
+            ],
+          },
+        }),
+      );
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: blocked");
+        },
+      );
+      mockRenderMermaidToPng.mockReturnValue({ buffer: Buffer.from("png") });
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 12 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 13 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalStatusResponse } = await import("./goal-commands.js");
+
+      await sendGoalStatusResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendPhoto).toHaveBeenCalledWith(
+        42,
+        expect.anything(),
+        expect.objectContaining({
+          caption: expect.stringContaining("<b>TASK BLOCKED</b> (test-run): Step 1 needs input"),
+          parse_mode: "HTML",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
+              [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],
+            ],
+          },
+        }),
+      );
+      expect(sendMessage).not.toHaveBeenCalled();
+      const run = loadRun("test-run-id-1234", testGoalsDir);
+      expect(run?.telegramQuestionMessages?.[0]).toMatchObject({
+        chatId: 42,
+        messageId: 12,
+        requiredInputKey: "task:1:input",
+      });
+    });
+
     it("falls back to text when the run has no plan", async () => {
       saveRunFixture(makeRun({ plan: null }));
       mockGoalStatusCommand.mockImplementation(
@@ -1171,10 +1243,7 @@ describe("goal-commands telegram adapter", () => {
         reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
       };
       expect(options.caption).toContain("<b>TASK BLOCKED</b> (test-run): Step 1 needs input");
-      expect(options.caption).toContain("<b>Ralph 1 (attempt 1):</b>");
-      expect(options.caption).toContain(
-        "<b>Next:</b> I will continue to complete tasks that aren't dependent on this blocked task.",
-      );
+      expect(options.caption).toContain("• Step 1: Need a value");
       expect(options.reply_markup?.inline_keyboard).toEqual([
         [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
         [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],
@@ -1232,6 +1301,7 @@ describe("goal-commands telegram adapter", () => {
     it.each([
       {
         eventType: "step_blocked",
+        expectedFallbackText: "<b>TASK BLOCKED</b> (test-run): Step 1 needs input",
         event: {
           type: "step_blocked",
           stepId: "1",
@@ -1249,6 +1319,7 @@ describe("goal-commands telegram adapter", () => {
       },
       {
         eventType: "fully_blocked",
+        expectedFallbackText: "<b>GOAL BLOCKED</b> (test-run): no runnable steps",
         event: {
           type: "fully_blocked",
           steps: [
@@ -1264,6 +1335,7 @@ describe("goal-commands telegram adapter", () => {
       },
       {
         eventType: "plan_revised",
+        expectedFallbackText: "plan_revised",
         event: {
           type: "plan_revised",
           revision: 2,
@@ -1280,6 +1352,7 @@ describe("goal-commands telegram adapter", () => {
       },
       {
         eventType: "all_done",
+        expectedFallbackText: "all_done",
         event: {
           type: "all_done",
           summary: "Done summary",
@@ -1295,7 +1368,7 @@ describe("goal-commands telegram adapter", () => {
       },
     ])(
       "swallows DAG exceptions and posts fallback text for $eventType status updates",
-      async ({ eventType, event }) => {
+      async ({ event, expectedFallbackText }) => {
         saveRunFixture(makeRun());
         mockRenderMermaidToPng.mockImplementationOnce(() => {
           throw new Error("render failed");
@@ -1318,7 +1391,7 @@ describe("goal-commands telegram adapter", () => {
         expect(sendMessage).toHaveBeenCalledTimes(1);
         const fallbackText = sendMessage.mock.calls[0]?.[1];
         expect(typeof fallbackText).toBe("string");
-        expect(fallbackText).toContain(eventType);
+        expect(fallbackText).toContain(expectedFallbackText);
         expect(fallbackText).toContain("test-run");
       },
     );

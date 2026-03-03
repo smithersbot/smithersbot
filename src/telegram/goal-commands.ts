@@ -63,6 +63,7 @@ import {
   persistFeedbackPromptMessage,
   persistTelegramQuestionMessage,
   sendDagPng,
+  sendBlockedNotification,
   sendGoalBackgroundResult,
   sendGoalPlanResult,
   sendGoalReply,
@@ -727,20 +728,36 @@ export async function sendGoalStatusResponse(params: {
   const reply = await handleGoalStatus(rawId);
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
-  if (run?.plan) {
-    const pngId = await sendDagPng({
-      bot,
-      chatId,
-      threadId,
-      runtime,
-      runId: resolvedId,
-      plan: run.plan,
-      steps: run.plan.steps,
-      stepResults: serializedStepResultsToMap(run),
-      caption: reply,
-      replyToMessageId,
-    });
-    if (pngId != null) return;
+  if (run?.plan && resolvedId) {
+    if (run.state === "blocked" && run.blocked) {
+      const blockedMessageId = await sendBlockedNotification({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId: resolvedId,
+        plan: run.plan,
+        steps: run.plan.steps,
+        stepResults: serializedStepResultsToMap(run),
+        blockedDetail: run.blocked,
+        replyToMessageId,
+      });
+      if (blockedMessageId != null) return;
+    } else {
+      const pngId = await sendDagPng({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId: resolvedId,
+        plan: run.plan,
+        steps: run.plan.steps,
+        stepResults: serializedStepResultsToMap(run),
+        caption: reply,
+        replyToMessageId,
+      });
+      if (pngId != null) return;
+    }
   }
   await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
