@@ -482,6 +482,7 @@ export function buildOnStatusChange(params: {
           chatId,
           threadId,
           runtime,
+          runId,
           plan,
           steps: event.steps,
           stepResults,
@@ -518,6 +519,7 @@ export function buildOnStatusChange(params: {
           chatId,
           threadId,
           runtime,
+          runId,
           plan,
           steps: event.steps,
           stepResults,
@@ -546,11 +548,13 @@ export function buildOnStatusChange(params: {
       }
     } else if (event.type === "plan_revised") {
       try {
+        // A missing PNG here is acceptable because this is an informational update.
         await sendDagPng({
           bot,
           chatId,
           threadId,
           runtime,
+          runId,
           plan,
           steps: event.steps,
           stepResults,
@@ -574,6 +578,7 @@ export function buildOnStatusChange(params: {
           chatId,
           threadId,
           runtime,
+          runId,
           plan,
           steps: event.steps,
           stepResults,

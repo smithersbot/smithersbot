@@ -728,18 +728,19 @@ export async function sendGoalStatusResponse(params: {
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
   if (run?.plan) {
-    await sendDagPng({
+    const pngId = await sendDagPng({
       bot,
       chatId,
       threadId,
       runtime,
+      runId: resolvedId,
       plan: run.plan,
       steps: run.plan.steps,
       stepResults: serializedStepResultsToMap(run),
       caption: reply,
       replyToMessageId,
     });
-    return;
+    if (pngId != null) return;
   }
   await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
@@ -758,18 +759,19 @@ export async function sendGoalDetailResponse(params: {
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
   if (run?.plan) {
-    await sendDagPng({
+    const pngId = await sendDagPng({
       bot,
       chatId,
       threadId,
       runtime,
+      runId: resolvedId,
       plan: run.plan,
       steps: run.plan.steps,
       stepResults: serializedStepResultsToMap(run),
       caption: reply,
       replyToMessageId,
     });
-    return;
+    if (pngId != null) return;
   }
   await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
