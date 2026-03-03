@@ -1,28 +1,58 @@
 import type { BlockedDetail, PlanStep } from "./types.js";
 
+function buildStuckPrompt(step: PlanStep): string {
+  return `Step ${step.id} stuck at in_progress — needs re-execution`;
+}
+
 export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null {
   const blocked = steps.filter((s) => s.status === "blocked");
-  if (blocked.length === 0) return null;
+  const stuckInProgress = steps.filter((s) => s.status === "in_progress");
+  if (blocked.length === 0 && stuckInProgress.length === 0) return null;
 
-  if (blocked.length === 1) {
-    const task = blocked[0]!;
-    const prompt =
-      task.blockedQuestion ?? `Task ${task.id} is blocked (${task.blockedReason ?? "unknown"}).`;
+  // Keep the legacy blocked-only contract untouched for existing callers.
+  if (stuckInProgress.length === 0) {
+    if (blocked.length === 1) {
+      const task = blocked[0]!;
+      const prompt =
+        task.blockedQuestion ?? `Task ${task.id} is blocked (${task.blockedReason ?? "unknown"}).`;
+      return {
+        blockedAt: "execution",
+        prompt,
+        requiredInputKey: `task:${task.id}:input`,
+        stepId: task.id,
+      };
+    }
+
+    const lines = blocked.map((task) => {
+      const reason = task.blockedQuestion ?? task.blockedReason ?? "unknown";
+      return `- Task ${task.id} (${task.description}): ${reason}`;
+    });
     return {
       blockedAt: "execution",
-      prompt,
-      requiredInputKey: `task:${task.id}:input`,
-      stepId: task.id,
+      prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
+      requiredInputKey: `tasks:${blocked.map((t) => t.id).join(",")}:input`,
     };
   }
 
-  const lines = blocked.map((task) => {
+  if (blocked.length === 0 && stuckInProgress.length === 1) {
+    return {
+      blockedAt: "execution",
+      prompt: buildStuckPrompt(stuckInProgress[0]!),
+      requiredInputKey: "resume_execution",
+    };
+  }
+
+  const blockedLines = blocked.map((task) => {
     const reason = task.blockedQuestion ?? task.blockedReason ?? "unknown";
     return `- Task ${task.id} (${task.description}): ${reason}`;
   });
+  const stuckLines = stuckInProgress.map(
+    (step) => `- Step ${step.id} (${step.description}): ${buildStuckPrompt(step)}`,
+  );
+  const lines = [...blockedLines, ...stuckLines];
   return {
     blockedAt: "execution",
     prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
-    requiredInputKey: `tasks:${blocked.map((t) => t.id).join(",")}:input`,
+    requiredInputKey: "resume_execution",
   };
 }
