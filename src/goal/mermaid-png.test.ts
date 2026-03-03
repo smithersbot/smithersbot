@@ -21,7 +21,11 @@ vi.mock("node:fs", async () => {
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { DEFAULT_MERMAID_RENDER_TIMEOUT_MS, renderMermaidToPng } from "./mermaid-png.js";
+import {
+  DEFAULT_MERMAID_RENDER_TIMEOUT_MS,
+  renderMermaidToPng,
+  repairMermaidDiagram,
+} from "./mermaid-png.js";
 
 const execFileSyncMock = execFileSync as unknown as vi.Mock;
 const mkdtempSyncMock = mkdtempSync as unknown as vi.Mock;
@@ -83,5 +87,58 @@ describe("renderMermaidToPng", () => {
 
     expect(result).toBeNull();
     expect(rmSyncMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("repairMermaidDiagram", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mkdtempSyncMock.mockReturnValue("/tmp/mermaid-png-test");
+    readFileSyncMock.mockReturnValue(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    execFileSyncMock.mockReturnValue(Buffer.alloc(0));
+  });
+
+  it("returns rendered PNG buffer when askFn provides a valid repair", async () => {
+    const askFn = vi.fn().mockResolvedValue("```mermaid\ngraph TD\n  Start --> Finish\n```");
+
+    const result = await repairMermaidDiagram({
+      source: "graph TD\n  Start --> Bad Node",
+      error: "Parse error: expecting node id",
+      askFn,
+    });
+
+    expect(result).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(askFn).toHaveBeenCalledOnce();
+    expect(askFn.mock.calls[0]?.[0]).toContain("graph TD\n  Start --> Bad Node");
+    expect(askFn.mock.calls[0]?.[0]).toContain("Parse error: expecting node id");
+  });
+
+  it("returns null when repaired Mermaid still fails to render", async () => {
+    execFileSyncMock.mockImplementationOnce(() => {
+      throw new Error("Parse error on line 2");
+    });
+    const askFn = vi.fn().mockResolvedValue("```mermaid\ngraph TD\n  broken\n```");
+
+    const result = await repairMermaidDiagram({
+      source: "graph TD\n  A --> B",
+      error: "old parse error",
+      askFn,
+    });
+
+    expect(result).toBeNull();
+    expect(askFn).toHaveBeenCalledOnce();
+  });
+
+  it("returns null when askFn throws", async () => {
+    const askFn = vi.fn().mockRejectedValue(new Error("backend offline"));
+
+    const result = await repairMermaidDiagram({
+      source: "graph TD\n  A --> B",
+      error: "render failed",
+      askFn,
+    });
+
+    expect(result).toBeNull();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 });

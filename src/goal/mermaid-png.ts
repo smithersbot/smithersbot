@@ -106,3 +106,57 @@ export function renderMermaidToPng(mermaidText: string): MermaidRenderResult {
     }
   }
 }
+
+function extractMermaidFromResponse(response: string): string {
+  const fencedMermaid = response.match(/```mermaid\s*([\s\S]*?)```/i);
+  if (fencedMermaid?.[1]) {
+    return fencedMermaid[1].trim();
+  }
+
+  const fencedCode = response.match(/```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```/);
+  if (fencedCode?.[1]) {
+    return fencedCode[1].trim();
+  }
+
+  return response.trim();
+}
+
+export async function repairMermaidDiagram(opts: {
+  source: string;
+  error: string;
+  askFn: (prompt: string) => Promise<string>;
+}): Promise<Buffer | null> {
+  const { source, error, askFn } = opts;
+
+  try {
+    const repairPrompt = [
+      "The Mermaid diagram below failed to render with mmdc.",
+      "Fix node IDs, labels, and Mermaid syntax while preserving the same DAG structure and intent.",
+      "Return only the corrected Mermaid diagram in a single ```mermaid``` fenced code block.",
+      "",
+      "Original Mermaid:",
+      "```mermaid",
+      source.trim(),
+      "```",
+      "",
+      "mmdc error:",
+      "```text",
+      error.trim(),
+      "```",
+    ].join("\n");
+
+    const response = await askFn(repairPrompt);
+    const repairedSource = extractMermaidFromResponse(response);
+    if (!repairedSource) {
+      return null;
+    }
+
+    const renderResult = renderMermaidToPng(repairedSource);
+    if (renderResult && "buffer" in renderResult) {
+      return renderResult.buffer;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
