@@ -16,6 +16,7 @@ import {
 import { loadRun, saveRun } from "../goal/run-store.js";
 import { resolveClaudeBinary } from "../goal/scout.js";
 import type {
+  BlockedDetail,
   ManualTestSuggestion,
   Plan,
   PlanStep,
@@ -27,6 +28,11 @@ import type { RuntimeEnv } from "../runtime.js";
 import { shortenHomePath } from "../utils.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks, markdownToTelegramHtml } from "./format.js";
+import {
+  buildBlockedCaption,
+  buildGoalBlockedInlineKeyboard,
+  buildTaskBlockedInlineKeyboard,
+} from "./goal-blocked-ui.js";
 import { indexPlanMessage } from "./goal-message-index.js";
 import { buildInlineKeyboard } from "./send.js";
 import { recordSentMessage } from "./sent-message-cache.js";
@@ -393,6 +399,87 @@ function buildCaptionHeader(result: GoalPlanResult): string {
     );
   }
   return lines.join("\n");
+}
+
+export async function sendBlockedNotification(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  runtime: RuntimeEnv;
+  runId: string;
+  plan: Plan;
+  steps: PlanStep[];
+  stepResults?: ReadonlyMap<string, StepResult>;
+  blockedDetail: BlockedDetail;
+  replyToMessageId?: number;
+}): Promise<number | undefined> {
+  const {
+    bot,
+    chatId,
+    threadId,
+    runtime,
+    runId,
+    plan,
+    steps,
+    stepResults,
+    blockedDetail,
+    replyToMessageId,
+  } = params;
+
+  const runIdPrefix = runId.slice(0, 8);
+  const blockedCaption = buildBlockedCaption(steps);
+  const replyMarkup = blockedDetail.stepId
+    ? buildTaskBlockedInlineKeyboard(runIdPrefix)
+    : buildGoalBlockedInlineKeyboard(runIdPrefix);
+  const title = blockedDetail.stepId
+    ? `**TASK BLOCKED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs input`
+    : `**GOAL BLOCKED** (${runIdPrefix}): no runnable steps - waiting for answers.`;
+  const caption = blockedCaption
+    ? `${title}\n\n${blockedCaption}`
+    : `${title}\n\n${blockedDetail.prompt}`;
+
+  let messageId: number | undefined;
+  try {
+    messageId = await sendDagPng({
+      bot,
+      chatId,
+      threadId,
+      runtime,
+      runId,
+      plan,
+      steps,
+      stepResults,
+      caption,
+      replyMarkup,
+      replyToMessageId,
+    });
+  } catch {
+    messageId = undefined;
+  }
+
+  if (messageId == null) {
+    messageId = await sendGoalReply(
+      bot,
+      chatId,
+      caption,
+      runtime,
+      threadId,
+      replyToMessageId,
+      replyMarkup,
+    );
+  }
+
+  if (messageId != null) {
+    persistTelegramQuestionMessage({
+      runId,
+      chatId,
+      messageId,
+      threadId,
+      requiredInputKey: blockedDetail.requiredInputKey,
+    });
+  }
+
+  return messageId;
 }
 
 export async function sendGoalPlanResult(params: {
