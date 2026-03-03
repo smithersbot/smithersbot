@@ -10,7 +10,9 @@ import { warn } from "../globals.js";
 const PUPPETEER_CACHE_DIR =
   process.env.PUPPETEER_CACHE_DIR ?? path.join(userInfo().homedir, ".cache", "puppeteer");
 
-const DEFAULT_MERMAID_RENDER_TIMEOUT_MS = 180_000;
+export const DEFAULT_MERMAID_RENDER_TIMEOUT_MS = 600_000;
+
+export type MermaidRenderResult = { buffer: Buffer } | { error: string } | null;
 
 /** Transparent background so the PNG blends with any chat theme. */
 export const MERMAID_PNG_BACKGROUND = "transparent";
@@ -26,9 +28,9 @@ const MERMAID_CONFIG = {
 /**
  * Render a Mermaid diagram to a PNG buffer using the `mmdc` CLI.
  *
- * Returns `null` on any failure so the caller can fall back to text.
+ * Returns `null` on timeout so the caller can fall back to text.
  */
-export function renderMermaidToPng(mermaidText: string): Buffer | null {
+export function renderMermaidToPng(mermaidText: string): MermaidRenderResult {
   if (process.env.MOLTBOT_DEBUG_MERMAID === "1") {
     const lines = mermaidText.split("\n").slice(0, 80);
     warn("mermaid-png: DEBUG mermaid source (first 80 lines):\n" + lines.join("\n"));
@@ -77,14 +79,23 @@ export function renderMermaidToPng(mermaidText: string): Buffer | null {
       },
     );
 
-    return readFileSync(outputPath);
+    return { buffer: readFileSync(outputPath) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     warn(`mermaid-png: render failed: ${msg}`);
     if (/chrome/i.test(msg) || /puppeteer/i.test(msg)) {
       warn("Hint: run `pnpm install` and ensure puppeteer is in .npmrc allow-build-scripts.");
     }
-    return null;
+    const timeoutSignal =
+      typeof err === "object" && err !== null ? (err as { signal?: string }).signal : undefined;
+    const timeoutKilled =
+      typeof err === "object" && err !== null
+        ? (err as { killed?: boolean }).killed === true
+        : false;
+    if (timeoutKilled || timeoutSignal === "SIGTERM") {
+      return null;
+    }
+    return { error: msg };
   } finally {
     if (tempDir) {
       try {
