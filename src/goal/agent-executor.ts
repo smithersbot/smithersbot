@@ -1079,7 +1079,23 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           requiredInputKey: "none",
         } as const)
       : aggregateBlockedDetails(orderedSteps)) ??
-    ({ blockedAt: "execution", prompt: "All tasks completed.", requiredInputKey: "none" } as const);
+    (() => {
+      const nonDoneStepIds = orderedSteps
+        .filter((step) => step.status !== "done")
+        .map((step) => step.id);
+      if (nonDoneStepIds.length > 0) {
+        return {
+          blockedAt: "execution",
+          prompt: `Steps stuck — unable to make progress: ${nonDoneStepIds.join(", ")}`,
+          requiredInputKey: "resume_execution",
+        } as const;
+      }
+      return {
+        blockedAt: "execution",
+        prompt: "Execution blocked unexpectedly.",
+        requiredInputKey: "none",
+      } as const;
+    })();
   session.state = "blocked";
   session.blocked = aggregated;
   if (onStatusChange) {
