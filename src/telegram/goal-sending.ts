@@ -43,15 +43,22 @@ export async function sendGoalReply(
   runtime: RuntimeEnv,
   threadId?: number,
   replyToMessageId?: number,
+  replyMarkup?: InlineKeyboardMarkup,
 ): Promise<number | undefined> {
   if (!markdown.trim()) {
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
     const replyParams =
       replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
+    const keyboardParams = replyMarkup ? { reply_markup: replyMarkup } : {};
     const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
-      fn: () => bot.api.sendMessage(chatId, "No output.", { ...threadParams, ...replyParams }),
+      fn: () =>
+        bot.api.sendMessage(chatId, "No output.", {
+          ...threadParams,
+          ...replyParams,
+          ...keyboardParams,
+        }),
     });
     return sent?.message_id;
   }
@@ -59,7 +66,9 @@ export async function sendGoalReply(
   const chunks = markdownToTelegramChunks(markdown, 4000);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
+    const isLast = i === chunks.length - 1;
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
+    const keyboardParams = isLast && replyMarkup ? { reply_markup: replyMarkup } : {};
     const replyParams =
       replyToMessageId != null && i === 0
         ? { reply_parameters: { message_id: replyToMessageId } }
@@ -74,12 +83,14 @@ export async function sendGoalReply(
             link_preview_options: { is_disabled: true },
             ...threadParams,
             ...replyParams,
+            ...keyboardParams,
           })
           .catch(() =>
             bot.api.sendMessage(chatId, chunk.text, {
               link_preview_options: { is_disabled: true },
               ...threadParams,
               ...replyParams,
+              ...keyboardParams,
             }),
           ),
     });
