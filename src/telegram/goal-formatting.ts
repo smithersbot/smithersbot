@@ -18,6 +18,11 @@ import {
   persistTelegramQuestionMessage,
   sendDagPng,
 } from "./goal-sending.js";
+import {
+  buildBlockedCaption,
+  buildGoalBlockedInlineKeyboard,
+  buildTaskBlockedInlineKeyboard,
+} from "./goal-blocked-ui.js";
 import { buildInlineKeyboard } from "./send.js";
 
 type WorkingDirInstructionHint = {
@@ -322,23 +327,6 @@ export function resolveBlockedRequiredInputKey(run: SerializedRun): string | und
   return firstBlockedStep ? `task:${firstBlockedStep.id}:input` : undefined;
 }
 
-function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [
-      { text: "\u25B6\uFE0F Resume Goal", callback_data: `gResume:${runIdPrefix}` },
-      { text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` },
-    ],
-  ]);
-}
-
-function buildTaskBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [{ text: "\u23F9\uFE0F Stop Goal", callback_data: `gStop:${runIdPrefix}` }],
-  ]);
-}
-
 export function buildGoalDoneInlineKeyboard(runIdPrefix: string) {
   return buildInlineKeyboard([
     [{ text: "🔍 Test Detail", callback_data: `gTD:${runIdPrefix}` }],
@@ -507,12 +495,10 @@ export function buildOnStatusChange(params: {
           `**GOAL BLOCKED** (${prefix}): no runnable steps — waiting for answers.`,
         ];
         const blocked = event.steps.filter((s) => s.status === "blocked");
-        if (blocked.length > 0) {
+        const blockedCaption = buildBlockedCaption(event.steps);
+        if (blockedCaption) {
           lines.push("");
-          for (const s of blocked.slice(0, 3)) {
-            lines.push(`• Step ${s.id}: ${s.blockedQuestion ?? s.blockedReason ?? "needs input"}`);
-          }
-          if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
+          lines.push(blockedCaption);
         }
         const sentId = await sendDagPng({
           bot,
