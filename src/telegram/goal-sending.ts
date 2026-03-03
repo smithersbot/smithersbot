@@ -2,15 +2,24 @@ import { InputFile, type Bot } from "grammy";
 import type { InlineKeyboardMarkup } from "grammy/types";
 
 import { warn } from "../globals.js";
+import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
+import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { runCliProcess } from "../goal/cli-process.js";
 import { computeCpm } from "../goal/cpm.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import { renderMermaid } from "../goal/mermaid-render.js";
-import { renderMermaidToPng } from "../goal/mermaid-png.js";
+import {
+  renderMermaidToPng,
+  repairMermaidDiagram,
+  type MermaidRenderResult,
+} from "../goal/mermaid-png.js";
 import { loadRun, saveRun } from "../goal/run-store.js";
+import { resolveClaudeBinary } from "../goal/scout.js";
 import type {
   ManualTestSuggestion,
   Plan,
   PlanStep,
+  PlannerBackendId,
   SerializedRun,
   StepResult,
 } from "../goal/types.js";
@@ -401,6 +410,7 @@ export async function sendGoalPlanResult(params: {
           chatId,
           threadId,
           runtime,
+          runId: result.runId,
           plan: result.plan,
           steps: result.plan.steps,
           stepResults: result.stepResults,
@@ -575,6 +585,79 @@ function splitTelegramCaption(caption: string): { caption: string; remainder?: s
   return { caption: headHtml, remainder: tailMarkdown || undefined };
 }
 
+const MERMAID_REPAIR_TIMEOUT_MS = 60_000;
+const CLAUDE_MERMAID_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
+
+function buildCodexMermaidRepairArgs(params: {
+  workingDir: string;
+  prompt: string;
+  model?: string;
+}): string[] {
+  const askForApprovalPlacement = getCodexAskForApprovalPlacement();
+  const args = [
+    ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
+    "exec",
+    ...(askForApprovalPlacement === "after_exec" ? ["--ask-for-approval", "never"] : []),
+    "--sandbox",
+    "workspace-write",
+    "--cd",
+    params.workingDir,
+    "-c",
+    "net.allowed=true",
+  ];
+  if (params.model) args.push("--model", params.model);
+  args.push(params.prompt);
+  return args;
+}
+
+function extractCliErrorDetail(stdout: string, stderr: string): string {
+  const detail = (stderr || stdout).trim();
+  return detail || "unknown CLI failure";
+}
+
+async function askPlannerBackendForMermaidRepair(params: {
+  backend: PlannerBackendId;
+  workingDir: string;
+  prompt: string;
+  model?: string;
+}): Promise<string> {
+  if (params.backend === "codex") {
+    const result = await runCliProcess({
+      command: "codex",
+      args: buildCodexMermaidRepairArgs({
+        workingDir: params.workingDir,
+        prompt: params.prompt,
+        model: params.model,
+      }),
+      cwd: params.workingDir,
+      timeoutMs: MERMAID_REPAIR_TIMEOUT_MS,
+    });
+    if (result.timedOut || (result.exitCode && result.exitCode !== 0) || result.signal) {
+      throw new Error(extractCliErrorDetail(result.stdout, result.stderr));
+    }
+    return result.stdout.trim();
+  }
+
+  const claudeBinary = resolveClaudeBinary();
+  if (!claudeBinary) {
+    throw new Error("claude binary not found on PATH");
+  }
+  const args = ["-p", "--allowedTools", CLAUDE_MERMAID_ALLOWED_TOOLS];
+  if (params.model) args.push("--model", params.model);
+  const result = await runCliProcess({
+    command: claudeBinary,
+    args,
+    cwd: params.workingDir,
+    timeoutMs: MERMAID_REPAIR_TIMEOUT_MS,
+    stdin: params.prompt,
+    env: buildClaudeCodeEnv("subscription"),
+  });
+  if (result.timedOut || (result.exitCode && result.exitCode !== 0) || result.signal) {
+    throw new Error(extractCliErrorDetail(result.stdout, result.stderr));
+  }
+  return result.stdout.trim();
+}
+
 export async function sendDagPng(params: {
   bot: Bot;
   chatId: number;
@@ -586,6 +669,7 @@ export async function sendDagPng(params: {
   caption: string;
   replyMarkup?: InlineKeyboardMarkup;
   replyToMessageId?: number;
+  runId?: string;
 }): Promise<number | undefined> {
   const {
     bot,
@@ -598,6 +682,7 @@ export async function sendDagPng(params: {
     caption,
     replyMarkup,
     replyToMessageId,
+    runId,
   } = params;
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   const replyParams =
@@ -611,38 +696,51 @@ export async function sendDagPng(params: {
     // CPM not critical for visual output
   }
   const mermaidText = renderMermaid(plan, cpm, displayStatuses, stepResults);
-  const pngBuffer = renderMermaidToPng(mermaidText);
+  const renderResult: MermaidRenderResult = renderMermaidToPng(mermaidText);
+  let pngBuffer: Buffer | undefined;
 
-  if (pngBuffer) {
-    // Keep PNG rendering ahead of any text chunking/fallback logic.
-    const split = splitTelegramCaption(caption);
-    try {
-      const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
-        caption: split.caption,
-        parse_mode: "HTML",
-        ...threadParams,
-        ...replyParams,
-        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-      });
-      if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
-        warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
-      }
-      if (split.remainder) {
-        await sendGoalReply(bot, chatId, split.remainder, runtime, threadId);
-      }
-      return sent.message_id;
-    } catch {
-      // Fall through to text fallback
-    }
+  if (renderResult && "buffer" in renderResult) {
+    pngBuffer = renderResult.buffer;
+  } else if (renderResult && "error" in renderResult) {
+    if (!runId) return undefined;
+    const run = loadRun(runId);
+    const backend = run?.plannerBackendUsed;
+    if (!run?.workingDir || !backend) return undefined;
+    const repaired = await repairMermaidDiagram({
+      source: mermaidText,
+      error: renderResult.error,
+      askFn: (prompt) =>
+        askPlannerBackendForMermaidRepair({
+          backend,
+          workingDir: run.workingDir,
+          prompt,
+          model: run.model,
+        }),
+    });
+    if (!repaired) return undefined;
+    pngBuffer = repaired;
+  } else {
+    // Timeout render path: let caller fall back to keyboarded text plan delivery.
+    return undefined;
   }
 
-  // Fallback: send Mermaid code block as text
-  return await sendGoalReply(
-    bot,
-    chatId,
-    `${caption}\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``,
-    runtime,
-    threadId,
-    replyToMessageId,
-  );
+  const split = splitTelegramCaption(caption);
+  try {
+    const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
+      caption: split.caption,
+      parse_mode: "HTML",
+      ...threadParams,
+      ...replyParams,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    });
+    if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
+      warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
+    }
+    if (split.remainder) {
+      await sendGoalReply(bot, chatId, split.remainder, runtime, threadId);
+    }
+    return sent.message_id;
+  } catch {
+    return undefined;
+  }
 }

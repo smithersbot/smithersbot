@@ -95,10 +95,45 @@ vi.mock("../goal/format-output.js", async (importOriginal) => {
   };
 });
 
-const mockRenderMermaidToPng = vi.fn(() => Buffer.from("png"));
+const mockRenderMermaidToPng = vi.fn(() => ({ buffer: Buffer.from("png") }));
+const mockRepairMermaidDiagram = vi.fn(async () => null);
 vi.mock("../goal/mermaid-png.js", () => ({
   renderMermaidToPng: (...args: unknown[]) => mockRenderMermaidToPng(...args),
+  repairMermaidDiagram: (...args: unknown[]) => mockRepairMermaidDiagram(...args),
 }));
+
+const mockRunCliProcess = vi.fn();
+vi.mock("../goal/cli-process.js", () => ({
+  runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
+}));
+
+const mockResolveClaudeBinary = vi.fn(() => "claude");
+vi.mock("../goal/scout.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/scout.js")>();
+  return {
+    ...actual,
+    resolveClaudeBinary: () => mockResolveClaudeBinary(),
+  };
+});
+
+const mockBuildClaudeCodeEnv = vi.fn(() => ({ CLAUDE_CODE_ENTRYPOINT: "mock" }));
+vi.mock("../goal/claude-code-env.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/claude-code-env.js")>();
+  return {
+    ...actual,
+    buildClaudeCodeEnv: (...args: unknown[]) => mockBuildClaudeCodeEnv(...args),
+  };
+});
+
+const mockGetCodexAskForApprovalPlacement = vi.fn(() => "before_exec");
+vi.mock("../goal/backend-availability.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/backend-availability.js")>();
+  return {
+    ...actual,
+    getCodexAskForApprovalPlacement: (...args: unknown[]) =>
+      mockGetCodexAskForApprovalPlacement(...args),
+  };
+});
 
 const mockResolveChannelConfigWrites = vi.fn(() => true);
 vi.mock("../channels/plugins/config-writes.js", () => ({
@@ -178,6 +213,19 @@ describe("goal-commands telegram adapter", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-test-"));
     vi.clearAllMocks();
+    mockRenderMermaidToPng.mockReturnValue({ buffer: Buffer.from("png") });
+    mockRepairMermaidDiagram.mockResolvedValue(null);
+    mockRunCliProcess.mockResolvedValue({
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+    });
+    mockResolveClaudeBinary.mockReturnValue("claude");
+    mockBuildClaudeCodeEnv.mockReturnValue({ CLAUDE_CODE_ENTRYPOINT: "mock" });
+    mockGetCodexAskForApprovalPlacement.mockReturnValue("before_exec");
     mockResolveChannelConfigWrites.mockReturnValue(true);
     mockLoadConfig.mockReturnValue({});
     mockWriteConfigFile.mockResolvedValue(undefined);
@@ -713,7 +761,7 @@ describe("goal-commands telegram adapter", () => {
           runtime.log("State: awaiting_approval");
         },
       );
-      mockRenderMermaidToPng.mockReturnValue(Buffer.from("png"));
+      mockRenderMermaidToPng.mockReturnValue({ buffer: Buffer.from("png") });
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
@@ -782,7 +830,7 @@ describe("goal-commands telegram adapter", () => {
           runtime.log("- 1. pending Step one");
         },
       );
-      mockRenderMermaidToPng.mockReturnValue(Buffer.from("png"));
+      mockRenderMermaidToPng.mockReturnValue({ buffer: Buffer.from("png") });
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
@@ -1246,17 +1294,15 @@ describe("goal-commands telegram adapter", () => {
         },
       },
     ])(
-      "swallows delivery errors and posts fallback text for $eventType status updates",
+      "swallows DAG exceptions and posts fallback text for $eventType status updates",
       async ({ eventType, event }) => {
         saveRunFixture(makeRun());
-        mockRenderMermaidToPng.mockReturnValueOnce(null);
+        mockRenderMermaidToPng.mockImplementationOnce(() => {
+          throw new Error("render failed");
+        });
 
         const sendPhoto = vi.fn().mockResolvedValue({ message_id: 30 });
-        const sendMessage = vi
-          .fn()
-          .mockRejectedValueOnce(new Error("html send failed"))
-          .mockRejectedValueOnce(new Error("text send failed"))
-          .mockResolvedValueOnce({ message_id: 31 });
+        const sendMessage = vi.fn().mockResolvedValue({ message_id: 31 });
         const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
         const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
         const onStatusChange = buildOnStatusChange({
@@ -1269,8 +1315,8 @@ describe("goal-commands telegram adapter", () => {
         await expect(onStatusChange(event as never)).resolves.toBeUndefined();
 
         expect(sendPhoto).not.toHaveBeenCalled();
-        expect(sendMessage).toHaveBeenCalledTimes(3);
-        const fallbackText = sendMessage.mock.calls[2]?.[1];
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        const fallbackText = sendMessage.mock.calls[0]?.[1];
         expect(typeof fallbackText).toBe("string");
         expect(fallbackText).toContain(eventType);
         expect(fallbackText).toContain("test-run");
@@ -1499,7 +1545,7 @@ describe("goal-commands telegram adapter", () => {
     it("threads reply parameters when DAG send falls back to text", async () => {
       const plan = makeRun().plan!;
       saveRunFixture(makeRun({ plan }));
-      mockRenderMermaidToPng.mockReturnValueOnce(undefined);
+      mockRenderMermaidToPng.mockReturnValueOnce(null);
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 401 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 402 });
@@ -1526,6 +1572,138 @@ describe("goal-commands telegram adapter", () => {
         reply_parameters?: { message_id: number };
       };
       expect(options.reply_parameters).toEqual({ message_id: 78 });
+      expect(mockRepairMermaidDiagram).not.toHaveBeenCalled();
+    });
+
+    it("repairs Mermaid render errors with the run's codex planner backend", async () => {
+      const plan = makeRun().plan!;
+      saveRunFixture(makeRun({ plan, plannerBackendUsed: "codex" }));
+      mockRenderMermaidToPng.mockReturnValueOnce({ error: "Parse error" });
+      mockRepairMermaidDiagram.mockImplementationOnce(async (args: unknown) => {
+        const { askFn } = args as { askFn: (prompt: string) => Promise<string> };
+        await askFn("repair prompt");
+        return Buffer.from("repaired-png");
+      });
+      mockRunCliProcess.mockResolvedValueOnce({
+        stdout: "```mermaid\nflowchart TD\nA-->B\n```",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+      });
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 451 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 452 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when repair succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(mockRepairMermaidDiagram).toHaveBeenCalledOnce();
+      expect(mockRunCliProcess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "codex",
+          cwd: "/tmp/ws",
+          args: expect.arrayContaining(["exec", "repair prompt"]),
+        }),
+      );
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("uses claude planner backend for Mermaid repair prompts", async () => {
+      const plan = makeRun().plan!;
+      saveRunFixture(makeRun({ plan, plannerBackendUsed: "claude_code" }));
+      mockRenderMermaidToPng.mockReturnValueOnce({ error: "Render failed" });
+      mockResolveClaudeBinary.mockReturnValueOnce("/usr/local/bin/claude");
+      mockBuildClaudeCodeEnv.mockReturnValueOnce({ CLAUDE_CODE_ENTRYPOINT: "from-test" });
+      mockRepairMermaidDiagram.mockImplementationOnce(async (args: unknown) => {
+        const { askFn } = args as { askFn: (prompt: string) => Promise<string> };
+        await askFn("repair prompt");
+        return Buffer.from("repaired-png");
+      });
+      mockRunCliProcess.mockResolvedValueOnce({
+        stdout: "```mermaid\nflowchart TD\nA-->B\n```",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+      });
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 461 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 462 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when repair succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(mockBuildClaudeCodeEnv).toHaveBeenCalledWith("subscription");
+      expect(mockRunCliProcess).toHaveBeenCalledWith(
+        expect.objectContaining({
+          command: "/usr/local/bin/claude",
+          cwd: "/tmp/ws",
+          stdin: "repair prompt",
+          args: expect.arrayContaining(["-p", "--allowedTools", "Read,Glob,Grep,Bash"]),
+          env: { CLAUDE_CODE_ENTRYPOINT: "from-test" },
+        }),
+      );
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("falls through to keyboarded text when Mermaid repair fails", async () => {
+      const plan = makeRun().plan!;
+      saveRunFixture(makeRun({ plan, plannerBackendUsed: "codex" }));
+      mockRenderMermaidToPng.mockReturnValueOnce({ error: "Parse error" });
+      mockRepairMermaidDiagram.mockResolvedValueOnce(null);
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 471 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 472 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when text fallback succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      const sendMessageOptions = sendMessage.mock.calls[0]?.[2] as {
+        reply_markup?: unknown;
+      };
+      expect(sendMessageOptions.reply_markup).toBeDefined();
     });
 
     it("threads reply parameters when sendGoalPlanMessage fallback is used", async () => {
