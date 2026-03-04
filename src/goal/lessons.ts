@@ -5,8 +5,14 @@ import { resolveStateDir } from "../config/paths.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import {
+  collectText,
+  collapseWhitespace,
+  formatCliFailure,
+  isRecord,
+  parseJsonLines,
+} from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
-import { repairJsonText } from "./json-repair.js";
 import { extractJson } from "./planner.js";
 import { loadRun } from "./run-store.js";
 import { resolveClaudeBinary } from "./scout.js";
@@ -154,55 +160,10 @@ export function removeLessons(ids: string[]): number {
   return removed;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function truncateText(value: string, maxChars = MAX_SUMMARY_TEXT_CHARS): string {
   const normalized = collapseWhitespace(value);
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars).trimEnd()}...`;
-}
-
-function collectText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
-  if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (Array.isArray(value.content))
-    return value.content.map((entry) => collectText(entry)).join("");
-  if (isRecord(value.message)) return collectText(value.message);
-  if (isRecord(value.delta)) return collectText(value.delta);
-  if (isRecord(value.item)) return collectText(value.item);
-  if (isRecord(value.result)) return collectText(value.result);
-  return "";
-}
-
-function parseJsonLines(text: string): Record<string, unknown>[] {
-  const parsed: Record<string, unknown>[] = [];
-  const lines = text.split(/\r?\n/g);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) continue;
-    try {
-      const value = JSON.parse(trimmed) as unknown;
-      if (isRecord(value)) parsed.push(value);
-    } catch {
-      try {
-        const repairedValue = JSON.parse(repairJsonText(trimmed)) as unknown;
-        if (isRecord(repairedValue)) parsed.push(repairedValue);
-      } catch {
-        // Ignore non-JSON lines.
-      }
-    }
-  }
-  return parsed;
 }
 
 function normalizeCandidate(value: unknown): LessonCandidate | undefined {
@@ -296,13 +257,6 @@ function parseCandidatesFromCliOutput(stdout: string): ParsedLessonCandidates {
   }
 
   return { parsed: false, lessons: [] };
-}
-
-function formatCliFailure(stdout: string, stderr: string, signal: NodeJS.Signals | null): string {
-  const detail = truncateText(stderr || stdout, 250);
-  if (detail) return detail;
-  if (signal) return `terminated by ${signal}`;
-  return "unknown CLI error";
 }
 
 function buildCodexExtractionArgs(params: { workingDir: string; prompt: string }): string[] {

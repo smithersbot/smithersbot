@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliPlanRevision } from "./cli-planner.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { computeCpm } from "./cpm.js";
@@ -132,26 +133,6 @@ class ReviewerCliError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function collectText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
-  if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (Array.isArray(value.content))
-    return value.content.map((entry) => collectText(entry)).join("");
-  if (isRecord(value.message)) return collectText(value.message);
-  if (isRecord(value.delta)) return collectText(value.delta);
-  if (isRecord(value.item)) return collectText(value.item);
-  if (isRecord(value.result)) return collectText(value.result);
-  return "";
-}
-
 function pickSessionId(parsed: Record<string, unknown>): string | undefined {
   const fields = [
     "session_id",
@@ -166,25 +147,6 @@ function pickSessionId(parsed: Record<string, unknown>): string | undefined {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return undefined;
-}
-
-function parseJsonLines(raw: string): Array<Record<string, unknown>> {
-  return raw
-    .split(/\r?\n/g)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line) as unknown;
-      } catch {
-        try {
-          return JSON.parse(repairJsonText(line)) as unknown;
-        } catch {
-          return null;
-        }
-      }
-    })
-    .filter((entry): entry is Record<string, unknown> => isRecord(entry));
 }
 
 function parseTextAndSessionFromJsonLines(raw: string): { text: string; sessionId?: string } {

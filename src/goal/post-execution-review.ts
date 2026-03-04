@@ -1,11 +1,12 @@
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import { formatExecError } from "./build-gate.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { collectText, isRecord } from "./cli-output-parsing.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
+import { truncateSingleLine as truncateCompactSingleLine } from "./compact-output.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { GoalSession, PlanStep } from "./types.js";
-
-export { extractJsonObjectCandidates } from "./json-repair.js";
 
 export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 300_000;
 export const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
@@ -23,49 +24,6 @@ export type PostExecutionReviewResult =
   | { status: "approved"; issues: string[] }
   | { status: "rejected"; issues: string[] }
   | { status: "error"; reason: string };
-
-function formatExecError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const maybeStdout = (error as { stdout?: Buffer | string }).stdout;
-  const maybeStderr = (error as { stderr?: Buffer | string }).stderr;
-  const stdout =
-    typeof maybeStdout === "string"
-      ? maybeStdout
-      : maybeStdout instanceof Buffer
-        ? maybeStdout.toString("utf8")
-        : "";
-  const stderr =
-    typeof maybeStderr === "string"
-      ? maybeStderr
-      : maybeStderr instanceof Buffer
-        ? maybeStderr.toString("utf8")
-        : "";
-  return [error.message, stdout, stderr]
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-export function collectText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
-  if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (Array.isArray(value.content))
-    return value.content.map((entry) => collectText(entry)).join("");
-  if (isRecord(value.message)) return collectText(value.message);
-  if (isRecord(value.delta)) return collectText(value.delta);
-  if (isRecord(value.item)) return collectText(value.item);
-  if (typeof value.result === "string") return value.result;
-  if (isRecord(value.result)) return collectText(value.result);
-  return "";
-}
 
 export function normalizeReviewIssues(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -179,10 +137,7 @@ export function parsePostExecutionReviewDecision(
 }
 
 export function truncateSingleLine(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return "";
-  if (normalized.length <= POST_EXECUTION_REVIEW_ERROR_MAX_CHARS) return normalized;
-  return `${normalized.slice(0, POST_EXECUTION_REVIEW_ERROR_MAX_CHARS).trimEnd()}...`;
+  return truncateCompactSingleLine(text, POST_EXECUTION_REVIEW_ERROR_MAX_CHARS);
 }
 
 export function describeCliFailure(result: RunCliProcessResult): string {

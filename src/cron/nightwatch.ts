@@ -7,7 +7,15 @@ import type { MoltbotConfig } from "../config/config.js";
 import type { NightwatchConfig } from "../config/types.cron.js";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import {
+  collectText,
+  collapseWhitespace,
+  formatCliFailure,
+  isRecord,
+  parseJsonLines,
+} from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
+import { extractJsonObjectCandidates } from "../goal/json-repair.js";
 import { addLesson, loadLessons, removeLessons, type Lesson } from "../goal/lessons.js";
 import { resolveClaudeBinary } from "../goal/scout.js";
 import { getChildLogger } from "../logging.js";
@@ -63,88 +71,6 @@ function runExecFileUtf8(command: string, args: string[]): Promise<string> {
       resolve(stdout);
     });
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function collapseWhitespace(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function collectText(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => collectText(entry)).join("");
-  if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (Array.isArray(value.content))
-    return value.content.map((entry) => collectText(entry)).join("");
-  if (isRecord(value.message)) return collectText(value.message);
-  if (isRecord(value.delta)) return collectText(value.delta);
-  if (isRecord(value.item)) return collectText(value.item);
-  if (isRecord(value.result)) return collectText(value.result);
-  return "";
-}
-
-function extractJsonObjectCandidates(text: string): string[] {
-  const candidates: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaping = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (!ch) continue;
-    if (inString) {
-      if (escaping) {
-        escaping = false;
-      } else if (ch === "\\") {
-        escaping = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-      continue;
-    }
-    if (ch === "}") {
-      if (depth === 0) continue;
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        candidates.push(text.slice(start, i + 1));
-        start = -1;
-      }
-    }
-  }
-
-  return candidates;
-}
-
-function parseJsonLines(text: string): Record<string, unknown>[] {
-  const parsed: Record<string, unknown>[] = [];
-  for (const line of text.split(/\r?\n/g)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) continue;
-    try {
-      const value = JSON.parse(trimmed) as unknown;
-      if (isRecord(value)) parsed.push(value);
-    } catch {
-      // Ignore non-JSON lines.
-    }
-  }
-  return parsed;
 }
 
 function normalizeSourceLessonIds(value: unknown, validIds: Set<string>): string[] {
@@ -309,13 +235,6 @@ function parseCondensedLessonsFromCliOutput(
   }
 
   return { parsed: false, lessons: [] };
-}
-
-function formatCliFailure(stdout: string, stderr: string, signal: NodeJS.Signals | null): string {
-  const detail = collapseWhitespace(stderr || stdout);
-  if (detail) return detail.slice(0, 260);
-  if (signal) return `terminated by ${signal}`;
-  return "unknown CLI error";
 }
 
 export function buildLessonCondensePrompt(workingDir: string, lessons: Lesson[]): string {
