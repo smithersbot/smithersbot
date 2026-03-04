@@ -30,13 +30,13 @@ export const GoalWorkerOutputSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
-export const PlanBuildGateInputSchema = z.object({
+const PlanBuildGateInputSchema = z.object({
   commands: z.array(z.string()),
   runBetweenSteps: z.boolean(),
   postExecutionReview: z.boolean().optional(),
 });
 
-export const PlanStepInputSchema = z.object({
+const PlanStepInputSchema = z.object({
   id: z.union([z.string().min(1), z.number()]),
   description: z.string().min(1),
   shortSummary: z.string().optional(),

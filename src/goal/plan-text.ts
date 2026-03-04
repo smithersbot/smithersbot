@@ -16,7 +16,3 @@ export function parseShortSummary(raw: unknown, fallback: unknown, maxChars: num
   }
   return truncateSummary(collapseWhitespace(fallback), maxChars);
 }
-
-export function ensureShortSummary(raw: unknown, fallback: unknown, maxChars: number): string {
-  return parseShortSummary(raw, fallback, maxChars);
-}

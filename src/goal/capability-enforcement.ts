@@ -8,7 +8,7 @@ import { createCodingTools } from "@mariozechner/pi-coding-agent";
 import type { HardDeny } from "./capability-types.js";
 import { checkCommandDeny, checkPathDeny } from "./hard-deny.js";
 
-export type DeniedAction = {
+type DeniedAction = {
   type: "exec" | "read" | "write" | "edit";
   command?: string;
   path?: string;

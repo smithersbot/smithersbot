@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { GoalWorkerOutputSchema, PlanInputSchema, PlanStepInputSchema } from "./goal-schemas.js";
+import { GoalWorkerOutputSchema, PlanInputSchema } from "./goal-schemas.js";
+
+function parseSingleStep(step: unknown) {
+  return PlanInputSchema.safeParse({
+    goal: "Goal",
+    workingDir: "/tmp/moltbot",
+    steps: [step],
+  });
+}
 
 describe("goal-schemas", () => {
   describe("GoalWorkerOutputSchema", () => {
@@ -56,9 +64,9 @@ describe("goal-schemas", () => {
     });
   });
 
-  describe("PlanStepInputSchema", () => {
+  describe("Plan step shape", () => {
     it("accepts valid planner step input with optional fields", () => {
-      const parsed = PlanStepInputSchema.safeParse({
+      const parsed = parseSingleStep({
         id: 1,
         description: "Implement CLI prompt changes and update tests",
         shortSummary: "Implement prompt updates",
@@ -73,11 +81,11 @@ describe("goal-schemas", () => {
     });
 
     it("rejects invalid planner step input", () => {
-      const missingRequiredFields = PlanStepInputSchema.safeParse({
+      const missingRequiredFields = parseSingleStep({
         id: "step-1",
         dependsOn: [],
       });
-      const invalidDependsOn = PlanStepInputSchema.safeParse({
+      const invalidDependsOn = parseSingleStep({
         id: "step-1",
         description: "Run tests",
         backend: "claude_code",

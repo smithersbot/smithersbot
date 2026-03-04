@@ -6,11 +6,6 @@ type CodexAskForApprovalPlacement = "before_exec" | "after_exec" | "unsupported"
 
 let cachedCodexAskForApproval: CodexAskForApprovalPlacement | null = null;
 
-export function resetBackendAvailabilityCache(): void {
-  cachedAvailability = null;
-  cachedCodexAskForApproval = null;
-}
-
 const PROBE_TIMEOUT_MS = 5_000;
 const MAX_REASON_CHARS = 160;
 

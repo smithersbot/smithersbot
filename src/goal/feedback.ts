@@ -1,5 +1,5 @@
 import type { Plan, PlanStep } from "./types.js";
-import { ensureShortSummary } from "./plan-text.js";
+import { parseShortSummary } from "./plan-text.js";
 
 const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
 const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
@@ -7,7 +7,7 @@ const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
 function cloneStep(step: PlanStep): PlanStep {
   return {
     ...step,
-    shortSummary: ensureShortSummary(
+    shortSummary: parseShortSummary(
       step.shortSummary,
       step.description || step.id,
       STEP_SHORT_SUMMARY_MAX_CHARS,
@@ -94,7 +94,7 @@ export function mergeRevisedPlanWithDoneSteps(params: {
     workingDir: revisedPlan.workingDir,
     summary: revisedPlan.summary,
     buildGate: revisedPlan.buildGate ?? originalPlan.buildGate,
-    shortSummary: ensureShortSummary(
+    shortSummary: parseShortSummary(
       revisedPlan.shortSummary,
       revisedPlan.summary || originalPlan.summary,
       PLAN_SHORT_SUMMARY_MAX_CHARS,
