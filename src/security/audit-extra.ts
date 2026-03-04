@@ -21,6 +21,7 @@ import { resolveGatewayAuth } from "../gateway/auth.js";
 import type { SandboxToolPolicy } from "../agents/sandbox/types.js";
 import { INCLUDE_KEY, MAX_INCLUDE_DEPTH } from "../config/includes.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import type { SecurityAuditFinding } from "./audit.js";
 import {
   formatPermissionDetail,
   formatPermissionRemediation,
@@ -29,13 +30,7 @@ import {
 } from "./audit-fs.js";
 import type { ExecFn } from "./windows-acl.js";
 
-export type SecurityAuditFinding = {
-  checkId: string;
-  severity: "info" | "warn" | "critical";
-  title: string;
-  detail: string;
-  remediation?: string;
-};
+export type { SecurityAuditFinding };
 
 const SMALL_MODEL_PARAM_B_MAX = 300;
 

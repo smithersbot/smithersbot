@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 
 import {
-  formatIcaclsResetCommand,
   formatWindowsAclSummary,
   inspectWindowsAcl,
+  resolveWindowsUserPrincipal,
   type ExecFn,
 } from "./windows-acl.js";
 
@@ -145,11 +145,18 @@ export function formatPermissionRemediation(params: {
   posixMode: number;
   env?: NodeJS.ProcessEnv;
 }): string {
+  const quotedPath = shellQuotePath(params.targetPath);
   if (params.perms.source === "windows-acl") {
-    return formatIcaclsResetCommand(params.targetPath, { isDir: params.isDir, env: params.env });
+    const user = resolveWindowsUserPrincipal(params.env) ?? "%USERNAME%";
+    const grant = params.isDir ? "(OI)(CI)F" : "F";
+    return `icacls ${quotedPath} /inheritance:r /grant:r "${user}:${grant}" /grant:r "SYSTEM:${grant}"`;
   }
   const mode = params.posixMode.toString(8).padStart(3, "0");
-  return `chmod ${mode} ${params.targetPath}`;
+  return `chmod ${mode} ${quotedPath}`;
+}
+
+function shellQuotePath(targetPath: string): string {
+  return `'${targetPath.replaceAll("'", "'\\''")}'`;
 }
 
 export function modeBits(mode: number | null): number | null {
