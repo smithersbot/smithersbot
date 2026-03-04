@@ -8,6 +8,10 @@ import type { NightwatchConfig } from "../config/types.cron.js";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
 import {
+  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+  CLAUDE_READ_ONLY_PROMPT,
+} from "../goal/claude-code-constants.js";
+import {
   collectText,
   collapseWhitespace,
   formatCliFailure,
@@ -34,8 +38,6 @@ const NIGHTWATCH_SENTINEL_MESSAGE = "__nightwatch__";
 const LESSON_CONDENSE_TIMEOUT_MS = 120_000;
 const MAX_CONDENSED_LESSONS_PER_DIR = 25;
 const MAX_CONDENSED_GLOBAL_LESSONS = 25;
-const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
-const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const nightwatchLogger = getChildLogger({ module: "cron-nightwatch" });
 
 export type NightwatchRunResult =
@@ -324,7 +326,7 @@ async function runClaudeLessonCondense(params: {
       "--max-turns",
       "1",
       "--allowedTools",
-      CLAUDE_ALLOWED_TOOLS,
+      CLAUDE_ALLOWED_TOOLS_READ_ONLY,
       "--append-system-prompt",
       CLAUDE_READ_ONLY_PROMPT,
     ],

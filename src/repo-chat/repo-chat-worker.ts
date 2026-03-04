@@ -4,13 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import {
+  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+  CLAUDE_READ_ONLY_PROMPT,
+} from "../goal/claude-code-constants.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
-const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
-const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
 const MAX_ERROR_DETAIL_CHARS = 1_000;
 const REPAIR_TIMEOUT_MS = 60_000;
@@ -26,7 +28,7 @@ export function buildClaudeRepoChatArgs(params: {
     "json",
     "--verbose",
     "--allowedTools",
-    CLAUDE_ALLOWED_TOOLS,
+    CLAUDE_ALLOWED_TOOLS_READ_ONLY,
     "--append-system-prompt",
     CLAUDE_APPENDED_PROMPT,
   ];
@@ -326,4 +328,4 @@ export async function runRepoChatWorker(
 }
 
 export const REPO_CHAT_READ_ONLY_PROMPT = CLAUDE_READ_ONLY_PROMPT;
-export const REPO_CHAT_CLAUDE_ALLOWED_TOOLS = CLAUDE_ALLOWED_TOOLS;
+export const REPO_CHAT_CLAUDE_ALLOWED_TOOLS = CLAUDE_ALLOWED_TOOLS_READ_ONLY;

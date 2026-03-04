@@ -6,6 +6,10 @@ import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import {
+  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+  CLAUDE_READ_ONLY_PROMPT,
+} from "./claude-code-constants.js";
+import {
   collectText,
   collapseWhitespace,
   formatCliFailure,
@@ -25,8 +29,6 @@ const MAX_PLAN_HISTORY_FOR_PROMPT = 12;
 const MAX_RALPH_INSIGHTS_FOR_PROMPT = 20;
 const MAX_STEP_RESULTS_FOR_PROMPT = 20;
 const MAX_SUMMARY_TEXT_CHARS = 500;
-const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
-const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 
 const LESSON_SOURCES = new Set(["ralph", "autocheck", "user_edit", "feedback", "worker"]);
 const LESSON_SCOPES = new Set(["global", "project"]);
@@ -301,7 +303,7 @@ async function runClaudeLessonExtraction(params: {
       "--max-turns",
       "1",
       "--allowedTools",
-      CLAUDE_ALLOWED_TOOLS,
+      CLAUDE_ALLOWED_TOOLS_READ_ONLY,
       "--append-system-prompt",
       CLAUDE_READ_ONLY_PROMPT,
     ],

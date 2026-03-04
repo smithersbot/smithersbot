@@ -1,6 +1,10 @@
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { formatExecError } from "./build-gate.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import {
+  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+  CLAUDE_READ_ONLY_PROMPT,
+} from "./claude-code-constants.js";
 import { collectText, isRecord } from "./cli-output-parsing.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { truncateSingleLine as truncateCompactSingleLine } from "./compact-output.js";
@@ -11,9 +15,6 @@ import type { GoalSession, PlanStep } from "./types.js";
 export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 300_000;
 export const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
 export const POST_EXECUTION_REVIEW_ERROR_MAX_CHARS = 400;
-export const CLAUDE_REVIEW_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
-export const CLAUDE_REVIEW_READ_ONLY_PROMPT =
-  "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 
 export type PostExecutionReviewDecision = {
   approved: boolean;
@@ -232,9 +233,9 @@ export async function runPostExecutionReview(params: {
         "--max-turns",
         "1",
         "--allowedTools",
-        CLAUDE_REVIEW_ALLOWED_TOOLS,
+        CLAUDE_ALLOWED_TOOLS_READ_ONLY,
         "--append-system-prompt",
-        CLAUDE_REVIEW_READ_ONLY_PROMPT,
+        CLAUDE_READ_ONLY_PROMPT,
       ],
       cwd: params.workingDir,
       timeoutMs: POST_EXECUTION_REVIEW_TIMEOUT_MS,

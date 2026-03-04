@@ -3,6 +3,10 @@ import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import {
+  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+  CLAUDE_READ_ONLY_PROMPT,
+} from "./claude-code-constants.js";
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliPlanRevision } from "./cli-planner.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
@@ -17,8 +21,6 @@ import type { Plan } from "./types.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
 const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
-const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
-const CLAUDE_READ_ONLY_PROMPT = "This is READ-ONLY. Do NOT create, modify, or delete any files.";
 const SESSION_NOT_FOUND_RE =
   /(session|thread|conversation|resume)[^.\n\r]{0,80}(not found|unknown|expired|invalid)/i;
 const MAX_DETAIL_CHARS = 1_200;
@@ -344,7 +346,7 @@ function buildClaudeReviewerArgs(params: {
     "--output-format",
     "stream-json",
     "--allowedTools",
-    CLAUDE_ALLOWED_TOOLS,
+    CLAUDE_ALLOWED_TOOLS_READ_ONLY,
     "--append-system-prompt",
     CLAUDE_READ_ONLY_PROMPT,
   ];

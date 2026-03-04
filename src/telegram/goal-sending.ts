@@ -4,6 +4,7 @@ import type { InlineKeyboardMarkup } from "grammy/types";
 import { warn } from "../globals.js";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { CLAUDE_ALLOWED_TOOLS_READ_ONLY } from "../goal/claude-code-constants.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { computeCpm } from "../goal/cpm.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
@@ -684,7 +685,6 @@ function splitTelegramCaption(caption: string): { caption: string; remainder?: s
 }
 
 const MERMAID_REPAIR_TIMEOUT_MS = 60_000;
-const CLAUDE_MERMAID_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 
 function buildCodexMermaidRepairArgs(params: {
   workingDir: string;
@@ -740,7 +740,7 @@ async function askPlannerBackendForMermaidRepair(params: {
   if (!claudeBinary) {
     throw new Error("claude binary not found on PATH");
   }
-  const args = ["-p", "--allowedTools", CLAUDE_MERMAID_ALLOWED_TOOLS];
+  const args = ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS_READ_ONLY];
   if (params.model) args.push("--model", params.model);
   const result = await runCliProcess({
     command: claudeBinary,
