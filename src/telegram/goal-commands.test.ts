@@ -3704,6 +3704,7 @@ describe("goal-commands telegram adapter", () => {
       callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
       sendMessage: ReturnType<typeof vi.fn>;
       answerCallbackQuery: ReturnType<typeof vi.fn>;
+      setMessageReaction: ReturnType<typeof vi.fn>;
       register: () => Promise<void>;
     } {
       let callbackHandler:
@@ -3711,13 +3712,14 @@ describe("goal-commands telegram adapter", () => {
         | undefined;
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 700 });
       const answerCallbackQuery = vi.fn().mockResolvedValue(undefined);
+      const setMessageReaction = vi.fn().mockResolvedValue(true);
       const bot = {
         api: {
           sendMessage,
           sendPhoto: vi.fn().mockResolvedValue({ message_id: 701 }),
           sendChatAction: vi.fn().mockResolvedValue(true),
           answerCallbackQuery,
-          setMessageReaction: vi.fn().mockResolvedValue(true),
+          setMessageReaction,
         },
         command: vi.fn(),
         on: (
@@ -3765,6 +3767,7 @@ describe("goal-commands telegram adapter", () => {
         },
         sendMessage,
         answerCallbackQuery,
+        setMessageReaction,
         register,
       };
     }
@@ -3807,6 +3810,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.callbackHandler(makeCallbackCtx("gTD:abcdef12"));
 
       expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      expect(harness.setMessageReaction).toHaveBeenCalledWith(42, 500, [
+        { type: "emoji", emoji: "\uD83D\uDC40" },
+      ]);
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Manual test details for abcdef12");
       expect(sentText).toContain("<b>Test 1: Check login flow [8/10 Critical]</b>");
@@ -3896,6 +3902,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.callbackHandler(makeCallbackCtx("gIF:abcdef12", 501));
 
       expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      expect(harness.setMessageReaction).toHaveBeenCalledWith(42, 501, [
+        { type: "emoji", emoji: "\u270D" },
+      ]);
       expect(harness.sendMessage).toHaveBeenCalledWith(
         42,
         "Reply with feedback from your manual tests.",
@@ -4006,6 +4015,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.callbackHandler(makeCallbackCtx("gAD:abcdef12", 502));
 
       expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      expect(harness.setMessageReaction).toHaveBeenCalledWith(42, 502, [
+        { type: "emoji", emoji: "\u270D" },
+      ]);
       expect(harness.sendMessage).toHaveBeenCalledWith(
         42,
         "Reply to the blocked message with unblocking details.",

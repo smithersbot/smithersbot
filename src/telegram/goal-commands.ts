@@ -1616,6 +1616,20 @@ export function registerTelegramGoalCommands({
       const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
         ?.message_thread_id;
 
+      // React with the corresponding emoji on the done message.
+      if (messageId) {
+        const emoji: ReactionTypeEmoji["emoji"] = action === "gTD" ? "\uD83D\uDC40" : "\u270D";
+        await bot.api
+          .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set done action reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+      }
+
       const resolvedId = resolveRunId(runIdPrefix!);
       if (!resolvedId) {
         await sendGoalReply(
@@ -1708,6 +1722,20 @@ export function registerTelegramGoalCommands({
       const messageId = ctx.callbackQuery.message?.message_id;
       const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
         ?.message_thread_id;
+
+      // React on the blocked details message to acknowledge Add Details.
+      if (messageId) {
+        const emoji: ReactionTypeEmoji["emoji"] = "\u270D";
+        await bot.api
+          .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set blocked detail reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+      }
 
       const resolvedId = resolveRunId(runIdPrefix!);
       if (!resolvedId) {
