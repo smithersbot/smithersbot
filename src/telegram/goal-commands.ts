@@ -2651,14 +2651,30 @@ export function registerTelegramGoalCommands({
   bot.command("goal_lessons", async (ctx: TelegramGoalCommandContext) => {
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
-    const reply = await handleGoalLessons(ctx.match?.trim() ?? "");
+    const replyToMessageId = ctx.message?.message_id;
+    const arg = ctx.match?.trim() ?? "";
+    if (arg.startsWith("clear")) {
+      if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+        await sendGoalReply(
+          bot,
+          resolved.chatId,
+          "Config writes are disabled for this Telegram account.",
+          runtime,
+          resolved.threadIdForSend,
+          replyToMessageId,
+        );
+        return;
+      }
+    }
+
+    const reply = await handleGoalLessons(arg);
     await sendGoalReply(
       bot,
       resolved.chatId,
       reply,
       runtime,
       resolved.threadIdForSend,
-      ctx.message?.message_id,
+      replyToMessageId,
     );
   });
 
