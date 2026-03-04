@@ -454,7 +454,10 @@ export async function sendBlockedNotification(params: {
       replyMarkup,
       replyToMessageId,
     });
-  } catch {
+  } catch (err) {
+    runtime.error?.(
+      `telegram goal sendBlockedNotification DAG failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     messageId = undefined;
   }
 
@@ -838,7 +841,10 @@ export async function sendDagPng(params: {
       await sendGoalReply(bot, chatId, split.remainder, runtime, threadId);
     }
     return sent.message_id;
-  } catch {
+  } catch (err) {
+    runtime.error?.(
+      `telegram goal sendPhoto failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return undefined;
   }
 }
