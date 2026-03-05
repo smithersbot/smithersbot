@@ -18,6 +18,7 @@ import {
   persistTelegramDoneMessage,
   persistTelegramQuestionMessage,
   sendDagPng,
+  sendGoalReply,
   sendBlockedNotification,
 } from "./goal-sending.js";
 import { buildInlineKeyboard } from "./send.js";
@@ -559,6 +560,24 @@ export function buildOnStatusChange(params: {
             messageId: sentId,
             threadId,
           });
+        } else {
+          const textSentId = await sendGoalReply(
+            bot,
+            chatId,
+            caption,
+            runtime,
+            threadId,
+            undefined,
+            buildGoalDoneInlineKeyboard(prefix),
+          );
+          if (textSentId != null) {
+            persistTelegramDoneMessage({
+              runId,
+              chatId,
+              messageId: textSentId,
+              threadId,
+            });
+          }
         }
       } catch {
         await sendDeliveryFallback();
