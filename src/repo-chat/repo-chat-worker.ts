@@ -8,6 +8,7 @@ import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
 } from "../goal/claude-code-constants.js";
+import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
@@ -157,6 +158,25 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
   return undefined;
 }
 
+function extractResponseFromCodexStdout(stdout: string): string {
+  const lines = parseJsonLines(stdout);
+  const parts: string[] = [];
+  let finalResultText: string | undefined;
+
+  for (const parsed of lines) {
+    const type = typeof parsed.type === "string" ? parsed.type : "";
+    if (type === "result" && parsed.is_error !== true) {
+      const text = collectText(parsed.result).trim();
+      if (text) finalResultText = text;
+      continue;
+    }
+    const text = collectText(parsed).trim();
+    if (text && parts.at(-1) !== text) parts.push(text);
+  }
+
+  return (finalResultText ?? parts.join("\n")).trim();
+}
+
 function cleanupResponseFile(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
@@ -288,6 +308,10 @@ export async function runRepoChatWorker(
     try {
       responseText = fs.readFileSync(responseFilePath, "utf-8").trim();
     } catch {}
+
+    if (!responseText && params.backend === "codex") {
+      responseText = extractResponseFromCodexStdout(stdout);
+    }
 
     if (!responseText) {
       const resumeArgs = buildResumeArgs({
