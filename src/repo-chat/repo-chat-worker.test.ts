@@ -70,7 +70,25 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("stream-json");
     });
 
-    it("builds Codex resume args with read-only sandbox re-applied", () => {
+    it("builds Codex initial args with read-only sandbox", () => {
+      const args = buildCodexRepoChatArgs({
+        prompt: "Explain the tests in src/goal",
+        workingDir: "/repo",
+      });
+
+      expect(args).toContain("exec");
+      expect(args).toContain("--json");
+      expect(args).toContain("--color");
+      expect(args).toContain("never");
+      expect(args).toContain("--sandbox");
+      expect(args).toContain("read-only");
+      expect(args).toContain("--skip-git-repo-check");
+      expect(args).toContain("--cd");
+      expect(args).toContain("/repo");
+      expect(args).not.toContain("resume");
+    });
+
+    it("builds Codex resume args with supported exec resume flags", () => {
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
@@ -80,11 +98,13 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("exec");
       expect(args).toContain("resume");
       expect(args).toContain("thread-123");
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("read-only");
+      expect(args).toContain("--json");
+      expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--ask-for-approval");
       expect(args).toContain("never");
-      expect(args).not.toContain("--json");
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("--color");
+      expect(args).not.toContain("--cd");
     });
 
     it("supports Codex ask-for-approval placement after exec", () => {

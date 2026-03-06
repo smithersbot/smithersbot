@@ -58,14 +58,12 @@ export function buildCodexRepoChatArgs(params: {
 
   if (params.cliSessionId) {
     args.push("resume", params.cliSessionId);
-  }
-
-  if (!params.cliSessionId) {
     args.push("--json");
+    args.push("--skip-git-repo-check");
+  } else {
+    args.push("--json", "--color", "never", "--sandbox", "read-only");
+    args.push("--skip-git-repo-check", "--cd", params.workingDir);
   }
-
-  args.push("--color", "never", "--sandbox", "read-only", "--skip-git-repo-check");
-  args.push("--cd", params.workingDir);
 
   if (params.model) {
     args.push("--model", params.model);
