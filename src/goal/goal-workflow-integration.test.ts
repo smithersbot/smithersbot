@@ -150,6 +150,13 @@ function findLineIndex(lines: string[], prefix: string): number {
   return lines.findIndex((line) => line.startsWith(prefix));
 }
 
+/** Create an active run lock so listRuns() treats the run as genuinely executing. */
+function createRunLock(runId: string): void {
+  const lockDir = path.join(testGoalsDir, ".locks", "runs");
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, `${runId}.lock`), JSON.stringify({ pid: process.pid }));
+}
+
 describe("goal workflow integration tests", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-integration-test-"));
@@ -411,6 +418,7 @@ describe("goal workflow integration tests", () => {
           plan,
         }),
       );
+      createRunLock("executing-run-1");
 
       // Also save a completed run
       saveRun(
@@ -1354,6 +1362,7 @@ describe("goal workflow integration tests", () => {
           state: "executing",
         }),
       );
+      createRunLock("exec-a");
       saveRun(
         makeSerializedRun({
           runId: "exec-b",
@@ -1361,6 +1370,7 @@ describe("goal workflow integration tests", () => {
           state: "executing",
         }),
       );
+      createRunLock("exec-b");
       saveRun(
         makeSerializedRun({
           runId: "done-c",
