@@ -179,7 +179,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-function hasActiveRunLock(runId: string, goalsDir: string): boolean {
+export function hasActiveRunLock(runId: string, goalsDir: string): boolean {
   const lockPath = path.join(goalsDir, LOCKS_DIRNAME, RUN_LOCKS_DIRNAME, `${runId}.lock`);
   let payload: { pid?: unknown } | undefined;
   try {
@@ -201,6 +201,51 @@ function hasActiveRunLock(runId: string, goalsDir: string): boolean {
   return false;
 }
 
+function toRunSummary(run: SerializedRun): RunSummary {
+  const stepCount = run.plan?.steps?.length ?? 0;
+  const completedSteps = (run.plan?.steps ?? []).filter(
+    (step) => (step as PlanStep).status === "done",
+  ).length;
+
+  return {
+    runId: run.runId,
+    goal: run.goal,
+    state: run.state,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    stepCount,
+    completedSteps,
+    dryRun: run.dryRun ?? false,
+  };
+}
+
+/** Reconcile stale executing runs on disk and return how many changed state. */
+export function reconcileStaleRuns(goalsDir: string = resolveGoalsDir()): number {
+  if (!fs.existsSync(goalsDir)) return 0;
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(goalsDir);
+  } catch {
+    return 0;
+  }
+
+  let reconciledCount = 0;
+  for (const entry of entries) {
+    const runFile = path.join(goalsDir, entry, RUN_FILENAME);
+    const data = loadJsonFile(runFile);
+    if (!data || typeof data !== "object") continue;
+    if ((data as { state?: unknown }).state !== "executing") continue;
+
+    const reconciled = loadRun(entry, goalsDir);
+    if (reconciled && reconciled.state !== "executing") {
+      reconciledCount += 1;
+    }
+  }
+
+  return reconciledCount;
+}
+
 /** List all runs as summaries, sorted by updatedAt descending (newest first). */
 export function listRuns(goalsDir: string = resolveGoalsDir()): RunSummary[] {
   if (!fs.existsSync(goalsDir)) return [];
@@ -217,21 +262,14 @@ export function listRuns(goalsDir: string = resolveGoalsDir()): RunSummary[] {
     const runFile = path.join(goalsDir, entry, RUN_FILENAME);
     const data = loadJsonFile(runFile);
     if (!data || typeof data !== "object") continue;
-    const run = data as SerializedRun;
-    const stepCount = run.plan?.steps?.length ?? 0;
-    const completedSteps = (run.plan?.steps ?? []).filter(
-      (s) => (s as PlanStep).status === "done",
-    ).length;
-    summaries.push({
-      runId: run.runId,
-      goal: run.goal,
-      state: run.state,
-      createdAt: run.createdAt,
-      updatedAt: run.updatedAt,
-      stepCount,
-      completedSteps,
-      dryRun: run.dryRun ?? false,
-    });
+    let run = data as SerializedRun;
+    if (run.state === "executing") {
+      const runId = typeof run.runId === "string" && run.runId.length > 0 ? run.runId : entry;
+      if (!hasActiveRunLock(runId, goalsDir)) {
+        run = loadRun(entry, goalsDir) ?? run;
+      }
+    }
+    summaries.push(toRunSummary(run));
   }
 
   summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));

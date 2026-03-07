@@ -6,6 +6,7 @@ import {
   saveRun,
   loadRun,
   listRuns,
+  reconcileStaleRuns,
   deleteRun,
   resolveRunId,
   sessionToSerialized,
@@ -148,6 +149,166 @@ describe("run-store", () => {
     expect(run).toBeDefined();
     expect(run!.stepCount).toBe(3);
     expect(run!.completedSteps).toBe(2);
+  });
+
+  it("reconcileStaleRuns persists stale executing runs and counts only changed runs", () => {
+    const staleRunId = "stale-executing-run";
+    const activeRunId = "active-executing-run";
+    const staleRunDir = path.join(tmpDir, staleRunId);
+    const activeRunDir = path.join(tmpDir, activeRunId);
+    const lockDir = path.join(tmpDir, ".locks", "runs");
+    fs.mkdirSync(staleRunDir, { recursive: true });
+    fs.mkdirSync(activeRunDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(staleRunDir, "run.json"),
+      JSON.stringify({
+        runId: staleRunId,
+        goal: "Stale run",
+        state: "executing",
+        plan: {
+          goal: "Stale run",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(activeRunDir, "run.json"),
+      JSON.stringify({
+        runId: activeRunId,
+        goal: "Active run",
+        state: "executing",
+        plan: {
+          goal: "Active run",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(lockDir, `${activeRunId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "execute", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    expect(reconcileStaleRuns(tmpDir)).toBe(1);
+    expect(reconcileStaleRuns(tmpDir)).toBe(0);
+
+    const stalePersisted = JSON.parse(
+      fs.readFileSync(path.join(staleRunDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+    const activePersisted = JSON.parse(
+      fs.readFileSync(path.join(activeRunDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+
+    expect(stalePersisted.state).toBe("blocked");
+    expect(stalePersisted.plan?.steps[0]?.status).toBe("pending");
+    expect(activePersisted.state).toBe("executing");
+    expect(activePersisted.plan?.steps[0]?.status).toBe("in_progress");
+  });
+
+  it("listRuns reconciles stale executing runs before returning summaries", () => {
+    const runId = "list-reconciles-stale-run";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "List stale run",
+        state: "executing",
+        plan: {
+          goal: "List stale run",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const listed = listRuns(tmpDir).find((run) => run.runId === runId);
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(runDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+
+    expect(listed?.state).toBe("blocked");
+    expect(persisted?.state).toBe("blocked");
+  });
+
+  it("listRuns preserves executing summaries when an active run lock exists", () => {
+    const runId = "list-preserves-active-run";
+    const runDir = path.join(tmpDir, runId);
+    const lockDir = path.join(tmpDir, ".locks", "runs");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "List active run",
+        state: "executing",
+        plan: {
+          goal: "List active run",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(lockDir, `${runId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "execute", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const listed = listRuns(tmpDir).find((run) => run.runId === runId);
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(runDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+
+    expect(listed?.state).toBe("executing");
+    expect(persisted?.state).toBe("executing");
+    expect(persisted?.plan?.steps[0]?.status).toBe("in_progress");
   });
 
   it("deleteRun removes the run directory", () => {

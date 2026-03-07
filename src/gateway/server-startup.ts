@@ -17,6 +17,7 @@ import {
 import { loadInternalHooks } from "../hooks/loader.js";
 import type { loadMoltbotPlugins } from "../plugins/loader.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
+import { reconcileStaleRuns } from "../goal/run-store.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import {
   scheduleRestartSentinelWake,
@@ -29,7 +30,7 @@ export async function startGatewaySidecars(params: {
   defaultWorkspaceDir: string;
   deps: CliDeps;
   startChannels: () => Promise<void>;
-  log: { warn: (msg: string) => void };
+  log: { info: (msg: string) => void; warn: (msg: string) => void };
   logHooks: {
     info: (msg: string) => void;
     warn: (msg: string) => void;
@@ -38,6 +39,17 @@ export async function startGatewaySidecars(params: {
   logChannels: { info: (msg: string) => void; error: (msg: string) => void };
   logBrowser: { error: (msg: string) => void };
 }) {
+  try {
+    const reconciledRuns = reconcileStaleRuns();
+    if (reconciledRuns > 0) {
+      params.log.info(
+        `goal startup sweep reconciled ${reconciledRuns} stale run${reconciledRuns === 1 ? "" : "s"}`,
+      );
+    }
+  } catch (err) {
+    params.log.warn(`goal startup sweep failed: ${String(err)}`);
+  }
+
   // Start clawd browser control server (unless disabled via config).
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
   try {
