@@ -244,6 +244,45 @@ describe("run-store", () => {
     expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
   });
 
+  it("persists reconciled state changes back to run.json", () => {
+    const runId = "persisted-reconciliation";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Persist stale reconciliation",
+        state: "executing",
+        plan: {
+          goal: "Persist stale reconciliation",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(runDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+
+    expect(loaded?.state).toBe("blocked");
+    expect(loaded?.plan?.steps[0]?.status).toBe("pending");
+    expect(persisted.state).toBe("blocked");
+    expect(persisted.plan?.steps[0]?.status).toBe("pending");
+    expect(persisted.blocked?.requiredInputKey).toBe("resume_execution");
+  });
+
   it("preserves in_progress when an active run lock exists", () => {
     const runId = "active-run-lock";
     const runDir = path.join(tmpDir, runId);
@@ -284,6 +323,58 @@ describe("run-store", () => {
     expect(loaded?.state).toBe("executing");
   });
 
+  it("does not write active locked runs back to run.json", () => {
+    const runId = "active-run-lock-no-write";
+    const runDir = path.join(tmpDir, runId);
+    const lockDir = path.join(tmpDir, ".locks", "runs");
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Locked goal",
+        state: "executing",
+        plan: {
+          goal: "Locked goal",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+        },
+        stepResults: {},
+        blocked: null,
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(lockDir, `${runId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "approve", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    const persisted = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8")) as Record<
+      string,
+      unknown
+    >;
+
+    expect(loaded?.state).toBe("executing");
+    expect(loaded?.answers).toEqual({});
+    expect(persisted.state).toBe("executing");
+    expect(persisted.plan).toEqual({
+      goal: "Locked goal",
+      workingDir: "/tmp",
+      summary: "Plan",
+      steps: [{ id: "1", description: "Step", dependsOn: [], status: "in_progress" }],
+    });
+    expect(persisted.answers).toBeUndefined();
+  });
+
   it("migrates stale executing runs with all done steps to done", () => {
     const runId = "executing-all-done";
     const runDir = path.join(tmpDir, runId);
@@ -319,7 +410,7 @@ describe("run-store", () => {
     expect(loaded?.blocked).toBeNull();
   });
 
-  it("keeps executing state when no in_progress step exists and no lock is present", () => {
+  it("blocks stale executing runs when no in_progress step exists and no lock is present", () => {
     const runId = "executing-pending-no-lock";
     const runDir = path.join(tmpDir, runId);
     fs.mkdirSync(runDir, { recursive: true });
@@ -348,8 +439,8 @@ describe("run-store", () => {
     );
 
     const loaded = loadRun(runId, tmpDir);
-    expect(loaded?.state).toBe("executing");
-    expect(loaded?.blocked).toBeNull();
+    expect(loaded?.state).toBe("blocked");
+    expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
   });
 });
 

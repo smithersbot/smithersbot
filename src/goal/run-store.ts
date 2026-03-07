@@ -54,7 +54,12 @@ export function loadRun(
   const filePath = path.join(resolveRunDir(runId, goalsDir), RUN_FILENAME);
   const data = loadJsonFile(filePath);
   if (!data || typeof data !== "object") return undefined;
-  return migrateRun(data as Record<string, unknown>, goalsDir) as SerializedRun;
+  const rawState = (data as { state?: unknown }).state;
+  const migrated = migrateRun(data as Record<string, unknown>, goalsDir);
+  if (rawState !== migrated.state) {
+    atomicWriteJson(filePath, migrated);
+  }
+  return migrated as SerializedRun;
 }
 
 /** Migrate old run data (blockReason → blocked, add answers, step status normalization). */
@@ -81,15 +86,12 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
   const plan = data.plan as { steps?: Array<Record<string, unknown>> } | null;
   const runId = typeof data.runId === "string" ? data.runId : null;
   const keepInProgress = runId ? hasActiveRunLock(runId, goalsDir) : false;
-  let hadInProgressStep = false;
   if (plan?.steps) {
     for (const step of plan.steps) {
       if (step.status === "running") {
-        hadInProgressStep = true;
         // Legacy "running" status: preserve for active runs, otherwise recover to pending.
         step.status = keepInProgress ? "in_progress" : "pending";
       } else if (step.status === "in_progress") {
-        hadInProgressStep = true;
         // Preserve active task colouring while a live run lock exists.
         if (!keepInProgress) {
           // Process crash mid-task → reset to pending so resume can re-run it.
@@ -135,7 +137,7 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
     if (allStepsDone) {
       data.state = "done";
       data.blocked = null;
-    } else if (hadInProgressStep) {
+    } else {
       data.state = "blocked";
       if (!data.blocked) {
         data.blocked = {
