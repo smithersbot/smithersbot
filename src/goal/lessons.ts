@@ -29,9 +29,12 @@ const MAX_PLAN_HISTORY_FOR_PROMPT = 12;
 const MAX_RALPH_INSIGHTS_FOR_PROMPT = 20;
 const MAX_STEP_RESULTS_FOR_PROMPT = 20;
 const MAX_SUMMARY_TEXT_CHARS = 500;
+const LESSONS_LOCK_RETRY_DELAY_MS = 20;
+const LESSONS_LOCK_TIMEOUT_MS = 5_000;
 
 const LESSON_SOURCES = new Set(["ralph", "autocheck", "user_edit", "feedback", "worker"]);
 const LESSON_SCOPES = new Set(["global", "project"]);
+const LOCK_WAIT_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 
 export type LessonSource = "ralph" | "autocheck" | "user_edit" | "feedback" | "worker";
 export type LessonScope = "global" | "project";
@@ -62,6 +65,10 @@ type ParsedLessonCandidates = {
 
 function resolveLessonsPath(stateDir: string = resolveStateDir()): string {
   return path.join(stateDir, LESSONS_FILENAME);
+}
+
+function resolveLessonsLockPath(stateDir: string = resolveStateDir()): string {
+  return `${resolveLessonsPath(stateDir)}.lock`;
 }
 
 function atomicWriteJson(filePath: string, data: unknown): void {
@@ -112,6 +119,39 @@ export function saveLessons(lessons: Lesson[]): void {
   atomicWriteJson(resolveLessonsPath(), lessons);
 }
 
+function sleepSync(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(LOCK_WAIT_BUFFER, 0, 0, ms);
+}
+
+function acquireLessonsWriteLock(stateDir: string = resolveStateDir()): () => void {
+  const lockPath = resolveLessonsLockPath(stateDir);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+
+  const deadline = Date.now() + LESSONS_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      fs.mkdirSync(lockPath, { mode: 0o700 });
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        try {
+          fs.rmdirSync(lockPath);
+        } catch {
+          // Best-effort cleanup; another caller may have already removed it.
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for lessons lock: ${lockPath}`);
+      }
+      sleepSync(LESSONS_LOCK_RETRY_DELAY_MS);
+    }
+  }
+}
+
 export function addLesson(lesson: Omit<Lesson, "id" | "createdAt">): Lesson {
   const next: Lesson = {
     ...lesson,
@@ -119,10 +159,16 @@ export function addLesson(lesson: Omit<Lesson, "id" | "createdAt">): Lesson {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
   };
-  const lessons = loadLessons();
-  lessons.push(next);
-  saveLessons(lessons);
-  return next;
+
+  const release = acquireLessonsWriteLock();
+  try {
+    const lessons = loadLessons();
+    lessons.push(next);
+    saveLessons(lessons);
+    return next;
+  } finally {
+    release();
+  }
 }
 
 export function getLessonsForContext(workingDir: string): Lesson[] {

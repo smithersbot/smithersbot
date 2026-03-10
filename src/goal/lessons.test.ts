@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,43 @@ import type { Lesson } from "./lessons.js";
 import type { SerializedRun } from "./types.js";
 
 const mockRunCliProcess = vi.fn();
+const LESSONS_MODULE_URL = new URL("./lessons.ts", import.meta.url).href;
+const CONCURRENT_ADD_LESSON_HELPER = `
+import fs from "node:fs";
+import path from "node:path";
+
+const [stateDir, barrierDir, writerId, pattern, lesson, runId, moduleUrl] = process.argv.slice(2);
+const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+const sleepSync = (ms) => {
+  if (ms > 0) Atomics.wait(waitBuffer, 0, 0, ms);
+};
+
+process.env.MOLTBOT_STATE_DIR = stateDir;
+delete process.env.CLAWDBOT_STATE_DIR;
+
+const targetPath = path.join(stateDir, "goal-lessons.json");
+const originalRenameSync = fs.renameSync.bind(fs);
+fs.renameSync = (from, to) => {
+  if (String(to) === targetPath) {
+    sleepSync(250);
+  }
+  return originalRenameSync(from, to);
+};
+
+fs.writeFileSync(path.join(barrierDir, \`\${writerId}.ready\`), "");
+const startPath = path.join(barrierDir, "start");
+while (!fs.existsSync(startPath)) sleepSync(10);
+
+const { addLesson } = await import(moduleUrl);
+addLesson({
+  workingDir: "/repo/a",
+  pattern,
+  lesson,
+  source: "worker",
+  runId,
+});
+`;
+
 vi.mock("./cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
 }));
@@ -53,6 +91,68 @@ describe("lessons store", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  async function waitForReadyFiles(dir: string, count: number): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (true) {
+      const readyFiles = fs.readdirSync(dir).filter((entry) => entry.endsWith(".ready"));
+      if (readyFiles.length >= count) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${count} lesson writers to be ready.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  function spawnConcurrentLessonWriter(
+    helperPath: string,
+    barrierDir: string,
+    writerId: string,
+    pattern: string,
+    lesson: string,
+    runId: string,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          helperPath,
+          tmpDir,
+          barrierDir,
+          writerId,
+          pattern,
+          lesson,
+          runId,
+          LESSONS_MODULE_URL,
+        ],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+
+      let stderr = "";
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      child.on("error", reject);
+      child.on("exit", (code, signal) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(
+          new Error(
+            `lesson writer ${writerId} failed (code=${String(code)} signal=${String(signal)}): ${stderr.trim()}`,
+          ),
+        );
+      });
+    });
+  }
+
   it("adds and loads lessons through disk round-trip", () => {
     const added = addLesson({
       workingDir: "/repo/a",
@@ -85,6 +185,64 @@ describe("lessons store", () => {
 
     expect(added.scope).toBe("global");
     expect(loadLessons()[0]?.scope).toBe("global");
+  });
+
+  it("serializes concurrent addLesson writes so both lessons persist", async () => {
+    saveLessons([]);
+
+    const helperPath = path.join(tmpDir, "concurrent-add-lesson-writer.mjs");
+    const barrierDir = fs.mkdtempSync(path.join(tmpDir, "lessons-barrier-"));
+    fs.writeFileSync(helperPath, CONCURRENT_ADD_LESSON_HELPER, "utf8");
+
+    const writerA = spawnConcurrentLessonWriter(
+      helperPath,
+      barrierDir,
+      "writer-a",
+      "pattern-a",
+      "lesson a",
+      "run-a",
+    );
+    const writerB = spawnConcurrentLessonWriter(
+      helperPath,
+      barrierDir,
+      "writer-b",
+      "pattern-b",
+      "lesson b",
+      "run-b",
+    );
+
+    await waitForReadyFiles(barrierDir, 2);
+    fs.writeFileSync(path.join(barrierDir, "start"), "go", "utf8");
+    await Promise.all([writerA, writerB]);
+
+    const loaded = loadLessons();
+    expect(loaded).toHaveLength(2);
+    expect(loaded.map((lesson) => lesson.pattern).sort()).toEqual(["pattern-a", "pattern-b"]);
+    expect(loaded.map((lesson) => lesson.runId).sort()).toEqual(["run-a", "run-b"]);
+  });
+
+  it("releases the lessons lock when addLesson throws", () => {
+    saveLessons([]);
+
+    const lockPath = path.join(tmpDir, "goal-lessons.json.lock");
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+      throw new Error("rename failed");
+    });
+
+    try {
+      expect(() =>
+        addLesson({
+          workingDir: "/repo/a",
+          pattern: "rename-failure",
+          lesson: "Lock cleanup should still run.",
+          source: "worker",
+          runId: "run-rename-failure",
+        }),
+      ).toThrow("rename failed");
+      expect(fs.existsSync(lockPath)).toBe(false);
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 
   it("returns global lessons and matching project lessons for a workingDir", () => {
