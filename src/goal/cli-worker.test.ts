@@ -315,10 +315,14 @@ describe("cli-worker", () => {
       });
 
       const prompt = args[args.length - 1]!;
-      const conventionsHeader = "PROJECT CONVENTIONS (from CLAUDE.md):";
+      const conventionsHeader = "## PROJECT CONVENTIONS";
+      const workerGuidelinesHeader = "## WORKER GUIDELINES";
       expect(prompt).toContain(conventionsHeader);
+      expect(prompt).toContain(workerGuidelinesHeader);
+      expect(prompt).toContain("----------------------------------------");
       expect(prompt).toContain("Use yarn test\nNo force-push");
       expect(prompt.indexOf(conventionsHeader)).toBeLessThan(prompt.indexOf(WORKER_CONTEXT));
+      expect(prompt.indexOf(workerGuidelinesHeader)).toBeLessThan(prompt.indexOf(WORKER_CONTEXT));
       expect(prompt.indexOf(WORKER_CONTEXT)).toBeLessThan(prompt.indexOf("do the task"));
     });
 
@@ -332,7 +336,7 @@ describe("cli-worker", () => {
       });
 
       const prompt = args[args.length - 1]!;
-      expect(prompt).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
+      expect(prompt).not.toContain("## PROJECT CONVENTIONS");
     });
   });
 
@@ -571,6 +575,123 @@ describe("cli-worker", () => {
       expect(result.output).toEqual(expectedOutput);
       expect(onProgress).not.toHaveBeenCalledWith(EARLY_RESULT_PROGRESS_MESSAGE);
       expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal?.aborted).toBe(false);
+    });
+
+    it("writes the assembled codex prompt artifact for each attempt", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-codex-prompt-"));
+      const runId = "run-codex-prompt";
+      const stepId = "step-codex-prompt";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-2",
+        "worker_result.json",
+      );
+      const expectedOutput = {
+        status: "complete",
+        summary: "Prompt artifact captured for codex",
+      } as const;
+
+      runCliProcessMock.mockImplementation(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(workspaceResultPath, JSON.stringify(expectedOutput), "utf8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify codex prompt artifact",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        attemptNumber: 2,
+        projectConventions: "Use bun test\nDo not force-push",
+      });
+
+      const promptArtifactPath = path.join(workerDir, "worker-prompt-2.txt");
+      const artifact = fs.readFileSync(promptArtifactPath, "utf8");
+      expect(artifact).toContain("## PROJECT CONVENTIONS");
+      expect(artifact).toContain("Use bun test\nDo not force-push");
+      expect(artifact).toContain("## WORKER GUIDELINES");
+      expect(artifact).toContain(WORKER_CONTEXT);
+      expect(artifact).toContain("YOUR TASK: Implement auth module");
+    });
+
+    it("writes the assembled claude code prompt artifact for each attempt", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-claude-prompt-"));
+      const runId = "run-claude-prompt";
+      const stepId = "step-claude-prompt";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-3",
+        "worker_result.json",
+      );
+      const expectedOutput = {
+        status: "complete",
+        summary: "Prompt artifact captured for claude code",
+      } as const;
+
+      runCliProcessMock.mockImplementation(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(workspaceResultPath, JSON.stringify(expectedOutput), "utf8");
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      await executeTaskWithCliWorker({
+        backend: "claude_code",
+        step,
+        plan,
+        goal: "Verify claude prompt artifact",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+        attemptNumber: 3,
+      });
+
+      const promptArtifactPath = path.join(workerDir, "worker-prompt-3.txt");
+      const artifact = fs.readFileSync(promptArtifactPath, "utf8");
+      expect(artifact).toContain("## APPENDED SYSTEM PROMPT");
+      expect(artifact).toContain("HARD DENIES (enforced):");
+      expect(artifact).toContain(WORKER_CONTEXT);
+      expect(artifact).toContain("## USER PROMPT");
+      expect(artifact).toContain("YOUR TASK: Implement auth module");
     });
 
     it("repairs invalid worker_result.json and returns repaired output", async () => {
@@ -863,6 +984,18 @@ describe("cli-worker", () => {
       expect(prompt).not.toContain(
         "LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):",
       );
+    });
+
+    it("tells workers to keep worker_result summaries concise", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain("In worker_result.json, write a concise outcome summary.");
     });
   });
 

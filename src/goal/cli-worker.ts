@@ -29,6 +29,7 @@ const WORKER_RESULT_WORKSPACE_DIR = ".moltbot-goal-worker-results";
 const RESULT_POLL_INTERVAL_MS = 4_000;
 const RESULT_GRACE_PERIOD_MS = 10_000;
 export const REPAIR_TIMEOUT_MS = 60_000;
+const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n";
 
 // --- Public API ---
 
@@ -104,6 +105,10 @@ function persistCanonicalWorkerResult(params: {
   } catch {
     // Best-effort artifact copy; execution result is already validated.
   }
+}
+
+function writeTextArtifact(filePath: string, value: string): void {
+  fs.writeFileSync(filePath, value, "utf8");
 }
 
 /**
@@ -259,6 +264,16 @@ export async function executeTaskWithCliWorker(
 
   // Write artifacts
   const denyFilePath = writeDenyFile(hardDenies, workerDir);
+  const promptPayload = buildCliPromptPayload({
+    backend,
+    prompt,
+    denyFilePath,
+    projectConventions,
+  });
+  writeTextArtifact(
+    path.join(workerDir, `worker-prompt-${attemptNumber}.txt`),
+    promptPayload.persistedPrompt,
+  );
 
   const args = buildCliArgs({
     backend,
@@ -267,6 +282,7 @@ export async function executeTaskWithCliWorker(
     denyFilePath,
     model,
     projectConventions,
+    promptPayload,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -632,6 +648,8 @@ export function buildCliWorkerPrompt(params: {
   lines.push("When you are done, write your result to this exact file path:");
   lines.push(resultPath);
   lines.push("");
+  lines.push("In worker_result.json, write a concise outcome summary.");
+  lines.push("");
   lines.push("The file must contain valid JSON with one of these shapes:");
   lines.push(
     '  Complete (task done): { "status": "complete", "summary": "<brief summary of what was done>" }',
@@ -657,6 +675,48 @@ export function buildCliWorkerPrompt(params: {
   lines.push("Do NOT rely on printing JSON to stdout as your result mechanism.");
 
   return lines.join("\n");
+}
+
+function buildPromptSection(title: string, content: string): string {
+  return `${title}\n\n${content.trim()}`;
+}
+
+function buildCliPromptPayload(params: {
+  backend: GoalBackendId;
+  prompt: string;
+  denyFilePath: string;
+  projectConventions?: string;
+}): {
+  promptArg: string;
+  persistedPrompt: string;
+  appendedSystemPrompt?: string;
+} {
+  const { backend, prompt, denyFilePath, projectConventions } = params;
+
+  if (backend === "codex") {
+    const sections: string[] = [];
+    const trimmedProjectConventions = projectConventions?.trim();
+    if (trimmedProjectConventions) {
+      sections.push(buildPromptSection("## PROJECT CONVENTIONS", trimmedProjectConventions));
+    }
+    if (WORKER_CONTEXT) {
+      sections.push(buildPromptSection("## WORKER GUIDELINES", WORKER_CONTEXT));
+    }
+    sections.push(prompt);
+    const promptArg = sections.join(PROMPT_SECTION_DIVIDER);
+    return { promptArg, persistedPrompt: promptArg };
+  }
+
+  const denyContent = fs.readFileSync(denyFilePath, "utf8");
+  const appendedSystemPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
+  return {
+    promptArg: prompt,
+    appendedSystemPrompt,
+    persistedPrompt: [
+      buildPromptSection("## APPENDED SYSTEM PROMPT", appendedSystemPrompt),
+      buildPromptSection("## USER PROMPT", prompt),
+    ].join(PROMPT_SECTION_DIVIDER),
+  };
 }
 
 // --- Allowed tools list generation (for Claude Code --allowedTools) ---
@@ -702,19 +762,24 @@ export function buildCliArgs(params: {
   denyFilePath: string;
   model?: string;
   projectConventions?: string;
+  promptPayload?: {
+    promptArg: string;
+    persistedPrompt: string;
+    appendedSystemPrompt?: string;
+  };
 }): string[] {
-  const { backend, prompt, workingDir, denyFilePath, model, projectConventions } = params;
+  const { backend, prompt, workingDir, denyFilePath, model, projectConventions, promptPayload } =
+    params;
+  const assembledPrompt =
+    promptPayload ??
+    buildCliPromptPayload({
+      backend,
+      prompt,
+      denyFilePath,
+      projectConventions,
+    });
 
   if (backend === "codex") {
-    // Codex has no --append-system-prompt; prepend context directly to the prompt.
-    const promptParts: string[] = [];
-    const trimmedProjectConventions = projectConventions?.trim();
-    if (trimmedProjectConventions) {
-      promptParts.push(`PROJECT CONVENTIONS (from CLAUDE.md):\n${trimmedProjectConventions}`);
-    }
-    if (WORKER_CONTEXT) promptParts.push(WORKER_CONTEXT);
-    promptParts.push(prompt);
-    const fullPrompt = promptParts.join("\n\n");
     const codexAskForApproval = getCodexAskForApprovalPlacement();
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
@@ -730,16 +795,12 @@ export function buildCliArgs(params: {
     args.push("-c", "net.allowed=true");
 
     if (model) args.push("--model", model);
-    args.push(fullPrompt);
+    args.push(assembledPrompt.promptArg);
     return args;
   }
 
   // Claude Code
   const allowedTools = buildAllowedToolsList();
-  const denyContent = fs.readFileSync(denyFilePath, "utf8");
-  const appendedPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
-  // TODO(goal): Claude Code has no workspace sandbox flag equivalent to Codex
-  // `--sandbox workspace-write`; cwd is already set by runCliProcess() spawn options.
   const args = [
     "-p",
     "--verbose",
@@ -748,10 +809,10 @@ export function buildCliArgs(params: {
     "--allowedTools",
     allowedTools.join(","),
     "--append-system-prompt",
-    appendedPrompt,
+    assembledPrompt.appendedSystemPrompt ?? "",
   ];
   if (model) args.push("--model", model);
-  args.push(prompt);
+  args.push(assembledPrompt.promptArg);
   return args;
 }
 
