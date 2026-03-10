@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoltbotConfig } from "../config/config.js";
 import type { NightwatchConfig } from "../config/types.cron.js";
@@ -193,6 +195,29 @@ describe("nightwatch cron", () => {
       expect(prompt).toContain("Security concerns");
       expect(prompt).toContain("src/security/audit.ts");
       expect(prompt).toContain("OWASP Top 10");
+    });
+
+    it("references existing key files and includes current goal architecture files", () => {
+      const prompt = buildNightwatchPrompt();
+      const keyFilePaths = prompt
+        .split("\n")
+        .filter((line) => line.startsWith("Key files: "))
+        .flatMap((line) =>
+          line
+            .slice("Key files: ".length)
+            .split(", ")
+            .map((entry) => entry.replace(/\.$/, "")),
+        );
+
+      expect(keyFilePaths).toContain("src/goal/claude-code-constants.ts");
+      expect(keyFilePaths).toContain("src/goal/llm-client.ts");
+
+      for (const filePath of keyFilePaths) {
+        expect(
+          fs.existsSync(path.resolve(process.cwd(), filePath)),
+          `${filePath} should exist on disk`,
+        ).toBe(true);
+      }
     });
   });
 
