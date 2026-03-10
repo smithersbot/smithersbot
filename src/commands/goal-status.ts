@@ -12,7 +12,7 @@ import type { DiagramMode, OutputFormat, SerializedRun, StepResult } from "../go
 import type { RuntimeEnv } from "../runtime.js";
 
 const TELEGRAM_LINE_BUDGET = 15;
-const AUTO_RESUME_BLOCK_KEYS = new Set(["git", "resume_execution"]);
+const AUTO_RESUME_BLOCK_KEYS = new Set(["git", "resume_execution", "none"]);
 
 export type GoalStatusOptions = {
   json?: boolean;

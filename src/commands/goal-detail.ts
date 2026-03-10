@@ -16,7 +16,7 @@ import type { DiagramMode, OutputFormat, SerializedRun, StepResult } from "../go
 import type { RuntimeEnv } from "../runtime.js";
 
 const NO_TRUNCATION = Number.POSITIVE_INFINITY;
-const AUTO_RESUME_BLOCK_KEYS = new Set(["git", "resume_execution"]);
+const AUTO_RESUME_BLOCK_KEYS = new Set(["git", "resume_execution", "none"]);
 
 export type GoalDetailOptions = {
   json?: boolean;

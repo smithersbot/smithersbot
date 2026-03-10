@@ -347,6 +347,37 @@ describe("goal-detail command", () => {
     expect(output).not.toContain("moltbot goal answer");
   });
 
+  it('shows goal ID only for blocked runs with requiredInputKey "none"', async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "detail-none-blocked",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Temporary system failure, resume to continue.",
+        requiredInputKey: "none",
+      },
+      plan: {
+        goal: "Build a widget",
+        workingDir: "/tmp",
+        summary: "System-blocked plan",
+        steps: [{ id: "1", description: "Continue", dependsOn: [], status: "pending" }],
+      },
+      stepResults: {},
+    });
+
+    const { goalDetailCommand } = await import("./goal-detail.js");
+    const rt = mockRuntime();
+    await goalDetailCommand("detail-none-blocked", {}, rt);
+    const output = rt.logs.join("\n");
+
+    expect(output).toContain(
+      "**Blocker** Execution: Temporary system failure, resume to continue.",
+    );
+    expect(output).toContain("**Goal ID:** detail-n");
+    expect(output).not.toContain("moltbot goal answer");
+  });
+
   it("--output json outputs strict JSON object", async () => {
     saveRunFixture(sampleRun);
     const { goalDetailCommand } = await import("./goal-detail.js");

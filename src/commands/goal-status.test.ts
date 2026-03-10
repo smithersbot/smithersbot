@@ -308,6 +308,27 @@ describe("goal-status command", () => {
     expect(output).not.toContain("moltbot goal answer");
   });
 
+  it('text mode shows goal ID only for blocked runs with requiredInputKey "none"', async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "blocked-none-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Temporary system failure, resume to continue.",
+        requiredInputKey: "none",
+      },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-none-run", {}, rt);
+    const output = rt.logs.join("\n");
+
+    expect(output).toContain("Temporary system failure, resume to continue.");
+    expect(output).toContain("**Goal ID:** blocked-");
+    expect(output).not.toContain("moltbot goal answer");
+  });
+
   it("shows retry summary without top steps output", async () => {
     const runId = "retry-status-run";
     saveRunFixture({
