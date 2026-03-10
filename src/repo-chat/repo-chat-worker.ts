@@ -15,6 +15,8 @@ import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
+const CODEX_STYLE_DIRECTIVE =
+  "Answer directly and concisely — the user sees only your final answer";
 const MAX_ERROR_DETAIL_CHARS = 1_000;
 const REPAIR_TIMEOUT_MS = 60_000;
 
@@ -47,6 +49,7 @@ export function buildClaudeRepoChatArgs(params: {
 export function buildCodexRepoChatArgs(params: {
   prompt: string;
   workingDir: string;
+  responseFilePath?: string;
   cliSessionId?: string;
   model?: string;
 }): string[] {
@@ -64,6 +67,9 @@ export function buildCodexRepoChatArgs(params: {
   } else {
     args.push("--json", "--color", "never", "--sandbox", "read-only");
     args.push("--skip-git-repo-check", "--cd", params.workingDir);
+    if (params.responseFilePath) {
+      args.push("--output-last-message", params.responseFilePath);
+    }
   }
 
   if (params.model) {
@@ -258,6 +264,7 @@ export async function runRepoChatWorker(
   const responseFilePath = path.join(os.tmpdir(), `moltbot-rc-${crypto.randomUUID()}.md`);
   const responseFileInstruction = buildResponseFileInstruction(responseFilePath);
   const augmentedPrompt = `${responseFileInstruction}\n\n---\n\nUser question:\n${params.prompt}`;
+  const codexPrompt = `${REPO_CHAT_CONTEXT}\n\n${CODEX_STYLE_DIRECTIVE}\n\n${augmentedPrompt}`;
   const command = params.backend === "claude_code" ? "claude" : "codex";
   const args =
     params.backend === "claude_code"
@@ -267,8 +274,9 @@ export async function runRepoChatWorker(
           model: params.model,
         })
       : buildCodexRepoChatArgs({
-          prompt: augmentedPrompt,
+          prompt: codexPrompt,
           workingDir: params.workingDir,
+          responseFilePath,
           cliSessionId: params.cliSessionId,
           model: params.model,
         });
@@ -351,3 +359,4 @@ export async function runRepoChatWorker(
 
 export const REPO_CHAT_READ_ONLY_PROMPT = CLAUDE_READ_ONLY_PROMPT;
 export const REPO_CHAT_CLAUDE_ALLOWED_TOOLS = CLAUDE_ALLOWED_TOOLS_READ_ONLY;
+export const REPO_CHAT_CODEX_STYLE_PROMPT = CODEX_STYLE_DIRECTIVE;

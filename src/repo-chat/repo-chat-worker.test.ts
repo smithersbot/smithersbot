@@ -25,9 +25,11 @@ import {
   buildClaudeRepoChatArgs,
   buildCodexRepoChatArgs,
   REPO_CHAT_CLAUDE_ALLOWED_TOOLS,
+  REPO_CHAT_CODEX_STYLE_PROMPT,
   REPO_CHAT_READ_ONLY_PROMPT,
   runRepoChatWorker,
 } from "./repo-chat-worker.js";
+import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
@@ -74,6 +76,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
+        responseFilePath: RESPONSE_FILE_PATH,
       });
 
       expect(args).toContain("exec");
@@ -85,6 +88,8 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
+      expect(args).toContain("--output-last-message");
+      expect(args).toContain(RESPONSE_FILE_PATH);
       expect(args).not.toContain("resume");
     });
 
@@ -105,6 +110,7 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("--sandbox");
       expect(args).not.toContain("--color");
       expect(args).not.toContain("--cd");
+      expect(args).not.toContain("--output-last-message");
     });
 
     it("supports Codex ask-for-approval placement after exec", () => {
@@ -138,6 +144,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt,
         workingDir: "/repo",
+        responseFilePath: RESPONSE_FILE_PATH,
       });
       const promptArg = args.at(-1) ?? "";
 
@@ -147,6 +154,38 @@ describe("repo-chat-worker", () => {
   });
 
   describe("runRepoChatWorker", () => {
+    it("reads Codex output-last-message file for initial sessions", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer from file\n", "utf-8");
+        return {
+          stdout: '{"thread_id":"codex-thread-file"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "How does repo chat work?",
+        workingDir: "/repo",
+      });
+
+      const call = runCliProcessMock.mock.calls[0]?.[0] as {
+        command: string;
+        args: string[];
+      };
+      expect(call.command).toBe("codex");
+      expect(call.args).toContain("--output-last-message");
+      expect(call.args).toContain(RESPONSE_FILE_PATH);
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
+      expect(result.text).toBe("Codex answer from file");
+      expect(result.cliSessionId).toBe("codex-thread-file");
+    });
+
     it("reads response file and returns written content", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Repository answer from file\n", "utf-8");
@@ -282,6 +321,13 @@ describe("repo-chat-worker", () => {
       });
 
       expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      const call = runCliProcessMock.mock.calls[0]?.[0] as {
+        args: string[];
+      };
+      expect(call.args).toContain("--output-last-message");
+      expect(call.args).toContain(RESPONSE_FILE_PATH);
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-thread-stdout");
     });
@@ -307,6 +353,12 @@ describe("repo-chat-worker", () => {
       });
 
       expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      const call = runCliProcessMock.mock.calls[0]?.[0] as {
+        args: string[];
+      };
+      expect(call.args).not.toContain("--output-last-message");
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
+      expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Resumed final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-resume-thread");
     });
