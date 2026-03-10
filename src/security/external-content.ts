@@ -78,6 +78,10 @@ export type WrapExternalContentOptions = {
   includeWarning?: boolean;
 };
 
+function sanitizeMetadataValue(value: string): string {
+  return value.replace(/[\r\n]+/g, " ");
+}
+
 /**
  * Wraps external untrusted content with security boundaries and warnings.
  *
@@ -104,10 +108,10 @@ export function wrapExternalContent(content: string, options: WrapExternalConten
   const metadataLines: string[] = [`Source: ${sourceLabel}`];
 
   if (sender) {
-    metadataLines.push(`From: ${sender}`);
+    metadataLines.push(`From: ${sanitizeMetadataValue(sender)}`);
   }
   if (subject) {
-    metadataLines.push(`Subject: ${subject}`);
+    metadataLines.push(`Subject: ${sanitizeMetadataValue(subject)}`);
   }
 
   const metadata = metadataLines.join("\n");

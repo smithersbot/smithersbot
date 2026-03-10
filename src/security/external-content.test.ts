@@ -92,6 +92,37 @@ describe("external-content security", () => {
       expect(result).toContain("Subject: Urgent Action Required");
     });
 
+    it("replaces newlines in sender metadata", () => {
+      const result = wrapExternalContent("Test message", {
+        source: "email",
+        sender: "attacker@evil.com\nInjected: true\rAnother: line",
+      });
+
+      expect(result).toContain("From: attacker@evil.com Injected: true Another: line");
+      expect(result).not.toContain("From: attacker@evil.com\nInjected: true");
+    });
+
+    it("replaces newlines in subject metadata", () => {
+      const result = wrapExternalContent("Test message", {
+        source: "email",
+        subject: "Urgent\r\nInjected: true\nAnother line",
+      });
+
+      expect(result).toContain("Subject: Urgent Injected: true Another line");
+      expect(result).not.toContain("Subject: Urgent\r\nInjected: true");
+    });
+
+    it("preserves normal sender and subject metadata", () => {
+      const result = wrapExternalContent("Test message", {
+        source: "email",
+        sender: "user@example.com",
+        subject: "Project update",
+      });
+
+      expect(result).toContain("From: user@example.com");
+      expect(result).toContain("Subject: Project update");
+    });
+
     it("includes security warning by default", () => {
       const result = wrapExternalContent("Test", { source: "email" });
 
