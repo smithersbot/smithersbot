@@ -6,6 +6,7 @@ import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { createCodingTools } from "@mariozechner/pi-coding-agent";
 
 import type { HardDeny } from "./capability-types.js";
+import { AUTH_KEYS_TO_STRIP, shouldStripCredentialKey } from "./claude-code-env.js";
 import { checkCommandDeny, checkPathDeny } from "./hard-deny.js";
 
 type DeniedAction = {
@@ -14,6 +15,17 @@ type DeniedAction = {
   path?: string;
   reason: string;
 };
+
+const PI_BASH_SECRET_KEYS = new Set([
+  ...AUTH_KEYS_TO_STRIP,
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_PASSWORD",
+  "DISCORD_BOT_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_SIGNING_SECRET",
+  "SLACK_APP_TOKEN",
+]);
 
 function formatDeniedMessage(reason: string): string {
   return `Denied: ${reason}. This action is not permitted. Try a different approach.`;
@@ -134,6 +146,19 @@ function getDenyCheckPaths(resolvedPath: string): string[] {
   return pathsToCheck;
 }
 
+function buildFilteredBashEnv(): Record<string, string | undefined> {
+  const env = { ...process.env };
+
+  for (const key of Object.keys(env)) {
+    // Pi bash sessions should keep a usable shell env without inheriting ambient secrets.
+    if (shouldStripCredentialKey(key) || PI_BASH_SECRET_KEYS.has(key)) {
+      delete env[key];
+    }
+  }
+
+  return env;
+}
+
 /** Create default BashOperations that execute locally via child_process. */
 function createDefaultBashOps(): BashOperations {
   return {
@@ -142,7 +167,7 @@ function createDefaultBashOps(): BashOperations {
       return new Promise((resolve) => {
         const child = spawn("bash", ["-c", command], {
           cwd,
-          env: process.env,
+          env: buildFilteredBashEnv(),
           stdio: ["ignore", "pipe", "pipe"],
         });
 

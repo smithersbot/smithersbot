@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import {
   createEnforcedBashOperations,
@@ -9,17 +9,34 @@ import {
 import { HARD_DENIES, checkCommandDeny, checkPathDeny } from "./hard-deny.js";
 
 const WORKING_DIR = "/home/user/project";
+const mockSpawn = vi.fn();
+let capturedBashOps: BashOperations | undefined;
 
 afterEach(() => {
+  capturedBashOps = undefined;
   vi.restoreAllMocks();
 });
 
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawn: (...args: unknown[]) => mockSpawn(...args),
+  };
+});
+
 vi.mock("@mariozechner/pi-coding-agent", () => ({
-  createCodingTools: () => [
-    { name: "Read", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
-    { name: "Write", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
-    { name: "Edit", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
-  ],
+  createCodingTools: (
+    _workingDir: string,
+    options?: { bash?: { operations?: BashOperations } },
+  ) => {
+    capturedBashOps = options?.bash?.operations;
+    return [
+      { name: "Read", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
+      { name: "Write", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
+      { name: "Edit", execute: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })) },
+    ];
+  },
 }));
 
 /** Mock BashOperations that records calls. */
@@ -39,6 +56,29 @@ function createEnoentError(): NodeJS.ErrnoException {
   const error = new Error("ENOENT") as NodeJS.ErrnoException;
   error.code = "ENOENT";
   return error;
+}
+
+function createMockSpawnChild(exitCode = 0) {
+  const closeHandlers: Array<(code: number | null) => void> = [];
+  const child = {
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "close") {
+        closeHandlers.push(handler as (code: number | null) => void);
+      }
+      return child;
+    }),
+    kill: vi.fn(),
+  };
+
+  queueMicrotask(() => {
+    for (const handler of closeHandlers) {
+      handler(exitCode);
+    }
+  });
+
+  return child;
 }
 
 describe("hard deny helpers", () => {
@@ -75,6 +115,10 @@ describe("hard deny helpers", () => {
 });
 
 describe("createEnforcedBashOperations", () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+  });
+
   it("denies hard-denied commands and returns a message", async () => {
     const denied: string[] = [];
     const mock = mockBashOps();
@@ -87,6 +131,86 @@ describe("createEnforcedBashOperations", () => {
     expect(result.exitCode).toBe(126);
     expect(denied.length).toBe(1);
     expect(output.join("")).toContain("Denied:");
+  });
+
+  it("strips gateway and channel secrets from Pi bash env while preserving shell vars", async () => {
+    const envKeys = [
+      "PATH",
+      "HOME",
+      "TERM",
+      "DATABASE_URL",
+      "OP_SESSION_test",
+      "APP_SECRET",
+      "ANTHROPIC_API_KEY",
+      "CLAWDBOT_GATEWAY_TOKEN",
+      "CLAWDBOT_GATEWAY_PASSWORD",
+      "DISCORD_BOT_TOKEN",
+      "TELEGRAM_BOT_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "SLACK_SIGNING_SECRET",
+      "SLACK_APP_TOKEN",
+    ] as const;
+    const priorEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]])) as Record<
+      (typeof envKeys)[number],
+      string | undefined
+    >;
+
+    mockSpawn.mockImplementation(() => createMockSpawnChild());
+    process.env.PATH = "/usr/bin:/bin";
+    process.env.HOME = "/tmp/pi-home";
+    process.env.TERM = "xterm-256color";
+    process.env.DATABASE_URL = "postgres://user:pass@db.local:5432/app";
+    process.env.OP_SESSION_test = "one-password-session";
+    process.env.APP_SECRET = "secret";
+    process.env.ANTHROPIC_API_KEY = "anthropic-key";
+    process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-token";
+    process.env.CLAWDBOT_GATEWAY_PASSWORD = "gateway-password";
+    process.env.DISCORD_BOT_TOKEN = "discord-token";
+    process.env.TELEGRAM_BOT_TOKEN = "telegram-token";
+    process.env.SLACK_BOT_TOKEN = "slack-token";
+    process.env.SLACK_SIGNING_SECRET = "slack-signing-secret";
+    process.env.SLACK_APP_TOKEN = "slack-app-token";
+
+    try {
+      createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+      expect(capturedBashOps).toBeTruthy();
+
+      const result = await capturedBashOps!.exec("printf ok", WORKING_DIR, {
+        onData: vi.fn(),
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        "bash",
+        ["-c", "printf ok"],
+        expect.objectContaining({
+          cwd: WORKING_DIR,
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      );
+
+      const spawnEnv = mockSpawn.mock.calls[0]?.[2]?.env as Record<string, string | undefined>;
+      expect(spawnEnv.PATH).toBe("/usr/bin:/bin");
+      expect(spawnEnv.HOME).toBe("/tmp/pi-home");
+      expect(spawnEnv.TERM).toBe("xterm-256color");
+      expect(spawnEnv.DATABASE_URL).toBeUndefined();
+      expect(spawnEnv.OP_SESSION_test).toBeUndefined();
+      expect(spawnEnv.APP_SECRET).toBeUndefined();
+      expect(spawnEnv.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(spawnEnv.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
+      expect(spawnEnv.CLAWDBOT_GATEWAY_PASSWORD).toBeUndefined();
+      expect(spawnEnv.DISCORD_BOT_TOKEN).toBeUndefined();
+      expect(spawnEnv.TELEGRAM_BOT_TOKEN).toBeUndefined();
+      expect(spawnEnv.SLACK_BOT_TOKEN).toBeUndefined();
+      expect(spawnEnv.SLACK_SIGNING_SECRET).toBeUndefined();
+      expect(spawnEnv.SLACK_APP_TOKEN).toBeUndefined();
+    } finally {
+      for (const key of envKeys) {
+        const prior = priorEnv[key];
+        if (prior === undefined) delete process.env[key];
+        else process.env[key] = prior;
+      }
+    }
   });
 });
 

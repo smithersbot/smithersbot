@@ -24,7 +24,7 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
   "REDIS_PASSWORD",
 ];
 
-function shouldStripCredentialKey(key: string): boolean {
+export function shouldStripCredentialKey(key: string): boolean {
   if (CREDENTIAL_KEYS_TO_STRIP.includes(key)) return true;
   if (key.startsWith("OP_SESSION_")) return true;
   if (key.endsWith("_SECRET")) return true;
