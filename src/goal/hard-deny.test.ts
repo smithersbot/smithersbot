@@ -25,6 +25,24 @@ describe("checkPathDeny", () => {
     expect(() => checkPathDeny(missingPath)).not.toThrow();
     expect(checkPathDeny(missingPath)?.pattern).toBe(".env*");
   });
+
+  it("blocks additional sensitive file patterns", () => {
+    const cases = [
+      { filePath: "/tmp/auth.json", pattern: "auth.json" },
+      { filePath: "/tmp/auth-profiles.json", pattern: "auth-profiles.json" },
+      { filePath: "/tmp/client-cert.p12", pattern: "*.p12" },
+      { filePath: "/tmp/client-cert.pfx", pattern: "*.pfx" },
+      { filePath: "/tmp/client-cert.cer", pattern: "*.cer" },
+      { filePath: "/tmp/.gnupg/private-keys-v1.d/keybox", pattern: ".gnupg/**" },
+      { filePath: "/tmp/id_ed25519.pub", pattern: "*id_ed25519*" },
+      { filePath: "/tmp/id_ecdsa", pattern: "*id_ecdsa*" },
+      { filePath: "/tmp/moltbot.json", pattern: "moltbot.json" },
+    ];
+
+    for (const testCase of cases) {
+      expect(checkPathDeny(testCase.filePath)?.pattern).toBe(testCase.pattern);
+    }
+  });
 });
 
 describe("checkCommandDeny", () => {
@@ -49,12 +67,21 @@ describe("checkCommandDeny", () => {
   });
 
   it("blocks additional publish command variants", () => {
+    expect(checkCommandDeny("bun publish --tag beta")?.pattern).toBe("bun publish");
     expect(checkCommandDeny("pnpm publish --tag latest")?.pattern).toBe("pnpm publish");
     expect(checkCommandDeny("yarn publish --new-version 1.2.3")?.pattern).toBe("yarn publish");
   });
 
   it("blocks fly deploy alias", () => {
     expect(checkCommandDeny("fly deploy")?.pattern).toBe("fly deploy");
+  });
+
+  it("blocks additional deploy command variants", () => {
+    expect(checkCommandDeny("docker push registry.example.com/app:latest")?.pattern).toBe(
+      "docker push",
+    );
+    expect(checkCommandDeny("wrangler deploy")?.pattern).toBe("wrangler deploy");
+    expect(checkCommandDeny("cdk deploy production")?.pattern).toBe("cdk deploy");
   });
 
   it("blocks denied commands in pipelines", () => {
@@ -84,6 +111,14 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("bash -c 'sudo rm -rf /'")).not.toBeNull();
     expect(checkCommandDeny('/bin/sh -c "npm publish"')).not.toBeNull();
     expect(checkCommandDeny("zsh -lc 'echo ok; flyctl deploy'")).not.toBeNull();
+  });
+
+  it("blocks denied commands hidden behind additional shell -c wrappers", () => {
+    expect(checkCommandDeny("fish -c 'bun publish --tag beta'")?.pattern).toBe("bun publish");
+    expect(checkCommandDeny("ksh -c 'docker push app:latest'")?.pattern).toBe("docker push");
+    expect(checkCommandDeny("/bin/dash -c 'wrangler deploy'")?.pattern).toBe("wrangler deploy");
+    expect(checkCommandDeny("csh -c 'cdk deploy prod'")?.pattern).toBe("cdk deploy");
+    expect(checkCommandDeny("/usr/bin/tcsh -fc 'sudo whoami'")?.pattern).toBe("sudo");
   });
 
   it("blocks denied commands inside command substitution", () => {

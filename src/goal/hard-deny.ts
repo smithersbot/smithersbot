@@ -9,10 +9,19 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: ".env*", reason: "Environment files may contain secrets", type: "path" },
   { pattern: "*.pem", reason: "Certificate files are sensitive", type: "path" },
   { pattern: "*.key", reason: "Key files are sensitive", type: "path" },
+  { pattern: "auth.json", reason: "Credential files are sensitive", type: "path" },
+  { pattern: "auth-profiles.json", reason: "Credential files are sensitive", type: "path" },
+  { pattern: "*.p12", reason: "Certificate files are sensitive", type: "path" },
+  { pattern: "*.pfx", reason: "Certificate files are sensitive", type: "path" },
+  { pattern: "*.cer", reason: "Certificate files are sensitive", type: "path" },
   { pattern: "credentials*", reason: "Credential files are sensitive", type: "path" },
   { pattern: ".aws/**", reason: "AWS config may contain secrets", type: "path" },
+  { pattern: ".gnupg/**", reason: "GPG keyrings are sensitive", type: "path" },
   { pattern: ".ssh/**", reason: "SSH config may contain secrets", type: "path" },
+  { pattern: "*id_ed25519*", reason: "SSH keys are sensitive", type: "path" },
+  { pattern: "*id_ecdsa*", reason: "SSH keys are sensitive", type: "path" },
   { pattern: "*id_rsa*", reason: "SSH keys are sensitive", type: "path" },
+  { pattern: "moltbot.json", reason: "Config files may contain secrets", type: "path" },
 
   // --- Command denies (token-aware matching) ---
   { pattern: "sudo", reason: "Elevated privileges not permitted", type: "command" },
@@ -21,9 +30,11 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "nsenter", reason: "Elevated privileges not permitted", type: "command" },
   { pattern: "unshare", reason: "Elevated privileges not permitted", type: "command" },
   { pattern: "chroot", reason: "Elevated privileges not permitted", type: "command" },
+  { pattern: "bun publish", reason: "Publishing not permitted", type: "command" },
   { pattern: "npm publish", reason: "Publishing not permitted", type: "command" },
   { pattern: "pnpm publish", reason: "Publishing not permitted", type: "command" },
   { pattern: "yarn publish", reason: "Publishing not permitted", type: "command" },
+  { pattern: "docker push", reason: "Deployment not permitted", type: "command" },
   { pattern: "rm -rf /", reason: "Recursive root deletion not permitted", type: "command" },
   { pattern: "mkfs", reason: "Filesystem formatting not permitted", type: "command" },
   { pattern: "dd if=", reason: "Raw disk writes not permitted", type: "command" },
@@ -47,6 +58,8 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "helm install", reason: "Deployment not permitted", type: "command" },
   { pattern: "helm upgrade", reason: "Deployment not permitted", type: "command" },
   { pattern: "terraform apply", reason: "Deployment not permitted", type: "command" },
+  { pattern: "wrangler deploy", reason: "Deployment not permitted", type: "command" },
+  { pattern: "cdk deploy", reason: "Deployment not permitted", type: "command" },
   { pattern: "serverless deploy", reason: "Deployment not permitted", type: "command" },
   { pattern: "gh release create", reason: "Release creation not permitted", type: "command" },
 ];
@@ -556,7 +569,18 @@ function extractShellCommandFromCTokens(tokens: string[]): string | null {
   if (tokens.length < 3) return null;
 
   const cmd = normalizeCommandToken(tokens[0]!);
-  if (cmd !== "bash" && cmd !== "sh" && cmd !== "zsh") return null;
+  if (
+    cmd !== "bash" &&
+    cmd !== "sh" &&
+    cmd !== "zsh" &&
+    cmd !== "fish" &&
+    cmd !== "ksh" &&
+    cmd !== "dash" &&
+    cmd !== "csh" &&
+    cmd !== "tcsh"
+  ) {
+    return null;
+  }
 
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i]!;
@@ -648,6 +672,9 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
       case "chroot":
         if (cmd === "chroot") return deny;
         break;
+      case "bun publish":
+        if (cmd === "bun" && args[0] === "publish") return deny;
+        break;
       case "npm publish":
         if (cmd === "npm" && args[0] === "publish") return deny;
         break;
@@ -656,6 +683,9 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
         break;
       case "yarn publish":
         if (cmd === "yarn" && args[0] === "publish") return deny;
+        break;
+      case "docker push":
+        if (cmd === "docker" && args[0] === "push") return deny;
         break;
       case "rm -rf /":
         if (isDangerousRm(lowerTokens)) return deny;
@@ -692,6 +722,12 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
         break;
       case "terraform apply":
         if (cmd === "terraform" && args[0] === "apply") return deny;
+        break;
+      case "wrangler deploy":
+        if (cmd === "wrangler" && args[0] === "deploy") return deny;
+        break;
+      case "cdk deploy":
+        if (cmd === "cdk" && args[0] === "deploy") return deny;
         break;
       case "serverless deploy":
         if (cmd === "serverless" && args[0] === "deploy") return deny;
