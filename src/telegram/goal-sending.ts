@@ -838,7 +838,7 @@ export async function sendDagPng(params: {
       warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
     }
     if (split.remainder) {
-      await sendGoalReply(bot, chatId, split.remainder, runtime, threadId);
+      await sendGoalReply(bot, chatId, split.remainder, runtime, threadId, replyToMessageId);
     }
     return sent.message_id;
   } catch (err) {

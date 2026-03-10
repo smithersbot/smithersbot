@@ -36,7 +36,7 @@ vi.mock("../goal/mermaid-png.js", async (importOriginal) => {
 });
 
 import { loadRun, saveRun } from "../goal/run-store.js";
-import { sendBlockedNotification } from "./goal-sending.js";
+import { sendBlockedNotification, sendDagPng } from "./goal-sending.js";
 
 function makeBlockedStep(overrides: Partial<PlanStep> = {}): PlanStep {
   return {
@@ -226,5 +226,41 @@ describe("sendBlockedNotification", () => {
       messageId: 654,
       requiredInputKey: "task:1:input",
     });
+  });
+
+  it("threads replyToMessageId into overflow DAG caption replies", async () => {
+    const plan = makePlan([makeBlockedStep()]);
+    const sendPhoto = vi.fn().mockResolvedValue({ message_id: 777 });
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 778 });
+    const bot = {
+      api: {
+        sendPhoto,
+        sendMessage,
+      },
+    };
+
+    const sentId = await sendDagPng({
+      bot: bot as never,
+      chatId: 3003,
+      threadId: 88,
+      runtime: createRuntime(),
+      plan,
+      steps: plan.steps,
+      caption: "A".repeat(1300),
+      replyToMessageId: 55,
+    });
+
+    expect(sentId).toBe(777);
+    expect(sendPhoto).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage).toHaveBeenCalledWith(
+      3003,
+      expect.any(String),
+      expect.objectContaining({
+        parse_mode: "HTML",
+        message_thread_id: 88,
+        reply_parameters: { message_id: 55 },
+      }),
+    );
   });
 });
