@@ -32,6 +32,33 @@ function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
   };
 }
 
+function orderedStepIds(plan: Plan): string[] {
+  const scores = computeCriticalPathScores(plan.steps);
+  return orderStepIdsCriticalPathFirst(plan.steps, scores);
+}
+
+function expectedNodeDeclarations(plan: Plan): string[] {
+  const stepById = new Map(plan.steps.map((step) => [step.id, step]));
+  return orderedStepIds(plan).map((stepId, index) => {
+    const orderedStep = stepById.get(stepId);
+    expect(orderedStep).toBeDefined();
+    return `  ${stepId}["${index + 1}. ${orderedStep!.shortSummary}"]`;
+  });
+}
+
+function expectedInvisibleEdges(plan: Plan): string[] {
+  const order = orderedStepIds(plan);
+  return order.slice(0, -1).map((stepId, index) => `  ${stepId} ~~~ ${order[index + 1]}`);
+}
+
+function nodeDeclarations(out: string): string[] {
+  return out.split("\n").filter((line) => /^\s+\S+\["/.test(line));
+}
+
+function invisibleEdges(out: string): string[] {
+  return out.split("\n").filter((line) => line.includes("~~~"));
+}
+
 describe("normalizeLabel", () => {
   it("strips numeric prefix like '1.'", () => {
     expect(normalizeLabel("1. Create directory")).toBe("Create directory");
@@ -249,17 +276,40 @@ describe("renderMermaid", () => {
         description: "Task A",
         dependsOn: [],
         status: "pending",
+        durationMinutes: 1,
       },
       {
         id: "b",
         description: "Task B",
         dependsOn: [],
         status: "pending",
+        durationMinutes: 5,
       },
     ]);
 
     const out = renderMermaid(plan);
     expect(out).toContain("flowchart TD");
+    expect(orderedStepIds(plan)).toEqual(["b", "a"]);
+    expect(nodeDeclarations(out)).toEqual(expectedNodeDeclarations(plan));
+    expect(invisibleEdges(out)).toEqual(expectedInvisibleEdges(plan));
+    expect(out).not.toContain("-->");
+  });
+
+  it("renders larger disconnected plans in numbered critical-path order with invisible links", () => {
+    const plan = makePlan([
+      step({ id: "a", description: "Task A", durationMinutes: 2 }),
+      step({ id: "b", description: "Task B", durationMinutes: 9 }),
+      step({ id: "c", description: "Task C", durationMinutes: 4 }),
+      step({ id: "d", description: "Task D", durationMinutes: 7 }),
+      step({ id: "e", description: "Task E", durationMinutes: 1 }),
+      step({ id: "f", description: "Task F", durationMinutes: 5 }),
+    ]);
+
+    const out = renderMermaid(plan);
+
+    expect(orderedStepIds(plan)).toEqual(["b", "d", "f", "c", "a", "e"]);
+    expect(nodeDeclarations(out)).toEqual(expectedNodeDeclarations(plan));
+    expect(invisibleEdges(out)).toEqual(expectedInvisibleEdges(plan));
     expect(out).not.toContain("-->");
   });
 
