@@ -186,9 +186,12 @@ export function renderMermaid(
   for (let i = 0; i < order.length; i++) {
     orderNum.set(order[i], i + 1);
   }
+  const stepById = new Map(plan.steps.map((step) => [step.id, step]));
 
   // Node declarations
-  for (const step of plan.steps) {
+  for (const stepId of order) {
+    const step = stepById.get(stepId);
+    if (!step) continue;
     const status = displayStatuses?.get(step.id) ?? "pending";
     const emoji = displayStatuses ? STATUS_EMOJI[status] : "";
     const prefix = emoji ? `${emoji} ` : "";
@@ -209,6 +212,11 @@ export function renderMermaid(
         criticalEdgeIndices.push(edgeIndex);
       }
       edgeIndex++;
+    }
+  }
+  if (edgeIndex === 0) {
+    for (let i = 0; i < order.length - 1; i++) {
+      lines.push(`  ${order[i]} ~~~ ${order[i + 1]}`);
     }
   }
 
