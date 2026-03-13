@@ -1109,7 +1109,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   };
 }
 
-function hasAnswerForTask(taskId: string, answers: Record<string, string>): boolean {
+export function hasAnswerForTask(taskId: string, answers: Record<string, string>): boolean {
   if (answers[`task:${taskId}:input`] != null) return true;
   for (const key of Object.keys(answers)) {
     const match = /^tasks:([^:]+):input$/.exec(key);
@@ -1118,7 +1118,10 @@ function hasAnswerForTask(taskId: string, answers: Record<string, string>): bool
   return false;
 }
 
-function getAnswerForTask(taskId: string, answers: Record<string, string>): string | undefined {
+export function getAnswerForTask(
+  taskId: string,
+  answers: Record<string, string>,
+): string | undefined {
   const direct = answers[`task:${taskId}:input`];
   if (direct != null) return direct;
   for (const [key, value] of Object.entries(answers)) {
@@ -1128,9 +1131,9 @@ function getAnswerForTask(taskId: string, answers: Record<string, string>): stri
   return undefined;
 }
 
-function consumeAnswerForTask(taskId: string, answers: Record<string, string>): void {
+export function consumeAnswerForTask(taskId: string, answers: Record<string, string>): void {
   const directKey = `task:${taskId}:input`;
-  if (answers[directKey]) delete answers[directKey];
+  if (directKey in answers) delete answers[directKey];
 
   for (const key of Object.keys(answers)) {
     const match = /^tasks:([^:]+):input$/.exec(key);

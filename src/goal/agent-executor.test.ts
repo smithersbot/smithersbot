@@ -1266,6 +1266,21 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 
+  it("consumes empty-string direct answers", async () => {
+    const { hasAnswerForTask, getAnswerForTask, consumeAnswerForTask } =
+      await import("./agent-executor.js");
+    const answers = { "task:1:input": "" };
+
+    expect(hasAnswerForTask("1", answers)).toBe(true);
+    expect(getAnswerForTask("1", answers)).toBe("");
+
+    consumeAnswerForTask("1", answers);
+
+    expect(hasAnswerForTask("1", answers)).toBe(false);
+    expect(getAnswerForTask("1", answers)).toBeUndefined();
+    expect(answers).toEqual({});
+  });
+
   it("accumulates duration across resumed attempts and keeps it on done steps", async () => {
     vi.useFakeTimers();
     try {
