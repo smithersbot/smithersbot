@@ -22,6 +22,20 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
   "DOCKER_PASSWORD",
   "REDIS_URL",
   "REDIS_PASSWORD",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "GOOGLE_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_KEY",
+  "HF_TOKEN",
+  "HUGGING_FACE_HUB_TOKEN",
+  "COHERE_API_KEY",
+  "MISTRAL_API_KEY",
+  "TOGETHER_API_KEY",
+  "FIREWORKS_API_KEY",
+  "GROQ_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "REPLICATE_API_TOKEN",
 ];
 
 export function shouldStripCredentialKey(key: string): boolean {
@@ -29,6 +43,7 @@ export function shouldStripCredentialKey(key: string): boolean {
   if (key.startsWith("OP_SESSION_")) return true;
   if (key.endsWith("_SECRET")) return true;
   if (key.endsWith("_PRIVATE_KEY")) return true;
+  if (!AUTH_KEYS_TO_STRIP.includes(key) && key.endsWith("_API_KEY")) return true;
   return false;
 }
 
