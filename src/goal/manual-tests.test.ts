@@ -17,7 +17,14 @@ vi.mock("./claude-code-env.js", () => ({
   buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
 }));
 
-import { generateManualTests } from "./manual-tests.js";
+import { clampCriticality, generateManualTests } from "./manual-tests.js";
+
+describe("clampCriticality", () => {
+  it("defaults invalid values to 5", () => {
+    expect(clampCriticality(Number.NaN)).toBe(5);
+    expect(clampCriticality("not-a-number")).toBe(5);
+  });
+});
 
 function makeClient(response: string): GoalLlmClient {
   return {

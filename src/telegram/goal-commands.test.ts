@@ -4426,6 +4426,7 @@ describe("goal-commands telegram adapter", () => {
       reactionHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
       sendMessage: ReturnType<typeof vi.fn>;
       sendPhoto: ReturnType<typeof vi.fn>;
+      setMessageReaction: ReturnType<typeof vi.fn>;
       register: () => Promise<void>;
     } {
       const commandHandlers: Record<string, (ctx: unknown) => Promise<void>> = {};
@@ -4437,13 +4438,14 @@ describe("goal-commands telegram adapter", () => {
         | undefined;
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 600 });
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 601 });
+      const setMessageReaction = vi.fn().mockResolvedValue(true);
       const bot = {
         api: {
           sendMessage,
           sendPhoto,
           sendChatAction: vi.fn().mockResolvedValue(true),
           answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
-          setMessageReaction: vi.fn().mockResolvedValue(true),
+          setMessageReaction,
         },
         command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
           if (Array.isArray(name)) {
@@ -4508,6 +4510,7 @@ describe("goal-commands telegram adapter", () => {
         },
         sendMessage,
         sendPhoto,
+        setMessageReaction,
         register,
       };
     }
@@ -4811,6 +4814,9 @@ describe("goal-commands telegram adapter", () => {
 
       await harness.callbackHandler(makeCallbackCtx("gD:abcdef12:1", 904));
 
+      expect(harness.setMessageReaction).toHaveBeenCalledWith(42, 904, [
+        { type: "emoji", emoji: "👀" },
+      ]);
       const hasPhotoReply = harness.sendPhoto.mock.calls.some((call) => {
         const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
         return options?.reply_parameters?.message_id === 904;

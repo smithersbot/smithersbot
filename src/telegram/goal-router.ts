@@ -15,8 +15,6 @@ export type RouteKind =
   | "CHAT_HELP"
   | "DISAMBIGUATE";
 
-export type RouterDecision = "GOAL_EDIT" | "GOAL_ANSWER" | "GOAL_FEEDBACK" | "CHAT";
-
 export type RouteResult = {
   kind: RouteKind;
   runId?: string;

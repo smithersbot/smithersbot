@@ -13,16 +13,14 @@ type IndexKey = string;
 
 const index = new Map<IndexKey, string>(); // key → runId
 let populated = false;
-let warmupPromise: Promise<void> | null = null;
 
 function makeKey(chatId: number, messageId: number): IndexKey {
   return `${chatId}:${messageId}`;
 }
 
-/** One-time scan of all runs to build the index. Concurrent callers coalesce. */
+/** One-time scan of all runs to build the index. */
 function ensurePopulated(): void {
   if (populated) return;
-  if (warmupPromise) return; // already warming up (sync path won't await, but guards re-entry)
 
   for (const summary of listRuns()) {
     const run = loadRun(summary.runId);
@@ -36,23 +34,6 @@ function ensurePopulated(): void {
     }
   }
   populated = true;
-}
-
-/**
- * Async warmup that coalesces concurrent callers into a single scan.
- * Used when callers can await (e.g. reaction handler).
- */
-export async function ensurePopulatedAsync(): Promise<void> {
-  if (populated) return;
-  if (warmupPromise) {
-    await warmupPromise;
-    return;
-  }
-  warmupPromise = Promise.resolve().then(() => {
-    ensurePopulated();
-    warmupPromise = null;
-  });
-  await warmupPromise;
 }
 
 /**
@@ -112,5 +93,4 @@ export function indexPlanMessage(
 export function resetMessageIndex(): void {
   index.clear();
   populated = false;
-  warmupPromise = null;
 }

@@ -1496,15 +1496,16 @@ export function registerTelegramGoalCommands({
       const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
         ?.message_thread_id;
 
-      // React with the corresponding emoji on the plan message
-      // (Plan detail should not set a reaction.)
-      if (messageId && action !== "gD") {
+      // React with the corresponding emoji on the plan message.
+      if (messageId) {
         const emoji: ReactionTypeEmoji["emoji"] =
           action === "ga"
             ? "\u2764" // ❤ for approve
-            : action === "gr"
-              ? "\uD83D\uDC4E" // 👎 for reject
-              : "\u270D"; // ✍ for edit
+            : action === "gD"
+              ? "\uD83D\uDC40" // 👀 for detail
+              : action === "gr"
+                ? "\uD83D\uDC4E" // 👎 for reject
+                : "\u270D"; // ✍ for edit
         await bot.api
           .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
           .catch((err) => {

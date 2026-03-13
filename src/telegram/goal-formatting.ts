@@ -9,6 +9,7 @@ import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
+import { clampCriticality } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
 import type { ManualTestSuggestion, Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -27,10 +28,6 @@ type WorkingDirInstructionHint = {
   requestedPath: string;
   resolvedPath?: string;
 };
-
-export function clampCriticality(value: number): number {
-  return Math.max(1, Math.min(10, Math.round(value)));
-}
 
 export function splitStructuredDetailLines(value: string | undefined): string[] {
   if (!value) return [];

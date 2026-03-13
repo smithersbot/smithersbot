@@ -165,7 +165,7 @@ async function generateManualTestsViaCli(userMessage: string): Promise<string> {
   return extractAssistantTextFromCliResult(procResult.stdout);
 }
 
-function clampCriticality(raw: unknown): number {
+export function clampCriticality(raw: unknown): number {
   const value = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(value)) return 5;
   return Math.min(10, Math.max(1, Math.round(value)));
