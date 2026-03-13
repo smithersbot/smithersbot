@@ -107,6 +107,15 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("env -u SAFE echo hello")).toBeNull();
   });
 
+  it("strips transparent wrappers before checking denied commands", () => {
+    expect(checkCommandDeny("nohup sudo whoami")?.pattern).toBe("sudo");
+    expect(checkCommandDeny("nice -n 19 npm publish")?.pattern).toBe("npm publish");
+    expect(checkCommandDeny("setsid --fork docker push evil/img")?.pattern).toBe("docker push");
+    expect(checkCommandDeny("timeout 30s rm -rf /")?.pattern).toBe("rm -rf /");
+    expect(checkCommandDeny("nohup python3 script.py")).toBeNull();
+    expect(checkCommandDeny("env nohup sudo rm -rf /")?.pattern).toBe("sudo");
+  });
+
   it("blocks denied commands hidden behind shell -c wrappers", () => {
     expect(checkCommandDeny("bash -c 'sudo rm -rf /'")).not.toBeNull();
     expect(checkCommandDeny('/bin/sh -c "npm publish"')).not.toBeNull();

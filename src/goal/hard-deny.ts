@@ -333,6 +333,279 @@ function stripEnvPrefix(tokens: string[]): string[] {
   return [...splitStringTokens, ...tokens.slice(i)];
 }
 
+function stripNohupPrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "nohup") return tokens;
+
+  const startIndex = tokens[1] === "--" ? 2 : 1;
+  return startIndex < tokens.length ? tokens.slice(startIndex) : tokens;
+}
+
+function stripNicePrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "nice") return tokens;
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+
+    if (token === "-n" || token === "--adjustment") {
+      if (i + 1 >= tokens.length) return tokens;
+      i += 2;
+      continue;
+    }
+
+    if (token.startsWith("--adjustment=") || /^-\d+$/.test(token)) {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-n") && token.length > 2) {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-")) return tokens;
+    break;
+  }
+
+  return i < tokens.length ? tokens.slice(i) : tokens;
+}
+
+function stripSetsidPrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "setsid") return tokens;
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+
+    if (token === "--fork" || token === "--wait" || token === "-f" || token === "-w") {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-")) return tokens;
+    break;
+  }
+
+  return i < tokens.length ? tokens.slice(i) : tokens;
+}
+
+function stripTimePrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "time") return tokens;
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+
+    if (
+      token === "-p" ||
+      token === "-a" ||
+      token === "--append" ||
+      token === "--portability" ||
+      token === "--quiet" ||
+      token === "--verbose"
+    ) {
+      i += 1;
+      continue;
+    }
+
+    if (token === "-f" || token === "-o" || token === "--format" || token === "--output") {
+      if (i + 1 >= tokens.length) return tokens;
+      i += 2;
+      continue;
+    }
+
+    if (token.startsWith("--format=") || token.startsWith("--output=")) {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-")) return tokens;
+    break;
+  }
+
+  return i < tokens.length ? tokens.slice(i) : tokens;
+}
+
+function stripTimeoutPrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "timeout") return tokens;
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+
+    if (
+      token === "--foreground" ||
+      token === "--preserve-status" ||
+      token === "-v" ||
+      token === "--verbose"
+    ) {
+      i += 1;
+      continue;
+    }
+
+    if (token === "-s" || token === "-k" || token === "--signal" || token === "--kill-after") {
+      if (i + 1 >= tokens.length) return tokens;
+      i += 2;
+      continue;
+    }
+
+    if (token.startsWith("--signal=") || token.startsWith("--kill-after=")) {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-")) return tokens;
+    break;
+  }
+
+  if (i + 1 >= tokens.length) return tokens;
+  return tokens.slice(i + 1);
+}
+
+function stripStracePrefix(tokens: string[]): string[] {
+  if (tokens.length === 0) return tokens;
+  if (normalizeCommandToken(tokens[0]!) !== "strace") return tokens;
+
+  const flagsWithValues = new Set([
+    "-e",
+    "-E",
+    "-I",
+    "-o",
+    "-O",
+    "-p",
+    "-P",
+    "-s",
+    "-S",
+    "-u",
+    "--attach",
+    "--env",
+    "--inject",
+    "--log-file",
+    "--output",
+    "--output-separately",
+    "--seccomp-bpf",
+    "--signal",
+    "--status",
+    "--strings-in-hex",
+    "--syscall-limit",
+    "--trace",
+    "--trace-fds",
+    "--trace-path",
+  ]);
+
+  let i = 1;
+  while (i < tokens.length) {
+    const token = tokens[i]!;
+    if (token === "--") {
+      i += 1;
+      break;
+    }
+
+    if (
+      token.startsWith("--attach=") ||
+      token.startsWith("--env=") ||
+      token.startsWith("--inject=") ||
+      token.startsWith("--log-file=") ||
+      token.startsWith("--output=") ||
+      token.startsWith("--output-separately=") ||
+      token.startsWith("--seccomp-bpf=") ||
+      token.startsWith("--signal=") ||
+      token.startsWith("--status=") ||
+      token.startsWith("--strings-in-hex=") ||
+      token.startsWith("--syscall-limit=") ||
+      token.startsWith("--trace=") ||
+      token.startsWith("--trace-fds=") ||
+      token.startsWith("--trace-path=")
+    ) {
+      i += 1;
+      continue;
+    }
+
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      if (flagsWithValues.has(token)) {
+        if (i + 1 >= tokens.length) return tokens;
+        i += 2;
+      } else {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (flagsWithValues.has(token)) {
+      if (i + 1 >= tokens.length) return tokens;
+      i += 2;
+      continue;
+    }
+
+    if (token.startsWith("--")) return tokens;
+    break;
+  }
+
+  return i < tokens.length ? tokens.slice(i) : tokens;
+}
+
+function stripTransparentWrapperPrefix(tokens: string[]): string[] {
+  const strippedByNohup = stripNohupPrefix(tokens);
+  if (strippedByNohup !== tokens) return strippedByNohup;
+
+  const strippedByNice = stripNicePrefix(tokens);
+  if (strippedByNice !== tokens) return strippedByNice;
+
+  const strippedBySetsid = stripSetsidPrefix(tokens);
+  if (strippedBySetsid !== tokens) return strippedBySetsid;
+
+  const strippedByTime = stripTimePrefix(tokens);
+  if (strippedByTime !== tokens) return strippedByTime;
+
+  const strippedByTimeout = stripTimeoutPrefix(tokens);
+  if (strippedByTimeout !== tokens) return strippedByTimeout;
+
+  return stripStracePrefix(tokens);
+}
+
+function stripTransparentPrefix(tokens: string[]): string[] {
+  let currentTokens = tokens;
+
+  while (currentTokens.length > 0) {
+    const strippedEnv = stripEnvPrefix(currentTokens);
+    if (strippedEnv !== currentTokens) {
+      currentTokens = strippedEnv;
+      continue;
+    }
+
+    const strippedWrapper = stripTransparentWrapperPrefix(currentTokens);
+    if (strippedWrapper !== currentTokens) {
+      currentTokens = strippedWrapper;
+      continue;
+    }
+
+    return currentTokens;
+  }
+
+  return currentTokens;
+}
+
 function readBacktickSubstitution(
   command: string,
   startIndex: number,
@@ -991,7 +1264,7 @@ function checkCommandDenyRecursive(
   for (const segment of segments) {
     const tokens = tokenizeCommand(segment);
     if (tokens.length > 0) {
-      const stripped = stripEnvPrefix(tokens);
+      const stripped = stripTransparentPrefix(tokens);
       if (stripped.length > 0) {
         const deny = checkCommandDenyTokens(stripped, hardDenies);
         if (deny) return deny;
