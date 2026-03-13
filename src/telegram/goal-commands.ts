@@ -2080,7 +2080,24 @@ export function registerTelegramGoalCommands({
     const nextConfig = loadConfig();
     nextConfig.goal ??= {};
     nextConfig.goal.planAutocheck = nextMode;
-    await writeConfigFile(nextConfig);
+    try {
+      await writeConfigFile(nextConfig);
+    } catch (error) {
+      runtime.error?.(
+        `[goal_plan_autocheck] failed to write config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Could not save goal plan autocheck mode. Check logs and try again.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
 
     cfg.goal ??= {};
     cfg.goal.planAutocheck = nextMode;
@@ -2152,7 +2169,24 @@ export function registerTelegramGoalCommands({
     const nextConfig = loadConfig();
     nextConfig.goal ??= {};
     nextConfig.goal.semgrep = nextMode;
-    await writeConfigFile(nextConfig);
+    try {
+      await writeConfigFile(nextConfig);
+    } catch (error) {
+      runtime.error?.(
+        `[goal_semgrep] failed to write config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Could not save goal semgrep mode. Check logs and try again.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
 
     cfg.goal ??= {};
     cfg.goal.semgrep = nextMode;
@@ -2222,7 +2256,24 @@ export function registerTelegramGoalCommands({
     const nextConfig = loadConfig();
     nextConfig.goal ??= {};
     nextConfig.goal.enabledWorkers = [...nextWorkers];
-    await writeConfigFile(nextConfig);
+    try {
+      await writeConfigFile(nextConfig);
+    } catch (error) {
+      runtime.error?.(
+        `[goal_workers] failed to write config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Could not save goal workers setting. Check logs and try again.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
 
     cfg.goal ??= {};
     cfg.goal.enabledWorkers = [...nextWorkers];
@@ -2286,7 +2337,24 @@ export function registerTelegramGoalCommands({
     const nextConfig = loadConfig();
     nextConfig.goal ??= {};
     nextConfig.goal.githubPush = { ...nextConfig.goal.githubPush, enabled };
-    await writeConfigFile(nextConfig);
+    try {
+      await writeConfigFile(nextConfig);
+    } catch (error) {
+      runtime.error?.(
+        `[goal_github_push] failed to write config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Could not save GitHub push setting. Check logs and try again.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
 
     cfg.goal ??= {};
     cfg.goal.githubPush = { ...cfg.goal.githubPush, enabled };
