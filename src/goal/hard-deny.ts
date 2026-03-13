@@ -598,6 +598,237 @@ function extractShellCommandFromCTokens(tokens: string[]): string | null {
   return null;
 }
 
+function extractInterpreterInlineCode(
+  tokens: string[],
+): { interpreter: string; code: string } | null {
+  if (tokens.length < 3) return null;
+
+  const interpreter = normalizeCommandToken(tokens[0]!);
+  if (
+    interpreter !== "python" &&
+    interpreter !== "python3" &&
+    interpreter !== "perl" &&
+    interpreter !== "ruby" &&
+    interpreter !== "node"
+  ) {
+    return null;
+  }
+
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token === "-c" || token === "-e") {
+      const code = tokens[i + 1];
+      return code ? { interpreter, code } : null;
+    }
+
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      const shortFlags = token.slice(1);
+      if (shortFlags.length > 1 && (shortFlags.includes("c") || shortFlags.includes("e"))) {
+        const code = tokens[i + 1];
+        return code ? { interpreter, code } : null;
+      }
+      continue;
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
+function readParenthesizedContent(
+  input: string,
+  startIndex: number,
+): { content: string; endIndex: number } | null {
+  let depth = 1;
+  let quote: "'" | '"' | "`" | null = null;
+  let escape = false;
+
+  for (let i = startIndex + 1; i < input.length; i++) {
+    const ch = input[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch as "'" | '"' | "`";
+      continue;
+    }
+
+    if (ch === "(") {
+      depth += 1;
+      continue;
+    }
+
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          content: input.slice(startIndex + 1, i),
+          endIndex: i,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractStringLiterals(input: string): string[] {
+  const literals: string[] = [];
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!;
+    if (ch !== "'" && ch !== '"' && ch !== "`") continue;
+
+    const quote = ch;
+    let current = "";
+    let escape = false;
+
+    for (i += 1; i < input.length; i++) {
+      const inner = input[i]!;
+
+      if (escape) {
+        current += inner;
+        escape = false;
+        continue;
+      }
+
+      if (inner === "\\" && quote !== "'") {
+        escape = true;
+        continue;
+      }
+
+      if (inner === quote) {
+        literals.push(current);
+        break;
+      }
+
+      current += inner;
+    }
+  }
+
+  return literals;
+}
+
+function extractInterpreterBacktickCommands(code: string): string[] {
+  const commands: string[] = [];
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]!;
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch as "'" | '"';
+      continue;
+    }
+
+    if (ch === "`") {
+      const parsed = readBacktickSubstitution(code, i);
+      if (parsed) {
+        commands.push(parsed.content);
+        i = parsed.endIndex;
+      }
+    }
+  }
+
+  return commands;
+}
+
+function scanInterpreterInlineForDenied(
+  tokens: string[],
+  hardDenies: HardDenyList,
+  depth: number,
+): HardDeny | null {
+  const inlineCode = extractInterpreterInlineCode(tokens);
+  if (!inlineCode) return null;
+
+  // Defense-in-depth heuristic: inspect inline interpreter snippets for obvious
+  // shell-exec APIs, then reuse the normal recursive command deny checks.
+  const commandCandidates = new Set<string>();
+  const callPatterns: RegExp[] = [];
+
+  if (inlineCode.interpreter === "python" || inlineCode.interpreter === "python3") {
+    callPatterns.push(/\bos\.system\b/g, /\bsubprocess\.(?:run|call|Popen)\b/g);
+  }
+
+  if (inlineCode.interpreter === "node") {
+    callPatterns.push(
+      /(?:\brequire\(\s*["']child_process["']\s*\)|\bchild_process)\.(?:exec|execSync|spawn)\b/g,
+    );
+  }
+
+  if (inlineCode.interpreter === "perl" || inlineCode.interpreter === "ruby") {
+    callPatterns.push(/(^|[^\w.])system\b/g);
+  }
+
+  for (const pattern of callPatterns) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(inlineCode.code)) !== null) {
+      const openParenIndex = inlineCode.code.indexOf("(", match.index + match[0].length);
+      if (openParenIndex === -1) continue;
+
+      const args = readParenthesizedContent(inlineCode.code, openParenIndex);
+      if (!args) continue;
+
+      const stringArgs = extractStringLiterals(args.content).filter(Boolean);
+      for (const stringArg of stringArgs) {
+        commandCandidates.add(stringArg);
+      }
+      if (stringArgs.length > 1) {
+        commandCandidates.add(stringArgs.join(" "));
+      }
+
+      pattern.lastIndex = args.endIndex + 1;
+    }
+  }
+
+  if (inlineCode.interpreter === "perl" || inlineCode.interpreter === "ruby") {
+    for (const backtickCommand of extractInterpreterBacktickCommands(inlineCode.code)) {
+      if (backtickCommand) {
+        commandCandidates.add(backtickCommand);
+      }
+    }
+  }
+
+  for (const commandCandidate of commandCandidates) {
+    const nestedDeny = checkCommandDenyRecursive(commandCandidate, hardDenies, depth + 1);
+    if (nestedDeny) return nestedDeny;
+  }
+
+  return null;
+}
+
 function isDangerousRm(tokens: string[]): boolean {
   if (tokens.length === 0 || tokens[0] !== "rm") return false;
   const args = tokens.slice(1);
@@ -770,6 +1001,9 @@ function checkCommandDenyRecursive(
           const nestedDeny = checkCommandDenyRecursive(nestedShellCommand, hardDenies, depth + 1);
           if (nestedDeny) return nestedDeny;
         }
+
+        const interpreterInlineDeny = scanInterpreterInlineForDenied(stripped, hardDenies, depth);
+        if (interpreterInlineDeny) return interpreterInlineDeny;
       }
     }
 

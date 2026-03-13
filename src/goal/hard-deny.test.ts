@@ -121,6 +121,27 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("/usr/bin/tcsh -fc 'sudo whoami'")?.pattern).toBe("sudo");
   });
 
+  it("blocks denied commands hidden in inline interpreter shell-exec calls", () => {
+    expect(checkCommandDeny(`python3 -c "import os; os.system('npm publish')"`)?.pattern).toBe(
+      "npm publish",
+    );
+    expect(
+      checkCommandDeny(`node -e "require('child_process').execSync('sudo rm -rf /')"`)?.pattern,
+    ).toBe("sudo");
+    expect(checkCommandDeny(`perl -e 'system("docker push evil/img")'`)?.pattern).toBe(
+      "docker push",
+    );
+    expect(checkCommandDeny(`ruby -e 'system("gh release create")'`)?.pattern).toBe(
+      "gh release create",
+    );
+  });
+
+  it("does not flag safe interpreter usage without inline shell execution", () => {
+    expect(checkCommandDeny("python3 script.py")).toBeNull();
+    expect(checkCommandDeny(`python3 -c "print('hello')"`)).toBeNull();
+    expect(checkCommandDeny(`node -e "console.log('npm publish')"`)).toBeNull();
+  });
+
   it("blocks denied commands inside command substitution", () => {
     expect(checkCommandDeny("echo $(sudo whoami)")).not.toBeNull();
     expect(checkCommandDeny("echo `npm publish`")).not.toBeNull();

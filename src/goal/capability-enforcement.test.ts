@@ -133,6 +133,22 @@ describe("createEnforcedBashOperations", () => {
     expect(output.join("")).toContain("Denied:");
   });
 
+  it("denies inline interpreter shell-exec commands before bash execution", async () => {
+    const denied: string[] = [];
+    const mock = mockBashOps();
+    const ops = createEnforcedBashOperations(HARD_DENIES, (d) => denied.push(d.reason), mock);
+    const output: string[] = [];
+
+    const result = await ops.exec(`python3 -c "import os; os.system('npm publish')"`, WORKING_DIR, {
+      onData: (data) => output.push(data.toString()),
+    });
+
+    expect(result.exitCode).toBe(126);
+    expect(denied).toContain("Publishing not permitted");
+    expect(mock.calls).toHaveLength(0);
+    expect(output.join("")).toContain("Denied:");
+  });
+
   it("strips gateway and channel secrets from Pi bash env while preserving shell vars", async () => {
     const envKeys = [
       "PATH",
