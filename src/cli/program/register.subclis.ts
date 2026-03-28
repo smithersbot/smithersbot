@@ -117,6 +117,14 @@ const entries: SubCliEntry[] = [
     },
   },
   {
+    name: "gstack",
+    description: "Claude Code with goal permissions",
+    register: async (program) => {
+      const mod = await import("../gstack-cli.js");
+      mod.registerGstackCli(program);
+    },
+  },
+  {
     name: "tui",
     description: "Terminal UI",
     register: async (program) => {
