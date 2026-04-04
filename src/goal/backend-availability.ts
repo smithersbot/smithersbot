@@ -7,6 +7,7 @@ type CodexAskForApprovalPlacement = "before_exec" | "after_exec" | "unsupported"
 let cachedCodexAskForApproval: CodexAskForApprovalPlacement | null = null;
 
 const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_RETRY_DELAY_MS = 500;
 const MAX_REASON_CHARS = 160;
 
 type ProbeResult = {
@@ -25,11 +26,19 @@ type ProbeSpec = {
 };
 
 function runProbe(binary: string, args: string[]): ProbeResult {
-  const result = spawnSync(binary, args, {
-    encoding: "utf8",
-    timeout: PROBE_TIMEOUT_MS,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const spawnProbe = () =>
+    spawnSync(binary, args, {
+      encoding: "utf8",
+      timeout: PROBE_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+  let result = spawnProbe();
+  const retryError = result.error as NodeJS.ErrnoException | undefined;
+  if (result.signal && retryError?.code !== "ENOENT") {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, PROBE_RETRY_DELAY_MS);
+    result = spawnProbe();
+  }
 
   return {
     ok: result.status === 0,
