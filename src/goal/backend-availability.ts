@@ -1,10 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 
-let cachedAvailability: BackendAvailability[] | null = null;
 type CodexAskForApprovalPlacement = "before_exec" | "after_exec" | "unsupported";
-
-let cachedCodexAskForApproval: CodexAskForApprovalPlacement | null = null;
 
 const PROBE_TIMEOUT_MS = 5_000;
 const PROBE_RETRY_DELAY_MS = 500;
@@ -103,24 +100,18 @@ function probeBackend(spec: ProbeSpec): { available: boolean; reason?: string } 
 }
 
 export function getCodexAskForApprovalPlacement(): CodexAskForApprovalPlacement {
-  if (cachedCodexAskForApproval != null) return cachedCodexAskForApproval;
   const beforeExec = runProbe("codex", ["--ask-for-approval", "never", "exec", "--help"]);
   if (beforeExec.ok) {
-    cachedCodexAskForApproval = "before_exec";
-    return cachedCodexAskForApproval;
+    return "before_exec";
   }
   const afterExec = runProbe("codex", ["exec", "--ask-for-approval", "never", "--help"]);
   if (afterExec.ok) {
-    cachedCodexAskForApproval = "after_exec";
-    return cachedCodexAskForApproval;
+    return "after_exec";
   }
-  cachedCodexAskForApproval = "unsupported";
-  return cachedCodexAskForApproval;
+  return "unsupported";
 }
 
 export function detectBackendAvailability(): BackendAvailability[] {
-  if (cachedAvailability) return cachedAvailability;
-
   const results: BackendAvailability[] = [{ id: "pi", available: true }];
 
   const codexAskForApproval = getCodexAskForApprovalPlacement();
@@ -153,7 +144,6 @@ export function detectBackendAvailability(): BackendAvailability[] {
   });
   results.push({ id: "claude_code", ...claudeProbe });
 
-  cachedAvailability = results;
   return results;
 }
 
