@@ -63,7 +63,7 @@ export function buildCodexRepoChatArgs(params: {
   if (params.cliSessionId) {
     args.push("resume", params.cliSessionId);
   }
-  args.push("--json", "--color", "never", "--sandbox", "read-only");
+  args.push("--json", "--color", "never", "--sandbox", "workspace-write");
   args.push("--skip-git-repo-check", "--cd", params.workingDir);
   if (params.responseFilePath) {
     args.push("--output-last-message", params.responseFilePath);
@@ -102,7 +102,14 @@ function buildResponseFileInstruction(filePath: string): string {
 }
 
 function extractSessionIdFromStdout(stdout: string): string | undefined {
-  const sessionIdFields = ["session_id", "sessionId", "conversation_id", "conversationId"];
+  const sessionIdFields = [
+    "session_id",
+    "sessionId",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+  ];
 
   function findInObject(obj: Record<string, unknown>): string | undefined {
     for (const field of sessionIdFields) {

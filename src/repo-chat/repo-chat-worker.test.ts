@@ -72,7 +72,7 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("stream-json");
     });
 
-    it("builds Codex initial args with read-only sandbox", () => {
+    it("builds Codex initial args with workspace-write sandbox", () => {
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
@@ -84,7 +84,8 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--color");
       expect(args).toContain("never");
       expect(args).toContain("--sandbox");
-      expect(args).toContain("read-only");
+      expect(args).toContain("workspace-write");
+      expect(args).not.toContain("read-only");
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
@@ -109,7 +110,8 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--color");
       expect(args).toContain("never");
       expect(args).toContain("--sandbox");
-      expect(args).toContain("read-only");
+      expect(args).toContain("workspace-write");
+      expect(args).not.toContain("read-only");
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
@@ -138,7 +140,7 @@ describe("repo-chat-worker", () => {
 
       const sandboxIdx = args.indexOf("--sandbox");
       expect(sandboxIdx).toBeGreaterThanOrEqual(0);
-      expect(args[sandboxIdx + 1]).toBe("read-only");
+      expect(args[sandboxIdx + 1]).toBe("workspace-write");
 
       const outputIdx = args.indexOf("--output-last-message");
       expect(outputIdx).toBeGreaterThanOrEqual(0);
@@ -220,7 +222,7 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("codex-session-file");
     });
 
-    it("does not capture codex thread_id as a resumable cliSessionId", async () => {
+    it("captures codex thread_id as cliSessionId on a successful turn", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer", "utf-8");
         return {
@@ -235,11 +237,76 @@ describe("repo-chat-worker", () => {
 
       const result = await runRepoChatWorker({
         backend: "codex",
-        prompt: "no resumable id",
+        prompt: "thread_id resumable",
         workingDir: "/repo",
       });
 
-      expect(result.cliSessionId).toBeUndefined();
+      expect(result.cliSessionId).toBe("codex-thread-only");
+    });
+
+    it("does not return cliSessionId on a failed codex turn even when stdout contains thread_id", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: '{"thread_id":"codex-thread-failed"}',
+        stderr: "codex blew up",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 5,
+      });
+
+      let result: Awaited<ReturnType<typeof runRepoChatWorker>> | undefined;
+      let caught: unknown;
+      try {
+        result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "failed turn",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(result).toBeUndefined();
+      expect((caught as Error | undefined)?.message).toContain(
+        "Repo chat worker failed (codex exit 1)",
+      );
+    });
+
+    it("does not return cliSessionId when codex response file is missing and repair fails (thread_id stdout)", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: '{"thread_id":"codex-thread-missing-file"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 11,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 12,
+        });
+
+      let result: Awaited<ReturnType<typeof runRepoChatWorker>> | undefined;
+      let caught: unknown;
+      try {
+        result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "missing response file",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(result).toBeUndefined();
+      expect((caught as Error | undefined)?.message).toContain(
+        "did not write a response file, even after repair attempt",
+      );
     });
 
     it("reads response file and returns written content", async () => {
