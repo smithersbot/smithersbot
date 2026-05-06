@@ -34,6 +34,7 @@ import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
+const LAST_MESSAGE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}-last.md`);
 
 describe("repo-chat-worker", () => {
   beforeEach(() => {
@@ -44,11 +45,13 @@ describe("repo-chat-worker", () => {
     buildClaudeCodeEnvMock.mockReturnValue({ TEST_ENV: "1" });
     vi.spyOn(crypto, "randomUUID").mockReturnValue(FIXED_UUID);
     fs.rmSync(RESPONSE_FILE_PATH, { force: true });
+    fs.rmSync(LAST_MESSAGE_FILE_PATH, { force: true });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     fs.rmSync(RESPONSE_FILE_PATH, { force: true });
+    fs.rmSync(LAST_MESSAGE_FILE_PATH, { force: true });
   });
 
   describe("args", () => {
@@ -77,7 +80,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
-        responseFilePath: RESPONSE_FILE_PATH,
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
       });
 
       expect(args).toContain("exec");
@@ -91,7 +94,7 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
       expect(args).toContain("--output-last-message");
-      expect(args).toContain(RESPONSE_FILE_PATH);
+      expect(args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(args).not.toContain("resume");
     });
 
@@ -100,7 +103,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt,
         workingDir: "/repo",
-        responseFilePath: RESPONSE_FILE_PATH,
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
         cliSessionId: "session-123",
       });
 
@@ -109,8 +112,8 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("session-123");
       expect(args).toContain("--json");
       expect(args).toContain("--skip-git-repo-check");
-      expect(args).toContain("--output-last-message");
-      expect(args).toContain(RESPONSE_FILE_PATH);
+      expect(args).not.toContain("--output-last-message");
+      expect(args).not.toContain(LAST_MESSAGE_FILE_PATH);
       // Resume must NOT carry fresh-only flags — codex exec resume rejects these.
       expect(args).not.toContain("--color");
       expect(args).not.toContain("--sandbox");
@@ -128,7 +131,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt,
         workingDir: "/repo",
-        responseFilePath: RESPONSE_FILE_PATH,
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
         cliSessionId: "session-resume-456",
       });
 
@@ -138,11 +141,32 @@ describe("repo-chat-worker", () => {
       expect(resumeIdx).toBe(1);
       expect(args[resumeIdx + 1]).toBe("session-resume-456");
 
-      const outputIdx = args.indexOf("--output-last-message");
-      expect(outputIdx).toBeGreaterThanOrEqual(0);
-      expect(args[outputIdx + 1]).toBe(RESPONSE_FILE_PATH);
+      expect(args).not.toContain("--output-last-message");
+      expect(args).not.toContain(LAST_MESSAGE_FILE_PATH);
 
       expect(args.at(-1)).toBe(prompt);
+    });
+
+    it("never uses the manual response file as the Codex output-last-message target", () => {
+      const initialArgs = buildCodexRepoChatArgs({
+        prompt: "Explain repo chat response files",
+        workingDir: "/repo",
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
+      });
+      const initialOutputIdx = initialArgs.indexOf("--output-last-message");
+      expect(initialOutputIdx).toBeGreaterThanOrEqual(0);
+      expect(initialArgs[initialOutputIdx + 1]).toBe(LAST_MESSAGE_FILE_PATH);
+      expect(initialArgs[initialOutputIdx + 1]).not.toBe(RESPONSE_FILE_PATH);
+
+      const resumeArgs = buildCodexRepoChatArgs({
+        prompt: "Resume repo chat response files",
+        workingDir: "/repo",
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
+        cliSessionId: "session-response-files",
+      });
+      expect(resumeArgs).not.toContain("--output-last-message");
+      expect(resumeArgs).not.toContain(RESPONSE_FILE_PATH);
+      expect(resumeArgs).not.toContain(LAST_MESSAGE_FILE_PATH);
     });
 
     it("omits --ask-for-approval on Codex resume regardless of placement", () => {
@@ -192,7 +216,7 @@ describe("repo-chat-worker", () => {
       const args = buildCodexRepoChatArgs({
         prompt,
         workingDir: "/repo",
-        responseFilePath: RESPONSE_FILE_PATH,
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
       });
       const promptArg = args.at(-1) ?? "";
 
@@ -216,9 +240,10 @@ describe("repo-chat-worker", () => {
       }
     });
 
-    it("reads Codex output-last-message file for initial sessions", async () => {
+    it("reads Codex manual response file for initial sessions", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer from file\n", "utf-8");
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
         return {
           stdout: '{"session_id":"codex-session-file","thread_id":"codex-thread-file"}',
           stderr: "",
@@ -241,11 +266,41 @@ describe("repo-chat-worker", () => {
       };
       expect(call.command).toBe("codex");
       expect(call.args).toContain("--output-last-message");
-      expect(call.args).toContain(RESPONSE_FILE_PATH);
+      expect(call.args).toContain(LAST_MESSAGE_FILE_PATH);
+      expect(call.args).not.toContain(RESPONSE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Codex answer from file");
       expect(result.cliSessionId).toBe("codex-session-file");
+    });
+
+    it("returns manual markdown when Codex last-message and stdout are Done.", async () => {
+      const fullMarkdown = "## Repo chat answer\n\n- First line\n- Second line";
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, `${fullMarkdown}\n`, "utf-8");
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
+        return {
+          stdout: [
+            '{"type":"thread","session_id":"codex-session-624","thread_id":"codex-thread-624"}',
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Done."}]}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 624,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "Simulate the 6:24 Done regression",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toBe(fullMarkdown);
+      expect(result.text).not.toBe("Done.");
+      expect(result.cliSessionId).toBe("codex-session-624");
     });
 
     it("captures codex thread_id as cliSessionId on a successful turn", async () => {
@@ -483,7 +538,8 @@ describe("repo-chat-worker", () => {
         args: string[];
       };
       expect(call.args).toContain("--output-last-message");
-      expect(call.args).toContain(RESPONSE_FILE_PATH);
+      expect(call.args).toContain(LAST_MESSAGE_FILE_PATH);
+      expect(call.args).not.toContain(RESPONSE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
@@ -491,6 +547,7 @@ describe("repo-chat-worker", () => {
       };
       expect(repairCall.args).toContain("resume");
       expect(repairCall.args).toContain("codex-session-stdout");
+      expect(repairCall.args).not.toContain("--output-last-message");
       expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-session-stdout");
@@ -529,8 +586,9 @@ describe("repo-chat-worker", () => {
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         args: string[];
       };
-      expect(call.args).toContain("--output-last-message");
-      expect(call.args).toContain(RESPONSE_FILE_PATH);
+      expect(call.args).not.toContain("--output-last-message");
+      expect(call.args).not.toContain(RESPONSE_FILE_PATH);
+      expect(call.args).not.toContain(LAST_MESSAGE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
@@ -538,6 +596,7 @@ describe("repo-chat-worker", () => {
       };
       expect(repairCall.args).toContain("resume");
       expect(repairCall.args).toContain("codex-resume-thread");
+      expect(repairCall.args).not.toContain("--output-last-message");
       expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Resumed final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-resume-thread");
@@ -578,6 +637,44 @@ describe("repo-chat-worker", () => {
       expect(result.text).toBe("Recovered repo answer");
     });
 
+    it("returns repaired content when manual file is missing and last-message fallback is Done.", async () => {
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
+          return {
+            stdout: [
+              '{"type":"thread","session_id":"codex-session-last-placeholder"}',
+              '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Done."}]}}',
+            ].join("\n"),
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 36,
+          };
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered after missing manual file", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 37,
+          };
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "missing manual should repair before Done fallback",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(result.text).toBe("Recovered after missing manual file");
+    });
+
     it("rejects placeholder codex stdout when repair fails", async () => {
       runCliProcessMock
         .mockResolvedValueOnce({
@@ -604,6 +701,43 @@ describe("repo-chat-worker", () => {
         runRepoChatWorker({
           backend: "codex",
           prompt: "placeholder should fail",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow(
+        "Repo chat worker completed but did not write a response file, even after repair attempt. (placeholder stdout reply rejected)",
+      );
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects Done last-message and stdout fallbacks when repair fails", async () => {
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
+          return {
+            stdout: [
+              '{"type":"thread","session_id":"codex-session-last-placeholder-fail"}',
+              '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Done."}]}}',
+            ].join("\n"),
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 38,
+          };
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 39,
+        });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "codex",
+          prompt: "last-message placeholder should fail",
           workingDir: "/repo",
         }),
       ).rejects.toThrow(
@@ -676,6 +810,7 @@ describe("repo-chat-worker", () => {
     it("cleans up temp response file on success", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "cleanup success", "utf-8");
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.", "utf-8");
         return {
           stdout: "",
           stderr: "",
@@ -693,11 +828,13 @@ describe("repo-chat-worker", () => {
       });
 
       expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+      expect(fs.existsSync(LAST_MESSAGE_FILE_PATH)).toBe(false);
     });
 
     it("cleans up temp response file on error", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "cleanup error", "utf-8");
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.", "utf-8");
         throw new Error("cli launch failed");
       });
 
@@ -710,11 +847,13 @@ describe("repo-chat-worker", () => {
       ).rejects.toThrow("cli launch failed");
 
       expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+      expect(fs.existsSync(LAST_MESSAGE_FILE_PATH)).toBe(false);
     });
 
     it("throws on timeout and still cleans up temp file", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "timeout path", "utf-8");
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.", "utf-8");
         return {
           stdout: "",
           stderr: "",
@@ -735,6 +874,7 @@ describe("repo-chat-worker", () => {
       ).rejects.toThrow("Repo chat worker timed out after 2000ms.");
 
       expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+      expect(fs.existsSync(LAST_MESSAGE_FILE_PATH)).toBe(false);
     });
 
     it("throws on non-zero exit and includes stderr details", async () => {

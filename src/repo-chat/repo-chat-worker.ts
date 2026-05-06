@@ -49,7 +49,7 @@ export function buildClaudeRepoChatArgs(params: {
 export function buildCodexRepoChatArgs(params: {
   prompt: string;
   workingDir: string;
-  responseFilePath?: string;
+  lastMessageFilePath?: string;
   cliSessionId?: string;
   model?: string;
 }): string[] {
@@ -59,9 +59,6 @@ export function buildCodexRepoChatArgs(params: {
     // "unexpected argument". Sandbox, cwd, and approval policy are inherited from the
     // original session, so we deliberately omit them.
     const args = ["exec", "resume", params.cliSessionId, "--json", "--skip-git-repo-check"];
-    if (params.responseFilePath) {
-      args.push("--output-last-message", params.responseFilePath);
-    }
     if (params.model) {
       args.push("--model", params.model);
     }
@@ -83,8 +80,8 @@ export function buildCodexRepoChatArgs(params: {
     "--cd",
     params.workingDir,
   ];
-  if (params.responseFilePath) {
-    args.push("--output-last-message", params.responseFilePath);
+  if (params.lastMessageFilePath) {
+    args.push("--output-last-message", params.lastMessageFilePath);
   }
 
   if (params.model) {
@@ -216,12 +213,24 @@ function cleanupResponseFile(filePath: string): void {
   } catch {}
 }
 
+function readResponseFile(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf-8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function readSubstantiveResponseFile(filePath: string): string {
+  const responseText = readResponseFile(filePath);
+  return isPlaceholderRepoChatReply(responseText) ? "" : responseText;
+}
+
 function buildResumeArgs(params: {
   backend: RepoChatWorkerParams["backend"];
   args: string[];
   cliSessionId?: string;
   workingDir: string;
-  responseFilePath?: string;
   model?: string;
 }): string[] {
   if (params.backend === "claude_code") {
@@ -240,7 +249,6 @@ function buildResumeArgs(params: {
     const resumeArgs = buildCodexRepoChatArgs({
       prompt: originalPrompt,
       workingDir: params.workingDir,
-      responseFilePath: params.responseFilePath,
       cliSessionId: params.cliSessionId,
       model: params.model,
     });
@@ -300,8 +308,10 @@ export async function runRepoChatWorker(
   params: RepoChatWorkerParams,
 ): Promise<RepoChatWorkerResult> {
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const responseFilePath = path.join(os.tmpdir(), `moltbot-rc-${crypto.randomUUID()}.md`);
-  const responseFileInstruction = buildResponseFileInstruction(responseFilePath);
+  const responseFileId = crypto.randomUUID();
+  const manualResponseFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}.md`);
+  const lastMessageFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}-last.md`);
+  const responseFileInstruction = buildResponseFileInstruction(manualResponseFilePath);
   const augmentedPrompt = `${responseFileInstruction}\n\n---\n\nUser question:\n${params.prompt}`;
   const codexPrompt = `${REPO_CHAT_CONTEXT}\n\n${CODEX_STYLE_DIRECTIVE}\n\n${augmentedPrompt}`;
   const command = params.backend === "claude_code" ? "claude" : "codex";
@@ -315,7 +325,7 @@ export async function runRepoChatWorker(
       : buildCodexRepoChatArgs({
           prompt: codexPrompt,
           workingDir: params.workingDir,
-          responseFilePath,
+          lastMessageFilePath,
           cliSessionId: params.cliSessionId,
           model: params.model,
         });
@@ -350,11 +360,7 @@ export async function runRepoChatWorker(
       extractSessionIdFromStdout(stdout) ??
       extractSessionIdFromStdout(stderr) ??
       params.cliSessionId;
-    let responseText = "";
-
-    try {
-      responseText = fs.readFileSync(responseFilePath, "utf-8").trim();
-    } catch {}
+    let responseText = readSubstantiveResponseFile(manualResponseFilePath);
 
     if (!responseText) {
       const resumeArgs = buildResumeArgs({
@@ -362,27 +368,36 @@ export async function runRepoChatWorker(
         args,
         cliSessionId,
         workingDir: params.workingDir,
-        responseFilePath,
         model: params.model,
       });
 
-      responseText = await repairResponseFile({
-        responseFilePath,
+      await repairResponseFile({
+        responseFilePath: manualResponseFilePath,
         command,
         args: resumeArgs,
         cwd: params.workingDir,
         env,
         abortSignal: params.abortSignal,
       });
+      responseText = readSubstantiveResponseFile(manualResponseFilePath);
     }
 
     let rejectedPlaceholderFallback = false;
     if (!responseText && params.backend === "codex") {
-      const fallbackText = extractResponseFromCodexStdout(stdout);
-      if (isPlaceholderRepoChatReply(fallbackText)) {
-        rejectedPlaceholderFallback = Boolean(fallbackText);
+      const lastMessageText = readResponseFile(lastMessageFilePath);
+      if (lastMessageText && !isPlaceholderRepoChatReply(lastMessageText)) {
+        responseText = lastMessageText;
       } else {
-        responseText = fallbackText;
+        rejectedPlaceholderFallback = Boolean(lastMessageText);
+      }
+    }
+
+    if (!responseText && params.backend === "codex") {
+      const stdoutFallbackText = extractResponseFromCodexStdout(stdout);
+      if (isPlaceholderRepoChatReply(stdoutFallbackText)) {
+        rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(stdoutFallbackText);
+      } else {
+        responseText = stdoutFallbackText;
       }
     }
 
@@ -403,7 +418,8 @@ export async function runRepoChatWorker(
       stderr,
     };
   } finally {
-    cleanupResponseFile(responseFilePath);
+    cleanupResponseFile(manualResponseFilePath);
+    cleanupResponseFile(lastMessageFilePath);
   }
 }
 
