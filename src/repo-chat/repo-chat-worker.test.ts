@@ -94,7 +94,7 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("resume");
     });
 
-    it("builds Codex resume args with supported exec resume flags", () => {
+    it("builds Codex resume args with only flags supported by `codex exec resume --help`", () => {
       const prompt = "Explain the tests in src/goal";
       const args = buildCodexRepoChatArgs({
         prompt,
@@ -107,21 +107,22 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("resume");
       expect(args).toContain("session-123");
       expect(args).toContain("--json");
-      expect(args).toContain("--color");
-      expect(args).toContain("never");
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("workspace-write");
-      expect(args).not.toContain("read-only");
       expect(args).toContain("--skip-git-repo-check");
-      expect(args).toContain("--cd");
-      expect(args).toContain("/repo");
       expect(args).toContain("--output-last-message");
       expect(args).toContain(RESPONSE_FILE_PATH);
-      expect(args).toContain("--ask-for-approval");
+      // Resume must NOT carry fresh-only flags — codex exec resume rejects these.
+      expect(args).not.toContain("--color");
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("workspace-write");
+      expect(args).not.toContain("read-only");
+      expect(args).not.toContain("--cd");
+      expect(args).not.toContain("/repo");
+      expect(args).not.toContain("--ask-for-approval");
+      expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       expect(args.at(-1)).toBe(prompt);
     });
 
-    it("builds Codex resume args containing all flags ordered before the prompt", () => {
+    it("builds Codex resume args ordered with session id and output file before the prompt", () => {
       const prompt = "Explain repo chat resume args";
       const args = buildCodexRepoChatArgs({
         prompt,
@@ -130,23 +131,33 @@ describe("repo-chat-worker", () => {
         cliSessionId: "session-resume-456",
       });
 
+      const execIdx = args.indexOf("exec");
       const resumeIdx = args.indexOf("resume");
-      expect(resumeIdx).toBeGreaterThanOrEqual(0);
+      expect(execIdx).toBe(0);
+      expect(resumeIdx).toBe(1);
       expect(args[resumeIdx + 1]).toBe("session-resume-456");
-
-      const cdIdx = args.indexOf("--cd");
-      expect(cdIdx).toBeGreaterThanOrEqual(0);
-      expect(args[cdIdx + 1]).toBe("/repo");
-
-      const sandboxIdx = args.indexOf("--sandbox");
-      expect(sandboxIdx).toBeGreaterThanOrEqual(0);
-      expect(args[sandboxIdx + 1]).toBe("workspace-write");
 
       const outputIdx = args.indexOf("--output-last-message");
       expect(outputIdx).toBeGreaterThanOrEqual(0);
       expect(args[outputIdx + 1]).toBe(RESPONSE_FILE_PATH);
 
       expect(args.at(-1)).toBe(prompt);
+    });
+
+    it("omits --ask-for-approval on Codex resume regardless of placement", () => {
+      for (const placement of ["before_exec", "after_exec", "unsupported"] as const) {
+        getCodexAskForApprovalPlacementMock.mockReturnValueOnce(placement);
+        const args = buildCodexRepoChatArgs({
+          prompt: "resume placement check",
+          workingDir: "/repo",
+          cliSessionId: "session-placement",
+        });
+        expect(args).not.toContain("--ask-for-approval");
+        expect(args[0]).toBe("exec");
+        expect(args[1]).toBe("resume");
+        expect(args[2]).toBe("session-placement");
+        expect(args.at(-1)).toBe("resume placement check");
+      }
     });
 
     it("supports Codex ask-for-approval placement after exec", () => {

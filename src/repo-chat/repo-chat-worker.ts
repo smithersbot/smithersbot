@@ -53,18 +53,36 @@ export function buildCodexRepoChatArgs(params: {
   cliSessionId?: string;
   model?: string;
 }): string[] {
+  if (params.cliSessionId) {
+    // Resume only accepts the flags `codex exec resume --help` documents: passing
+    // --color, --sandbox, --cd, or --ask-for-approval here causes codex to exit 2 with
+    // "unexpected argument". Sandbox, cwd, and approval policy are inherited from the
+    // original session, so we deliberately omit them.
+    const args = ["exec", "resume", params.cliSessionId, "--json", "--skip-git-repo-check"];
+    if (params.responseFilePath) {
+      args.push("--output-last-message", params.responseFilePath);
+    }
+    if (params.model) {
+      args.push("--model", params.model);
+    }
+    args.push(params.prompt);
+    return args;
+  }
+
   const askForApprovalPlacement = getCodexAskForApprovalPlacement();
   const args = [
     ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
     ...(askForApprovalPlacement === "after_exec" ? ["--ask-for-approval", "never"] : []),
+    "--json",
+    "--color",
+    "never",
+    "--sandbox",
+    "workspace-write",
+    "--skip-git-repo-check",
+    "--cd",
+    params.workingDir,
   ];
-
-  if (params.cliSessionId) {
-    args.push("resume", params.cliSessionId);
-  }
-  args.push("--json", "--color", "never", "--sandbox", "workspace-write");
-  args.push("--skip-git-repo-check", "--cd", params.workingDir);
   if (params.responseFilePath) {
     args.push("--output-last-message", params.responseFilePath);
   }
@@ -190,30 +208,42 @@ function buildResumeArgs(params: {
   backend: RepoChatWorkerParams["backend"];
   args: string[];
   cliSessionId?: string;
+  workingDir: string;
+  responseFilePath?: string;
+  model?: string;
 }): string[] {
-  const repairArgs = [...params.args];
-
   if (params.backend === "claude_code") {
+    const repairArgs = [...params.args];
     if (params.cliSessionId && !repairArgs.includes("--resume")) {
       repairArgs.splice(repairArgs.length - 1, 0, "--resume", params.cliSessionId);
     }
     return repairArgs;
   }
 
+  // Codex repair: when we have a session id, rebuild a clean codex resume arg list rather
+  // than mutating the fresh args. Without this, fresh-only flags (--color, --sandbox, --cd,
+  // --ask-for-approval) would be passed to `codex exec resume`, which rejects them.
+  if (params.cliSessionId) {
+    const originalPrompt = params.args.at(-1) ?? "";
+    const resumeArgs = buildCodexRepoChatArgs({
+      prompt: originalPrompt,
+      workingDir: params.workingDir,
+      responseFilePath: params.responseFilePath,
+      cliSessionId: params.cliSessionId,
+      model: params.model,
+    });
+    const jsonIndex = resumeArgs.indexOf("--json");
+    if (jsonIndex >= 0) {
+      resumeArgs.splice(jsonIndex, 1);
+    }
+    return resumeArgs;
+  }
+
+  const repairArgs = [...params.args];
   const jsonIndex = repairArgs.indexOf("--json");
   if (jsonIndex >= 0) {
     repairArgs.splice(jsonIndex, 1);
   }
-
-  if (!params.cliSessionId || repairArgs.includes("resume")) {
-    return repairArgs;
-  }
-
-  const execIndex = repairArgs.indexOf("exec");
-  if (execIndex >= 0) {
-    repairArgs.splice(execIndex + 1, 0, "resume", params.cliSessionId);
-  }
-
   return repairArgs;
 }
 
@@ -323,6 +353,9 @@ export async function runRepoChatWorker(
         backend: params.backend,
         args,
         cliSessionId,
+        workingDir: params.workingDir,
+        responseFilePath,
+        model: params.model,
       });
 
       responseText = await repairResponseFile({
