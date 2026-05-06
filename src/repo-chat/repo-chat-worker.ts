@@ -198,6 +198,18 @@ function extractResponseFromCodexStdout(stdout: string): string {
   return (finalResultText ?? parts.join("\n")).trim();
 }
 
+export function isPlaceholderRepoChatReply(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  if (trimmed.includes("\n")) return false;
+
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+
+  const normalized = trimmed.replace(/[.!]$/, "").trim().toLowerCase();
+  return new Set(["done", "ok", "okay", "sure", "completed"]).has(normalized);
+}
+
 function cleanupResponseFile(filePath: string): void {
   try {
     fs.unlinkSync(filePath);
@@ -344,10 +356,6 @@ export async function runRepoChatWorker(
       responseText = fs.readFileSync(responseFilePath, "utf-8").trim();
     } catch {}
 
-    if (!responseText && params.backend === "codex") {
-      responseText = extractResponseFromCodexStdout(stdout);
-    }
-
     if (!responseText) {
       const resumeArgs = buildResumeArgs({
         backend: params.backend,
@@ -368,9 +376,21 @@ export async function runRepoChatWorker(
       });
     }
 
+    let rejectedPlaceholderFallback = false;
+    if (!responseText && params.backend === "codex") {
+      const fallbackText = extractResponseFromCodexStdout(stdout);
+      if (isPlaceholderRepoChatReply(fallbackText)) {
+        rejectedPlaceholderFallback = Boolean(fallbackText);
+      } else {
+        responseText = fallbackText;
+      }
+    }
+
     if (!responseText) {
       throw new Error(
-        "Repo chat worker completed but did not write a response file, even after repair attempt.",
+        `Repo chat worker completed but did not write a response file, even after repair attempt.${
+          rejectedPlaceholderFallback ? " (placeholder stdout reply rejected)" : ""
+        }`,
       );
     }
 

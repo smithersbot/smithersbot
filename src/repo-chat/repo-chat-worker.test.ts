@@ -24,6 +24,7 @@ vi.mock("../goal/claude-code-env.js", () => ({
 import {
   buildClaudeRepoChatArgs,
   buildCodexRepoChatArgs,
+  isPlaceholderRepoChatReply,
   REPO_CHAT_CLAUDE_ALLOWED_TOOLS,
   REPO_CHAT_CODEX_STYLE_PROMPT,
   REPO_CHAT_READ_ONLY_PROMPT,
@@ -201,6 +202,20 @@ describe("repo-chat-worker", () => {
   });
 
   describe("runRepoChatWorker", () => {
+    it("detects placeholder repo-chat replies conservatively", () => {
+      for (const text of ["", "  \n", "Done.", "Done", "OK", "Ok", "Okay", "Sure", "Completed"]) {
+        expect(isPlaceholderRepoChatReply(text)).toBe(true);
+      }
+
+      for (const text of [
+        "Final answer from codex stdout",
+        "Done. The repo uses pnpm.",
+        "## Summary\n\nDone.",
+      ]) {
+        expect(isPlaceholderRepoChatReply(text)).toBe(false);
+      }
+    });
+
     it("reads Codex output-last-message file for initial sessions", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer from file\n", "utf-8");
@@ -434,19 +449,28 @@ describe("repo-chat-worker", () => {
       expect(result.text).toBe("Recovered from empty file");
     });
 
-    it("extracts codex response from stdout when the response file is missing", async () => {
-      runCliProcessMock.mockResolvedValueOnce({
-        stdout: [
-          '{"type":"thread","session_id":"codex-session-stdout","thread_id":"codex-thread-stdout"}',
-          '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working through repo details"}]}}',
-          '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Final answer from codex stdout"}]}}',
-        ].join("\n"),
-        stderr: "",
-        timedOut: false,
-        exitCode: 0,
-        signal: null,
-        durationMs: 27,
-      });
+    it("extracts codex response from stdout after repair fails to produce a response file", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: [
+            '{"type":"thread","session_id":"codex-session-stdout","thread_id":"codex-thread-stdout"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working through repo details"}]}}',
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Final answer from codex stdout"}]}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 27,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 28,
+        });
 
       const result = await runRepoChatWorker({
         backend: "codex",
@@ -454,7 +478,7 @@ describe("repo-chat-worker", () => {
         workingDir: "/repo",
       });
 
-      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         args: string[];
       };
@@ -462,22 +486,37 @@ describe("repo-chat-worker", () => {
       expect(call.args).toContain(RESPONSE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
+        args: string[];
+      };
+      expect(repairCall.args).toContain("resume");
+      expect(repairCall.args).toContain("codex-session-stdout");
+      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-session-stdout");
     });
 
-    it("extracts codex response from stdout for resumed sessions without repair", async () => {
-      runCliProcessMock.mockResolvedValueOnce({
-        stdout: [
-          '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Repair should be skipped"}]}}',
-          '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Resumed final answer from codex stdout"}]}}',
-        ].join("\n"),
-        stderr: "",
-        timedOut: false,
-        exitCode: 0,
-        signal: null,
-        durationMs: 28,
-      });
+    it("extracts codex response from stdout for resumed sessions after repair fails", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: [
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Repair should run first"}]}}',
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Resumed final answer from codex stdout"}]}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 28,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 29,
+        });
 
       const result = await runRepoChatWorker({
         backend: "codex",
@@ -486,7 +525,7 @@ describe("repo-chat-worker", () => {
         cliSessionId: "codex-resume-thread",
       });
 
-      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         args: string[];
       };
@@ -494,8 +533,113 @@ describe("repo-chat-worker", () => {
       expect(call.args).toContain(RESPONSE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
+        args: string[];
+      };
+      expect(repairCall.args).toContain("resume");
+      expect(repairCall.args).toContain("codex-resume-thread");
+      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Resumed final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-resume-thread");
+    });
+
+    it("returns repaired content instead of placeholder codex stdout", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: [
+            '{"type":"thread","session_id":"codex-session-placeholder"}',
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Done."}]}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 30,
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered repo answer", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 31,
+          };
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "placeholder should repair",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(result.text).toBe("Recovered repo answer");
+    });
+
+    it("rejects placeholder codex stdout when repair fails", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: [
+            '{"type":"thread","session_id":"codex-session-placeholder-fail"}',
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Done."}]}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 32,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 33,
+        });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "codex",
+          prompt: "placeholder should fail",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow(
+        "Repo chat worker completed but did not write a response file, even after repair attempt. (placeholder stdout reply rejected)",
+      );
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("rejects OK placeholder codex stdout when repair fails", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"OK"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 34,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 35,
+        });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "codex",
+          prompt: "ok placeholder should fail",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow("placeholder stdout reply rejected");
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
     });
 
     it("throws when repair also fails to produce a response file", async () => {
