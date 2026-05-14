@@ -67,3 +67,50 @@ No `AKIA...`, `AIza...`, `ghp_...`, `xoxp-...`, or JWT `eyJ...` credential-shape
 Open question for operator: Is the untracked `.env` expected local state, and can it be deleted or moved before packaging a public release?
 
 Open question for operator: Should Stage 2 preserve legacy `com.clawdbot` / `com.steipete.clawdbot` migration identifiers in code, or remove them because public v0 only ships Telegram?
+
+## PII and personal-data sweep
+
+Scope: this section covers real-looking NANP `+1` phone numbers outside reserved fictional ranges, real-looking emails outside `example.com` / `example.org` / test domains, hardcoded `/home/<user>/` and `/Users/<user>/` paths, private hostnames / SSH targets, and personal handles in code, comments, and operator docs. Stage 1 did not inspect denied sensitive files such as `.env*`, key files, credential files, or `moltbot.json`.
+
+### Blockers
+
+| File:line | What it looks like | Severity | Git history evidence | Recommended action |
+| --- | --- | --- | --- | --- |
+| `scripts/clawtributors-map.json:34-37` | Personal email-to-GitHub mapping containing redacted Gmail addresses such as `s***@gmail.com` and `h***@gmail.com` | blocker | Not checked; this is an attribution helper with current-file PII evidence | Remove personal email mappings from public pack or replace with non-email contributor IDs |
+| `SECURITY.md:7` | Security contact uses a personal Gmail address, redacted as `s***@gmail.com` | blocker | Not checked; public security contact must be project-owned | Replace with project-owned security contact before public release |
+
+### Risks
+
+| File:line | What it looks like | Severity | Git history evidence | Recommended action |
+| --- | --- | --- | --- | --- |
+| `AGENTS.md:28-30` and `CLAUDE.md:28-30` | Private exe.dev VM operations and `ssh exe.dev` target | risk | Not checked; repo-local operator guidance | Move private VM operations to private docs or rewrite as generic provider guidance |
+| `AGENTS.md:115` and `CLAUDE.md:115` | Private Fly app / SSH target command naming `flawd-bot` | risk | Not checked; repo-local operator guidance | Remove private deployment target from public repo |
+| `scripts/termux-sync-widget.sh:9` | Hardcoded SSH target plus absolute path `/home/admin/moltbot/...` | risk | Not checked; script contains private host/path assumptions | Cut from Telegram-only v0 public pack or rewrite with placeholders |
+| `scripts/auth-monitor.sh:6` and `scripts/systemd/clawdbot-auth-monitor.service:7` | Hardcoded `/home/admin/moltbot/scripts/auth-monitor.sh` path | risk | Not checked; private ops path | Rewrite to generic install path or remove from public pack |
+| `apps/macos/Tests/MoltbotIPCTests/WideAreaGatewayDiscoveryTests.swift:31,47` | Internal Tailscale hostname and personal path `/Users/s***e/moltbot/src/entry.ts` | risk | Not checked; app code is out of v0 but public pack would expose private host/path fixtures | Cut macOS app/tests from v0 pack or rewrite fixtures |
+| `src/commands/health-format.test.ts:23,33` | Personal config path `/Users/s***e/.clawdbot-dev/moltbot.json` | risk | Not checked; test fixture exposes private username and state path | Rewrite fixture to `/Users/user/...` or remove with out-of-v0 tests |
+| `src/commands/doctor.warns-per-agent-sandbox-docker-browser-prune.test.ts:398,405,407,410` | Personal workspace paths under `/Users/s***e/...` | risk | Not checked; test fixture exposes private username/workspace | Rewrite fixture to generic username |
+| `src/commands/gateway-status.test.ts:207,228,246,254,272` | Personal SSH user and internal Tailscale hostname `s***e@peters-mac-studio-1.sheep-coho.ts.net` | risk | Not checked; test fixture exposes private user/host | Rewrite fixture to generic `user@gateway-host.tailnet.ts.net` |
+| `src/infra/ssh-config.test.ts:21,22,53,54` | Personal SSH user and internal Tailscale hostname `s***e@peters-mac-studio-1.sheep-coho.ts.net` | risk | Not checked; test fixture exposes private user/host | Rewrite fixture to generic user/host |
+| `apps/macos/Sources/Moltbot/AboutSettings.swift:53-55,80` | Personal website, social handle, email, and copyright attribution | risk | Not checked; macOS app is out of v0 but public pack would expose personal contact surfaces | Cut macOS app from v0 pack or replace with project-owned contacts |
+| `docs/index.md:225,232` | Personal maintainer handle and a contributor Gmail address, redacted as `n***@gmail.com` | risk | Not checked; public docs attribution surface | Rewrite public docs attribution and remove direct personal email |
+| `docs/platforms/mac/logging.md:23` | Personal blog attribution to `steipete.me` | risk | Not checked; macOS docs are out of v0 | Cut macOS docs from Telegram-only v0 or replace with neutral reference |
+| `docs/automation/gmail-pubsub.md:98,167,180,227,228,236,237,249` | Repeated real-looking `m***@gmail.com` account placeholder | risk | Not checked; public onboarding example could be mistaken for a live project account | Rewrite to `user@example.com` or a reserved example domain |
+| `docs/gateway/security/index.md:752` | Old-product contact `security@clawd.bot` | risk | Not checked; old public security surface | Replace with current project-owned security contact |
+| `extensions/bluebubbles/src/targets.test.ts:27,28,50,136,138,179,181` and `extensions/bluebubbles/src/send.test.ts:202,218` | Real-looking NANP numbers outside `+1555` reserved examples, redacted as `+1********29` | risk | Not checked; BlueBubbles is out of v0 | Cut BlueBubbles extension from v0 pack or rewrite numbers to reserved fictional `+1555...` values |
+| `src/media/parse.test.ts:13,14,19,20` | Personal-looking `/Users/pete/My File.png` fixture path | risk | Not checked; fixture exposes a real first-name home path | Rewrite to `/Users/user/...` |
+
+### Nits
+
+| File:line | What it looks like | Severity | Git history evidence | Recommended action |
+| --- | --- | --- | --- | --- |
+| `LICENSE:3` and `README.md:463,467,481` | Personal creator attribution and `steipete` profile links | nit | Not checked; also covered by attribution audit | Preserve legal attribution where required, but move product contact surfaces to project-owned links |
+| `CONTRIBUTING.md:8,12-19` | Named maintainers and social handles for `@steipete`, `@thewilloftheshadow`, and `@joshp123` | nit | Not checked; governance text | Replace with project governance language for public fork release |
+| `CHANGELOG.md:68,74,95,164,464,479,484,590,593,628,780,803,809,811,813-820,853,880,881,897` | Contributor handles in historical changelog entries | nit | Not checked; historical attribution | Keep if preserving history, or add release-note context that old handles/PRs refer to upstream history |
+| `skills/wacli/SKILL.md:33,35`, `skills/imsg/SKILL.md:21`, and `skills/voice-call/SKILL.md:14` | Phone-number examples use `+14155551212` or `+15555550123`; mostly reserved-looking examples but out-of-v0 skills | nit | Not checked; skills are out of Telegram-only v0 unless separately included | Cut out-of-v0 skills or standardize all examples on reserved fictional `+1555...` values |
+
+### Open questions for operator
+
+Open question for operator: Should Stage 2 preserve historical personal attribution in `CHANGELOG.md`, `LICENSE`, and README while replacing only active contact/governance surfaces?
+
+Open question for operator: Are scripts under `scripts/termux-*`, `scripts/auth-monitor.sh`, and `scripts/systemd/` part of any intended public v0 packaging path, or can they be removed from the pack entirely?
