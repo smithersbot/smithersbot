@@ -49,7 +49,13 @@ flowchart TD
   C -->|needs changes, up to 3 rounds| B
   C -->|approves plan| D[Telegram shows plan flowchart]
   D --> E{Operator decision}
-  E -->|Approve| F[Begin execution]
+  E -->|Plan Detail| F[Show detailed implementation plan]
+  E -->|Request Edit| G[User describes plan changes]
+  G --> B
+  E -->|Ask Repo Chat| H[/repo_chat inspects repo and goal context]
+  H --> E
+  E -->|Reject| I[Stop goal before execution]
+  E -->|Approve| J[Begin execution]
 ```
 
 Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `moltbot goal detail <run_id>`.
