@@ -85,3 +85,10 @@ macOS-app onboarding flow bodies (page order, Local-vs-Remote choices,
 TCC permissions checklist, Moltbot.app references, etc.). Native-app surface
 cleanup — including the full macOS-app onboarding rewrite or removal — is
 deferred to Stage 2B alongside the broader `apps/macos` decision.
+
+## W5 — package.json identity outcome
+
+- tsc verification: PASS (`pnpm exec tsc -p tsconfig.json` exit 0, zero output).
+- Commit: a57d42ed812ef72901794b254e8429f9bf441244 — `build(pkg): SmithersBot identity in package.json (name, bin, description, author, homepage, repository, bugs, keywords)`.
+- Fields written: name=smithersbot; bin={smithersbot:./moltbot.mjs}; description='SmithersBot — a personal Telegram-first AI assistant. Fork of moltbot/moltbot.'; author='Matthew Overing <contact@smithersbot.com>'; homepage=https://smithersbot.com; repository.url=git+https://github.com/smithersbot/smithersbot.git; bugs.url=https://github.com/smithersbot/smithersbot/issues; keywords=[telegram, bot, agent, assistant, cli, ai].
+- Fields preserved untouched: version, type, main, exports, files, scripts, license, engines, packageManager, dependencies, optionalDependencies, devDependencies, overrides, pnpm, vitest.
