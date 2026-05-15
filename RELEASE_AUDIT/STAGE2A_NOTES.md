@@ -74,3 +74,14 @@ Result: fetch/merge-base refinement failed on the single allowed attempt; keep t
 ```text
 4583f88626f20efedc454d893afaaf898c23523b
 ```
+
+## macOS-app onboarding deferred to 2B
+
+`docs/start/onboarding.md` is titled "Onboarding (macOS app)" end-to-end, and
+`docs/start/setup.md` describes the macOS-app stable/bleeding-edge workflows.
+Stage 2A only mechanically replaced legacy `~/.clawdbot` and `~/clawd` path
+strings with `~/.smithersbot/...` (v0) placeholders; it did **not** rewrite the
+macOS-app onboarding flow bodies (page order, Local-vs-Remote choices,
+TCC permissions checklist, Moltbot.app references, etc.). Native-app surface
+cleanup — including the full macOS-app onboarding rewrite or removal — is
+deferred to Stage 2B alongside the broader `apps/macos` decision.

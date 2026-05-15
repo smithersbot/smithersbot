@@ -42,7 +42,7 @@ The macOS app supports Anthropic OAuth (Claude Pro/Max). The flow:
 
 - Opens the browser for OAuth (PKCE)
 - Asks the user to paste the `code#state` value
-- Writes credentials to `~/.clawdbot/credentials/oauth.json`
+- Writes credentials to `~/.smithersbot/credentials/oauth.json` (v0 path)
 
 Other providers (OpenAI, custom APIs) are configured via environment variables
 or config files for now.
@@ -75,7 +75,7 @@ from your normal conversation.
 
 ## Agent bootstrap ritual
 
-On the first agent run, Moltbot bootstraps a workspace (default `~/clawd`):
+On the first agent run, the bot bootstraps a workspace (v0 default `~/.smithersbot/workspace`):
 
 - Seeds `AGENTS.md`, `BOOTSTRAP.md`, `IDENTITY.md`, `USER.md`
 - Runs a short Q&A ritual (one question at a time)
@@ -97,7 +97,7 @@ See [/automation/gmail-pubsub](/automation/gmail-pubsub) for details.
 When the Gateway runs on another machine, credentials and workspace files live
 **on that host**. If you need OAuth in remote mode, create:
 
-- `~/.clawdbot/credentials/oauth.json`
-- `~/.clawdbot/agents/<agentId>/agent/auth-profiles.json`
+- `~/.smithersbot/credentials/oauth.json` (v0 path)
+- `~/.smithersbot/agents/<agentId>/agent/auth-profiles.json` (v0 path)
 
 on the gateway host.
