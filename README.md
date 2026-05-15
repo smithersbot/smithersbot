@@ -34,6 +34,16 @@ Goal state is persisted on disk. Set `MOLTBOT_STATE_DIR` when you need to redire
 - Reply to the done message to suggest follow-up work via **Incorporate Feedback**.
 - Routing is scoped to the chat and topic thread the run was started in.
 
+## Telegram commands
+
+- `/new_goal <description>` starts a new goal.
+- `/goal_status` shows the current state of the flowchart/DAG for a goal.
+- `/goal_list` shows a summary of all goals.
+- `/repo_chat <question>` asks repo and active-goal context questions.
+- `/rc <question>` is the short alias for `/repo_chat`.
+- `/chat_backend` configures repo chat to use Codex or Claude Code.
+- `/nightwatch` configures the scheduled daily review.
+
 ## Repo chat
 
 Repo chat is a Telegram-native planning tool, not a separate CLI chat product. Use `/repo_chat <question>` or the short alias `/rc <question>` to ask Codex or Claude Code about the repo, active goal context, and the plan currently waiting for approval. Replies to a prior repo-chat message continue the same session.
