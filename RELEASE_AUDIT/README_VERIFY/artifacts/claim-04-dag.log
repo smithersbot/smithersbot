@@ -1,0 +1,84 @@
+# Claim 04 — DAG / critical path
+
+## Goal
+Verify goal detail renders a task graph or text DAG. If graphical Mermaid/PNG rendering is not verified, say "text DAG verified only".
+
+## Command run
+```
+MOLTBOT_STATE_DIR=$PWD/RELEASE_AUDIT/README_VERIFY/_state \
+  node scripts/run-node.mjs goal detail 5e1de960-5456-4dc2-a1c7-a1bdf231cdc6
+```
+- Run id source: newest dir under RELEASE_AUDIT/README_VERIFY/_state/goals/ (only one entry).
+- Exit code: 0
+- Stdout lines: 35; stderr lines: 0
+
+## Captured stdout (verbatim)
+```
+🧭 Planning: Add docstring to scripts/run-node.mjs
+**Progress** 0/1
+**Retries** 0 retries
+**Steps**
+- add-run-node-docstr…. pending Add top-of-file docstring
+Run ID: 5e1de960-5456-4dc2-a1c7-a1bdf231cdc6
+
+**Dependencies (ASCII)**
+```text
+[ ] add-run-node-docstring
+    deps: none
+```
+**Dependency Graph**
+```mermaid
+%%{init: {
+  "theme": "base",
+  ...
+}}%%
+
+flowchart TD
+  add-run-node-docstring["1. Add top-of-file docstring<br/>~5 min | Codex"]
+classDef pending fill:#2D3748,...;
+...
+  class add-run-node-docstring pending;
+```
+```
+
+(Full text saved to /tmp/goal-detail-stdout.log during this task and reproducible by re-running the command above.)
+
+## Rendering analysis
+
+What the `goal detail` CLI emits:
+- An "**Dependencies (ASCII)**" code block — a plain-text dependency listing
+  with `[ ]` / `[x]` markers and `deps:` lines (the text DAG).
+- A "**Dependency Graph**" `mermaid` *source* code block (the textual Mermaid
+  flowchart that a viewer like GitHub / Telegram / Mintlify can render).
+
+What it does NOT emit:
+- No PNG file path, no rendered image, no base64-encoded image in the CLI
+  stdout. PNG rendering lives in `src/goal/mermaid-png.ts` and is called
+  ONLY from the Telegram sender (`src/telegram/goal-sending.ts:13` imports
+  `renderMermaidToPng`; `src/telegram/goal-sending.ts:800` invokes it). It
+  is not wired into the CLI `goal detail` printer.
+
+Therefore: CLI `goal detail` renders both a text DAG (ASCII) and a Mermaid
+source block, but does not render a PNG. Telegram is a separate surface
+that can convert the Mermaid block to a PNG, but that path was not
+exercised in this run.
+
+## Code path citations
+- src/cli/program/register.goal.ts:49 — `moltbot goal detail <runId>` CLI registration.
+- src/goal/format-output.ts — formatter for the text DAG / mermaid block (no PNG).
+- src/goal/mermaid-png.ts:33 — `renderMermaidToPng`, only used by Telegram.
+- src/telegram/goal-sending.ts:13,800 — Telegram surface invoking PNG renderer.
+
+## Safe README wording
+- "text DAG verified only" — for the CLI surface.
+- "renders a task graph as both an ASCII dependency list and a Mermaid
+  flowchart source block" — accurate description of CLI output.
+- "Telegram surface renders the Mermaid graph as a PNG" — only safe if
+  separately verified live; in this audit it was static-only.
+
+## Unsafe README wording to avoid
+- "renders a graphical PNG dependency graph in the terminal" (false for CLI).
+- "renders a Mermaid diagram out of the box on every channel" (unverified).
+
+STATUS: verified
+REASON: `goal detail` exited 0 and emitted both a text DAG (ASCII dependency block) and a Mermaid source block; PNG rendering is wired only into Telegram (src/telegram/goal-sending.ts:800) and was not produced by the CLI command. Recorded as "text DAG verified only" for the CLI surface.

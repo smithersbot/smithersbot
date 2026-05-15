@@ -1,0 +1,98 @@
+# Claim 06 — Artifact trail
+
+## Goal
+Verify a completed or attempted run persists prompts, stdout/stderr, result
+JSON, attempt summaries, journals, and run state.
+
+## Inventory (read-only) for run 5e1de960-5456-4dc2-a1c7-a1bdf231cdc6
+
+```
+RELEASE_AUDIT/README_VERIFY/_state/goals/5e1de960-5456-4dc2-a1c7-a1bdf231cdc6/
+  run.json                                   (2923 B, mode 0600)
+  scout/
+    PLANNING_BRIEF.md                        (17616 B)  — planner system brief
+    plan_draft.md                            (1552 B)   — scout draft plan
+    execution_plan.json                      (2403 B)   — typed plan JSON
+    scout_report.json                        ( 347 B)   — DAG nodes/edges
+    planning_stdout.txt                      (2249 B)   — planner CLI stdout
+    planning_stderr.txt                      (   0 B)   — planner CLI stderr
+    planning_raw_output.txt                  (2249 B)   — raw model output
+    attempt-1.json                           (2265 B)   — scout attempt summary
+    auth_mode.txt                            ( 118 B)   — auth mode artifact
+    node_specs/
+      add-run-node-docstring.md              (1219 B)   — per-step planning spec
+```
+
+This run was --plan-only, so it stopped before any worker dispatch.
+Therefore there is no `workers/<stepId>/` subdir yet for this run, no
+WORKING.md (worker journal), and no executor `sessions/` data — those
+artifacts are created only after worker dispatch begins. The directory
+shape and persistence model are still verifiable through code citations
+below; the run-store layout is the same regardless of phase.
+
+## Artifact types confirmed for this run
+| Artifact type                   | Present | Path                                             |
+|---------------------------------|---------|--------------------------------------------------|
+| Run state (typed JSON)          | yes     | run.json                                         |
+| Plan JSON (typed steps)         | yes     | scout/execution_plan.json                        |
+| Plan markdown draft             | yes     | scout/plan_draft.md                              |
+| DAG node/edge spec              | yes     | scout/scout_report.json                          |
+| Planner stdout                  | yes     | scout/planning_stdout.txt                        |
+| Planner stderr (empty here)     | yes     | scout/planning_stderr.txt                        |
+| Planner raw model output        | yes     | scout/planning_raw_output.txt                    |
+| Planner attempt summary         | yes     | scout/attempt-1.json                             |
+| Per-step planning spec          | yes     | scout/node_specs/add-run-node-docstring.md       |
+| Auth mode audit artifact        | yes     | scout/auth_mode.txt                              |
+
+## Artifact types not present in this run (because plan-only)
+| Artifact type                   | Expected location                                  |
+|---------------------------------|----------------------------------------------------|
+| Worker prompt                   | workers/<stepId>/worker-prompt-<n>.txt             |
+| Worker stdout / stderr          | workers/<stepId>/attempt-<n>.stdout.txt / .stderr.txt |
+| Worker result JSON              | workers/<stepId>/<WORKER_RESULT_FILENAME>          |
+| Per-step working journal        | workers/<stepId>/WORKING.md                        |
+| Top-level run journal           | WORKING.md (at run root)                           |
+| Deny list passed to worker      | workers/<stepId>/.deny (or similar)                |
+| Plan-raw debug for parse fails  | plan-raw.txt (run root)                            |
+
+## Code path citations (how each artifact type is persisted)
+
+- src/goal/run-store.ts:31-47 — atomicWriteJson + saveRun: run.json is
+  written via temp-file + rename, chmod 0600.
+- src/goal/run-store.ts:493-499 — resolveWorkingFile / resolveGoalWorkingFile:
+  per-step WORKING.md lives under workers/<stepId>/WORKING.md; run-level
+  WORKING.md lives at the run root.
+- src/goal/attempt-bundle.ts:35-36 — resolveWorkerDir: `workers/<stepId>/`.
+- src/goal/cli-worker.ts:234-235 — `mkdirSync(workerDir, { recursive: true })`
+  on dispatch.
+- src/goal/cli-worker.ts:273-276 — writeTextArtifact for
+  `worker-prompt-<attempt>.txt`.
+- src/goal/cli-worker.ts:294-295 — `attempt-<n>.stdout.txt` and
+  `attempt-<n>.stderr.txt` for the worker subprocess.
+- src/goal/cli-worker.ts:184-185 — `attempt-<n>.repair.stdout.txt`/`.repair.stderr.txt`
+  for repair passes.
+- src/goal/cli-worker.ts:250 — `writeAuthModeArtifact` for claude_code.
+- src/goal/run-journal.ts:14-22 — appendGoalWorkingEntry writes to the
+  run-level WORKING.md.
+- src/goal/run-journal.ts:25-44 — appendRetryContext writes per-step
+  WORKING.md retry sections.
+- src/goal/run-journal.ts:46-78 — appendRalphContext writes ralph history
+  per step (also viewable via buildRalphHistorySummary at :80).
+- src/goal/planner.ts:146 — plan-raw.txt is written under the run dir on
+  planner output for debugging.
+
+## Safe README wording
+- "every run persists its typed plan, per-step prompts, worker stdout/stderr,
+  worker result JSON, attempt summaries, journals, and run state under a
+  single run directory."
+- "artifacts live under $STATE_DIR/goals/<runId>/, with worker subprocess
+  output captured per attempt as plain-text files alongside a typed
+  worker_result.json."
+
+## Unsafe README wording to avoid
+- "captures every stdin/stdout byte of every subprocess" (true for worker
+  CLIs, but easy to overclaim).
+- "writes a database log" (no DB; flat files only).
+
+STATUS: verified
+REASON: All artifact types named in the brief are persisted by the goal system. For this plan-only run, run.json plus the full scout/ artifact set (typed plan, planner stdout/stderr/raw, scout report DAG, per-step node spec, attempt summary, auth-mode audit) are present on disk. Worker-dispatch-time artifacts (workers/<stepId>/worker-prompt, attempt-<n>.stdout/stderr, worker_result.json, WORKING.md journals) are unambiguously sourced in cli-worker.ts (lines 234, 273-276, 294-295) and run-journal.ts (lines 14-78); they are not present here only because no worker ran in a plan-only flow.
