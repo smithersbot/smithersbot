@@ -1,0 +1,56 @@
+=== Command ===
+MOLTBOT_STATE_DIR=$PWD/RELEASE_AUDIT/README_VERIFY/_state node scripts/run-node.mjs goal "Add a short docstring to scripts/run-node.mjs" --plan-only --output json
+(plan extracted from persisted run.json under MOLTBOT_STATE_DIR)
+
+=== Captured at ===
+2026-05-15T15:52:33Z
+
+=== plan.goal ===
+Add a short docstring to scripts/run-node.mjs
+
+=== plan.workingDir ===
+/home/matt/moltbot
+
+=== plan.shortSummary ===
+Add docstring to scripts/run-node.mjs
+
+=== plan.summary ===
+Add a short top-of-file docstring to scripts/run-node.mjs describing its purpose as the local dev entrypoint that conditionally rebuilds TypeScript to dist/ and then runs moltbot.mjs with forwarded args. The change is comment-only and must not alter runtime behavior.
+
+=== plan.buildGate (raw JSON) ===
+{
+  "commands": [
+    "node --check scripts/run-node.mjs"
+  ],
+  "runBetweenSteps": false
+}
+
+=== Per-step extraction: id / shortSummary / dependsOn / backend / successCriteria / constraints ===
+  --- step ---
+  id: add-run-node-docstring
+  shortSummary: Add top-of-file docstring
+  status: pending
+  durationMinutes: 5
+  dependsOn: []
+  backend: codex
+  successCriteria: scripts/run-node.mjs has a concise docstring directly after the shebang covering purpose, build-stamp behavior, compiler selection, run step, and the --json / CLAWDBOT_FORCE_BUILD flags; `node --check scripts/run-node.mjs` exits 0; no other lines in the file are changed.
+  constraints:
+    - Do not modify runtime behavior, control flow, imports, variables, or env-var handling
+    - Do not reorder existing code or rename anything
+    - Do not add new files or dependencies
+    - Keep the docstring concise (roughly 5–15 lines) and match the file's existing comment style
+
+=== Field presence summary ===
+  typed steps:         PRESENT (1 step)
+  step.id:             PRESENT
+  step.description:    PRESENT
+  step.dependsOn:      PRESENT (array)
+  step.backend:        PRESENT (codex)
+  step.successCriteria: PRESENT
+  step.constraints:    PRESENT (4 items)
+  step.status:         PRESENT (pending)
+  step.durationMinutes: PRESENT
+  plan.buildGate:      PRESENT (commands=["node --check scripts/run-node.mjs"], runBetweenSteps=false)
+
+STATUS: verified
+REASON: Persisted plan in RELEASE_AUDIT/README_VERIFY/_state/goals/5e1de960-5456-4dc2-a1c7-a1bdf231cdc6/run.json contains typed steps with id/description/shortSummary, an explicit dependsOn array, per-step backend assignment ('codex' for this single step), per-step successCriteria, per-step constraints (4 items), and a plan-level buildGate ({ commands: ['node --check scripts/run-node.mjs'], runBetweenSteps: false }). All six fields required by claim 3 are present in the generated plan.
