@@ -54,6 +54,10 @@ A typical operator loop is to use repo chat before `/new_goal` to sharpen the in
 
 ## How it works
 
+![SmithersBot operator flow](./smithersbot-flowchart.png)
+
+<details><summary>Mermaid source</summary>
+
 ```mermaid
 flowchart TD
   A[User sends /new_goal in Telegram] --> B[Claude Code Plan Mode creates DAG]
@@ -87,6 +91,8 @@ flowchart TD
   V["/goal_status"] --> D
   W["/goal_list"] --> X[Show summary of goals]
 ```
+
+</details>
 
 Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `smithersbot goal detail <run_id>`.
 
