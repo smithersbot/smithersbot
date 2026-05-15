@@ -40,15 +40,19 @@ Telegram-only: `/repo_chat <question>` (alias `/rc`) asks a read-only question a
 
 The backend is configurable to use Codex or Claude Code via `/chat_backend`; until set, the command is disabled.
 
-## How planning works
+## How it works
 
-Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate.
-
-```bash
-moltbot goal detail <run_id>
+```mermaid
+flowchart TD
+  A[User sends /new_goal in Telegram] --> B[Claude Code Plan Mode creates DAG]
+  B --> C[Codex reviews the plan]
+  C -->|needs changes, up to 3 rounds| B
+  C -->|approves plan| D[Telegram shows plan flowchart]
+  D --> E{Operator decision}
+  E -->|Approve| F[Begin execution]
 ```
 
-This renders a text DAG and a Mermaid source block for debugging the same plan shown in Telegram.
+Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `moltbot goal detail <run_id>`.
 
 ## Worker backends
 
