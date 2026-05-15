@@ -329,3 +329,72 @@ Searched-area status:
 - Relevance: low
 - Key excerpts:
   - `templates/scout_prompt_template.md:93`: "Risk: 1 = safe isolated change, 3 = touches shared code, 5 = changes critical paths or public APIs"
+
+## Git-history hits
+
+Commands run:
+
+- `git log --all --diff-filter=D --name-only --pretty=format:'commit %H %s'`
+- `git log --all --name-status --pretty=format:'commit %H %s' -- '*goal*' '*smithers*' '*README*' 'docs/**'`
+- `git show f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`
+- `git show 5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`
+- `git show 5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`
+- `git log --all --format='%H %s' -S'moltbot-goal' -- README.md docs RELEASE_AUDIT smithersbot_marketing openclaw-starter-kit skills templates`
+- `git log --all --format='%H %s' -S'SmithersBot' -- README.md docs RELEASE_AUDIT smithersbot_marketing openclaw-starter-kit skills templates`
+- `git log --all --format='%H %s' -S'/new_goal' -- README.md docs RELEASE_AUDIT smithersbot_marketing openclaw-starter-kit skills templates`
+- `git log --all --format='%H %s' -S'Repo Chat' -- README.md docs RELEASE_AUDIT smithersbot_marketing openclaw-starter-kit skills templates`
+
+### `f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`
+
+- Git ref: `f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`
+- Title/heading: `Customer Guide`
+- Summary: Deleted customer-facing SmithersBot guide for using the Telegram bot, starting goals with `/new_goal`, approving/editing plans, tracking goal status, handling blocked tasks, and using repo chat for questions about runs and failures. This is the strongest recovered historical public-product doc because it describes the goal system as an end-user experience instead of an internal architecture.
+- Mine vs upstream: definitely mine. The file names SmithersBot directly, was deleted by `docs(surface): rewrite README, install docs, issue templates for Telegram-only v0; delete customer-guide`, and describes `/new_goal`, goal approval, blocked goal tasks, and repo chat behavior that are absent from upstream Moltbot positioning.
+- Relevance: high
+- Key excerpts:
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "This guide shows you how to use SmithersBot in Telegram."
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "Use the `/new_goal` command in your chat with the bot."
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "After you give your bot a `/new_goal` command it will create a plan for you to approve."
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "Once the goal plan is approved, it executes its tasks in its optimal time saving order."
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "If a task gets blocked, it will send you a message and continue to try and complete other tasks that aren't dependant on blocked tasks."
+  - `git:f26ab617637795670978cbe465b4891fde27b969^:docs/customer-guide.md`: "If you have a question you'd like to ask but you don't want to change anything use repo chat."
+
+### `5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`
+
+- Git ref: `5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`
+- Title/heading: `Customer Guide`
+- Summary: Earlier, shorter SmithersBot customer guide added by `claw: customer-docs`. It covers Telegram setup, `/new_goal`, plain-language task examples, `/goal_status`, and a basic restart/support path.
+- Mine vs upstream: definitely mine. The commit added `docs/customer-guide.md` and `docs/setup-call-checklist.md` together as customer docs, and the content is SmithersBot-specific.
+- Relevance: high
+- Key excerpts:
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`: "Simple guide for customers using SmithersBot in Telegram"
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`: "Use the `/new_goal` command in your chat with the bot."
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`: "Tip: write tasks in plain language."
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/customer-guide.md`: "Use `/goal_status` in the same chat."
+
+### `5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`
+
+- Git ref: `5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`
+- Title/heading: `Setup Call Checklist`
+- Summary: Operator-facing checklist for a 30-minute SmithersBot customer setup call. It confirms the intended early product shape: Telegram bot onboarding, Claude login, non-interactive Moltbot onboarding, doctor customer checks, and teaching `/new_goal` plus `/goal_status`.
+- Mine vs upstream: definitely mine. It was added in the same `claw: customer-docs` commit as the SmithersBot customer guide and is specific to onboarding customers onto SmithersBot.
+- Relevance: medium
+- Key excerpts:
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`: "Operator checklist for a 30 minute customer setup call"
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`: "Create or get Telegram bot token using `@BotFather`."
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`: "Run non interactive onboarding with Telegram token."
+  - `git:5913f848f59b57a8c76a376136f5dea866b56098:docs/setup-call-checklist.md`: "Customer knows `/new_goal` and `/goal_status`"
+
+### Deleted upstream docs in `f26ab617637795670978cbe465b4891fde27b969`
+
+- Git ref: `f26ab617637795670978cbe465b4891fde27b969` deleted many `docs/**` files; examples include `docs/concepts/session-tool.md`, `docs/concepts/memory.md`, `docs/multi-agent-sandbox-tools.md`, and the existing goal-analysis docs also present in the working-tree audit.
+- Title/heading: mixed upstream Moltbot/OpenClaw docs and local goal-analysis docs
+- Summary: The diff-filter search confirmed a broad documentation deletion at the same time as the public-surface rewrite. Most deleted docs were inherited Moltbot/OpenClaw docs, while the local goal docs had already been captured in the working-tree section above and are not additional recovered content.
+- Mine vs upstream: mixed. The mass-deleted docs are mostly upstream or upstream-adjacent; the goal-analysis docs are mine but already exist in current working-tree audit evidence.
+- Relevance: low for additional product definition; useful as search coverage evidence
+- Key excerpts:
+  - `git:f26ab617637795670978cbe465b4891fde27b969`: `D docs/concepts/session-tool.md`
+  - `git:f26ab617637795670978cbe465b4891fde27b969`: `D docs/concepts/memory.md`
+  - `git:f26ab617637795670978cbe465b4891fde27b969`: `D docs/multi-agent-sandbox-tools.md`
+  - `git:f26ab617637795670978cbe465b4891fde27b969`: `D docs/goal-issues-analysis.md`
+  - `git:f26ab617637795670978cbe465b4891fde27b969`: `D docs/goal-simplification-phase1.md`
