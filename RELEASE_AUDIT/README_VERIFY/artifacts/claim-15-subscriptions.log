@@ -1,0 +1,109 @@
+CLAIM 15 — Local Claude Code / Codex CLI workers
+
+Scope of inspection (static only): src/goal/cli-worker.ts,
+src/goal/cli-runner.ts, src/goal/backend-types.ts,
+src/goal/backend-availability.ts, src/goal/claude-code-env.ts,
+src/config/types.goal.ts.
+
+What the code actually does
+============================
+
+A. The supported backends are the local Codex CLI and the local Claude Code
+   CLI; no in-process model API call is used to drive a worker step.
+
+   - src/goal/backend-types.ts:7-10 — `export const SUPPORTED_BACKEND_IDS =
+     ["codex", "claude_code"] as const;` (only these two values are accepted
+     anywhere downstream; full file establishes the GoalBackendId union and
+     transport contract).
+   - src/goal/backend-availability.ts:114-148 — `probeBackend` shells out to
+     `codex --version` / `claude --version` (or equivalent) and records
+     whether each CLI is installed on PATH before a worker is dispatched.
+
+B. The worker invocation is a real subprocess against the local CLI binary.
+
+   - src/goal/cli-worker.ts:183 — `const command = backend === "codex"
+     ? "codex" : "claude";` (used by the repair pass).
+   - src/goal/cli-worker.ts:288 — same selection in the main attempt path:
+     `const command = backend === "codex" ? "codex" : "claude";`
+   - src/goal/cli-worker.ts:327-336 — `runCliProcess({ command, args, cwd:
+     workingDir, ..., env: workerEnv })` runs the chosen CLI; stdout and
+     stderr stream to per-attempt files inside the run's worker directory.
+   - src/goal/cli-worker.ts:782-799 — Codex arg builder spawns
+     `codex [--ask-for-approval never] exec --json --sandbox workspace-write
+     --cd <workingDir> -c net.allowed=true [--model <id>] <prompt>`.
+   - src/goal/cli-worker.ts:802-816 — Claude Code arg builder spawns
+     `claude -p --verbose --output-format stream-json --allowedTools <list>
+     --append-system-prompt <denies+context> [--model <id>] <prompt>`.
+
+C. Claude Code is wired for *subscription* auth by default — credential env
+   vars are scrubbed so the Claude Code CLI uses its own configured auth.
+
+   - src/config/types.goal.ts:1 — `export type ClaudeCodeAuthMode =
+     "subscription" | "api_key";`
+   - src/goal/cli-worker.ts:230 — `claudeCodeAuth = "subscription"` is the
+     default when `executeTaskWithCliWorker` is called without an explicit
+     mode.
+   - src/goal/cli-worker.ts:249-250 — `const workerEnv = buildGoalWorkerEnv(
+     backend, claudeCodeAuth);` and `if (backend === "claude_code")
+     writeAuthModeArtifact(workerDir, claudeCodeAuth);` — the resolved auth
+     mode is persisted to `auth_mode.txt` in the worker dir for audit.
+   - src/goal/claude-code-env.ts:7-11 — `AUTH_KEYS_TO_STRIP = [
+     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY_OLD" ]`.
+   - src/goal/claude-code-env.ts:54-67 — `buildClaudeCodeEnv("subscription")`
+     deletes those keys from the env before spawning `claude`, so the CLI
+     falls back to its own subscription-based login. (`"api_key"` mode
+     passes the gateway's ANTHROPIC_API_KEY through.)
+
+D. The harness does not embed an Anthropic/OpenAI SDK call to do the worker
+   step itself — every worker call goes through the locally installed CLI
+   binary. The Node code only handles prompt assembly, subprocess
+   management, log capture, and result-JSON parsing.
+
+Path:line citation summary (>=2)
+=================================
+- src/goal/backend-types.ts:7-10        (only `codex` and `claude_code`
+                                         are valid backend ids)
+- src/goal/cli-worker.ts:183, 288       (`command = backend === "codex"
+                                         ? "codex" : "claude"`)
+- src/goal/cli-worker.ts:327-336        (real spawn via runCliProcess)
+- src/goal/cli-worker.ts:782-816        (concrete `codex exec ...` and
+                                         `claude -p ...` arg lists)
+- src/goal/cli-worker.ts:249-250        (workerEnv built per auth mode +
+                                         auth_mode.txt artifact)
+- src/goal/claude-code-env.ts:7-11, 54-67 (subscription mode strips
+                                           ANTHROPIC_* env vars)
+- src/goal/backend-availability.ts:114-148 (PATH-based probing of both
+                                            CLIs at run dispatch)
+
+Safe README wording
+===================
+- "Each worker step is executed by a locally installed CLI — Codex
+  (`codex exec ...`) or Claude Code (`claude -p ...`). Moltbot uses local
+  CLI backends; it does not call a model API directly to drive worker
+  steps."
+- "Claude Code workers run in subscription auth mode by default: the
+  harness strips `ANTHROPIC_API_KEY`-class environment variables from the
+  worker process so the Claude Code CLI uses whatever credentials it has
+  been configured with."
+- "Whether each CLI is available is probed at run dispatch; if a backend
+  is not installed on PATH, the run falls back to whichever backend is."
+
+Unsafe wording to avoid
+=======================
+- "Free Claude / unlimited Codex." (No claim of free or unlimited use —
+  the harness only delegates to whatever subscription/billing the
+  installed CLI itself has.)
+- "Bring-your-own API key required." (Subscription mode does not require
+  an API key for the worker.)
+- "Moltbot ships its own model runtime." (It does not — it shells out to
+  the local CLIs.)
+- "Works without the Codex or Claude Code CLI installed." (The probe
+  fails closed: an uninstalled CLI is reported unavailable.)
+
+STATUS: verified
+REASON: Both worker backends are real subprocess invocations of the
+locally installed `codex` and `claude` binaries (cli-worker.ts:183, 288,
+327-336, 782-816). Claude Code defaults to subscription auth and the
+harness strips Anthropic credential env vars so the CLI uses its own
+login (claude-code-env.ts:54-67). Safe README wording is "uses local CLI
+backends"; do not promise free or unlimited usage.
