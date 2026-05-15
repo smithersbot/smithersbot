@@ -1,6 +1,6 @@
 # SmithersBot README Verification Log
 
-One section per claim (1..18). Each section records the commands run, exit codes, key output lines, skipped checks, the reason for the final status, and a cross-reference to both the per-claim artifact and the matching section of `_evidence/code-survey.md`.
+One section per claim (1..20). Each section records the commands run, exit codes, key output lines, skipped checks, the reason for the final status, and a cross-reference to both the per-claim artifact and the matching section of `_evidence/code-survey.md`. Sections 19 and 20 (repo chat and Telegram goal UX) were added in a follow-on extension.
 
 Status vocabulary: `{verified, partial, unverified, roadmap, manual-required}`.
 
@@ -279,4 +279,49 @@ Status vocabulary: `{verified, partial, unverified, roadmap, manual-required}`.
 
 ---
 
-Sources: `RELEASE_AUDIT/README_VERIFY/artifacts/INDEX.md`, `RELEASE_AUDIT/README_VERIFY/_evidence/code-survey.md`, and `RELEASE_AUDIT/README_VERIFY/artifacts/claim-01..18-*.log`.
+## Claim 19 - Repo chat / read-only question mode
+
+- **Commands run**
+  - `MOLTBOT_STATE_DIR=$PWD/RELEASE_AUDIT/README_VERIFY/_state node scripts/run-node.mjs --help` — exit `0`. Top-level subcommand inventory inspected (head -40 + tail -50). No `chat`, `repo_chat`, `ask`, `question`, or `inspect` subcommand is present on the CLI surface.
+- **Key code evidence**
+  - **Entrypoint (Telegram only)** — `src/telegram/repo-chat-commands.ts:36-42` declares the command spec (`/repo_chat`: "Ask a repository question (read-only)."; `/chat_backend`: "Set repo chat backend: codex, claude_code, or off."). `:401` registers `bot.command(["repo_chat", "rc"], …)`. `:475-516` registers `/chat_backend` and persists the per-account backend via `writeConfigFile`.
+  - **Free-text + reply routing into repo chat** — `src/telegram/bot-handlers.ts:228-233` (`shouldRouteTelegramTextToRepoChat`: when a backend is configured and the message is not a reply, plain text routes to repo chat) and `:458-475` (replies to prior repo-chat messages resume the same session).
+  - **Worker behaviour** — `src/repo-chat/repo-chat-worker.ts:23-47` launches Claude Code with `--allowedTools CLAUDE_ALLOWED_TOOLS_READ_ONLY` and `--append-system-prompt CLAUDE_APPENDED_PROMPT`; `:49-93` launches Codex with `exec … --sandbox workspace-write --skip-git-repo-check --cd <workingDir>`.
+  - **Read-only allow-list (Claude Code)** — `src/goal/claude-code-constants.ts:1-4` defines `CLAUDE_ALLOWED_TOOLS_READ_ONLY = "Read,Glob,Grep,Bash"` (Write excluded) and the literal `CLAUDE_READ_ONLY_PROMPT`. **Note: `Bash` is in the read-only allow-list, so the model can run shell commands; only `Write` is excluded.** Codex runs `--sandbox workspace-write`, so on the Codex path the read-only-ness rests on the prompt, not on tool restriction.
+  - **Context shipped to both backends** — `src/repo-chat/repo-chat-context.ts:1-50` (Moltbot project context embedded as a string; mirrors `src/repo-chat/repo-chat-context/CLAUDE.md` and `AGENTS.md`).
+  - **Backend configurability** — `src/config/types.telegram.ts:78` (`repoChatBackend?: "codex" | "claude_code" | null`) and `src/config/zod-schema.providers-core.ts:99` (Zod enum validation). The operator changes it at runtime with `/chat_backend codex` / `/chat_backend claude_code` / `/chat_backend off`.
+  - **Session continuity** — `src/repo-chat/types.ts:5-27` (`RepoChatSession` with Telegram `messageRefs` + CLI `cliSessionId`); `src/repo-chat/repo-chat-store.ts` (`saveRepoChatSession`, `findRepoChatSessionByMessageId`); resume uses `--resume <session-id>` on Claude Code and `exec resume <thread-id>` on Codex (`repo-chat-worker.ts:42-44` and `:56-66`).
+  - **Tests** — `src/telegram/repo-chat-commands.test.ts`, `src/telegram/bot-handlers.repo-chat-routing.test.ts`, `src/repo-chat/repo-chat-worker.test.ts`, `src/repo-chat/repo-chat-store.test.ts`.
+- **Skipped checks** — No live Telegram message was sent (out of scope for this read-only audit; a live round trip would require a running bot + chat). Did not fuzz-test the read-only guarantee; classification rests on the Claude Code allow-list (Write excluded) and on prompt compliance for Codex.
+- **Status reason** — Code path is real, well-factored, and unit-tested; backend configurability is cited to concrete code paths. The CLI surface contains no chat-like subcommand, so the runtime live path is Telegram-only and **manual-required** for end-to-end. Read-only-ness is **partial**: Claude Code excludes Write but allows Bash; Codex runs `--sandbox workspace-write` and relies on prompt compliance. Overall claim: **partial**.
+- **Cross-references** — `artifacts/claim-19-repo-chat.log`; `_evidence/code-survey.md` → "Claim 19 - Repo chat / read-only question mode".
+
+---
+
+## Claim 20 - Telegram goal UX (inline buttons, reply edits, blocked answers, feedback follow-ups)
+
+- **Commands run** — None (static inspection only; live Telegram round-trip is out of scope).
+- **Key code evidence**
+  - **Inline plan buttons** — `src/telegram/goal-sending.ts:118-123` attaches four buttons to the plan message: ❤️ Approve (`callback_data: "ga:<runIdPrefix>:<revision>"`), 🔍 Plan Detail (`gD:`), ✏️ Request changes (`ge:`), 👎 Reject (`gr:`).
+  - **Callback dispatch** — `src/telegram/goal-commands.ts:1479-1483` (`bot.on("callback_query:data", …)`, regex `^(ga|gD|gr|ge):([a-f0-9-]+):(\d+)$`); `:1499-1517` reacts on the plan message with ❤ / 👀 / 👎 / ✍; `:1520-1562` `ge` action sends a ForceReply prompt and calls `persistEditPromptMessage`; `:1565-1599` resolves the run id and dispatches `ga` → `startGoalResume`, `gD` → `sendGoalDetailResponse`, `gr` → rejection reply.
+  - **Reply routing (`src/telegram/goal-router.ts:188-279`)** — documented precedence:
+    1. Empty text → CHAT_HELP.
+    2. Non-reply greeting → CHAT.
+    3. Reply to latest plan message → GOAL_EDIT (`:207-213`).
+    4. Reply to edit-prompt message → GOAL_EDIT (`:215-223`).
+    5. Reply to done message → GOAL_FEEDBACK (`:225-233`).
+    6. Reply to feedback-prompt message → GOAL_FEEDBACK (`:235-243`).
+    7. Reply to question message (blocked run) → GOAL_ANSWER (`:245-254` via `findRunByQuestionMessageId` at `:158-167`).
+    8. Reply to older plan revision → DISAMBIGUATE (`:256-262`).
+    9. Help intent → CHAT_HELP.
+    10. Default → CHAT (with optional blocked-run hint at `:271-278`).
+  - **Context-preservation primitives** — scoping by `(chatId, threadId)` at `src/telegram/goal-router.ts:190-194` (`filterRunsForChatThread`); per-run Telegram message tables on the run record: `telegramPlanMessage`, `telegramEditPromptMessages`, `telegramDoneMessage`, `telegramFeedbackPromptMessages`, `telegramQuestionMessages` (`src/goal/types.ts`).
+  - **Incorporate Feedback** — `src/telegram/goal-formatting.ts:328` adds the `🔄 Incorporate Feedback` button (`callback_data: "gIF:<runIdPrefix>"`); `src/telegram/goal-commands.ts` registers the callback and `src/telegram/goal-sending.ts:298` `persistFeedbackPromptMessage` binds the ForceReply id back to the run. `src/goal/feedback.ts:46-56` builds the revision instructions ("add only the additional fix/improvement steps needed") and `:62-101` `mergeRevisedPlanWithDoneSteps` preserves done steps when the revised plan is merged in.
+  - **Automated tests (handlers and router)** — `src/telegram/goal-commands.test.ts:4255` (`ge:` callback), `:4583` (`ga:` happy path), `:4593` (`ga:` run-not-found), `:4610` (`gr:`), `:4815` (`gD:`); `src/telegram/goal-router.test.ts:76` (plan reply → GOAL_EDIT), `:94` (edit-prompt reply → GOAL_EDIT), `:113` (feedback-prompt reply → GOAL_FEEDBACK), `:133` (done reply → GOAL_FEEDBACK), `:152` (wrong-chat scoping negative), `:416` (question reply → GOAL_ANSWER), `:469` (no-longer-blocked negative); `src/goal/feedback.test.ts` for revision and merge logic.
+- **Skipped checks** — No live Telegram message exchange (would require a live gateway + bot token, both out of scope). The Bot API surface (grammy `sendMessage`, `setMessageReaction`, `answerCallbackQuery`) was not network-mocked here; the unit tests stub `bot.api` and check arguments.
+- **Status reason** — Every sub-feature (inline buttons, plan-reply edit, edit-prompt reply, blocked-reply answer, chat/thread scoping, Incorporate Feedback follow-up steps) has its code path statically present and unit-tested at the router / handler / revision level. Per the brief's classification rule (live Telegram UX without an automated end-to-end test is never **verified**), the overall claim sits at **partial**.
+- **Cross-references** — `artifacts/claim-20-telegram-goal-ux.log`; `_evidence/code-survey.md` → "Claim 20 - Telegram goal UX (inline buttons, reply edits, blocked answers, feedback follow-ups)".
+
+---
+
+Sources: `RELEASE_AUDIT/README_VERIFY/artifacts/INDEX.md`, `RELEASE_AUDIT/README_VERIFY/_evidence/code-survey.md`, and `RELEASE_AUDIT/README_VERIFY/artifacts/claim-01..20-*.log`.

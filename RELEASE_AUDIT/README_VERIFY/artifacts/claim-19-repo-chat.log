@@ -1,0 +1,255 @@
+Claim 19 — Repo chat / read-only question mode
+==============================================
+
+Goal: locate the user-facing entrypoint for repo chat / read-only
+question mode; determine which channel surfaces it, whether it is
+genuinely read-only, what it can inspect, and whether the worker
+backend (Codex vs Claude Code) is operator-configurable.
+
+Method: static inspection (Grep + Read) plus one safe runtime check
+of the top-level CLI help.
+
+Commands run
+------------
+
+1. MOLTBOT_STATE_DIR=$PWD/RELEASE_AUDIT/README_VERIFY/_state \
+     node scripts/run-node.mjs --help
+   exit 0.
+   Subcommand list inspected end to end (head -40 + tail -50).
+   Result: top-level subcommand inventory contains:
+     setup, onboard, configure, config, doctor, dashboard, reset,
+     uninstall, message, memory, agent, agents, acp, gateway, daemon,
+     logs, system, models, approvals, nodes, devices, node, sandbox,
+     gstack, tui, cron, dns, docs, hooks, webhooks, pairing, plugins,
+     channels, directory, security, skills, update, status, health,
+     sessions, browser, goal, help.
+   No `chat`, `repo_chat`, `ask`, `question`, `inspect`, or similar
+   read-only repo-chat subcommand is present on the CLI surface.
+
+Code evidence
+-------------
+
+1. Telegram command spec — `/repo_chat` (and `/rc` alias) is the
+   user-facing entrypoint.
+   src/telegram/repo-chat-commands.ts:36-42
+
+       export const REPO_CHAT_COMMAND_SPECS: Array<{ command: string; description: string }> = [
+         { command: "repo_chat", description: "Ask a repository question (read-only)." },
+         {
+           command: "chat_backend",
+           description: "Set repo chat backend: codex, claude_code, or off.",
+         },
+       ];
+
+   Note: command description is explicitly "(read-only)".
+
+2. Command registration (handler entry, with `rc` alias).
+   src/telegram/repo-chat-commands.ts:401
+
+       bot.command(["repo_chat", "rc"], async (ctx: TelegramRepoChatCommandContext) => {
+
+3. Free-text routing path: in DMs/topics where a backend is configured,
+   non-command + non-reply text routes to repo chat too.
+   src/telegram/bot-handlers.ts:228-233
+
+       export function shouldRouteTelegramTextToRepoChat(params: {
+         repoChatBackend: "codex" | "claude_code" | null | undefined;
+         replyToMessageId?: number;
+       }): boolean {
+         return isRepoChatBackendEnabled(params.repoChatBackend) && params.replyToMessageId == null;
+       }
+
+   Reply-routing also dispatches to repo chat when the reply targets a
+   prior repo-chat message (src/telegram/bot-handlers.ts:458-475).
+
+4. Worker entrypoint and read-only enforcement (Claude Code).
+   src/repo-chat/repo-chat-worker.ts:8-17
+
+       import {
+         CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+         CLAUDE_READ_ONLY_PROMPT,
+       } from "../goal/claude-code-constants.js";
+       ...
+       const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
+
+   src/repo-chat/repo-chat-worker.ts:23-47
+
+       export function buildClaudeRepoChatArgs(params: ... ): string[] {
+         const args = [
+           "-p",
+           "--output-format", "json",
+           "--verbose",
+           "--allowedTools",
+           CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+           "--append-system-prompt",
+           CLAUDE_APPENDED_PROMPT,
+         ];
+         ...
+
+   The Claude Code worker is launched with `--allowedTools` restricted
+   to `CLAUDE_ALLOWED_TOOLS_READ_ONLY` and a system prompt that says
+   "READ-ONLY. Do NOT create, modify, or delete any files."
+
+5. The read-only tool allow-list (and the literal prompt string).
+   src/goal/claude-code-constants.ts:1-4
+
+       export const CLAUDE_ALLOWED_TOOLS_READ_ONLY = "Read,Glob,Grep,Bash";
+       export const CLAUDE_ALLOWED_TOOLS_WRITE = "Read,Glob,Grep,Bash,Write";
+       export const CLAUDE_READ_ONLY_PROMPT =
+         "This is READ-ONLY. Do NOT create, modify, or delete any files.";
+
+   IMPORTANT: `Bash` IS in the read-only allow-list (so the LLM can run
+   shell commands like `cat`, `ls`, `git log`, etc.). `Write` is NOT in
+   the list. Read-only-ness is enforced by (a) excluding the `Write`
+   tool from `--allowedTools` and (b) a prompt instruction. There is no
+   capability-level deny on, e.g., `bash -c "rm -rf …"` for the repo
+   chat worker — the goal-system hard-deny scanner is wired into the
+   goal worker tool surface (`src/goal/capability-enforcement.ts`),
+   not into the repo-chat Claude Code subprocess. So the surface is
+   "tool-restricted, not sandboxed" — Bash exposure is real and limited
+   only by the LLM following the prompt and by the absence of `Write`.
+
+6. Codex backend path (codex `exec`/`exec resume`).
+   src/repo-chat/repo-chat-worker.ts:49-93
+
+       export function buildCodexRepoChatArgs(params: { ... }): string[] {
+         if (params.cliSessionId) {
+           const args = ["exec", "resume", params.cliSessionId, "--json", "--skip-git-repo-check"];
+           ...
+         }
+         const args = [
+           ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
+           "exec",
+           ...(askForApprovalPlacement === "after_exec" ? ["--ask-for-approval", "never"] : []),
+           "--json",
+           "--color", "never",
+           "--sandbox", "workspace-write",
+           "--skip-git-repo-check",
+           "--cd", params.workingDir,
+         ];
+         ...
+       }
+
+   The Codex form uses `--sandbox workspace-write`, NOT a read-only
+   sandbox. The read-only-ness for Codex is enforced only by the
+   prepended prompt instructions (`REPO_CHAT_CONTEXT` and
+   `CODEX_STYLE_DIRECTIVE`). The prompt says "read-only" but the
+   sandbox would technically allow writes inside the working
+   directory.
+
+7. Read-only system prompt and Moltbot project context shipped to both
+   backends.
+   src/repo-chat/repo-chat-context.ts:1-50
+
+       // Repo-chat context for read-only code assistant sessions.
+       ...
+       "You are a read-only code assistant running inside the Moltbot
+        gateway. Your job is to answer questions about the codebase
+        accurately and thoroughly. You must NOT create, modify, or delete any files."
+
+   Includes a per-directory `src/repo-chat/repo-chat-context/CLAUDE.md`
+   and an `AGENTS.md` shadow so context is shipped explicitly rather
+   than relying on workspace discovery.
+
+8. Backend configurability (operator can pick codex / claude_code / off
+   at runtime).
+   src/config/types.telegram.ts:78
+
+       repoChatBackend?: "codex" | "claude_code" | null;
+
+   src/config/zod-schema.providers-core.ts:99
+
+       repoChatBackend: z.enum(["codex", "claude_code"]).nullable().optional(),
+
+   src/telegram/repo-chat-commands.ts:475-516 — `/chat_backend
+   <codex|claude_code|off>` command writes the setting back to disk
+   via writeConfigFile.
+
+9. Default-disabled posture.
+   src/telegram/repo-chat-commands.ts:46-47
+
+       const REPO_CHAT_DISABLED_MESSAGE =
+         "Repo chat is disabled. Enable it with /chat_backend codex or /chat_backend claude_code.";
+
+   Repo chat is opt-in per Telegram account.
+
+10. Session continuity (Telegram-reply-driven multi-turn).
+    src/repo-chat/repo-chat-store.ts (functions saveRepoChatSession,
+    findRepoChatSessionByMessageId) and the message-ref tracking in
+    src/repo-chat/types.ts:5-27 wire each conversation's CLI session id
+    (`--resume <session-id>` for Claude, `exec resume <thread-id>` for
+    Codex) to the Telegram message ids that compose the thread.
+
+11. Automated tests (handler + routing + worker behaviors).
+    src/telegram/repo-chat-commands.test.ts — handler tests.
+    src/telegram/bot-handlers.repo-chat-routing.test.ts — text routing
+       to repo chat.
+    src/repo-chat/repo-chat-worker.test.ts — worker behaviors
+       (response-file handling, repair pass, placeholder rejection).
+    src/repo-chat/repo-chat-store.test.ts — session persistence.
+
+What the worker can inspect
+---------------------------
+
+The repo chat worker is launched with `cwd = workingDir` (defaulting to
+`path.resolve(process.cwd())` for fresh sessions:
+src/telegram/repo-chat-commands.ts:327). So:
+
+  * It can read everything under the gateway's working directory —
+    typically the cloned source repo. With `Bash` in the allow-list, it
+    can also run safe shell commands (`cat`, `git log`, `ls`).
+  * It is NOT explicitly wired to inspect goal/run state under
+    `~/.moltbot/goals/<runId>/`, worker outputs, attempt bundles, or
+    journals. Nothing in `src/repo-chat/` references the goals state
+    directory; the system prompt does not mention it either. A user
+    *could* ask the bot to `cat ~/.moltbot/goals/...` and it might
+    comply (subject to Bash file-system reach), but this is not a
+    deliberate, documented surface.
+
+Skipped checks
+--------------
+
+  * No live Telegram round trip was attempted (no bot token / chat
+    available to this worker, and Telegram sends are out of scope for
+    this read-only audit).
+  * Claim that "repo chat is genuinely read-only" was NOT separately
+    fuzz-tested; the verdict relies on the Claude Code
+    `--allowedTools` list (Write excluded) and the prompt instruction.
+    The Codex sandbox is `workspace-write`, so for Codex the read-only
+    guarantee rests on prompt compliance, not on tool restriction.
+
+Safe README wording (drawn from code, not aspirational)
+-------------------------------------------------------
+
+  * "Telegram-only: send `/repo_chat <question>` (alias `/rc`) to ask
+    a question about the repo. Replies to the bot continue the same
+    session."
+  * "The backend is configurable to use Codex or Claude Code; switch
+    with `/chat_backend codex` or `/chat_backend claude_code`."
+  * "Repo chat is opt-in; until `/chat_backend` is set, the command is
+    disabled."
+
+Unsafe wording to avoid
+-----------------------
+
+  * "CLI command `moltbot chat …`" — no such CLI subcommand exists.
+  * "Repo chat is sandboxed and cannot run shell commands" — the
+    Claude Code allow-list explicitly includes `Bash`, and Codex
+    runs with `--sandbox workspace-write`.
+  * "Repo chat can introspect goal runs and worker artifacts under
+    `~/.moltbot/goals/`" — no explicit code path wires this in; only
+    the cwd-relative repo is the documented surface.
+  * "Free / unlimited repo chat" — repo chat reuses the same Codex /
+    Claude Code CLI subscriptions as the goal workers; no free tier
+    is promised.
+
+STATUS: partial
+REASON: code path is real, well-factored, and unit-tested; backend
+configurability is cited to a concrete code path
+(src/config/types.telegram.ts:78 + src/telegram/repo-chat-commands.ts:475+).
+Runtime presence on the CLI surface is absent (`moltbot --help` shows
+no chat-like subcommand), so the live round-trip is Telegram-only and
+manual-required. Read-only-ness is partial: Write is excluded from the
+Claude Code allow-list but Bash is allowed and Codex runs with a
+`workspace-write` sandbox; read-only-ness depends on prompt
+compliance, not on capability enforcement.
