@@ -3,7 +3,7 @@
 # Run via cron or systemd timer to get proactive notifications
 # before Claude Code auth expires.
 #
-# Suggested cron: */30 * * * * /home/admin/moltbot/scripts/auth-monitor.sh
+# Suggested cron: */30 * * * * ~/moltbot/scripts/auth-monitor.sh
 #
 # Environment variables:
 #   NOTIFY_PHONE - Phone number to send Moltbot notification (e.g., +1234567890)
@@ -78,7 +78,7 @@ HOURS_LEFT=$((DIFF_MS / 3600000))
 MINS_LEFT=$(((DIFF_MS % 3600000) / 60000))
 
 if [ "$DIFF_MS" -lt 0 ]; then
-    send_notification "Claude Code auth EXPIRED! Moltbot is down. Run: ssh l36 '~/moltbot/scripts/mobile-reauth.sh'" "urgent"
+    send_notification "Claude Code auth EXPIRED! Moltbot is down. Run: ssh user@gateway-host '~/moltbot/scripts/mobile-reauth.sh'" "urgent"
     exit 1
 elif [ "$HOURS_LEFT" -lt "$WARN_HOURS" ]; then
     send_notification "Claude Code auth expires in ${HOURS_LEFT}h ${MINS_LEFT}m. Consider re-auth soon." "high"

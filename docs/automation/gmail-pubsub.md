@@ -95,7 +95,7 @@ Use the Moltbot helper to wire everything together (installs deps on macOS via b
 
 ```bash
 moltbot webhooks gmail setup \
-  --account moltbot@gmail.com
+  --account user@example.com
 ```
 
 Defaults:
@@ -164,7 +164,7 @@ gcloud pubsub topics add-iam-policy-binding gog-gmail-watch \
 
 ```bash
 gog gmail watch start \
-  --account moltbot@gmail.com \
+  --account user@example.com \
   --label INBOX \
   --topic projects/<project-id>/topics/gog-gmail-watch
 ```
@@ -177,7 +177,7 @@ Local example (shared token auth):
 
 ```bash
 gog gmail watch serve \
-  --account moltbot@gmail.com \
+  --account user@example.com \
   --bind 127.0.0.1 \
   --port 8788 \
   --path /gmail-pubsub \
@@ -224,8 +224,8 @@ Send a message to the watched inbox:
 
 ```bash
 gog gmail send \
-  --account moltbot@gmail.com \
-  --to moltbot@gmail.com \
+  --account user@example.com \
+  --to user@example.com \
   --subject "watch test" \
   --body "ping"
 ```
@@ -233,8 +233,8 @@ gog gmail send \
 Check watch state and history:
 
 ```bash
-gog gmail watch status --account moltbot@gmail.com
-gog gmail history --account moltbot@gmail.com --since <historyId>
+gog gmail watch status --account user@example.com
+gog gmail history --account user@example.com --since <historyId>
 ```
 
 ## Troubleshooting
@@ -246,7 +246,7 @@ gog gmail history --account moltbot@gmail.com --since <historyId>
 ## Cleanup
 
 ```bash
-gog gmail watch stop --account moltbot@gmail.com
+gog gmail watch stop --account user@example.com
 gcloud pubsub subscriptions delete gog-gmail-watch-push
 gcloud pubsub topics delete gog-gmail-watch
 ```
