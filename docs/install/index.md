@@ -1,30 +1,29 @@
 ---
-summary: "Install Moltbot (recommended installer, global install, or from source)"
+summary: "Install SmithersBot from source"
 read_when:
-  - Installing Moltbot
+  - Installing SmithersBot
   - You want to install from GitHub
 ---
 
 # Install
 
-Use the installer unless you have a reason not to. It sets up the CLI and runs onboarding.
+SmithersBot v0 is installed from a source checkout. Hosted installer scripts and npm release packaging are deferred until a later public release stage.
 
-## Quick install (recommended)
+## Quick install from source
 
 ```bash
-curl -fsSL https://molt.bot/install.sh | bash
-```
-
-Windows (PowerShell):
-
-```powershell
-iwr -useb https://molt.bot/install.ps1 | iex
+git clone https://github.com/smithersbot/smithersbot.git
+cd smithersbot
+pnpm install
+pnpm ui:build
+pnpm build
+pnpm moltbot onboard --install-daemon
 ```
 
 Next step (if you skipped onboarding):
 
 ```bash
-moltbot onboard --install-daemon
+pnpm moltbot onboard --install-daemon
 ```
 
 ## System requirements
@@ -35,65 +34,44 @@ moltbot onboard --install-daemon
 
 ## Choose your install path
 
-### 1) Installer script (recommended)
-
-Installs `moltbot` globally via npm and runs onboarding.
+### 1) Source checkout
 
 ```bash
-curl -fsSL https://molt.bot/install.sh | bash
+git clone https://github.com/smithersbot/smithersbot.git
+cd smithersbot
+pnpm install
+pnpm ui:build
+pnpm build
 ```
 
-Installer flags:
+Run commands from the checkout:
 
 ```bash
-curl -fsSL https://molt.bot/install.sh | bash -s -- --help
+pnpm moltbot status
+pnpm moltbot health
 ```
 
 Details: [Installer internals](/install/installer).
 
-Non-interactive (skip onboarding):
+### 2) Update an existing checkout
 
 ```bash
-curl -fsSL https://molt.bot/install.sh | bash -s -- --no-onboard
-```
-
-### 2) Global install (manual)
-
-If you already have Node:
-
-```bash
-npm install -g moltbot@latest
-```
-
-If you have libvips installed globally (common on macOS via Homebrew) and `sharp` fails to install, force prebuilt binaries:
-
-```bash
-SHARP_IGNORE_GLOBAL_LIBVIPS=1 npm install -g moltbot@latest
-```
-
-If you see `sharp: Please add node-gyp to your dependencies`, either install build tooling (macOS: Xcode CLT + `npm install -g node-gyp`) or use the `SHARP_IGNORE_GLOBAL_LIBVIPS=1` workaround above to skip the native build.
-
-Or:
-
-```bash
-pnpm add -g moltbot@latest
-```
-
-Then:
-
-```bash
-moltbot onboard --install-daemon
+cd ~/smithersbot
+git pull --ff-only
+pnpm install
+pnpm ui:build
+pnpm build
 ```
 
 ### 3) From source (contributors/dev)
 
 ```bash
-git clone https://github.com/moltbot/moltbot.git
-cd moltbot
+git clone https://github.com/smithersbot/smithersbot.git
+cd smithersbot
 pnpm install
 pnpm ui:build # auto-installs UI deps on first run
 pnpm build
-moltbot onboard --install-daemon
+pnpm moltbot onboard --install-daemon
 ```
 
 Tip: if you don’t have a global install yet, run repo commands via `pnpm moltbot ...`.
@@ -107,72 +85,10 @@ Tip: if you don’t have a global install yet, run repo commands via `pnpm moltb
 
 ## After install
 
-- Run onboarding: `moltbot onboard --install-daemon`
-- Quick check: `moltbot doctor`
-- Check gateway health: `moltbot status` + `moltbot health`
-- Open the dashboard: `moltbot dashboard`
-
-## Install method: npm vs git (installer)
-
-The installer supports two methods:
-
-- `npm` (default): `npm install -g moltbot@latest`
-- `git`: clone/build from GitHub and run from a source checkout
-
-### CLI flags
-
-```bash
-# Explicit npm
-curl -fsSL https://molt.bot/install.sh | bash -s -- --install-method npm
-
-# Install from GitHub (source checkout)
-curl -fsSL https://molt.bot/install.sh | bash -s -- --install-method git
-```
-
-Common flags:
-
-- `--install-method npm|git`
-- `--git-dir <path>` (default: `~/moltbot`)
-- `--no-git-update` (skip `git pull` when using an existing checkout)
-- `--no-prompt` (disable prompts; required in CI/automation)
-- `--dry-run` (print what would happen; make no changes)
-- `--no-onboard` (skip onboarding)
-
-### Environment variables
-
-Equivalent env vars (useful for automation):
-
-- `CLAWDBOT_INSTALL_METHOD=git|npm`
-- `CLAWDBOT_GIT_DIR=...`
-- `CLAWDBOT_GIT_UPDATE=0|1`
-- `CLAWDBOT_NO_PROMPT=1`
-- `CLAWDBOT_DRY_RUN=1`
-- `CLAWDBOT_NO_ONBOARD=1`
-- `SHARP_IGNORE_GLOBAL_LIBVIPS=0|1` (default: `1`; avoids `sharp` building against system libvips)
-
-## Troubleshooting: `moltbot` not found (PATH)
-
-Quick diagnosis:
-
-```bash
-node -v
-npm -v
-npm prefix -g
-echo "$PATH"
-```
-
-If `$(npm prefix -g)/bin` (macOS/Linux) or `$(npm prefix -g)` (Windows) is **not** present inside `echo "$PATH"`, your shell can’t find global npm binaries (including `moltbot`).
-
-Fix: add it to your shell startup file (zsh: `~/.zshrc`, bash: `~/.bashrc`):
-
-```bash
-# macOS / Linux
-export PATH="$(npm prefix -g)/bin:$PATH"
-```
-
-On Windows, add the output of `npm prefix -g` to your PATH.
-
-Then open a new terminal (or `rehash` in zsh / `hash -r` in bash).
+- Run onboarding: `pnpm moltbot onboard --install-daemon`
+- Quick check: `pnpm moltbot doctor`
+- Check gateway health: `pnpm moltbot status` + `pnpm moltbot health`
+- Open the dashboard: `pnpm moltbot dashboard`
 
 ## Update / uninstall
 

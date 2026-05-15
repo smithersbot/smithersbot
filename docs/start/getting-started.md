@@ -13,7 +13,7 @@ Fastest chat: open the Control UI (no channel setup needed). Run `moltbot dashbo
 and chat in the browser, or open `http://127.0.0.1:18789/` on the gateway host.
 Docs: [Dashboard](/web/dashboard) and [Control UI](/web/control-ui).
 
-Recommended path: use the **CLI onboarding wizard** (`moltbot onboard`). It sets up:
+Recommended path: use the **CLI onboarding wizard** (`pnpm moltbot onboard`). It sets up:
 - model/auth (OAuth recommended)
 - gateway settings
 - channels (WhatsApp/Telegram/Discord/Mattermost (plugin)/...)
@@ -52,34 +52,22 @@ run on host, set an explicit per-agent override:
 macOS: if you plan to build the apps, install Xcode / CLT. For the CLI + gateway only, Node is enough.
 Windows: use **WSL2** (Ubuntu recommended). WSL2 is strongly recommended; native Windows is untested, more problematic, and has poorer tool compatibility. Install WSL2 first, then run the Linux steps inside WSL. See [Windows (WSL2)](/platforms/windows).
 
-## 1) Install the CLI (recommended)
+## 1) Install from source
 
 ```bash
-curl -fsSL https://molt.bot/install.sh | bash
+git clone https://github.com/smithersbot/smithersbot.git
+cd smithersbot
+pnpm install
+pnpm ui:build
+pnpm build
 ```
 
-Installer options (install method, non-interactive, from GitHub): [Install](/install).
-
-Windows (PowerShell):
-
-```powershell
-iwr -useb https://molt.bot/install.ps1 | iex
-```
-
-Alternative (global install):
-
-```bash
-npm install -g moltbot@latest
-```
-
-```bash
-pnpm add -g moltbot@latest
-```
+Install details: [Install](/install).
 
 ## 2) Run the onboarding wizard (and install the service)
 
 ```bash
-moltbot onboard --install-daemon
+pnpm moltbot onboard --install-daemon
 ```
 
 What you’ll choose:
