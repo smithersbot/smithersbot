@@ -2,9 +2,9 @@
 
 A Telegram-controlled multi-agent goal execution harness for local coding and research work.
 
-SmithersBot turns a one-line goal into a structured plan, runs the plan as a DAG of local CLI workers (Codex or Claude Code), and persists every plan, prompt, attempt, journal note, and run state file to disk. You approve, reject, or revise plans from Telegram. Code-related steps are gated by your own build and test commands, scanned with Semgrep, run through a typed deny check on tool calls, and committed to a per-run recoverability checkpoint before each task. If a worker gets stuck, SmithersBot reverts to the pre-step checkpoint, records what failed, retries with new context, and escalates to you when the retry budget is spent.
+SmithersBot is built around one operator chat: Telegram. You send `/new_goal <description>`, review the plan as a flowchart, ask for detail or edits, and approve execution from inline Telegram controls.
 
-> CLI command rename to `smithersbot` is still being completed. The binary is published as `smithersbot`, but the executable's own help text and the verified examples below still use `moltbot` as the command name. Use whichever your local install resolves; the subcommand surface is the same.
+Under the hood, SmithersBot turns that operator-approved plan into a DAG of local Codex or Claude Code workers. It persists every plan, prompt, attempt, journal note, and run state file to disk; gates code changes with your own build and test commands; runs Semgrep at the configured cadence; and creates a local recoverability checkpoint before each task. The CLI exists as a supporting path for debugging, inspection, and automation, not as the intended day-to-day interface.
 
 ## Demo
 
@@ -12,15 +12,19 @@ Demo coming soon.
 
 ## Quick start
 
-Create a goal from the CLI and hold the plan for approval:
+Start with Telegram. Send this to your configured SmithersBot chat:
+
+`/new_goal <description>`
+
+SmithersBot drafts the plan, runs the planner review loop, and sends the flowchart back to Telegram for approval. From there you can inspect the plan, request edits, ask repo-context questions, reject it, or approve it to run.
+
+For debugging or automation, the CLI can start the same planning path and hold it for approval:
 
 ```bash
 moltbot goal "<task>" --plan-only
 ```
 
-The plan is persisted on disk and held for approval. Set `MOLTBOT_STATE_DIR` to redirect goal state to any directory.
-
-From Telegram, send `/new_goal <description>` to the bot to start a goal; approve, request changes, or reject from inline buttons on the plan message.
+Goal state is persisted on disk. Set `MOLTBOT_STATE_DIR` when you need to redirect that state for local testing or inspection.
 
 ## Telegram controls
 
@@ -30,15 +34,11 @@ From Telegram, send `/new_goal <description>` to the bot to start a goal; approv
 - Reply to the done message to suggest follow-up work via **Incorporate Feedback**.
 - Routing is scoped to the chat and topic thread the run was started in.
 
-Live inline-button round-trips, reply-edit revisions, blocked-question answers, and Incorporate Feedback have unit-test coverage but were not exercised end-to-end in a live Telegram session for this release; verify them on your own bot before relying on them.
-
 ## Repo chat
 
 Telegram-only: `/repo_chat <question>` (alias `/rc`) asks a read-only question about the repo. Replies to a prior repo-chat message continue the same session.
 
 The backend is configurable to use Codex or Claude Code via `/chat_backend`; until set, the command is disabled.
-
-A live round-trip on both backends and reply-continuation of an existing session were not exercised end-to-end in this release; treat the live path as manual-required.
 
 ## How planning works
 
@@ -48,7 +48,7 @@ Plans are validated structured objects: typed steps, explicit `dependsOn`, per-s
 moltbot goal detail <run_id>
 ```
 
-This renders a text DAG and a Mermaid source block. The text DAG was verified on the CLI; the Telegram channel additionally renders the DAG to PNG.
+This renders a text DAG and a Mermaid source block for debugging the same plan shown in Telegram.
 
 ## Worker backends
 
@@ -96,7 +96,6 @@ SmithersBot is a personal, single-operator harness. A few things are worth knowi
 - Subscription-mode auth strips Anthropic credential env vars from the worker environment so the local CLI uses its own login; it is not a free or unlimited Claude.
 - Crash recovery is best-effort and rolls the interrupted step back to `pending` to be replayed; it is not a formal guarantee.
 - Per-directory memory: only `CLAUDE.md` is plumbed by the goal worker; `AGENTS.md` is read natively by Codex but not by the harness; `MEMORY.md` belongs to a different subsystem and is not read by the goal worker.
-- The following sub-features have code-path and unit-test coverage but were not exercised end-to-end in this release; verify them live before relying on them in operator-facing copy: live inline plan buttons on a real Telegram message; live reply-to-plan revisions, reply-to-blocked-question answers, and reply-to-done feedback via Incorporate Feedback; live `/repo_chat` round-trip on both backends and `/repo_chat` reply-continuation of an existing session.
 
 ## Attribution
 
