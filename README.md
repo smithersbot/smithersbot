@@ -64,7 +64,7 @@ A typical operator loop is to use repo chat before `/new_goal` to sharpen the in
 flowchart LR
   A["Goal<br/>/new_goal in Telegram"] --> B["Plan<br/>Claude Code drafts DAG<br/>Codex reviews up to 3 rounds"]
   B --> C["Review<br/>approve, edit, reject<br/>or ask repo chat"]
-  C --> D["Execute<br/>checkpoint each task<br/>fresh worker per task<br/>external verification gate"]
+  C --> D["Execute<br/>checkpoint each task<br/>fresh worker per task<br/>external build/test gate"]
   D --> E["Complete<br/>Telegram summary<br/>manual smoke tests"]
   D -->|fails or stuck| F["Recover<br/>revert checkpoint<br/>retry or ask operator"]
   F --> D
