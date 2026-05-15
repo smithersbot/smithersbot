@@ -99,15 +99,19 @@ Completed runs can extract scoped lessons; later workers in the same working dir
 - **Hard-deny on tool calls.** Worker tool calls run through a typed deny check that blocks reads/writes to sensitive paths (env files, SSH keys, credentials) and a recursive command scanner that blocks dangerous shell forms, elevated-privilege commands, and publish/deploy/release commands.
 - **Per-task git checkpoints.** Before each task starts, SmithersBot makes a local checkpoint commit on a per-run branch so a failed worker can be reverted to the pre-step state via a recoverability checkpoint reset. Checkpoint commits are local only; nothing is pushed.
 
-## Recovery behavior
+## Execution flow
 
-Steps run until their dependencies are met or until they hit a blocker; SmithersBot keeps running unrelated parts of the DAG, then reports remaining blockers to the operator with a consolidated question.
+After approval, SmithersBot creates a local git checkpoint before each task, then runs the next critical-path task with a fresh worker. It runs the configured build/test gate itself, outside the worker, so the worker cannot bypass completion checks. Semgrep runs at the configured cadence, and the final Telegram message includes completion status plus manual tests and things to double-check.
 
-When a worker gets stuck, SmithersBot reverts the working tree to the pre-step recoverability checkpoint, records what failed, and retries the task with new context; if still stuck after a configurable retry budget, it escalates to the operator with the full failure history. There is no automatic handoff between backends; escalation goes to you.
+## Recovery
+
+If a worker's approach clearly fails, SmithersBot reverts to the pre-task checkpoint, records what happened, and retries with new context. It keeps running unblocked DAG tasks when possible, escalates to the operator in Telegram when it needs help, and reports clearly when the whole run is blocked.
 
 If the gateway crashes mid-run, the next start reconciles stale in-progress steps; `moltbot goal resume <run_id>` continues from the persisted run state on disk.
 
-After a goal completes, SmithersBot suggests the manual smoke tests it could not run itself, each ranked by an estimated 1..10 criticality.
+## Feedback loop
+
+After completion, the operator can click **Incorporate Feedback** in Telegram with notes from manual testing. SmithersBot updates the plan and resumes execution until the goal completes again.
 
 ## Nightwatch
 
