@@ -64,7 +64,7 @@ flowchart TD
   E -->|Plan Detail| F[Show detailed implementation plan]
   E -->|Request Edit| G[User describes plan changes]
   G --> B
-  E -->|Ask Repo Chat| H[/repo_chat inspects repo and goal context]
+  E -->|Ask Repo Chat| H["/repo_chat inspects repo and goal context"]
   H --> E
   E -->|Reject| I[Stop goal before execution]
   E -->|Approve| J[Begin execution]
@@ -84,8 +84,8 @@ flowchart TD
   S --> T{Manual feedback?}
   T -->|Incorporate Feedback| B
   T -->|done| U[Goal complete]
-  V[/goal_status] --> D
-  W[/goal_list] --> X[Show summary of goals]
+  V["/goal_status"] --> D
+  W["/goal_list"] --> X[Show summary of goals]
 ```
 
 Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `smithersbot goal detail <run_id>`.
