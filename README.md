@@ -61,42 +61,29 @@ A typical operator loop is to use repo chat before `/new_goal` to sharpen the in
 <details><summary>Mermaid source</summary>
 
 ```mermaid
-flowchart TD
-  A[User sends /new_goal in Telegram] --> B[Claude Code Plan Mode creates DAG]
-  B --> C[Codex reviews the plan]
-  C -->|needs changes, up to 3 rounds| B
-  C -->|approves plan| D["Telegram shows plan flowchart"]
-  D --> E{Operator decision}
-  E -->|Plan Detail| F[Show detailed implementation plan]
-  E -->|Request Edit| G[User describes plan changes]
-  G --> B
-  E -->|Ask Repo Chat| H["/repo_chat inspects repo and goal context"]
-  H --> E
-  E -->|Reject| I[Stop goal before execution]
-  E -->|Approve| J[Begin execution]
-  J --> K[Create local git checkpoint]
-  K --> L[Run critical-path task with fresh worker]
-  L --> M[External build/test gate runs]
-  M -->|fails or worker stuck| N[Revert checkpoint and retry with context]
-  N -->|retry budget remains| L
-  N -->|still blocked| O[Escalate question to operator]
-  O -->|operator answers in Telegram| L
-  O -->|other tasks unblocked| P[Continue unblocked DAG work]
-  P --> K
-  M -->|passes| Q{More runnable tasks?}
-  Q -->|yes| K
-  Q -->|no| R[Semgrep and final checks per config]
-  R --> S[Telegram completion plus smoke tests]
-  S --> T{Manual feedback?}
-  T -->|Incorporate Feedback| B
-  T -->|done| U[Goal complete]
-  V["/goal_status"] --> D
-  W["/goal_list"] --> X[Show summary of goals]
+flowchart LR
+  A["Goal<br/>/new_goal in Telegram"] --> B["Plan<br/>Claude Code drafts DAG<br/>Codex reviews up to 3 rounds"]
+  B --> C["Review<br/>approve, edit, reject<br/>or ask repo chat"]
+  C --> D["Execute<br/>checkpoint each task<br/>fresh worker per task<br/>external verification gate"]
+  D --> E["Complete<br/>Telegram summary<br/>manual smoke tests"]
+  D -->|fails or stuck| F["Recover<br/>revert checkpoint<br/>retry or ask operator"]
+  F --> D
+  E -->|Incorporate Feedback| B
+  G["/goal_status<br/>inspect current DAG"] -.-> C
+  H["/goal_list<br/>all goals summary"] -.-> A
+
+  classDef spine fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF,rx:4,ry:4;
+  class A,B,C,D,E spine;
 ```
 
 </details>
 
-Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `smithersbot goal detail <run_id>`.
+- **Plan Detail** shows the implementation plan behind the flowchart.
+- **Request Edit** sends the plan back to the planner with your notes.
+- **Repo chat** helps inspect the repo or ask whether a plan looks safe to approve.
+- `/goal_status` shows the current DAG state for a goal.
+- `/goal_list` summarizes all goals.
+- **Incorporate Feedback** updates the plan after manual testing and continues the run.
 
 ## Worker backends
 
