@@ -348,7 +348,7 @@ describe("doctor command", () => {
           list: [
             {
               id: "work",
-              workspace: "~/clawd-work",
+              workspace: "~/smithersbot-work",
               sandbox: {
                 mode: "all",
                 scope: "shared",
@@ -395,19 +395,19 @@ describe("doctor command", () => {
       parsed: {},
       valid: true,
       config: {
-        agents: { defaults: { workspace: "/Users/steipete/clawd" } },
+        agents: { defaults: { workspace: "/Users/example/smithersbot" } },
       },
       issues: [],
       legacyIssues: [],
     });
 
     note.mockClear();
-    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue("/Users/steipete");
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue("/Users/example");
     const realExists = fs.existsSync;
-    const legacyPath = path.join("/Users/steipete", "moltbot");
+    const legacyPath = path.join("/Users/example", "moltbot");
     const legacyAgentsPath = path.join(legacyPath, "AGENTS.md");
     const existsSpy = vi.spyOn(fs, "existsSync").mockImplementation((value) => {
-      if (value === "/Users/steipete/moltbot" || value === legacyPath || value === legacyAgentsPath)
+      if (value === "/Users/example/moltbot" || value === legacyPath || value === legacyAgentsPath)
         return true;
       return realExists(value as never);
     });

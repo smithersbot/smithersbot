@@ -204,7 +204,7 @@ describe("gateway-status command", () => {
 
     const originalUser = process.env.USER;
     try {
-      process.env.USER = "steipete";
+      process.env.USER = "user";
       loadConfig.mockReturnValueOnce({
         gateway: {
           mode: "remote",
@@ -225,7 +225,7 @@ describe("gateway-status command", () => {
 
       expect(startSshPortForward).toHaveBeenCalledTimes(1);
       const call = startSshPortForward.mock.calls[0]?.[0] as { target: string };
-      expect(call.target).toBe("steipete@goodhost");
+      expect(call.target).toBe("user@goodhost");
     } finally {
       process.env.USER = originalUser;
     }
@@ -243,16 +243,16 @@ describe("gateway-status command", () => {
 
     const originalUser = process.env.USER;
     try {
-      process.env.USER = "steipete";
+      process.env.USER = "user";
       loadConfig.mockReturnValueOnce({
         gateway: {
           mode: "remote",
-          remote: { url: "ws://peters-mac-studio-1.sheep-coho.ts.net:18789", token: "rtok" },
+          remote: { url: "ws://gateway.example:18789", token: "rtok" },
         },
       });
       resolveSshConfig.mockResolvedValueOnce({
-        user: "steipete",
-        host: "peters-mac-studio-1.sheep-coho.ts.net",
+        user: "user",
+        host: "gateway.example",
         port: 2222,
         identityFiles: ["/tmp/id_ed25519"],
       });
@@ -269,7 +269,7 @@ describe("gateway-status command", () => {
         target: string;
         identity?: string;
       };
-      expect(call.target).toBe("steipete@peters-mac-studio-1.sheep-coho.ts.net:2222");
+      expect(call.target).toBe("user@gateway.example:2222");
       expect(call.identity).toBe("/tmp/id_ed25519");
     } finally {
       process.env.USER = originalUser;

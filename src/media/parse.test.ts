@@ -10,14 +10,14 @@ describe("splitMediaFromOutput", () => {
   });
 
   it("captures media paths with spaces", () => {
-    const result = splitMediaFromOutput("MEDIA:/Users/pete/My File.png");
-    expect(result.mediaUrls).toEqual(["/Users/pete/My File.png"]);
+    const result = splitMediaFromOutput("MEDIA:/Users/example/My File.png");
+    expect(result.mediaUrls).toEqual(["/Users/example/My File.png"]);
     expect(result.text).toBe("");
   });
 
   it("captures quoted media paths with spaces", () => {
-    const result = splitMediaFromOutput('MEDIA:"/Users/pete/My File.png"');
-    expect(result.mediaUrls).toEqual(["/Users/pete/My File.png"]);
+    const result = splitMediaFromOutput('MEDIA:"/Users/example/My File.png"');
+    expect(result.mediaUrls).toEqual(["/Users/example/My File.png"]);
     expect(result.text).toBe("");
   });
 
