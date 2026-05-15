@@ -13,6 +13,19 @@
 9. Review and build gates: completed runs can go through read-only diff review and sequential verification commands with captured output and failure classification (`src/goal/post-execution-review.ts:168`; `src/goal/post-execution-review.ts:206`; `src/goal/build-gate.ts:58`; `src/goal/build-gate.ts:115`).
 10. Goal-specific learned rules and safety guardrails: completed runs can produce scoped lessons for later worker prompts, while hard-deny policies, capability enforcement, sandbox prompt contracts, and credential-like env stripping reduce risky worker actions (`src/goal/lessons.ts:25`; `src/goal/lessons.ts:174`; `src/goal/agent-executor.ts:1024`; `src/goal/hard-deny.ts:52`; `src/goal/capability-enforcement.ts:80`; `src/goal/claude-code-env.ts:7`; `src/goal/cli-worker.ts:628`).
 
+Reading this what i see is missing:
+ - Pushes to git before every step making everything recoverable
+ - ralph loops where it can admit it's stuck, write what went wrong and what to try next, revert to before it started and get the next agent to read that and try again
+ - For #9 the point is that testing isn't just left to the LLM, it can't proceed with code that doesn't build
+ - Tells you what needs to be tested manually after it's done with a score of how critical it is to run that test
+ - nightwatch functionality
+ - every working dir essentially becomes its own "agent" with the claude.md, agents.md and memory.md files so lessons from each folder is remembered.
+ - automated semgrep security test after goal completes if the changes made were code related.
+ - uses your claude and codex subscriptions rather than API credits
+ - keeps running down the DAG until it's completely blocked at which time it messages you
+ 
+ 
+
 ## Top 5 things that make SmithersBot impressive
 
 1. It treats coding-agent work as an executable dependency graph rather than a single prompt or flat checklist, with typed plan structures, DAG rendering, and critical-path scheduling (`src/goal/types.ts:57`; `src/goal/dag-render.ts:62`; `src/goal/cpm.ts:57`).
