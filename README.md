@@ -56,6 +56,22 @@ flowchart TD
   H --> E
   E -->|Reject| I[Stop goal before execution]
   E -->|Approve| J[Begin execution]
+  J --> K[Create local git checkpoint]
+  K --> L[Run critical-path task with fresh worker]
+  L --> M[External build/test gate runs]
+  M -->|fails or worker stuck| N[Revert checkpoint and retry with context]
+  N -->|retry budget remains| L
+  N -->|still blocked| O[Escalate question to operator]
+  O -->|operator answers in Telegram| L
+  O -->|other tasks unblocked| P[Continue unblocked DAG work]
+  P --> K
+  M -->|passes| Q{More runnable tasks?}
+  Q -->|yes| K
+  Q -->|no| R[Semgrep and final checks per config]
+  R --> S[Telegram completion plus smoke tests]
+  S --> T{Manual feedback?}
+  T -->|Incorporate Feedback| B
+  T -->|done| U[Goal complete]
 ```
 
 Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `moltbot goal detail <run_id>`.
