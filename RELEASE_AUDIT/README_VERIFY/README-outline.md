@@ -7,6 +7,12 @@ Short headings + bullets covering the SmithersBot story. Only claims classified 
 - Create a goal from the CLI with `moltbot goal "<task>" --plan-only`; the plan is persisted on disk and held for approval. `MOLTBOT_STATE_DIR` redirects goal state to any directory.
 - Telegram-controlled: send `/new_goal <description>` to the bot to start a goal; approve, request changes, or reject from inline buttons.
 
+## Telegram controls
+
+- Plan messages carry inline buttons for Approve, Plan Detail, Request changes, and Reject.
+- Reply to the plan to revise it; reply to a blocked question to unblock the run; reply to the done message to suggest follow-up work via Incorporate Feedback.
+- Routing is scoped to the chat and topic thread the run was started in.
+
 ## How a goal becomes a plan
 
 - Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate.
@@ -43,6 +49,19 @@ Short headings + bullets covering the SmithersBot story. Only claims classified 
 ## Nightwatch
 
 - Nightwatch is a scheduled daily code review that runs in the background and delivers a summary plan to your configured Telegram chat; schedule and chat are configurable through `/nightwatch`.
+
+## Repo chat
+
+- Telegram-only: `/repo_chat <question>` (alias `/rc`) asks a read-only question about the repo; replies continue the same session.
+- The backend is configurable to use Codex or Claude Code via `/chat_backend`; until set, the command is disabled.
+
+## Verification checklist
+
+The following sub-features are present in the code path and unit-tested, but were not exercised end-to-end in this release audit. Verify them live before relying on them in operator-facing copy:
+
+- Live inline plan buttons (Approve, Plan Detail, Request changes, Reject) on a real Telegram message.
+- Live reply-to-plan revisions, reply-to-blocked-question answers, and reply-to-done feedback via Incorporate Feedback.
+- Live `/repo_chat` round-trip on both backends (Codex and Claude Code) and `/repo_chat` reply-continuation of an existing session.
 
 ---
 
