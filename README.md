@@ -72,6 +72,8 @@ flowchart TD
   S --> T{Manual feedback?}
   T -->|Incorporate Feedback| B
   T -->|done| U[Goal complete]
+  V[/goal_status] --> D
+  W[/goal_list] --> X[Show summary of goals]
 ```
 
 Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `moltbot goal detail <run_id>`.
