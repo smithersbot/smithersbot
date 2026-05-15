@@ -1,7 +1,7 @@
 {
   "name": "smithersbot",
   "version": "2026.1.29",
-  "description": "SmithersBot — a personal Telegram-first AI assistant. Fork of moltbot/moltbot.",
+  "description": "SmithersBot — a Telegram-controlled multi-agent goal execution harness. Personal fork of OpenClaw.",
   "type": "module",
   "main": "dist/index.js",
   "exports": {

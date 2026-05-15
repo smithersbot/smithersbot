@@ -1,406 +1,107 @@
-# 🦞 Moltbot — Personal AI Assistant
+# SmithersBot
 
-<p align="center">
-  <strong>EXFOLIATE! EXFOLIATE!</strong>
-</p>
+A Telegram-controlled multi-agent goal execution harness for local coding and research work.
 
-<p align="center">
-  <a href="https://github.com/moltbot/moltbot/releases"><img src="https://img.shields.io/github/v/release/moltbot/moltbot?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
-  <a href="https://deepwiki.com/moltbot/moltbot"><img src="https://img.shields.io/badge/DeepWiki-moltbot-111111?style=for-the-badge" alt="DeepWiki"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
-</p>
+SmithersBot turns a one-line goal into a structured plan, runs the plan as a DAG of local CLI workers (Codex or Claude Code), and persists every plan, prompt, attempt, journal note, and run state file to disk. You approve, reject, or revise plans from Telegram. Code-related steps are gated by your own build and test commands, scanned with Semgrep, run through a typed deny check on tool calls, and committed to a per-run recoverability checkpoint before each task. If a worker gets stuck, SmithersBot reverts to the pre-step checkpoint, records what failed, retries with new context, and escalates to you when the retry budget is spent.
 
-**Moltbot** is a *personal AI assistant* you run on your own devices. It answers you on Telegram, and it can speak and listen on macOS/iOS/Android while rendering a live Canvas you control. The Gateway is just the control plane — the product is the assistant.
+> CLI command rename to `smithersbot` is still being completed. The binary is published as `smithersbot`, but the executable's own help text and the verified examples below still use `moltbot` as the command name. Use whichever your local install resolves; the subcommand surface is the same.
 
-If you want a personal, single-user assistant that feels local, fast, and always-on, this is it.
+## Demo
 
-[Website](https://molt.bot) · [Docs](https://docs.molt.bot) · [Getting Started](https://docs.molt.bot/start/getting-started) · [Updating](https://docs.molt.bot/install/updating) · [Showcase](https://docs.molt.bot/start/showcase) · [FAQ](https://docs.molt.bot/start/faq) · [Wizard](https://docs.molt.bot/start/wizard) · [Docker](https://docs.molt.bot/install/docker)
+Demo coming soon.
 
-Preferred setup: clone from source and run the onboarding wizard (`pnpm moltbot onboard`). It walks through gateway, workspace, the Telegram channel, and skills. The CLI wizard is the recommended path and works on **macOS, Linux, and Windows (via WSL2; strongly recommended)**.
-Works with pnpm, npm, or bun.
-New install? Start here: [Getting started](https://docs.molt.bot/start/getting-started)
+## Quick start
 
-**Subscriptions (OAuth):**
-- **[Anthropic](https://www.anthropic.com/)** (Claude Pro/Max)
-- **[OpenAI](https://openai.com/)** (ChatGPT/Codex)
-
-Model note: while any model is supported, I strongly recommend **Anthropic Pro/Max (100/200) + Opus 4.5** for long‑context strength and better prompt‑injection resistance. See [Onboarding](https://docs.molt.bot/start/onboarding).
-
-## Models (selection + auth)
-
-- Models config + CLI: [Models](https://docs.molt.bot/concepts/models)
-- Auth profile rotation (OAuth vs API keys) + fallbacks: [Model failover](https://docs.molt.bot/concepts/model-failover)
-
-## Install (from source)
-
-Runtime: **Node ≥22**.
+Create a goal from the CLI and hold the plan for approval:
 
 ```bash
-git clone https://github.com/moltbot/moltbot.git
-cd moltbot
-
-pnpm install
-pnpm ui:build # auto-installs UI deps on first run
-pnpm build
-
-pnpm moltbot onboard --install-daemon
+moltbot goal "<task>" --plan-only
 ```
 
-The wizard installs the Gateway daemon (launchd/systemd user service) so it stays running.
+The plan is persisted on disk and held for approval. Set `MOLTBOT_STATE_DIR` to redirect goal state to any directory.
 
-## Quick start (TL;DR)
+From Telegram, send `/new_goal <description>` to the bot to start a goal; approve, request changes, or reject from inline buttons on the plan message.
 
-Runtime: **Node ≥22**.
+## Telegram controls
 
-Full beginner guide (auth, pairing, Telegram setup): [Getting started](https://docs.molt.bot/start/getting-started)
+- Plan messages carry inline buttons for **Approve**, **Plan Detail**, **Request changes**, and **Reject**.
+- Reply to the plan to revise it.
+- Reply to a blocked question to unblock the run.
+- Reply to the done message to suggest follow-up work via **Incorporate Feedback**.
+- Routing is scoped to the chat and topic thread the run was started in.
+
+Live inline-button round-trips, reply-edit revisions, blocked-question answers, and Incorporate Feedback have unit-test coverage but were not exercised end-to-end in a live Telegram session for this release; verify them on your own bot before relying on them.
+
+## Repo chat
+
+Telegram-only: `/repo_chat <question>` (alias `/rc`) asks a read-only question about the repo. Replies to a prior repo-chat message continue the same session.
+
+The backend is configurable to use Codex or Claude Code via `/chat_backend`; until set, the command is disabled.
+
+A live round-trip on both backends and reply-continuation of an existing session were not exercised end-to-end in this release; treat the live path as manual-required.
+
+## How planning works
+
+Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate.
 
 ```bash
-pnpm moltbot onboard --install-daemon
-
-pnpm moltbot gateway --port 18789 --verbose
-
-# Talk to the assistant (delivers replies back on Telegram when configured)
-pnpm moltbot agent --message "Ship checklist" --thinking high
+moltbot goal detail <run_id>
 ```
 
-Upgrading? [Updating guide](https://docs.molt.bot/install/updating) (and run `pnpm moltbot doctor`).
+This renders a text DAG and a Mermaid source block. The text DAG was verified on the CLI; the Telegram channel additionally renders the DAG to PNG.
 
-## Development channels
+## Worker backends
 
-- **stable**: tagged releases (`vYYYY.M.D` or `vYYYY.M.D-<patch>`), npm dist-tag `latest`.
-- **beta**: prerelease tags (`vYYYY.M.D-beta.N`), npm dist-tag `beta` (macOS app may be missing).
-- **dev**: moving head of `main`, npm dist-tag `dev` (when published).
+SmithersBot can route work to local Codex or Claude Code CLI workers. Whichever is installed on `PATH` is probed at startup and assigned work.
 
-Switch channels (git + npm): `pnpm moltbot update --channel stable|beta|dev`.
-Details: [Development channels](https://docs.molt.bot/install/development-channels).
+SmithersBot uses local CLI backends (Codex and Claude Code), so it runs against whichever logins are already installed on the operator's machine.
 
-## From source (development)
+## What gets saved on disk
 
-Prefer `pnpm` for builds from source. Bun is optional for running TypeScript directly.
+Every plan, worker prompt, stdout/stderr capture, attempt bundle, journal note, and run state file lives on disk under the goals state directory and can be inspected after the fact.
 
-```bash
-git clone https://github.com/moltbot/moltbot.git
-cd moltbot
+Each working directory can carry its own `CLAUDE.md`; SmithersBot also remembers per-directory and global lessons and injects the relevant ones into the worker prompt under a labelled section.
 
-pnpm install
-pnpm ui:build # auto-installs UI deps on first run
-pnpm build
-
-pnpm moltbot onboard --install-daemon
+Completed runs can extract scoped lessons; later workers in the same working directory or globally automatically receive the relevant lessons in their prompt under a labelled section.
 
-# Dev loop (auto-reload on TS changes)
-pnpm gateway:watch
-```
+## Safety rails
 
-Note: `pnpm moltbot ...` runs TypeScript directly (via `tsx`). `pnpm build` produces `dist/` for running via Node / the packaged `moltbot` binary.
+- **Build/test gate.** Code-related steps cannot complete until the operator-configured build/test commands actually exit zero; SmithersBot runs the commands itself with `spawnSync` and captures full stdout/stderr.
+- **Semgrep.** After each code-related step SmithersBot runs Semgrep against changed files (cadence configurable to `off`, `step`, or `goal`); a failed scan blocks the step the same way any other build-gate command failure does.
+- **Hard-deny on tool calls.** Worker tool calls run through a typed deny check that blocks reads/writes to sensitive paths (env files, SSH keys, credentials) and a recursive command scanner that blocks dangerous shell forms, elevated-privilege commands, and publish/deploy/release commands.
+- **Per-task git checkpoints.** Before each task starts, SmithersBot makes a local checkpoint commit on a per-run branch so a failed worker can be reverted to the pre-step state via a recoverability checkpoint reset. Checkpoint commits are local only; nothing is pushed.
 
-## Security defaults (DM access)
+## Recovery behavior
 
-Moltbot connects to a real messaging surface. Treat inbound DMs as **untrusted input**.
+Steps run until their dependencies are met or until they hit a blocker; SmithersBot keeps running unrelated parts of the DAG, then reports remaining blockers to the operator with a consolidated question.
 
-Full security guide: [Security](https://docs.molt.bot/gateway/security)
+When a worker gets stuck, SmithersBot reverts the working tree to the pre-step recoverability checkpoint, records what failed, and retries the task with new context; if still stuck after a configurable retry budget, it escalates to the operator with the full failure history. There is no automatic handoff between backends; escalation goes to you.
 
-Default behavior on Telegram:
-- **DM pairing** (`dmPolicy="pairing"`): unknown senders receive a short pairing code and the bot does not process their message.
-- Approve with: `pnpm moltbot pairing approve telegram <code>` (then the sender is added to a local allowlist store).
-- Public inbound DMs require an explicit opt-in: set `dmPolicy="open"` and include `"*"` in the channel allowlist (`allowFrom`).
+If the gateway crashes mid-run, the next start reconciles stale in-progress steps; `moltbot goal resume <run_id>` continues from the persisted run state on disk.
 
-Run `pnpm moltbot doctor` to surface risky/misconfigured DM policies.
+After a goal completes, SmithersBot suggests the manual smoke tests it could not run itself, each ranked by an estimated 1..10 criticality.
 
-## Highlights
+## Nightwatch
 
-- **[Local-first Gateway](https://docs.molt.bot/gateway)** — single control plane for sessions, the Telegram channel, tools, and events.
-- **Telegram inbox** — connect a Telegram bot account and route inbound chats and groups to isolated agents (workspaces + per-agent sessions).
-- **[Multi-agent routing](https://docs.molt.bot/gateway/configuration)** — route inbound accounts/peers to isolated agents (workspaces + per-agent sessions).
-- **[Voice Wake](https://docs.molt.bot/nodes/voicewake) + [Talk Mode](https://docs.molt.bot/nodes/talk)** — always-on speech for macOS/iOS/Android with ElevenLabs.
-- **[Live Canvas](https://docs.molt.bot/platforms/mac/canvas)** — agent-driven visual workspace with [A2UI](https://docs.molt.bot/platforms/mac/canvas#canvas-a2ui).
-- **[First-class tools](https://docs.molt.bot/tools)** — browser, canvas, nodes, cron, and sessions.
-- **[Companion apps](https://docs.molt.bot/platforms/macos)** — macOS menu bar app + iOS/Android [nodes](https://docs.molt.bot/nodes).
-- **[Onboarding](https://docs.molt.bot/start/wizard) + [skills](https://docs.molt.bot/tools/skills)** — wizard-driven setup with bundled/managed/workspace skills.
+Nightwatch is a scheduled daily code review that runs in the background and delivers a summary plan to your configured Telegram chat; schedule and chat are configurable through `/nightwatch`.
 
-## Star History
+## Status and limitations
 
-[![Star History Chart](https://api.star-history.com/svg?repos=moltbot/moltbot&type=date&legend=top-left)](https://www.star-history.com/#moltbot/moltbot&type=date&legend=top-left)
+SmithersBot is a personal, single-operator harness. A few things are worth knowing up front:
 
-## Everything we built so far
+- Execution is sequential, not parallel.
+- Recovery is bounded by a retry budget; it is not self-healing.
+- Manual-test criticality is an LLM 1..10 heuristic, not a calibrated risk score.
+- Read-only repo chat: Claude Code excludes the `Write` tool but allows `Bash`; Codex runs `--sandbox workspace-write` and relies on prompt compliance.
+- Subscription-mode auth strips Anthropic credential env vars from the worker environment so the local CLI uses its own login; it is not a free or unlimited Claude.
+- Crash recovery is best-effort and rolls the interrupted step back to `pending` to be replayed; it is not a formal guarantee.
+- Per-directory memory: only `CLAUDE.md` is plumbed by the goal worker; `AGENTS.md` is read natively by Codex but not by the harness; `MEMORY.md` belongs to a different subsystem and is not read by the goal worker.
+- The following sub-features have code-path and unit-test coverage but were not exercised end-to-end in this release; verify them live before relying on them in operator-facing copy: live inline plan buttons on a real Telegram message; live reply-to-plan revisions, reply-to-blocked-question answers, and reply-to-done feedback via Incorporate Feedback; live `/repo_chat` round-trip on both backends and `/repo_chat` reply-continuation of an existing session.
 
-### Core platform
-- [Gateway WS control plane](https://docs.molt.bot/gateway) with sessions, presence, config, cron, webhooks, [Control UI](https://docs.molt.bot/web), and [Canvas host](https://docs.molt.bot/platforms/mac/canvas#canvas-a2ui).
-- [CLI surface](https://docs.molt.bot/tools/agent-send): gateway, agent, send, [wizard](https://docs.molt.bot/start/wizard), and [doctor](https://docs.molt.bot/gateway/doctor).
-- [Pi agent runtime](https://docs.molt.bot/concepts/agent) in RPC mode with tool streaming and block streaming.
-- [Session model](https://docs.molt.bot/concepts/session): `main` for direct chats, group isolation, activation modes, queue modes, reply-back. Group rules: [Groups](https://docs.molt.bot/concepts/groups).
-- [Media pipeline](https://docs.molt.bot/nodes/images): images/audio/video, transcription hooks, size caps, temp file lifecycle. Audio details: [Audio](https://docs.molt.bot/nodes/audio).
+## Attribution
 
-### Channel
-- [Telegram](https://docs.molt.bot/channels/telegram) (grammY) is the supported messaging surface for v0. Group routing supports mention gating, reply tags, and per-channel chunking.
+SmithersBot is a personal fork of OpenClaw, originally forked when the upstream project was still named Moltbot. See `NOTICE.md` for attribution and license details.
 
-### Apps + nodes
-- [macOS app](https://docs.molt.bot/platforms/macos): menu bar control plane, [Voice Wake](https://docs.molt.bot/nodes/voicewake)/PTT, [Talk Mode](https://docs.molt.bot/nodes/talk) overlay, debug tools, [remote gateway](https://docs.molt.bot/gateway/remote) control.
-- [iOS node](https://docs.molt.bot/platforms/ios): [Canvas](https://docs.molt.bot/platforms/mac/canvas), [Voice Wake](https://docs.molt.bot/nodes/voicewake), [Talk Mode](https://docs.molt.bot/nodes/talk), camera, screen recording, Bonjour pairing.
-- [Android node](https://docs.molt.bot/platforms/android): [Canvas](https://docs.molt.bot/platforms/mac/canvas), [Talk Mode](https://docs.molt.bot/nodes/talk), camera, screen recording, optional SMS.
-- [macOS node mode](https://docs.molt.bot/nodes): system.run/notify + canvas/camera exposure.
+## License
 
-### Tools + automation
-- [Browser control](https://docs.molt.bot/tools/browser): dedicated moltbot Chrome/Chromium, snapshots, actions, uploads, profiles.
-- [Canvas](https://docs.molt.bot/platforms/mac/canvas): [A2UI](https://docs.molt.bot/platforms/mac/canvas#canvas-a2ui) push/reset, eval, snapshot.
-- [Nodes](https://docs.molt.bot/nodes): camera snap/clip, screen record, [location.get](https://docs.molt.bot/nodes/location-command), notifications.
-- [Cron + wakeups](https://docs.molt.bot/automation/cron-jobs); [webhooks](https://docs.molt.bot/automation/webhook); [Gmail Pub/Sub](https://docs.molt.bot/automation/gmail-pubsub).
-- [Skills platform](https://docs.molt.bot/tools/skills): bundled, managed, and workspace skills with install gating + UI.
-
-### Runtime + safety
-- [Channel routing](https://docs.molt.bot/concepts/channel-routing), [retry policy](https://docs.molt.bot/concepts/retry), and [streaming/chunking](https://docs.molt.bot/concepts/streaming).
-- [Presence](https://docs.molt.bot/concepts/presence), [typing indicators](https://docs.molt.bot/concepts/typing-indicators), and [usage tracking](https://docs.molt.bot/concepts/usage-tracking).
-- [Models](https://docs.molt.bot/concepts/models), [model failover](https://docs.molt.bot/concepts/model-failover), and [session pruning](https://docs.molt.bot/concepts/session-pruning).
-- [Security](https://docs.molt.bot/gateway/security) and [troubleshooting](https://docs.molt.bot/channels/troubleshooting).
-
-### Ops + packaging
-- [Control UI](https://docs.molt.bot/web) served directly from the Gateway.
-- [Tailscale Serve/Funnel](https://docs.molt.bot/gateway/tailscale) or [SSH tunnels](https://docs.molt.bot/gateway/remote) with token/password auth.
-- [Nix mode](https://docs.molt.bot/install/nix) for declarative config; [Docker](https://docs.molt.bot/install/docker)-based installs.
-- [Doctor](https://docs.molt.bot/gateway/doctor) migrations, [logging](https://docs.molt.bot/logging).
-
-## How it works (short)
-
-```
-                  Telegram
-                     │
-                     ▼
-┌───────────────────────────────┐
-│            Gateway            │
-│       (control plane)         │
-│     ws://127.0.0.1:18789      │
-└──────────────┬────────────────┘
-               │
-               ├─ Pi agent (RPC)
-               ├─ CLI (moltbot …)
-               ├─ macOS app
-               └─ iOS / Android nodes
-```
-
-## Key subsystems
-
-- **[Gateway WebSocket network](https://docs.molt.bot/concepts/architecture)** — single WS control plane for clients, tools, and events (plus ops: [Gateway runbook](https://docs.molt.bot/gateway)).
-- **[Tailscale exposure](https://docs.molt.bot/gateway/tailscale)** — Serve/Funnel for the Gateway dashboard + WS (remote access: [Remote](https://docs.molt.bot/gateway/remote)).
-- **[Browser control](https://docs.molt.bot/tools/browser)** — moltbot‑managed Chrome/Chromium with CDP control.
-- **[Canvas + A2UI](https://docs.molt.bot/platforms/mac/canvas)** — agent‑driven visual workspace (A2UI host: [Canvas/A2UI](https://docs.molt.bot/platforms/mac/canvas#canvas-a2ui)).
-- **[Voice Wake](https://docs.molt.bot/nodes/voicewake) + [Talk Mode](https://docs.molt.bot/nodes/talk)** — always‑on speech and continuous conversation.
-- **[Nodes](https://docs.molt.bot/nodes)** — Canvas, camera snap/clip, screen record, `location.get`, notifications, plus macOS‑only `system.run`/`system.notify`.
-
-## Tailscale access (Gateway dashboard)
-
-Moltbot can auto-configure Tailscale **Serve** (tailnet-only) or **Funnel** (public) while the Gateway stays bound to loopback. Configure `gateway.tailscale.mode`:
-
-- `off`: no Tailscale automation (default).
-- `serve`: tailnet-only HTTPS via `tailscale serve` (uses Tailscale identity headers by default).
-- `funnel`: public HTTPS via `tailscale funnel` (requires shared password auth).
-
-Notes:
-- `gateway.bind` must stay `loopback` when Serve/Funnel is enabled (Moltbot enforces this).
-- Serve can be forced to require a password by setting `gateway.auth.mode: "password"` or `gateway.auth.allowTailscale: false`.
-- Funnel refuses to start unless `gateway.auth.mode: "password"` is set.
-- Optional: `gateway.tailscale.resetOnExit` to undo Serve/Funnel on shutdown.
-
-Details: [Tailscale guide](https://docs.molt.bot/gateway/tailscale) · [Web surfaces](https://docs.molt.bot/web)
-
-## Remote Gateway (Linux is great)
-
-It’s perfectly fine to run the Gateway on a small Linux instance. Clients (macOS app, CLI) can connect over **Tailscale Serve/Funnel** or **SSH tunnels**, and you can still pair device nodes (macOS/iOS/Android) to execute device‑local actions when needed.
-
-- **Gateway host** runs the exec tool and the Telegram channel connection by default.
-- **Device nodes** run device‑local actions (`system.run`, camera, screen recording, notifications) via `node.invoke`.
-In short: exec runs where the Gateway lives; device actions run where the device lives.
-
-Details: [Remote access](https://docs.molt.bot/gateway/remote) · [Nodes](https://docs.molt.bot/nodes) · [Security](https://docs.molt.bot/gateway/security)
-
-## macOS permissions via the Gateway protocol
-
-The macOS app can run in **node mode** and advertises its capabilities + permission map over the Gateway WebSocket (`node.list` / `node.describe`). Clients can then execute local actions via `node.invoke`:
-
-- `system.run` runs a local command and returns stdout/stderr/exit code; set `needsScreenRecording: true` to require screen-recording permission (otherwise you’ll get `PERMISSION_MISSING`).
-- `system.notify` posts a user notification and fails if notifications are denied.
-- `canvas.*`, `camera.*`, `screen.record`, and `location.get` are also routed via `node.invoke` and follow TCC permission status.
-
-Elevated bash (host permissions) is separate from macOS TCC:
-
-- Use `/elevated on|off` to toggle per‑session elevated access when enabled + allowlisted.
-- Gateway persists the per‑session toggle via `sessions.patch` (WS method) alongside `thinkingLevel`, `verboseLevel`, `model`, `sendPolicy`, and `groupActivation`.
-
-Details: [Nodes](https://docs.molt.bot/nodes) · [macOS app](https://docs.molt.bot/platforms/macos) · [Gateway protocol](https://docs.molt.bot/concepts/architecture)
-
-## Agent to Agent (sessions_* tools)
-
-- Use these to coordinate work across sessions without jumping between chat surfaces.
-- `sessions_list` — discover active sessions (agents) and their metadata.
-- `sessions_history` — fetch transcript logs for a session.
-- `sessions_send` — message another session; optional reply‑back ping‑pong + announce step (`REPLY_SKIP`, `ANNOUNCE_SKIP`).
-
-Details: [Session tools](https://docs.molt.bot/concepts/session-tool)
-
-## Chat commands
-
-Send these in Telegram (group commands are owner-only):
-
-- `/status` — compact session status (model + tokens, cost when available)
-- `/new` or `/reset` — reset the session
-- `/compact` — compact session context (summary)
-- `/think <level>` — off|minimal|low|medium|high|xhigh (GPT-5.2 + Codex models only)
-- `/verbose on|off`
-- `/usage off|tokens|full` — per-response usage footer
-- `/restart` — restart the gateway (owner-only in groups)
-- `/activation mention|always` — group activation toggle (groups only)
-
-## Apps (optional)
-
-The Gateway alone delivers a great experience. All apps are optional and add extra features.
-
-If you plan to build/run companion apps, follow the platform runbooks below.
-
-### macOS (Moltbot.app) (optional)
-
-- Menu bar control for the Gateway and health.
-- Voice Wake + push-to-talk overlay.
-- Debug tools.
-- Remote gateway control over SSH.
-
-Note: signed builds required for macOS permissions to stick across rebuilds (see `docs/mac/permissions.md`).
-
-### iOS node (optional)
-
-- Pairs as a node via the Bridge.
-- Voice trigger forwarding + Canvas surface.
-- Controlled via `pnpm moltbot nodes …`.
-
-Runbook: [iOS connect](https://docs.molt.bot/platforms/ios).
-
-### Android node (optional)
-
-- Pairs via the same Bridge + pairing flow as iOS.
-- Exposes Canvas, Camera, and Screen capture commands.
-- Runbook: [Android connect](https://docs.molt.bot/platforms/android).
-
-## Agent workspace + skills
-
-- Workspace root: `~/clawd` (configurable via `agents.defaults.workspace`).
-- Injected prompt files: `AGENTS.md`, `SOUL.md`, `TOOLS.md`.
-- Skills: `~/clawd/skills/<skill>/SKILL.md`.
-
-## Configuration
-
-Minimal `~/.clawdbot/moltbot.json` (model + defaults):
-
-```json5
-{
-  agent: {
-    model: "anthropic/claude-opus-4-5"
-  }
-}
-```
-
-[Full configuration reference (all keys + examples).](https://docs.molt.bot/gateway/configuration)
-
-## Security model (important)
-
-- **Default:** tools run on the host for the **main** session, so the agent has full access when it’s just you.
-- **Group/channel safety:** set `agents.defaults.sandbox.mode: "non-main"` to run **non‑main sessions** (groups/channels) inside per‑session Docker sandboxes; bash then runs in Docker for those sessions.
-- **Sandbox defaults:** allowlist `bash`, `process`, `read`, `write`, `edit`, `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`; denylist `browser`, `canvas`, `nodes`, `cron`, `gateway`.
-
-Details: [Security guide](https://docs.molt.bot/gateway/security) · [Docker + sandboxing](https://docs.molt.bot/install/docker) · [Sandbox config](https://docs.molt.bot/gateway/configuration)
-
-### [Telegram](https://docs.molt.bot/channels/telegram)
-
-- Set `TELEGRAM_BOT_TOKEN` or `channels.telegram.botToken` (env wins).
-- Optional: set `channels.telegram.groups` (with `channels.telegram.groups."*".requireMention`); when set, it is a group allowlist (include `"*"` to allow all). Also `channels.telegram.allowFrom` or `channels.telegram.webhookUrl` as needed.
-
-```json5
-{
-  channels: {
-    telegram: {
-      botToken: "123456:ABCDEF"
-    }
-  }
-}
-```
-
-Browser control (optional):
-
-```json5
-{
-  browser: {
-    enabled: true,
-    color: "#FF4500"
-  }
-}
-```
-
-## Docs
-
-Use these when you’re past the onboarding flow and want the deeper reference.
-- [Start with the docs index for navigation and “what’s where.”](https://docs.molt.bot)
-- [Read the architecture overview for the gateway + protocol model.](https://docs.molt.bot/concepts/architecture)
-- [Use the full configuration reference when you need every key and example.](https://docs.molt.bot/gateway/configuration)
-- [Run the Gateway by the book with the operational runbook.](https://docs.molt.bot/gateway)
-- [Learn how the Control UI/Web surfaces work and how to expose them safely.](https://docs.molt.bot/web)
-- [Understand remote access over SSH tunnels or tailnets.](https://docs.molt.bot/gateway/remote)
-- [Follow the onboarding wizard flow for a guided setup.](https://docs.molt.bot/start/wizard)
-- [Wire external triggers via the webhook surface.](https://docs.molt.bot/automation/webhook)
-- [Set up Gmail Pub/Sub triggers.](https://docs.molt.bot/automation/gmail-pubsub)
-- [Learn the macOS menu bar companion details.](https://docs.molt.bot/platforms/mac/menu-bar)
-- [Platform guides: Windows (WSL2)](https://docs.molt.bot/platforms/windows), [Linux](https://docs.molt.bot/platforms/linux), [macOS](https://docs.molt.bot/platforms/macos), [iOS](https://docs.molt.bot/platforms/ios), [Android](https://docs.molt.bot/platforms/android)
-- [Debug common failures with the troubleshooting guide.](https://docs.molt.bot/channels/troubleshooting)
-- [Review security guidance before exposing anything.](https://docs.molt.bot/gateway/security)
-
-## Advanced docs (discovery + control)
-
-- [Discovery + transports](https://docs.molt.bot/gateway/discovery)
-- [Bonjour/mDNS](https://docs.molt.bot/gateway/bonjour)
-- [Gateway pairing](https://docs.molt.bot/gateway/pairing)
-- [Remote gateway README](https://docs.molt.bot/gateway/remote-gateway-readme)
-- [Control UI](https://docs.molt.bot/web/control-ui)
-- [Dashboard](https://docs.molt.bot/web/dashboard)
-
-## Operations & troubleshooting
-
-- [Health checks](https://docs.molt.bot/gateway/health)
-- [Gateway lock](https://docs.molt.bot/gateway/gateway-lock)
-- [Background process](https://docs.molt.bot/gateway/background-process)
-- [Browser troubleshooting (Linux)](https://docs.molt.bot/tools/browser-linux-troubleshooting)
-- [Logging](https://docs.molt.bot/logging)
-
-## Deep dives
-
-- [Agent loop](https://docs.molt.bot/concepts/agent-loop)
-- [Presence](https://docs.molt.bot/concepts/presence)
-- [TypeBox schemas](https://docs.molt.bot/concepts/typebox)
-- [RPC adapters](https://docs.molt.bot/reference/rpc)
-- [Queue](https://docs.molt.bot/concepts/queue)
-
-## Workspace & skills
-
-- [Skills config](https://docs.molt.bot/tools/skills-config)
-- [Default AGENTS](https://docs.molt.bot/reference/AGENTS.default)
-- [Templates: AGENTS](https://docs.molt.bot/reference/templates/AGENTS)
-- [Templates: BOOTSTRAP](https://docs.molt.bot/reference/templates/BOOTSTRAP)
-- [Templates: IDENTITY](https://docs.molt.bot/reference/templates/IDENTITY)
-- [Templates: SOUL](https://docs.molt.bot/reference/templates/SOUL)
-- [Templates: TOOLS](https://docs.molt.bot/reference/templates/TOOLS)
-- [Templates: USER](https://docs.molt.bot/reference/templates/USER)
-
-## Platform internals
-
-- [macOS dev setup](https://docs.molt.bot/platforms/mac/dev-setup)
-- [macOS menu bar](https://docs.molt.bot/platforms/mac/menu-bar)
-- [macOS voice wake](https://docs.molt.bot/platforms/mac/voicewake)
-- [iOS node](https://docs.molt.bot/platforms/ios)
-- [Android node](https://docs.molt.bot/platforms/android)
-- [Windows (WSL2)](https://docs.molt.bot/platforms/windows)
-- [Linux app](https://docs.molt.bot/platforms/linux)
-
-## Email hooks (Gmail)
-
-- [docs.molt.bot/gmail-pubsub](https://docs.molt.bot/automation/gmail-pubsub)
-
-## Community
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, governance, and how to submit PRs.
-
-Project by Matthew Overing — see NOTICE.md for upstream attribution.
+MIT. See `LICENSE`.

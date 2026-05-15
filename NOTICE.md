@@ -1,11 +1,13 @@
 # NOTICE
 
-SmithersBot is a fork of the upstream project `moltbot/moltbot`
-(https://github.com/moltbot/moltbot).
+SmithersBot is a personal fork of OpenClaw, originally forked when the
+upstream project was still named Moltbot.
 
 ## Upstream attribution
 
-- Upstream project: `moltbot/moltbot`
+- Current upstream project: OpenClaw
+- Historical upstream at fork point: `moltbot/moltbot`
+  (https://github.com/moltbot/moltbot)
 - Original copyright holder: Peter Steinberger
 - Upstream license: MIT (see `LICENSE` for the full text)
 
@@ -15,14 +17,16 @@ included in this fork remains under the MIT License.
 
 ## Fork point
 
-This fork branched from upstream at commit:
+This fork branched from the upstream project at commit:
 
 ```text
 4583f88626f20efedc454d893afaaf898c23523b
 ```
 
-Commits up to and including this SHA originate in the upstream project.
-Commits after this SHA are SmithersBot changes.
+dated 2026-01-29. At the time of the fork, the upstream project was named
+`moltbot/moltbot`; it has since been renamed to OpenClaw. Commits up to and
+including this SHA originate in the upstream project. Commits after this
+SHA are SmithersBot changes.
 
 ## Downstream changes
 
