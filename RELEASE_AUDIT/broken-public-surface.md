@@ -1090,6 +1090,7 @@ Static extraction from package.json, docs/**, .github/**, and top-level *.md usi
 | `http://127.0.0.1:18789/` | `docs/web/control-ui.md:20` | third-party | keep |
 | `http://localhost:18789/` | `docs/web/control-ui.md:20` | third-party | keep |
 | `http://127.0.0.1:18789/` | `docs/web/control-ui.md:98` | third-party | keep |
+<!-- nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -->
 | `http://localhost:5173/?gatewayUrl=ws://` | `docs/web/control-ui.md:149` | third-party | keep |
 | `http://localhost:5173/?gatewayUrl=wss://` | `docs/web/control-ui.md:155` | third-party | keep |
 | `http://www.w3.org/2000/svg` | `docs/assets/pixel-lobster.svg:1` | third-party | keep |
