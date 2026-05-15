@@ -1,0 +1,38 @@
+# Per-Claim Artifact Index
+
+All paths are relative to `RELEASE_AUDIT/README_VERIFY/`.
+
+| # | Claim | Status | Reason (one line) | Log path |
+| --- | --- | --- | --- | --- |
+| 1 | Goal creation (CLI plan-only) | verified | `goal --help` confirms top-level form `moltbot goal "<task>"`; plan-only run created a persisted run + scout artifacts under the redirected state dir with no leakage to `~/.moltbot/`. | `artifacts/claim-01-cli-help.log`, `artifacts/claim-01-cli-plan.log` |
+| 2 | Telegram goal creation | partial | `/new_goal` handler is verified statically at `src/telegram/goal-commands.ts:1959-1960` with multiple supporting citations; live Telegram send/receive was not exercised (manual-required). | `artifacts/claim-02-telegram.log` |
+| 3 | Structured planning | verified | Persisted plan in `_state/.../run.json` contains typed steps, `dependsOn`, per-step `backend`, `successCriteria`, `constraints` (4), and plan-level `buildGate` (commands + `runBetweenSteps`). | `artifacts/claim-03-structured-plan.log` |
+| 4 | DAG / critical path | verified | `goal detail` emitted both an ASCII dependency block and a Mermaid `flowchart TD` source block; PNG rendering is wired only into the Telegram path. Recorded as "text DAG verified only" for the CLI surface. | `artifacts/claim-04-dag.log` |
+| 5 | Worker orchestration | verified | Two CLI backends declared in `backend-types.ts:7-10` (codex, claude_code), probed in `backend-availability.ts:114-148`, dispatched in `cli-worker.ts:183/249/288`. Safe wording: "local CLI backends". | `artifacts/claim-05-workers.log` |
+| 6 | Artifact trail | verified | `run.json` plus the full `scout/` artifact set is present on disk for the plan-only run; worker-time artifact paths are sourced in `cli-worker.ts:234/273-276/294-295`, `run-journal.ts:14-78`, `attempt-bundle.ts:35-36`, `planner.ts:146`. | `artifacts/claim-06-artifact-trail.log` |
+| 7 | Checkpoint / recoverability | verified | Per-task local checkpoint commits implemented via `startTaskCheckpoint` (`git-checkpoint.ts:296`), `finalizeTaskCheckpoint` (`git-checkpoint.ts:311`), and `resetToTaskBaseSha` (`build-gate.ts:195`); wired at `agent-executor.ts:388/465/499/609`. No `git push` is invoked. | `artifacts/claim-07-checkpoints.log` |
+| 8 | Build gate | verified | `runBuildGateCommands` captures real exit code + stdout/stderr via `spawnSync` (`build-gate.ts:65-115`); executor overrides worker `done` to `blocked`/`pending` on failure (`agent-executor.ts:565-661`); session `done` is conditional on the final gate (`agent-executor.ts:739-761`). | `artifacts/claim-08-build-gate.log` |
+| 9 | Manual test recommendations | verified | Manual-test generation with a 1..10 criticality field is implemented in `manual-tests.ts:8-62/168-172/224-226/327-399`, wired into the all-done path of `agent-executor.ts:1036-1048/1061-1069`, persisted on the run, and rendered to Telegram. | `artifacts/claim-09-manual-tests.log` |
+| 10 | Blocked-loop behavior | verified | DAG progression loop, per-step `step_blocked` notification, fatal-vs-recoverable distinction, and aggregated `fully_blocked` final report are all in `agent-executor.ts:252/310/333-336/695-714/716-726/1074-1109/1158-1177`. | `artifacts/claim-10-blocked-loop.log` |
+| 11 | Recovery loops (admit stuck → revert → retry → escalate) | partial | Detect-stuck, revert-to-checkpoint, persist failure, retry-with-new-context, and operator escalation are implemented (`cli-worker.ts:170/659-662`, `agent-executor.ts:477-530/499`, `git-checkpoint.ts:7-8`, `lessons.ts:415-453`). No automatic switch to a different backend on stuck loops — true handoff is operator escalation only. | `artifacts/claim-11-ralph-recovery.log` |
+| 12 | Nightwatch | verified | `nightwatch-daily` cron with handler in `src/cron/nightwatch.ts:30-37/594-655/658-725/727-775`, user-facing `/nightwatch` Telegram command in `src/telegram/nightwatch-commands.ts:17-32`, native-command registration, and unit/integration tests. | `artifacts/claim-12-nightwatch.log` |
+| 13 | Per-directory agent memory | partial | Per-dir `CLAUDE.md` reaches Codex workers via explicit injection (`cli-runner.ts:37-38/76-84`, `cli-worker.ts:60/231/267-272/284/700`) and Claude Code via native cwd discovery. Project-scoped lessons filtered by `workingDir` (`lessons.ts:174-180`). `AGENTS.md` is NOT read by the goal worker; `MEMORY.md` belongs to a different subsystem. Narrow public wording to "CLAUDE.md + scoped lessons". | `artifacts/claim-13-per-dir-memory.log` |
+| 14 | Semgrep / security scan | verified | Default ON (`build-gate.ts:7` `DEFAULT_SAST_SEMGREP_ENABLED=true`); per-step cadence default (`agent-executor.ts:179`); path-scoped scan prepended after each completed step (`agent-executor.ts:539-555`); whole-repo scan on final gate when `'goal'` mode (`agent-executor.ts:732-737`); command shape built at `build-gate.ts:160-192`. Operator can toggle via `config.goal.semgrep`. Not roadmap. | `artifacts/claim-14-semgrep.log` |
+| 15 | Claude/Codex subscriptions | verified | Both workers are real local CLI subprocesses: `backend-types.ts:7-10`, `cli-worker.ts:183/288/327-336/782-816`. Claude Code defaults to `subscription` mode and `claude-code-env.ts:54-67` strips `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` from worker env. Safe wording: "uses local CLI backends". | `artifacts/claim-15-subscriptions.log` |
+| 16 | Guardrails (hard-deny / capability) | verified | Pure deny-check functions exported from `src/goal/hard-deny.ts` and wired into the worker tool surface at `src/goal/capability-enforcement.ts:50-56/93-...`. Safe in-process probe (`artifacts/claim-16-denial-probe.mjs`) on 4 fake forbidden commands + 3 forbidden paths returned HardDeny for every dangerous input and null for harmless baselines (9/9 PASS, exit 0). | `artifacts/claim-16-guardrails.log` |
+| 17 | Lessons / memory injection | verified | Writers (`lessons.ts:155` `addLesson`, `lessons.ts:581` `extractRunLessons`) and readers (`lessons.ts:174` `getLessonsForContext`) connect to the worker prompt via `cli-runner.ts:33-52` and the labelled `LESSONS FROM PRIOR RUNS` block emitted at `cli-worker.ts:576-582`. This worker's own prompt contains the block as observable evidence. | `artifacts/claim-17-lessons-injection.log` |
+| 18 | Resume / crash recovery | verified | Atomic persistence (`run-store.ts:31-47`), lock-aware migration that resets executing→blocked with synthesized `BlockedDetail` (`run-store.ts:66-151`), `reconcileStaleRuns` sweep (`run-store.ts:223-247`) wired into gateway startup (`server-startup.ts:43-50`), resume reads reconciled state via `loadRun` (`goal-resume.ts:340/360`). | `artifacts/claim-18-resume-recovery.log` |
+
+## Status legend
+
+- **verified** — claim is supported by both code evidence and (where applicable) a safe runtime exercise inside this audit.
+- **partial** — core mechanism is implemented but the literal wording in the goal brief overreaches; safe README wording must be narrowed.
+- **unverified** — claim was not exercised and the code evidence is insufficient to decide.
+- **roadmap** — feature is not yet implemented; do not place in README today.
+- **manual-required** — claim depends on a live human-driven path (e.g. Telegram round-trip) that this read-only worker did not run.
+
+## Cross-references
+
+- Raw audit material: `RELEASE_AUDIT/FEATURE_AUDIT/readme-raw-material.md`, `RELEASE_AUDIT/FEATURE_AUDIT/product-definition.md`, `RELEASE_AUDIT/FEATURE_AUDIT/feature-inventory.md`, `RELEASE_AUDIT/keep-vs-cut.md`.
+- Per-claim code synthesis: `_evidence/code-survey.md` (18 sections, one per claim).
+- Plan-only run created during this audit: `_state/goals/5e1de960-5456-4dc2-a1c7-a1bdf231cdc6/` (run.json + scout artifacts).
