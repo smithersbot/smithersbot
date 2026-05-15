@@ -36,9 +36,11 @@ Goal state is persisted on disk. Set `MOLTBOT_STATE_DIR` when you need to redire
 
 ## Repo chat
 
-Telegram-only: `/repo_chat <question>` (alias `/rc`) asks a read-only question about the repo. Replies to a prior repo-chat message continue the same session.
+Repo chat is a Telegram-native planning tool, not a separate CLI chat product. Use `/repo_chat <question>` or the short alias `/rc <question>` to ask Codex or Claude Code about the repo, active goal context, and the plan currently waiting for approval. Replies to a prior repo-chat message continue the same session.
 
-The backend is configurable to use Codex or Claude Code via `/chat_backend`; until set, the command is disabled.
+The backend is configurable with `/chat_backend`, which selects Codex or Claude Code for future repo-chat sessions.
+
+A typical operator loop is to use repo chat before `/new_goal` to sharpen the initial prompt, then ask it after the flowchart is created: "I sent that prompt, does the plan look good to approve?" Repo chat can inspect the repo and current goal context, then recommend approving the plan or requesting an edit before any worker runs.
 
 ## How it works
 
