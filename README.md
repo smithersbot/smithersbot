@@ -21,10 +21,10 @@ SmithersBot drafts the plan, runs the planner review loop, and sends the flowcha
 For debugging or automation, the CLI can start the same planning path and hold it for approval:
 
 ```bash
-moltbot goal "<task>" --plan-only
+smithersbot goal "<task>" --plan-only
 ```
 
-Goal state is persisted on disk. Set `MOLTBOT_STATE_DIR` when you need to redirect that state for local testing or inspection.
+Goal state is persisted on disk. Set the state directory environment variable when you need to redirect that state for local testing or inspection.
 
 ## Telegram controls
 
@@ -88,7 +88,7 @@ flowchart TD
   W[/goal_list] --> X[Show summary of goals]
 ```
 
-Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `moltbot goal detail <run_id>`.
+Plans are validated structured objects: typed steps, explicit `dependsOn`, per-step worker backend, success criteria, constraints, and a project build/test gate. The CLI can render the same plan for debugging with `smithersbot goal detail <run_id>`.
 
 ## Worker backends
 
@@ -119,7 +119,7 @@ After approval, SmithersBot creates a local git checkpoint before each task, the
 
 If a worker's approach clearly fails, SmithersBot reverts to the pre-task checkpoint, records what happened, and retries with new context. It keeps running unblocked DAG tasks when possible, escalates to the operator in Telegram when it needs help, and reports clearly when the whole run is blocked.
 
-If the gateway crashes mid-run, the next start reconciles stale in-progress steps; `moltbot goal resume <run_id>` continues from the persisted run state on disk.
+If the gateway crashes mid-run, the next start reconciles stale in-progress steps; `smithersbot goal resume <run_id>` continues from the persisted run state on disk.
 
 ## Feedback loop
 
@@ -143,7 +143,7 @@ SmithersBot is a personal, single-operator harness. A few things are worth knowi
 
 ## Attribution
 
-SmithersBot is a personal fork of OpenClaw, originally forked when the upstream project was still named Moltbot. See `NOTICE.md` for attribution and license details.
+SmithersBot is a personal fork of OpenClaw. See `NOTICE.md` for attribution and license details.
 
 ## License
 
