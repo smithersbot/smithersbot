@@ -92,9 +92,7 @@ Plans are validated structured objects: typed steps, explicit `dependsOn`, per-s
 
 ## Worker backends
 
-SmithersBot can route work to local Codex or Claude Code CLI workers. Whichever is installed on `PATH` is probed at startup and assigned work.
-
-SmithersBot uses local CLI backends (Codex and Claude Code), so it runs against whichever logins are already installed on the operator's machine.
+SmithersBot routes work to local Codex or Claude Code CLI workers. Whichever backend is installed on `PATH` is probed at startup and assigned work, using the operator's existing CLI login.
 
 ## What gets saved on disk
 
