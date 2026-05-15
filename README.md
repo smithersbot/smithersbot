@@ -54,7 +54,9 @@ A typical operator loop is to use repo chat before `/new_goal` to sharpen the in
 
 ## How it works
 
-![SmithersBot operator flow](./smithersbot-flowchart.png)
+<p align="center">
+  <img src="./smithersbot-flowchart.png" alt="SmithersBot operator flow" width="720">
+</p>
 
 <details><summary>Mermaid source</summary>
 
