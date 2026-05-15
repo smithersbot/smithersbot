@@ -89,7 +89,6 @@
 - When working on an issue: reference the issue in the changelog entry.
 - When merging a PR: leave a PR comment that explains exactly what we did and include the SHA hashes.
 - When merging a PR from a new contributor: add their avatar to the README “Thanks to all clawtributors” thumbnail list.
-- After merging a PR: run `bun scripts/update-clawtributors.ts` if the contributor is missing, then commit the regenerated README.
 
 ## Shorthand Commands
 - `sync`: if working tree is dirty, commit all changes (pick a sensible Conventional Commit message), then `git pull --rebase`; if rebase conflicts and cannot resolve, stop; otherwise `git push`.
@@ -240,4 +239,3 @@ If the CLI behavior is incorrect, incomplete, or unexpected:
 4. Repeat until the behavior matches intent.
 
 Do not mark work as complete unless the modified `/goal` behavior has been exercised and confirmed through real execution.
-
