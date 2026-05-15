@@ -1,30 +1,23 @@
 # 🦞 Moltbot — Personal AI Assistant
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/moltbot/moltbot/main/docs/whatsapp-clawd.jpg" alt="Clawdbot" width="400">
-</p>
-
-<p align="center">
   <strong>EXFOLIATE! EXFOLIATE!</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/moltbot/moltbot/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/moltbot/moltbot/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
   <a href="https://github.com/moltbot/moltbot/releases"><img src="https://img.shields.io/github/v/release/moltbot/moltbot?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
   <a href="https://deepwiki.com/moltbot/moltbot"><img src="https://img.shields.io/badge/DeepWiki-moltbot-111111?style=for-the-badge" alt="DeepWiki"></a>
-  <a href="https://discord.gg/clawd"><img src="https://img.shields.io/discord/1456350064065904867?label=Discord&logo=discord&logoColor=white&color=5865F2&style=for-the-badge" alt="Discord"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 </p>
 
-**Moltbot** is a *personal AI assistant* you run on your own devices.
-It answers you on the channels you already use (WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, iMessage, Microsoft Teams, WebChat), plus extension channels like BlueBubbles, Matrix, Zalo, and Zalo Personal. It can speak and listen on macOS/iOS/Android, and can render a live Canvas you control. The Gateway is just the control plane — the product is the assistant.
+**Moltbot** is a *personal AI assistant* you run on your own devices. It answers you on Telegram, and it can speak and listen on macOS/iOS/Android while rendering a live Canvas you control. The Gateway is just the control plane — the product is the assistant.
 
 If you want a personal, single-user assistant that feels local, fast, and always-on, this is it.
 
-[Website](https://molt.bot) · [Docs](https://docs.molt.bot) · [Getting Started](https://docs.molt.bot/start/getting-started) · [Updating](https://docs.molt.bot/install/updating) · [Showcase](https://docs.molt.bot/start/showcase) · [FAQ](https://docs.molt.bot/start/faq) · [Wizard](https://docs.molt.bot/start/wizard) · [Nix](https://github.com/moltbot/nix-clawdbot) · [Docker](https://docs.molt.bot/install/docker) · [Discord](https://discord.gg/clawd)
+[Website](https://molt.bot) · [Docs](https://docs.molt.bot) · [Getting Started](https://docs.molt.bot/start/getting-started) · [Updating](https://docs.molt.bot/install/updating) · [Showcase](https://docs.molt.bot/start/showcase) · [FAQ](https://docs.molt.bot/start/faq) · [Wizard](https://docs.molt.bot/start/wizard) · [Docker](https://docs.molt.bot/install/docker)
 
-Preferred setup: run the onboarding wizard (`moltbot onboard`). It walks through gateway, workspace, channels, and skills. The CLI wizard is the recommended path and works on **macOS, Linux, and Windows (via WSL2; strongly recommended)**.
-Works with npm, pnpm, or bun.
+Preferred setup: clone from source and run the onboarding wizard (`pnpm moltbot onboard`). It walks through gateway, workspace, the Telegram channel, and skills. The CLI wizard is the recommended path and works on **macOS, Linux, and Windows (via WSL2; strongly recommended)**.
+Works with pnpm, npm, or bun.
 New install? Start here: [Getting started](https://docs.molt.bot/start/getting-started)
 
 **Subscriptions (OAuth):**
@@ -38,39 +31,39 @@ Model note: while any model is supported, I strongly recommend **Anthropic Pro/M
 - Models config + CLI: [Models](https://docs.molt.bot/concepts/models)
 - Auth profile rotation (OAuth vs API keys) + fallbacks: [Model failover](https://docs.molt.bot/concepts/model-failover)
 
-## Install (recommended)
+## Install (from source)
 
 Runtime: **Node ≥22**.
 
 ```bash
-npm install -g moltbot@latest
-# or: pnpm add -g moltbot@latest
+git clone https://github.com/moltbot/moltbot.git
+cd moltbot
 
-moltbot onboard --install-daemon
+pnpm install
+pnpm ui:build # auto-installs UI deps on first run
+pnpm build
+
+pnpm moltbot onboard --install-daemon
 ```
 
 The wizard installs the Gateway daemon (launchd/systemd user service) so it stays running.
-Legacy note: `clawdbot` remains available as a compatibility shim.
 
 ## Quick start (TL;DR)
 
 Runtime: **Node ≥22**.
 
-Full beginner guide (auth, pairing, channels): [Getting started](https://docs.molt.bot/start/getting-started)
+Full beginner guide (auth, pairing, Telegram setup): [Getting started](https://docs.molt.bot/start/getting-started)
 
 ```bash
-moltbot onboard --install-daemon
+pnpm moltbot onboard --install-daemon
 
-moltbot gateway --port 18789 --verbose
+pnpm moltbot gateway --port 18789 --verbose
 
-# Send a message
-moltbot message send --to +1234567890 --message "Hello from Moltbot"
-
-# Talk to the assistant (optionally deliver back to any connected channel: WhatsApp/Telegram/Slack/Discord/Google Chat/Signal/iMessage/BlueBubbles/Microsoft Teams/Matrix/Zalo/Zalo Personal/WebChat)
-moltbot agent --message "Ship checklist" --thinking high
+# Talk to the assistant (delivers replies back on Telegram when configured)
+pnpm moltbot agent --message "Ship checklist" --thinking high
 ```
 
-Upgrading? [Updating guide](https://docs.molt.bot/install/updating) (and run `moltbot doctor`).
+Upgrading? [Updating guide](https://docs.molt.bot/install/updating) (and run `pnpm moltbot doctor`).
 
 ## Development channels
 
@@ -78,7 +71,7 @@ Upgrading? [Updating guide](https://docs.molt.bot/install/updating) (and run `mo
 - **beta**: prerelease tags (`vYYYY.M.D-beta.N`), npm dist-tag `beta` (macOS app may be missing).
 - **dev**: moving head of `main`, npm dist-tag `dev` (when published).
 
-Switch channels (git + npm): `moltbot update --channel stable|beta|dev`.
+Switch channels (git + npm): `pnpm moltbot update --channel stable|beta|dev`.
 Details: [Development channels](https://docs.molt.bot/install/development-channels).
 
 ## From source (development)
@@ -103,25 +96,25 @@ Note: `pnpm moltbot ...` runs TypeScript directly (via `tsx`). `pnpm build` prod
 
 ## Security defaults (DM access)
 
-Moltbot connects to real messaging surfaces. Treat inbound DMs as **untrusted input**.
+Moltbot connects to a real messaging surface. Treat inbound DMs as **untrusted input**.
 
 Full security guide: [Security](https://docs.molt.bot/gateway/security)
 
-Default behavior on Telegram/WhatsApp/Signal/iMessage/Microsoft Teams/Discord/Google Chat/Slack:
-- **DM pairing** (`dmPolicy="pairing"` / `channels.discord.dm.policy="pairing"` / `channels.slack.dm.policy="pairing"`): unknown senders receive a short pairing code and the bot does not process their message.
-- Approve with: `moltbot pairing approve <channel> <code>` (then the sender is added to a local allowlist store).
-- Public inbound DMs require an explicit opt-in: set `dmPolicy="open"` and include `"*"` in the channel allowlist (`allowFrom` / `channels.discord.dm.allowFrom` / `channels.slack.dm.allowFrom`).
+Default behavior on Telegram:
+- **DM pairing** (`dmPolicy="pairing"`): unknown senders receive a short pairing code and the bot does not process their message.
+- Approve with: `pnpm moltbot pairing approve telegram <code>` (then the sender is added to a local allowlist store).
+- Public inbound DMs require an explicit opt-in: set `dmPolicy="open"` and include `"*"` in the channel allowlist (`allowFrom`).
 
-Run `moltbot doctor` to surface risky/misconfigured DM policies.
+Run `pnpm moltbot doctor` to surface risky/misconfigured DM policies.
 
 ## Highlights
 
-- **[Local-first Gateway](https://docs.molt.bot/gateway)** — single control plane for sessions, channels, tools, and events.
-- **[Multi-channel inbox](https://docs.molt.bot/channels)** — WhatsApp, Telegram, Slack, Discord, Google Chat, Signal, iMessage, BlueBubbles, Microsoft Teams, Matrix, Zalo, Zalo Personal, WebChat, macOS, iOS/Android.
-- **[Multi-agent routing](https://docs.molt.bot/gateway/configuration)** — route inbound channels/accounts/peers to isolated agents (workspaces + per-agent sessions).
+- **[Local-first Gateway](https://docs.molt.bot/gateway)** — single control plane for sessions, the Telegram channel, tools, and events.
+- **Telegram inbox** — connect a Telegram bot account and route inbound chats and groups to isolated agents (workspaces + per-agent sessions).
+- **[Multi-agent routing](https://docs.molt.bot/gateway/configuration)** — route inbound accounts/peers to isolated agents (workspaces + per-agent sessions).
 - **[Voice Wake](https://docs.molt.bot/nodes/voicewake) + [Talk Mode](https://docs.molt.bot/nodes/talk)** — always-on speech for macOS/iOS/Android with ElevenLabs.
 - **[Live Canvas](https://docs.molt.bot/platforms/mac/canvas)** — agent-driven visual workspace with [A2UI](https://docs.molt.bot/platforms/mac/canvas#canvas-a2ui).
-- **[First-class tools](https://docs.molt.bot/tools)** — browser, canvas, nodes, cron, sessions, and Discord/Slack actions.
+- **[First-class tools](https://docs.molt.bot/tools)** — browser, canvas, nodes, cron, and sessions.
 - **[Companion apps](https://docs.molt.bot/platforms/macos)** — macOS menu bar app + iOS/Android [nodes](https://docs.molt.bot/nodes).
 - **[Onboarding](https://docs.molt.bot/start/wizard) + [skills](https://docs.molt.bot/tools/skills)** — wizard-driven setup with bundled/managed/workspace skills.
 
@@ -138,12 +131,11 @@ Run `moltbot doctor` to surface risky/misconfigured DM policies.
 - [Session model](https://docs.molt.bot/concepts/session): `main` for direct chats, group isolation, activation modes, queue modes, reply-back. Group rules: [Groups](https://docs.molt.bot/concepts/groups).
 - [Media pipeline](https://docs.molt.bot/nodes/images): images/audio/video, transcription hooks, size caps, temp file lifecycle. Audio details: [Audio](https://docs.molt.bot/nodes/audio).
 
-### Channels
-- [Channels](https://docs.molt.bot/channels): [WhatsApp](https://docs.molt.bot/channels/whatsapp) (Baileys), [Telegram](https://docs.molt.bot/channels/telegram) (grammY), [Slack](https://docs.molt.bot/channels/slack) (Bolt), [Discord](https://docs.molt.bot/channels/discord) (discord.js), [Google Chat](https://docs.molt.bot/channels/googlechat) (Chat API), [Signal](https://docs.molt.bot/channels/signal) (signal-cli), [iMessage](https://docs.molt.bot/channels/imessage) (imsg), [BlueBubbles](https://docs.molt.bot/channels/bluebubbles) (extension), [Microsoft Teams](https://docs.molt.bot/channels/msteams) (extension), [Matrix](https://docs.molt.bot/channels/matrix) (extension), [Zalo](https://docs.molt.bot/channels/zalo) (extension), [Zalo Personal](https://docs.molt.bot/channels/zalouser) (extension), [WebChat](https://docs.molt.bot/web/webchat).
-- [Group routing](https://docs.molt.bot/concepts/group-messages): mention gating, reply tags, per-channel chunking and routing. Channel rules: [Channels](https://docs.molt.bot/channels).
+### Channel
+- [Telegram](https://docs.molt.bot/channels/telegram) (grammY) is the supported messaging surface for v0. Group routing supports mention gating, reply tags, and per-channel chunking.
 
 ### Apps + nodes
-- [macOS app](https://docs.molt.bot/platforms/macos): menu bar control plane, [Voice Wake](https://docs.molt.bot/nodes/voicewake)/PTT, [Talk Mode](https://docs.molt.bot/nodes/talk) overlay, [WebChat](https://docs.molt.bot/web/webchat), debug tools, [remote gateway](https://docs.molt.bot/gateway/remote) control.
+- [macOS app](https://docs.molt.bot/platforms/macos): menu bar control plane, [Voice Wake](https://docs.molt.bot/nodes/voicewake)/PTT, [Talk Mode](https://docs.molt.bot/nodes/talk) overlay, debug tools, [remote gateway](https://docs.molt.bot/gateway/remote) control.
 - [iOS node](https://docs.molt.bot/platforms/ios): [Canvas](https://docs.molt.bot/platforms/mac/canvas), [Voice Wake](https://docs.molt.bot/nodes/voicewake), [Talk Mode](https://docs.molt.bot/nodes/talk), camera, screen recording, Bonjour pairing.
 - [Android node](https://docs.molt.bot/platforms/android): [Canvas](https://docs.molt.bot/platforms/mac/canvas), [Talk Mode](https://docs.molt.bot/nodes/talk), camera, screen recording, optional SMS.
 - [macOS node mode](https://docs.molt.bot/nodes): system.run/notify + canvas/camera exposure.
@@ -162,7 +154,7 @@ Run `moltbot doctor` to surface risky/misconfigured DM policies.
 - [Security](https://docs.molt.bot/gateway/security) and [troubleshooting](https://docs.molt.bot/channels/troubleshooting).
 
 ### Ops + packaging
-- [Control UI](https://docs.molt.bot/web) + [WebChat](https://docs.molt.bot/web/webchat) served directly from the Gateway.
+- [Control UI](https://docs.molt.bot/web) served directly from the Gateway.
 - [Tailscale Serve/Funnel](https://docs.molt.bot/gateway/tailscale) or [SSH tunnels](https://docs.molt.bot/gateway/remote) with token/password auth.
 - [Nix mode](https://docs.molt.bot/install/nix) for declarative config; [Docker](https://docs.molt.bot/install/docker)-based installs.
 - [Doctor](https://docs.molt.bot/gateway/doctor) migrations, [logging](https://docs.molt.bot/logging).
@@ -170,9 +162,9 @@ Run `moltbot doctor` to surface risky/misconfigured DM policies.
 ## How it works (short)
 
 ```
-WhatsApp / Telegram / Slack / Discord / Google Chat / Signal / iMessage / BlueBubbles / Microsoft Teams / Matrix / Zalo / Zalo Personal / WebChat
-               │
-               ▼
+                  Telegram
+                     │
+                     ▼
 ┌───────────────────────────────┐
 │            Gateway            │
 │       (control plane)         │
@@ -181,7 +173,6 @@ WhatsApp / Telegram / Slack / Discord / Google Chat / Signal / iMessage / BlueBu
                │
                ├─ Pi agent (RPC)
                ├─ CLI (moltbot …)
-               ├─ WebChat UI
                ├─ macOS app
                └─ iOS / Android nodes
 ```
@@ -213,9 +204,9 @@ Details: [Tailscale guide](https://docs.molt.bot/gateway/tailscale) · [Web surf
 
 ## Remote Gateway (Linux is great)
 
-It’s perfectly fine to run the Gateway on a small Linux instance. Clients (macOS app, CLI, WebChat) can connect over **Tailscale Serve/Funnel** or **SSH tunnels**, and you can still pair device nodes (macOS/iOS/Android) to execute device‑local actions when needed.
+It’s perfectly fine to run the Gateway on a small Linux instance. Clients (macOS app, CLI) can connect over **Tailscale Serve/Funnel** or **SSH tunnels**, and you can still pair device nodes (macOS/iOS/Android) to execute device‑local actions when needed.
 
-- **Gateway host** runs the exec tool and channel connections by default.
+- **Gateway host** runs the exec tool and the Telegram channel connection by default.
 - **Device nodes** run device‑local actions (`system.run`, camera, screen recording, notifications) via `node.invoke`.
 In short: exec runs where the Gateway lives; device actions run where the device lives.
 
@@ -245,15 +236,9 @@ Details: [Nodes](https://docs.molt.bot/nodes) · [macOS app](https://docs.molt.b
 
 Details: [Session tools](https://docs.molt.bot/concepts/session-tool)
 
-## Skills registry (ClawdHub)
-
-ClawdHub is a minimal skill registry. With ClawdHub enabled, the agent can search for skills automatically and pull in new ones as needed.
-
-[ClawdHub](https://ClawdHub.com)
-
 ## Chat commands
 
-Send these in WhatsApp/Telegram/Slack/Google Chat/Microsoft Teams/WebChat (group commands are owner-only):
+Send these in Telegram (group commands are owner-only):
 
 - `/status` — compact session status (model + tokens, cost when available)
 - `/new` or `/reset` — reset the session
@@ -274,7 +259,7 @@ If you plan to build/run companion apps, follow the platform runbooks below.
 
 - Menu bar control for the Gateway and health.
 - Voice Wake + push-to-talk overlay.
-- WebChat + debug tools.
+- Debug tools.
 - Remote gateway control over SSH.
 
 Note: signed builds required for macOS permissions to stick across rebuilds (see `docs/mac/permissions.md`).
@@ -283,7 +268,7 @@ Note: signed builds required for macOS permissions to stick across rebuilds (see
 
 - Pairs as a node via the Bridge.
 - Voice trigger forwarding + Canvas surface.
-- Controlled via `moltbot nodes …`.
+- Controlled via `pnpm moltbot nodes …`.
 
 Runbook: [iOS connect](https://docs.molt.bot/platforms/ios).
 
@@ -317,15 +302,9 @@ Minimal `~/.clawdbot/moltbot.json` (model + defaults):
 
 - **Default:** tools run on the host for the **main** session, so the agent has full access when it’s just you.
 - **Group/channel safety:** set `agents.defaults.sandbox.mode: "non-main"` to run **non‑main sessions** (groups/channels) inside per‑session Docker sandboxes; bash then runs in Docker for those sessions.
-- **Sandbox defaults:** allowlist `bash`, `process`, `read`, `write`, `edit`, `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`; denylist `browser`, `canvas`, `nodes`, `cron`, `discord`, `gateway`.
+- **Sandbox defaults:** allowlist `bash`, `process`, `read`, `write`, `edit`, `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`; denylist `browser`, `canvas`, `nodes`, `cron`, `gateway`.
 
 Details: [Security guide](https://docs.molt.bot/gateway/security) · [Docker + sandboxing](https://docs.molt.bot/install/docker) · [Sandbox config](https://docs.molt.bot/gateway/configuration)
-
-### [WhatsApp](https://docs.molt.bot/channels/whatsapp)
-
-- Link the device: `pnpm moltbot channels login` (stores creds in `~/.clawdbot/credentials`).
-- Allowlist who can talk to the assistant via `channels.whatsapp.allowFrom`.
-- If `channels.whatsapp.groups` is set, it becomes a group allowlist; include `"*"` to allow all.
 
 ### [Telegram](https://docs.molt.bot/channels/telegram)
 
@@ -341,43 +320,6 @@ Details: [Security guide](https://docs.molt.bot/gateway/security) · [Docker + s
   }
 }
 ```
-
-### [Slack](https://docs.molt.bot/channels/slack)
-
-- Set `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` (or `channels.slack.botToken` + `channels.slack.appToken`).
-
-### [Discord](https://docs.molt.bot/channels/discord)
-
-- Set `DISCORD_BOT_TOKEN` or `channels.discord.token` (env wins).
-- Optional: set `commands.native`, `commands.text`, or `commands.useAccessGroups`, plus `channels.discord.dm.allowFrom`, `channels.discord.guilds`, or `channels.discord.mediaMaxMb` as needed.
-
-```json5
-{
-  channels: {
-    discord: {
-      token: "1234abcd"
-    }
-  }
-}
-```
-
-### [Signal](https://docs.molt.bot/channels/signal)
-
-- Requires `signal-cli` and a `channels.signal` config section.
-
-### [iMessage](https://docs.molt.bot/channels/imessage)
-
-- macOS only; Messages must be signed in.
-- If `channels.imessage.groups` is set, it becomes a group allowlist; include `"*"` to allow all.
-
-### [Microsoft Teams](https://docs.molt.bot/channels/msteams)
-
-- Configure a Teams app + Bot Framework, then add a `msteams` config section.
-- Allowlist who can talk via `msteams.allowFrom`; group access via `msteams.groupAllowFrom` or `msteams.groupPolicy: "open"`.
-
-### [WebChat](https://docs.molt.bot/web/webchat)
-
-- Uses the Gateway WebSocket; no separate WebChat port/config.
 
 Browser control (optional):
 
