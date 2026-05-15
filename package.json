@@ -1,7 +1,7 @@
 {
-  "name": "moltbot",
+  "name": "smithersbot",
   "version": "2026.1.29",
-  "description": "WhatsApp gateway CLI (Baileys web) with Pi RPC agent",
+  "description": "SmithersBot — a personal Telegram-first AI assistant. Fork of moltbot/moltbot.",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -11,8 +11,7 @@
     "./cli-entry": "./moltbot.mjs"
   },
   "bin": {
-    "moltbot": "./moltbot.mjs",
-    "clawdbot": "./moltbot.mjs"
+    "smithersbot": "./moltbot.mjs"
   },
   "files": [
     "dist/acp/**",
@@ -147,9 +146,24 @@
     "check:loc": "node --import tsx scripts/check-ts-max-loc.ts --max 500",
     "debug:mermaid": "node --import tsx scripts/debug-mermaid-png.ts"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "telegram",
+    "bot",
+    "agent",
+    "assistant",
+    "cli",
+    "ai"
+  ],
+  "author": "Matthew Overing <contact@smithersbot.com>",
   "license": "MIT",
+  "homepage": "https://smithersbot.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/smithersbot/smithersbot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/smithersbot/smithersbot/issues"
+  },
   "engines": {
     "node": ">=22.12.0"
   },
