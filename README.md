@@ -59,7 +59,7 @@ flowchart TD
   A[User sends /new_goal in Telegram] --> B[Claude Code Plan Mode creates DAG]
   B --> C[Codex reviews the plan]
   C -->|needs changes, up to 3 rounds| B
-  C -->|approves plan| D[Telegram shows plan flowchart]
+  C -->|approves plan| D["Telegram shows plan flowchart"]
   D --> E{Operator decision}
   E -->|Plan Detail| F[Show detailed implementation plan]
   E -->|Request Edit| G[User describes plan changes]
