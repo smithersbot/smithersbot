@@ -209,6 +209,79 @@ Concrete shell commands for the above live under `git-hygiene.md`'s "Candidate S
 11. **CI badge.** README advertises `moltbot/moltbot` CI on `ci.yml@main` but `.github/workflows/` is absent on the audited branch. Restore CI in Stage 2, or remove the badge? (`broken-public-surface.md`)
 12. **Untracked `.env`.** A local `.env` exists at repo root; contents were not inspected in Stage 1 per hard-deny. Confirm it is gitignored and rotate any tokens it contains. (`secrets-and-pii.md`)
 
+Answers:
+Here are my answers to the Stage 1 open questions.
+
+1. Fork identity
+
+Owner/name: Matthew Overing
+Project name: SmithersBot
+Public email: contact@smithersbot.com
+X: @moovering
+LinkedIn: https://linkedin.com/in/matthewovering
+Website: https://smithersbot.com
+Support channel: GitHub Issues only for now, no SLA
+Security contact: contact@smithersbot.com
+
+Do not add Discord or any community/support surface yet.
+
+2. CHANGELOG history
+
+Truncate CHANGELOG.md to a fork-start entry. Do not preserve the upstream changelog inline. Upstream provenance should live in NOTICE.md, not the main public changelog.
+
+3. Precise merge-base
+
+Use 4583f88626f20efedc454d893afaaf898c23523b, dated 2026-01-29, as the fork attribution point unless Stage 2 can safely verify a more precise merge-base. If verification is easy and safe, run the precise merge-base check in Stage 2 and update NOTICE.md if needed.
+
+4. WebChat scope
+
+WebChat is internal/dev only. Do not expose it in README, CLI docs, examples, badges, package metadata, or public v0 positioning. Keep only what is required for compile/local dev, and mark it internal.
+
+5. src/web extraction
+
+Approved. Extract loadWebMedia to src/media/ and move hasAnyWhatsAppAuth / resolveWhatsAppAccount to channel-agnostic config helpers before cutting src/web. After extraction, src/web should be cut from public v0 unless something still requires it.
+
+6. Non-channel plugins
+
+Default rule: public v0 keeps only Telegram + the goal/agent system + required memory/learning path. Everything else is out of v0 or excluded from the public pack.
+
+Specific decisions:
+- extensions/copilot-proxy: cut from v0
+- extensions/diagnostics-otel: cut from v0
+- extensions/google-antigravity-auth: cut from v0
+- extensions/google-gemini-cli-auth: cut from v0
+- extensions/llm-task: investigate; keep only if required by the goal/agent system
+- extensions/lobster: cut from v0
+- extensions/memory-core: investigate; keep only if required by auto-learning/memory for the demo
+- extensions/memory-lancedb: cut from v0 unless memory-core requires it
+- extensions/open-prose: cut from v0
+
+7. External memory/state paths
+
+v0 should not publicly require ~/clawd or ~/.clawdbot paths. Rename public docs/config to ~/.smithersbot where possible. If legacy compatibility is needed internally, support it silently or document it as migration-only. Do not publish docs that instruct new users to create ~/clawd or ~/.clawdbot.
+
+8. Git history strategy
+
+Create a clean public repo history for v0. Keep the messy private repo as source history. Public repo should start from a cleaned tree with honest NOTICE.md attribution to upstream. Do not carry the 227 MB .git directory, thousands of commits, scratch branches, or old remotes into the public proof repo.
+
+9. Bin alias
+
+Cut the public clawdbot bin alias immediately. Public binaries should be smithersbot only. No transition window.
+
+10. External install host
+
+Do not use molt.bot install URLs for v0. Use GitHub README install instructions only, with a local/source install path. Add smithersbot.com install hosting later if needed.
+
+11. CI badge
+
+Remove the old upstream CI badge now. Add a new SmithersBot CI badge only after a real .github/workflows/ci.yml exists and passes.
+
+12. Untracked .env
+
+Confirm .env is gitignored. Inspect it locally. Rotate anything sensitive if there is any chance it was ever committed or copied. Do not ship .env. Keep only a sanitized .env.example with fake reserved placeholders.
+
+Now please produce the Stage 2 cleanup goal prompt. It should be execution-oriented, but should still avoid dangerous irreversible operations unless explicitly gated. Group work by the audit’s themes: Identity, Attribution, Scoping cuts, Secrets/PII, Git hygiene, Public surface, and Packaging.
+
 ### Verbatim parse-failure lines from `_fragments/_parse-failures.txt`
 
 Per spec these are included verbatim. **All 84 lines are markdown table rows and prose from `broken-public-surface.md`** (no information loss — the source doc is the canonical record, and the corresponding inventory entries exist in `inventory-W6.jsonl`). Included here only because the W7 consolidator's jsonl-block scanner picked them up while reading the doc. **No action required** beyond confirming the synthesis used `broken-public-surface.md` directly (it did).
