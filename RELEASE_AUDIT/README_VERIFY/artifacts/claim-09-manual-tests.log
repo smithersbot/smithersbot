@@ -1,0 +1,66 @@
+Claim 09 - Manual test recommendations with criticality / risk score
+=====================================================================
+
+Method: Static inspection only. No CLI / live tests executed.
+
+Findings:
+
+1. A dedicated module generates manual-test suggestions:
+   - src/goal/manual-tests.ts:8-62 (MANUAL_TESTS_SYSTEM_PROMPT explicitly
+     instructs the model to emit `criticality` integers 1..10 with reasons)
+   - src/goal/manual-tests.ts:168-172 (clampCriticality clamps to 1..10
+     and defaults to 5)
+   - src/goal/manual-tests.ts:224-226 (fallbackCriticality assigns a
+     decaying value 3..6 when the model returns fewer suggestions than
+     requested)
+   - src/goal/manual-tests.ts:327-399 (generateManualTests, the public
+     entry point; filters to done steps, parses, normalizes, and returns
+     ManualTestSuggestion[])
+
+2. The data type is part of the goal contract, not ad hoc:
+   - src/goal/types.ts:123-125 (`export type ManualTestSuggestion = {
+     description: string; criticality: number; reason?: string;
+     detail: string; };`)
+
+3. Manual tests are invoked at goal completion, not as roadmap aspiration:
+   - src/goal/agent-executor.ts:52 (`import { generateManualTests }
+     from "./manual-tests.js";`)
+   - src/goal/agent-executor.ts:1036-1048 (when the goal reaches the
+     all-done path, generateManualTests is awaited; failure is
+     fail-open and recorded as manualTestsError)
+   - src/goal/agent-executor.ts:1061-1069 (the `all_done` status event
+     carries `manualTests` and `manualTestsError` to the channel layer)
+
+4. The Telegram channel renders criticality to the operator:
+   - src/telegram/goal-formatting.ts:96 (renders each suggestion as
+     `**Test N: <desc> [N/10 Critical]**`)
+   - src/telegram/goal-sending.ts:275-288 (persistManualTests writes
+     suggestions and any generation error onto the run record so the
+     summary survives restart)
+
+Implementation summary:
+- After every completed goal the system asks the model to enumerate
+  manual verification steps that the automated harness cannot perform
+  (real Telegram, UI, multi-service integration, devices).
+- Each suggestion carries a 1..10 criticality value, a reason, and
+  human-friendly numbered steps.
+- The suggestions are surfaced in the goal summary alongside the
+  artifact trail; failures to generate them are non-blocking and shown
+  to the operator as a notice rather than swallowed.
+
+Safe README wording:
+- "After a goal completes, SmithersBot suggests manual verification
+  steps the bot could not perform itself, each tagged with a 1..10
+  criticality rating."
+
+Unsafe wording to avoid:
+- "SmithersBot runs manual tests for you" (it suggests, it does not run).
+- "Risk score" framed as a quantitative safety/compliance metric -
+  criticality here is an LLM-assigned heuristic for operator
+  prioritization, not a calibrated risk model.
+
+STATUS: verified
+REASON: Manual-test generation with a 1..10 criticality field is fully
+implemented, wired into the all-done path of agent-executor.ts, typed
+in the goal contract, persisted on the run, and rendered to the
+operator in the Telegram channel.

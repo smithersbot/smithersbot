@@ -1,0 +1,87 @@
+Claim 12 - Nightwatch (what it is, whether it is implemented enough
+                       to claim publicly)
+=====================================================================
+
+Method: Static inspection only. No CLI / live tests executed.
+
+Findings:
+
+1. Nightwatch is a real, registered cron job, not a label:
+   - src/cron/nightwatch.ts:30-37 (`NIGHTWATCH_DEFAULTS` with cron
+     expression `0 3 * * *`, default repo path, timezone; also
+     NIGHTWATCH_JOB_NAME = "nightwatch-daily")
+   - src/cron/nightwatch.ts:727-775 (registerNightwatchJob: registers
+     or replaces the cron job inside the CronService; handles
+     duplicates by removing them; respects nightwatchCfg.enabled)
+
+2. It has a defined runtime behavior - daily code review of the
+   repo, delivered to Telegram:
+   - src/cron/nightwatch.ts:594-655 (buildNightwatchPrompt builds the
+     review prompt; includes a self-maintenance section telling the
+     review to update its own key-file list when files are renamed)
+   - src/cron/nightwatch.ts:658-725 (runNightwatch: skips if no
+     telegram chat / token is configured, skips if no git changes
+     since the last run, otherwise builds the prompt, runs the goal
+     planner via handleGoal, and delivers the plan to the configured
+     Telegram chat/topic)
+   - src/cron/nightwatch.ts:668-676 (best-effort lesson condensation
+     runs alongside nightwatch but never blocks it)
+
+3. It is configurable from Telegram with a real command surface, so
+   the token is user-facing, not internal-only:
+   - src/telegram/nightwatch-commands.ts:17-22
+     (NIGHTWATCH_COMMAND_SPECS describes the `/nightwatch` Telegram
+     command with the description "Configure nightwatch daily code
+     review schedule")
+   - src/telegram/nightwatch-commands.ts:24-32 (`NIGHTWATCH_USAGE`
+     advertises `/nightwatch`, `/nightwatch on`, `/nightwatch off`,
+     `/nightwatch time HH:MM`, `/nightwatch tz Area/City`,
+     `/nightwatch chat` to the operator)
+   - src/telegram/bot-native-commands.ts:54-56 (the command specs are
+     imported alongside the other native Telegram commands)
+   - src/telegram/bot-native-commands.ts:174,185 (nightwatch command
+     specs are concatenated into the public command list)
+   - src/telegram/bot-native-commands.ts:530-533 (the command is
+     registered as a real Telegram handler at startup)
+
+4. It is wired into gateway startup, with tests, so this is not a
+   sketch:
+   - src/gateway/server-cron.ts (registers nightwatch as part of
+     cron setup; confirmed by tests below)
+   - src/gateway/server-cron.nightwatch.test.ts (dedicated
+     integration test for nightwatch within the cron service)
+   - src/cron/nightwatch.test.ts (unit tests for the module)
+   - src/telegram/nightwatch-commands.test.ts (unit tests for the
+     command surface)
+
+Implementation summary:
+- "Nightwatch" is a daily cron-triggered Telegram-delivered review
+  that asks the goal planner to scan the repository's recent
+  activity and produce a review/follow-up plan.
+- It is configurable end-to-end from Telegram, persists schedule
+  state, condenses lessons as a side-effect, and is integrated into
+  the gateway's cron service.
+- The token "nightwatch" is user-facing: it appears as the literal
+  Telegram command `/nightwatch` and as the visible description
+  "nightwatch daily code review".
+
+Safe README wording:
+- "Nightwatch runs a scheduled daily code review against the
+  repository and delivers the resulting goal plan to a configured
+  Telegram chat. Schedule, timezone, and target chat are
+  configurable through the `/nightwatch` command."
+
+Unsafe wording to avoid:
+- "Nightwatch fixes bugs overnight" - it delivers a plan; execution
+  still goes through the normal goal approval flow.
+- "Always-on monitoring of production" - the trigger is cron + git
+  changes, not live telemetry.
+
+STATUS: verified
+REASON: Nightwatch is a real cron job (`nightwatch-daily`) with a
+registered handler in src/cron/nightwatch.ts, a user-facing
+`/nightwatch` Telegram command in src/telegram/nightwatch-commands.ts,
+gateway-wiring tests, and a unit-test suite. The token is
+explicitly user-facing in Telegram, so it is safe to use in the
+README provided the wording stays close to "scheduled daily code
+review delivered to Telegram".

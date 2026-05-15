@@ -1,0 +1,126 @@
+Claim 11 - Recovery loops (admit it's stuck, write what went wrong,
+                           revert to a prior checkpoint, hand off
+                           context to another agent)
+=====================================================================
+
+Method: Static inspection only. No CLI / live tests executed.
+Internal jargon "ralph" is used freely below for traceability. It
+MUST NOT appear in any README wording.
+
+Findings:
+
+1. The worker can self-report being stuck. The CLI worker prompt
+   tells the model exactly how to do this:
+   - src/goal/cli-worker.ts:170 (worker prompt template includes the
+     `"status":"ralph"` response shape with approachTried,
+     specificErrors, keyInsight, suggestedApproach)
+   - src/goal/cli-worker.ts:659-662 (worker instructions block
+     "Ralph (stuck after genuine attempt ...)" guides the agent to
+     use this only when continuing is slower than reverting)
+   - src/goal/cli-worker.ts:1034 (`if (output.status === "ralph")
+     return "ralph";`)
+
+2. The data shape for "what went wrong" is a typed contract, not
+   freeform prose:
+   - src/goal/types.ts:50-54 (`export type RalphDetail = {
+     approachTried: string; specificErrors: string; keyInsight:
+     string; suggestedApproach: string; };`)
+   - src/goal/task-runner.ts:22-26 (TaskRunnerResult.status includes
+     "ralph"; result carries ralphDetail)
+   - src/goal/cli-runner.ts:100-103 (cli-runner translates worker
+     output into a TaskRunnerResult with status "ralph" and the
+     parsed RalphDetail)
+
+3. The orchestrator counts ralph attempts per step and decides
+   whether to retry or escalate:
+   - src/goal/agent-executor.ts:82 (`const DEFAULT_MAX_RALPH_ATTEMPTS
+     = 2`)
+   - src/goal/agent-executor.ts:183 (`session.stepRalphCounts ??=
+     {};`)
+   - src/goal/agent-executor.ts:192 (`const maxRalphAttempts =
+     retryConfig?.maxRalphAttempts ?? DEFAULT_MAX_RALPH_ATTEMPTS;`)
+   - src/goal/agent-executor.ts:477-530 (full ralph branch:
+     increments count, builds history, escalates to blocked when the
+     limit is hit, otherwise resets to the task base SHA and retries
+     with appended ralph context)
+
+4. Revert to a prior checkpoint is real and uses git, not just
+   in-memory state:
+   - src/goal/git-checkpoint.ts:7-8 (GitResult / GitCommitResult)
+   - src/goal/git-checkpoint.ts:296,311 (startTaskCheckpoint /
+     finalizeTaskCheckpoint exports)
+   - src/goal/agent-executor.ts:499 (`resetToTaskBaseSha(workingDir,
+     session.taskCheckpoints?.[task.id]?.baseSha)` on each ralph)
+   - src/goal/agent-executor.ts:386-400 (startTaskCheckpoint at task
+     entry captures the base SHA the revert restores to)
+
+5. The "what went wrong" record is persisted to disk for the run,
+   not just held in memory:
+   - src/goal/run-journal.ts:46-78 (appendRalphContext appends a
+     numbered `## Ralph (attempt N) - <timestamp>` block to the run
+     journal on each ralph)
+   - src/goal/run-journal.ts:80-90 (buildRalphHistorySummary
+     consolidates all attempt bundles into the blocked-question
+     handoff text)
+   - src/goal/agent-executor.ts:484-497 (the blocked question after
+     hitting the ralph limit IS the consolidated ralph history)
+
+6. Recovery insights survive the run as scoped lessons that future
+   workers can read:
+   - src/goal/lessons.ts:35,39 (LessonSource includes "ralph";
+     LESSON_SOURCES set includes it)
+   - src/goal/lessons.ts:415-453 (collectRalphInsights gathers
+     RalphDetail from attempt bundles)
+   - src/goal/lessons.ts:487-491 (later worker prompts include a
+     "Ralph key insights:" preamble built from prior runs)
+
+7. Hand-off to a DIFFERENT agent (the literal claim wording):
+   - Retry-with-new-strategy: implemented. The next attempt receives
+     the ralph history prepended via appendRalphContext, so the same
+     worker rereads its own failure and is steered to a new plan.
+   - Hand-off to a different backend / different agent: NOT
+     implemented. The retry uses the same backend that was clamped
+     in src/goal/agent-executor.ts:355-358 by
+     clampBackendForEnabledWorkers; nothing in the ralph branch
+     selects a fresh backend or spawns a second model.
+   - Escalation to the operator IS the only "hand-off to another
+     agent": once stepRalphCounts >= maxRalphAttempts the step
+     becomes blocked with the full ralph history as
+     blockedQuestion, and the operator becomes the next agent in
+     the loop.
+
+Implementation summary:
+- The system DOES admit it is stuck (typed RalphDetail emitted from
+  the worker).
+- The system DOES write what went wrong (RalphDetail + journal +
+  attempt bundles + run-scoped lessons).
+- The system DOES revert to a prior checkpoint (git reset to the
+  task base SHA).
+- The system DOES retry with a new strategy (appended ralph history
+  steers the next attempt).
+- The system DOES escalate to the operator when the limit is hit
+  (blocked with full history).
+- The system does NOT automatically hand the context off to a
+  different model/agent backend; only the operator is the "next
+  agent" in that scenario.
+
+Safe README wording:
+- "When a worker reports it is stuck, SmithersBot reverts the local
+  checkpoint, records what went wrong, and retries the task with
+  that context. After a configurable retry budget the step is
+  escalated to the operator with the full failure history."
+
+Unsafe wording to avoid:
+- The internal token "ralph" must not appear in any public README.
+- Do not claim "hands the work off to a second model" - the next
+  agent is the operator, not another backend.
+- Do not claim a recovery guarantee or unlimited retries.
+
+STATUS: partial
+REASON: The recovery loop, checkpoint revert, persisted failure
+record, ralph-aware retry, escalation to operator, and lessons
+extraction are all implemented and traceable. The literal "hand off
+context to another agent" portion is implemented only as escalation
+to the operator; there is no automatic switch to a different model
+backend on stuck-loops, so the claim is partial - safe README wording
+must describe operator escalation, not multi-agent handoff.
