@@ -62,28 +62,68 @@ A typical operator loop is to use repo chat before `/new_goal` to sharpen the in
 
 ```mermaid
 flowchart LR
-  A["Goal<br/>/new_goal in Telegram"] --> B["Plan<br/>Claude Code drafts DAG<br/>Codex reviews up to 3 rounds"]
-  B --> C["Review<br/>approve, edit, reject<br/>or ask repo chat"]
-  C --> D["Execute<br/>checkpoint each task<br/>fresh worker per task<br/>external build/test gate"]
-  D --> E["Complete<br/>Telegram summary<br/>manual smoke tests"]
-  D -->|fails or stuck| F["Recover<br/>revert checkpoint<br/>retry or ask operator"]
-  F --> D
-  E -->|Incorporate Feedback| B
-  G["/goal_status<br/>inspect current DAG"] -.-> C
-  H["/goal_list<br/>all goals summary"] -.-> A
+  subgraph P["Planning"]
+    direction TB
+    A["Send <code>/new_goal</code> prompt"]
+    B["Claude Code drafts plan<br/>breaking goal into tasks"]
+    C["Codex reviews plan"]
+    D{"User reviews plan"}
 
-  classDef spine fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF,rx:4,ry:4;
-  class A,B,C,D,E spine;
+    A --> B
+    B --> C
+    C -. "feedback" .-> B
+    C -->|"approves"| D
+    D -. "edit" .-> B
+  end
+
+  subgraph X["Execution"]
+    direction TB
+    E["Fresh worker runs next task"]
+    F["Task tested outside worker"]
+    R{"Retry or ask user?"}
+    Q["Ask user focused question"]
+
+    E -->|"done"| F
+    F -- "next task" --> E
+    E -. "fails" .-> R
+    F -. "test fails" .-> R
+    R -. "ralph retry" .-> E
+    R -. "ask user" .-> Q
+    Q -. "answer" .-> R
+  end
+
+  subgraph U["User Review"]
+    direction TB
+    H["Reports final tests for user to complete"]
+    T{"Tests pass?"}
+    I["Goal complete"]
+    J["User feedback sends goal back to planning phase"]
+
+    H -->|"User tests"| T
+    T -->|"yes"| I
+    T .->|"no"| J
+
+  end
+
+  P -->|"plan approved"| X
+  X -->|"all tasks complete"| U
+
+  classDef phase fill:#f8fafc,stroke:#94a3b8,stroke-width:1.2px,color:#334155;
+  classDef main fill:#eef6ff,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+  classDef decision fill:#f8fafc,stroke:#64748b,stroke-width:1.5px,color:#0f172a;
+  classDef aux fill:#f8fafc,stroke:#94a3b8,stroke-width:1.2px,color:#334155,stroke-dasharray:4 3;
+
+  class P,X,U phase;
+  class A,B,C,D,E,F,H,I,T main;
+  class Q,R,J aux;
 ```
 
 </details>
 
-- **Plan Detail** shows the implementation plan behind the flowchart.
-- **Request Edit** sends the plan back to the planner with your notes.
-- **Repo chat** helps inspect the repo or ask whether a plan looks safe to approve.
-- `/goal_status` shows the current DAG state for a goal.
-- `/goal_list` summarizes all goals.
-- **Incorporate Feedback** updates the plan after manual testing and continues the run.
+- **Planning** starts from `/new_goal`: Claude Code drafts the plan, Codex reviews it, and the user approves or requests edits.
+- **Execution** runs one fresh worker per task, then SmithersBot runs the external test gate itself.
+- **Recovery** uses ralph-retry when an approach fails, or asks the user a focused Telegram question when operator input is needed.
+- **User Review** reports final tests; passing tests complete the goal, while feedback sends the goal back to planning.
 
 ## Worker backends
 
