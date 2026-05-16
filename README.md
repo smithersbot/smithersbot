@@ -121,8 +121,7 @@ flowchart LR
 </details>
 
 - **Planning** starts from `/new_goal`: Claude Code drafts the plan, Codex reviews it, and the user approves or requests edits.
-- **Execution** runs one fresh worker per task, then SmithersBot runs the external test gate itself.
-- **Recovery** uses ralph-retry when an approach fails, or asks the user a focused Telegram question when operator input is needed.
+- **Execution** runs one fresh worker per task and tests it outside the worker; on failure SmithersBot ralph-retries or asks the user a focused Telegram question.
 - **User Review** reports final tests; passing tests complete the goal, while feedback sends the goal back to planning.
 
 ## Worker backends
