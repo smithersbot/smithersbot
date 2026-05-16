@@ -74,3 +74,69 @@ When the `prune-non-channel-extensions` step deletes the five CUT extensions, th
 - `.secrets.baseline`: drop entries pointing at deleted extension files (e.g. `extensions/memory-lancedb/config.ts`, `extensions/memory-lancedb/index.test.ts`, `extensions/open-prose/skills/prose/SKILL.md`, `extensions/open-prose/skills/prose/state/postgres.md`).
 - `docs/prose.md`: remove or rewrite the install reference `moltbot plugins install ./extensions/open-prose` (handled by `fix-tiny-broken-refs`).
 - Note: `scripts/e2e/Dockerfile:17` `COPY extensions/memory-core ./extensions/memory-core` is for the KEPT extension and must remain.
+
+## Channel Extensions
+
+Twelve candidate channel-plugin extensions investigated. For each, evidence
+gathered from four grep sweeps: (a) `extensions/<name>` relative imports
+in `src/`; (b) plugin-id string literal; (c) channel-id string literal
+across `src/infra/outbound/*`, `src/gateway/*`, `src/channels/*`,
+`src/config/*`; (d) test-fixture references. Plugin-id == channel-id for
+every candidate (verified in each `extensions/<name>/clawdbot.plugin.json`).
+
+Decision rule:
+- Zero refs → **CUT**.
+- Any non-test src/ reference (infra/outbound, gateway, channels, config,
+  utils, security, auto-reply, agents, commands) → **DEFER** to Stage 2C
+  (cutting requires src/* edits out of Stage 2B scope).
+- Only test-fixture references → recorded explicitly; default to **DEFER**
+  when the fixture asserts behavior on the channel id.
+
+| Extension | Plugin-ID / Channel-ID | `extensions/<name>` imports in src/ | Non-test src/ references (runtime coupling) | Test-only src/ references | Other (`package.json`, `scripts/`, `.github/`) | Decision | Reason |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| bluebubbles | `bluebubbles` | none | `src/agents/tools/message-tool.ts:275` (`channel !== "bluebubbles"`); `src/channels/plugins/status-issues/bluebubbles.ts:63,80,91`; `src/channels/plugins/group-mentions.ts:226,364`; `src/infra/outbound/outbound-session.ts:554,576,809` (stripProviderPrefix + channel literal + `case "bluebubbles"`); `src/infra/outbound/target-resolver.ts:140,311,378` | `src/agents/tools/message-tool.test.ts:112,114,148,153`; `src/auto-reply/chunk.test.ts:368`; `src/config/schema.test.ts:92,101,103`; `src/config/plugin-auto-enable.test.ts:121`; `src/config/config.plugin-validation.test.ts:161,168`; `src/gateway/test-helpers.mocks.ts:133,135`; `src/infra/outbound/outbound-session.test.ts:74`; `src/infra/outbound/message-action-runner.test.ts:366,368,398,432` | `.github/labeler.yml:4` (label rule) | **DEFER** | Heavy runtime coupling: dedicated `src/channels/plugins/status-issues/bluebubbles.ts` module, special-cased in `target-resolver.ts` alongside iMessage, branched on in `message-tool.ts`, registered in outbound-session switch. Cutting requires src/* edits out of Stage 2B scope. |
+| googlechat | `googlechat` | none | `src/channels/dock.ts:217`; `src/channels/registry.ts:11,62-67,105-106` (declared in `BUILTIN_CHANNEL_IDS` array, registry entry with `docsPath`/`docsLabel`, normalization aliases `google-chat`/`gchat`); `src/channels/plugins/group-mentions.ts:169,180`; `src/config/types.hooks.ts:28`; `src/utils/message-channel.ts:25` | `src/channels/registry.test.ts:12-13,24` | `.github/labeler.yml:15` | **DEFER** | Declared as a built-in channel in `src/channels/registry.ts` (in `BUILTIN_CHANNEL_IDS`, full registry entry, plus two normalization aliases) and referenced in `src/config/types.hooks.ts` channel union. Cutting requires src/* edits out of Stage 2B scope. |
+| line | `line` | none | `src/line/bot-message-context.ts:150,161,287,324,335,437`; `src/line/send.ts:147,169,215,257,312,360,413,454,498`; `src/line/bot-handlers.ts:87,100,133`; `src/line/monitor.ts:141,163,235,277,352` (entire `src/line/` source-channel directory uses `channel: "line"`, `pluginId: "line"`, `readChannelAllowFromStore("line")`) | none for the channel-id literal beyond `src/line/` itself; note unrelated CLI/text-context hits in `src/cli/memory-cli.ts:265,556` and `src/cli/progress.ts:20,55` are display-fallback strings, not the channel id, and `src/imessage/client.ts:74` is a stream-reader event name | `.github/labeler.yml:26` | **DEFER** | Channel-id literal pervasive throughout `src/line/` source-channel directory (handlers, send, monitor, message context). `src/line/` is explicitly out of Stage 2B scope per the goal ("Do not delete source-channel directories like ... src/line"); cleanup of both extension and src/line/ is a Stage 2C task. |
+| matrix | `matrix` | none | `src/infra/outbound/outbound-session.ts:453,462,803` (stripProviderPrefix + channel literal + `case "matrix"`) | `src/config/schema.test.ts:56`; `src/gateway/test-helpers.mocks.ts:118,120`; `src/infra/outbound/deliver.test.ts:203,208,215,218,239` | `.github/labeler.yml:31` | **DEFER** | Runtime coupling in `src/infra/outbound/outbound-session.ts` outbound dispatch (dedicated branch + switch case). Cutting requires src/* edits out of Stage 2B scope. |
+| mattermost | `mattermost` | none | `src/infra/outbound/outbound-session.ts:531,807` (channel literal + `case "mattermost"`) | none in the strict-channel-id sense beyond outbound dispatch | `.github/labeler.yml:36` | **DEFER** | Runtime coupling in outbound-session dispatch switch. Cutting requires src/* edits out of Stage 2B scope. |
+| msteams | `msteams` | none | `src/utils/message-channel.ts:24-26` (alias `"teams" → "msteams"`); `src/security/fix.ts:276`; `src/config/zod-schema.hooks.ts:29` (`z.literal("msteams")`); `src/config/legacy.rules.ts:29` (legacy path rule key); `src/config/legacy.migrations.part-1.ts:129`; `src/config/types.hooks.ts:32`; `src/infra/outbound/outbound-session.ts:496,805`; `src/commands/channels/capabilities.ts:187` (`if (channelId === "msteams")`) | `src/utils/message-channel.test.ts:24,26,58,60`; `src/agents/pi-embedded-runner.get-dm-history-limit-from-session-key...test.ts:172,191`; `src/auto-reply/reply/route-reply.test.ts:85,89,94,96,335,352,447`; `src/channels/plugins/catalog.test.ts:10,17`; `src/channels/plugins/load.test.ts:26,27,31,33,49,63,69`; `src/commands/channels/capabilities.test.ts:116,129`; `src/config/channel-capabilities.test.ts:91,104,165,167`; `src/gateway/hooks.test.ts:115,127,138,140`; `src/gateway/server.agent.gateway-server-agent-b.e2e.test.ts:89,91,133,147,163,173,217`; `src/gateway/test-helpers.mocks.ts:113,115`; `src/infra/outbound/message.test.ts:38,56,101,122-123,137,145,150,159,161` | `.github/labeler.yml:41` | **DEFER** | Heaviest runtime coupling among the twelve: declared as a `z.literal` in config hooks schema, name-normalization alias in `src/utils/message-channel.ts`, capability-specific branch in `src/commands/channels/capabilities.ts`, legacy-config migration rule, hooks channel union, plus outbound-session dispatch. Cutting requires src/* edits out of Stage 2B scope. |
+| nextcloud-talk | `nextcloud-talk` | none | `src/infra/outbound/outbound-session.ts:602,811` (channel literal + `case "nextcloud-talk"`) | `src/agents/pi-embedded-runner.get-dm-history-limit-from-session-key...test.ts:173,192` (channel-list fixture asserting DM history limit defaults) | `.github/labeler.yml:46` | **DEFER** | Runtime coupling in outbound-session dispatch switch and asserted in pi-embedded-runner DM-history channel-list fixture. Cutting requires src/* edits out of Stage 2B scope. |
+| nostr | `nostr` | none | `src/infra/outbound/outbound-session.ts:674,680,817` (stripProviderPrefix + channel literal + `case "nostr"`) | none | `.github/labeler.yml:51` | **DEFER** | Runtime coupling in outbound-session dispatch (target-resolver branch + switch). Cutting requires src/* edits out of Stage 2B scope. |
+| tlon | `tlon` | none | `src/infra/outbound/outbound-session.ts:703,739,819` (stripProviderPrefix + channel literal + `case "tlon"`) | none | `.github/labeler.yml:74` | **DEFER** | Runtime coupling in outbound-session dispatch (target-resolver branch + switch). Cutting requires src/* edits out of Stage 2B scope. |
+| twitch | `twitch` | none | none | none | none in `.github/labeler.yml` (no entry); none in `package.json`; none in `scripts/`. Only refs are `docs/channels/twitch.md:23` (`moltbot plugins install ./extensions/twitch`) and `extensions/twitch/README.md:8` (self) plus historical `RELEASE_AUDIT/*` rows. | **CUT** | Zero src/ references of any kind (no import, no plugin-id literal, no channel-id literal, no test fixture). Not declared in `BUILTIN_CHANNEL_IDS`, not dispatched in `outbound-session.ts`, not labeled in `.github/labeler.yml`. Only post-deletion follow-up: `docs/channels/twitch.md` install snippet (handled by `fix-tiny-broken-refs`). |
+| zalo | `zalo` | `src/commands/onboarding/plugin-install.test.ts:38,99,179` — test fixture that uses the literal path `"extensions/zalo"` as a `localPath` for the install-flow harness | `src/infra/outbound/outbound-session.ts:619,629,813` (stripProviderPrefix + channel literal + `case "zalo"`) | `src/cli/pairing-cli.test.ts:111,113-114` (`pairing list zalo` flow); `src/commands/onboarding/plugin-install.test.ts:27,29,33,56,70,99,179` (asserts the onboarding install flow resolves `extensions/zalo` and adds it to `cfg.plugins.allow`); `src/gateway/test-helpers.mocks.ts:123,125` | `.github/labeler.yml:89` | **DEFER** | Runtime coupling in outbound-session dispatch plus a load-bearing onboarding test (`src/commands/onboarding/plugin-install.test.ts`) that asserts behavior using the literal path `"extensions/zalo"` and the `"zalo"` plugin id — deleting the directory would break that test. Cutting requires src/* edits out of Stage 2B scope. |
+| zalouser | `zalouser` | none | `src/infra/outbound/outbound-session.ts:646,657,815` (stripProviderPrefix + channel literal + `case "zalouser"`) | `src/gateway/test-helpers.mocks.ts:128,130`; `src/infra/outbound/outbound-session.test.ts:87` | `.github/labeler.yml:94` | **DEFER** | Runtime coupling in outbound-session dispatch (separate branch from `zalo`) plus outbound-session test asserts the channel id. Cutting requires src/* edits out of Stage 2B scope. |
+
+### Summary
+
+Of the twelve channel extensions investigated:
+
+- **CUT** (zero src/ refs): `twitch`. Only `docs/channels/twitch.md:23` and `extensions/twitch/README.md:8` reference the extension path; no source coupling, not declared in `BUILTIN_CHANNEL_IDS`, not dispatched in `outbound-session.ts`, not labeled in `.github/labeler.yml`.
+- **DEFER to Stage 2C** (non-test src/ runtime coupling): `bluebubbles`, `googlechat`, `line`, `matrix`, `mattermost`, `msteams`, `nextcloud-talk`, `nostr`, `tlon`, `zalo`, `zalouser`. All have channel-id literals dispatched from `src/infra/outbound/outbound-session.ts` (`case "<id>"`) and/or referenced in registry/config/utils/security modules; cutting requires the matching src/* edits which are out of Stage 2B scope. `line` additionally has its full source-channel directory under `src/line/` which is explicitly out of Stage 2B scope per the goal text.
+
+This matches the plan's expected DEFER channel set (`discord`, `imessage`, `signal`, `slack`, `voice-call`, `whatsapp` already enumerated by the goal as coupled-channel extensions) plus the eleven additional channels DEFERed here from non-test src/ evidence.
+
+### Stage 2B follow-up for the CUT entry
+
+When the `prune-channel-extensions` step deletes `extensions/twitch`:
+
+- `.github/labeler.yml`: no entry to trim (none exists for twitch).
+- `docs/channels/twitch.md`: remove or rewrite the install snippet `moltbot plugins install ./extensions/twitch` (handled by `fix-tiny-broken-refs`); consider whether the entire doc page should be deleted in the same step.
+
+### Stage 2C cleanup checklist for the DEFER channels
+
+When Stage 2C is ready to drop these channel extensions, the following src/* surfaces will need edits (non-exhaustive, derived from the evidence above):
+
+- `src/infra/outbound/outbound-session.ts` per-channel branches (`case "bluebubbles" | "matrix" | "mattermost" | "msteams" | "nextcloud-talk" | "nostr" | "tlon" | "zalo" | "zalouser"`) and their `stripProviderPrefix` helpers.
+- `src/channels/registry.ts` `BUILTIN_CHANNEL_IDS` + `googlechat` registry entry + normalization aliases.
+- `src/channels/dock.ts` `googlechat` entry.
+- `src/channels/plugins/group-mentions.ts` `bluebubbles` and `googlechat` branches.
+- `src/channels/plugins/status-issues/bluebubbles.ts` (entire module).
+- `src/agents/tools/message-tool.ts` `bluebubbles` branch.
+- `src/infra/outbound/target-resolver.ts` `bluebubbles | imessage` numeric-target branches.
+- `src/commands/channels/capabilities.ts` `msteams` branch.
+- `src/utils/message-channel.ts` `googlechat`, `msteams` (incl. `teams` alias).
+- `src/security/fix.ts` `msteams` entry.
+- `src/config/zod-schema.hooks.ts`, `src/config/legacy.rules.ts`, `src/config/legacy.migrations.part-1.ts`, `src/config/types.hooks.ts` `msteams`/`googlechat` literals.
+- `src/line/` (entire source-channel directory — Stage 2C source-channel cleanup).
+- Matching `*.test.ts` updates across `src/agents/`, `src/auto-reply/`, `src/channels/`, `src/cli/`, `src/commands/`, `src/config/`, `src/gateway/`, `src/infra/outbound/`, `src/utils/`.
