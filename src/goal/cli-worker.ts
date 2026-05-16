@@ -793,6 +793,15 @@ export function buildCliArgs(params: {
     ];
 
     args.push("-c", "net.allowed=true");
+    // codex's workspace-write sandbox protects `.git` as read-only by default
+    // (via PROTECTED_METADATA_PATH_NAMES + bubblewrap `--ro-bind`). Adding an
+    // explicit writable_roots entry for the working dir's `.git` overrides that
+    // default and lets scripts/committer succeed from inside the worker. The
+    // hallucinated `sandbox_workspace_write.allow_git_writes` key is a silent
+    // no-op; codex 0.125.0 has no such option.
+    const gitWritablePath = path.join(workingDir, ".git");
+    const escapedGitPath = gitWritablePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    args.push("-c", `sandbox_workspace_write.writable_roots=["${escapedGitPath}"]`);
 
     if (model) args.push("--model", model);
     args.push(assembledPrompt.promptArg);

@@ -305,6 +305,26 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--output-schema");
     });
 
+    it("allows network and git writes for codex workspace-write workers", () => {
+      const args = buildCliArgs({
+        backend: "codex",
+        prompt: "test",
+        workingDir: "/tmp/sample-workspace",
+        denyFilePath: "/tmp/deny",
+      });
+
+      const netConfigIndex = args.findIndex(
+        (arg, index) => arg === "-c" && args[index + 1] === "net.allowed=true",
+      );
+      expect(netConfigIndex).toBeGreaterThanOrEqual(0);
+      expect(args.slice(netConfigIndex, netConfigIndex + 4)).toEqual([
+        "-c",
+        "net.allowed=true",
+        "-c",
+        'sandbox_workspace_write.writable_roots=["/tmp/sample-workspace/.git"]',
+      ]);
+    });
+
     it("prepends project conventions before worker context for codex workers", () => {
       const args = buildCliArgs({
         backend: "codex",
