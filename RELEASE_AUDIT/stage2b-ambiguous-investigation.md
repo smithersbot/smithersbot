@@ -46,3 +46,31 @@ edits (non-exhaustive, derived from the evidence above):
 - `src/infra/provider-usage.*` stack (types, fetch, shared, auth, load) for google-antigravity / google-gemini-cli.
 - `src/utils/provider-utils.ts` normalization.
 - Matching `*.test.ts` updates.
+
+## Non-Channel Extensions
+
+| Extension | Plugin ID (clawdbot.plugin.json) | Relative imports `extensions/<name>` | Plugin-ID literal hits in src/ | package.json / scripts / .github hits | Decision | Reason |
+| --- | --- | --- | --- | --- | --- | --- |
+| diagnostics-otel | `diagnostics-otel` | none in src/ | none | `.github/labeler.yml:187,190` (label rule); none in `package.json`; none in `scripts/` | **CUT** | Zero src/ references. Safe to delete in Stage 2B; only `.github/labeler.yml` label rule needs trimming. |
+| llm-task | `llm-task` | none in src/ | none | `.github/labeler.yml:199,202` (label rule); none in `package.json`; none in `scripts/` | **CUT** | Zero src/ references. Safe to delete in Stage 2B; only `.github/labeler.yml` label rule needs trimming. |
+| lobster | `lobster` | none in src/ | `src/agents/tool-policy.plugin-only-allowlist.test.ts:6-7,13,26,30,36,38,44,48-49` (test uses `"lobster"` as synthetic plugin id inside an inline `PluginToolGroups` fixture); `src/config/config.tools-alsoAllow.test.ts:12,30,47` (test uses `"lobster"` as an `alsoAllow` token in a synthetic config). Unrelated false-positive hits: `src/agents/session-slug.ts:73` (slug wordlist), `src/config/ui-seam-color.test.ts:12` (uses `"lobster"` as a non-hex string to assert rejection). | `.github/labeler.yml:203,206` (label rule); none in `package.json`; none in `scripts/` | **CUT** (test-fixture refs only, no fixture trim required) | All `"lobster"` plugin-id references in src/ are inside tests that construct synthetic plugin/tool groups inline; nothing loads the real `extensions/lobster/` directory. Tests will pass unchanged after the extension is deleted, so no test edit is strictly required. `.github/labeler.yml` label rule needs trimming. |
+| memory-core | `memory-core` | none in src/ | Runtime (non-test) hits: `src/plugins/slots.ts:17` (default `memory` slot = `"memory-core"`); `src/plugins/config-state.ts:71` (`plugins.entries["memory-core"]` lookup); `src/commands/status.scan.ts:35,152` (default slot value + branch); `src/gateway/tools-invoke-http.ts:138` (user guidance string). Test hits: `src/plugins/config-state.test.ts:8,43,50`; `src/plugins/loader.test.ts:150-208` (multiple); `src/plugins/slots.test.ts:10,12,24,32,34,36,79`; `src/plugins/cli.test.ts:13`; `src/commands/status.test.ts:294`. | `scripts/e2e/Dockerfile:17` (`COPY extensions/memory-core`); `.github/labeler.yml:207,210`; none in `package.json` | **KEEP** | Pervasive non-test runtime coupling: declared as the default `memory` slot in `src/plugins/slots.ts`, branched on in `src/commands/status.scan.ts`, and named in gateway guidance. E2E Docker image also copies it explicitly. Required for v0 memory functionality. |
+| memory-lancedb | `memory-lancedb` | none in src/ | none | `.github/labeler.yml:211,214` (label rule); none in `package.json`; none in `scripts/`. `.secrets.baseline:909-921` references the extension's own files (not a runtime coupling). | **CUT** | Zero src/ references. Heavy native-deps optional backend, no runtime coupling. Safe to delete in Stage 2B; `.github/labeler.yml` label rule and `.secrets.baseline` entries for the deleted files need trimming. |
+| open-prose | `open-prose` | none in src/ | `src/agents/skills.loadworkspaceskillentries.test.ts:47,54,72,86,93` — test creates a synthetic plugin under a tmpdir (`<tmp>/.clawdbot/extensions/open-prose`) with its own `moltbot.plugin.json` and skills, then asserts that an enabled plugin's skills load. The real `extensions/open-prose/` directory is not read by this test. | `.github/labeler.yml:215,218` (label rule); `docs/prose.md:30` (docs reference `./extensions/open-prose`); none in `package.json`; none in `scripts/` | **CUT** (test-fixture refs only, no fixture trim required) | All src/ references are synthetic fixture strings in a single test that manufactures the plugin layout under a tmpdir; nothing loads the real extension. Tests will pass unchanged after deletion. `.github/labeler.yml` label rule needs trimming; `docs/prose.md` is a downstream doc to address in the tiny-broken-refs step. |
+
+### Summary
+
+Of the six non-channel extensions investigated:
+
+- **KEEP**: `memory-core` (default memory slot, branched on across `src/plugins/slots.ts`, `src/plugins/config-state.ts`, `src/commands/status.scan.ts`, `src/gateway/tools-invoke-http.ts`, plus `scripts/e2e/Dockerfile`).
+- **CUT** (zero src/ refs): `diagnostics-otel`, `llm-task`, `memory-lancedb`.
+- **CUT** (test-fixture refs only, no fixture trim required): `lobster`, `open-prose`. Both have plugin-id literal hits only inside tests that construct synthetic plugin fixtures inline / under tmpdirs; deleting the real extension dirs leaves the tests valid.
+
+### Stage 2B follow-up for these cuts
+
+When the `prune-non-channel-extensions` step deletes the five CUT extensions, the following ancillary edits must be made in later Stage 2B steps:
+
+- `.github/labeler.yml`: drop the `extensions: diagnostics-otel | llm-task | lobster | memory-lancedb | open-prose` label rules (handled by `trim-github-configs`).
+- `.secrets.baseline`: drop entries pointing at deleted extension files (e.g. `extensions/memory-lancedb/config.ts`, `extensions/memory-lancedb/index.test.ts`, `extensions/open-prose/skills/prose/SKILL.md`, `extensions/open-prose/skills/prose/state/postgres.md`).
+- `docs/prose.md`: remove or rewrite the install reference `moltbot plugins install ./extensions/open-prose` (handled by `fix-tiny-broken-refs`).
+- Note: `scripts/e2e/Dockerfile:17` `COPY extensions/memory-core ./extensions/memory-core` is for the KEPT extension and must remain.
