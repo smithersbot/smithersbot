@@ -97,17 +97,14 @@
 "app: android":
   - changed-files:
       - any-glob-to-any-file:
-          - "apps/android/**"
           - "docs/platforms/android.md"
 "app: ios":
   - changed-files:
       - any-glob-to-any-file:
-          - "apps/ios/**"
           - "docs/platforms/ios.md"
 "app: macos":
   - changed-files:
       - any-glob-to-any-file:
-          - "apps/macos/**"
           - "docs/platforms/macos.md"
           - "docs/platforms/mac/**"
 "app: web-ui":
@@ -184,10 +181,6 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/copilot-proxy/**"
-"extensions: diagnostics-otel":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/diagnostics-otel/**"
 "extensions: google-antigravity-auth":
   - changed-files:
       - any-glob-to-any-file:
@@ -196,26 +189,10 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/google-gemini-cli-auth/**"
-"extensions: llm-task":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/llm-task/**"
-"extensions: lobster":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/lobster/**"
 "extensions: memory-core":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/memory-core/**"
-"extensions: memory-lancedb":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/memory-lancedb/**"
-"extensions: open-prose":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/open-prose/**"
 "extensions: qwen-portal-auth":
   - changed-files:
       - any-glob-to-any-file:
