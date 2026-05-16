@@ -159,11 +159,11 @@ Other reasonable options include dedicated hardware, a VPS, Docker, or another i
 
 ### Working directory boundary
 
-The planner chooses a working directory. The goal should only make changes downstream from that working directory.
+The planner chooses a working directory. The goal only makes changes downstream from that working directory.
 
 ### Per-task git checkpoints
 
-Before a task runs, SmithersBot creates a local checkpoint. If a worker gets into a bad state, SmithersBot can revert to the checkpoint and retry.
+Before each task begins, SmithersBot creates a local checkpoint. If a worker gets into a bad state, SmithersBot can revert to the checkpoint and retry.
 
 ### External build/test gate
 
@@ -182,6 +182,8 @@ Worker tool calls run through a typed deny check that blocks sensitive path read
 Each working directory has its own `CLAUDE.md` file created if it does not already have one. This gives workers project-specific instructions, conventions, and context.
 
 SmithersBot also has a lessons system. Completed runs can extract lessons. Lessons can be scoped globally or to a project / working directory. Future workers receive relevant lessons in their prompt under a labelled section.
+
+Each working directory can also have its own skills or plugins added. SmithersBot can be used to use, create, or edit skills or plugins.
 
 ## What gets saved on disk
 
