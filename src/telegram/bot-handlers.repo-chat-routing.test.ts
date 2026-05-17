@@ -27,6 +27,7 @@ vi.mock("./goal-router.js", async (importOriginal) => {
 });
 
 import { registerTelegramHandlers, shouldRouteTelegramTextToRepoChat } from "./bot-handlers.js";
+import { buildCommandFragmentKey, CommandFragmentBuffer } from "./command-fragments.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -74,6 +75,50 @@ describe("shouldRouteTelegramTextToRepoChat", () => {
         replyToMessageId: undefined,
       }),
     ).toBe(false);
+  });
+
+  it("does not route non-reply text to repo chat when a live command anchor exists", () => {
+    const commandFragmentBuffer = new CommandFragmentBuffer();
+    const commandKey = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: 7,
+      senderId: "99",
+    });
+    commandFragmentBuffer.setAnchor(commandKey, {
+      commandName: "new_goal",
+      anchoredAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+      appendHandler: vi.fn(async () => undefined),
+    });
+
+    expect(
+      shouldRouteTelegramTextToRepoChat({
+        repoChatBackend: "codex",
+        replyToMessageId: undefined,
+        commandFragmentBuffer,
+        accountId: "telegram-account",
+        chatId: 42,
+        threadId: 7,
+        senderId: "99",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps existing non-reply repo-chat routing when no command anchor exists", () => {
+    const commandFragmentBuffer = new CommandFragmentBuffer();
+
+    expect(
+      shouldRouteTelegramTextToRepoChat({
+        repoChatBackend: "codex",
+        replyToMessageId: undefined,
+        commandFragmentBuffer,
+        accountId: "telegram-account",
+        chatId: 42,
+        threadId: 7,
+        senderId: "99",
+      }),
+    ).toBe(true);
   });
 });
 

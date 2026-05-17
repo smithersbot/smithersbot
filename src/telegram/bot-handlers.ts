@@ -233,8 +233,36 @@ function isRepoChatBackendEnabled(
 export function shouldRouteTelegramTextToRepoChat(params: {
   repoChatBackend: "codex" | "claude_code" | null | undefined;
   replyToMessageId?: number;
+  commandFragmentBuffer?: {
+    getAnchor: (key: string) => unknown;
+  };
+  accountId?: string;
+  chatId?: number;
+  threadId?: number;
+  senderId?: string;
 }): boolean {
-  return isRepoChatBackendEnabled(params.repoChatBackend) && params.replyToMessageId == null;
+  if (!isRepoChatBackendEnabled(params.repoChatBackend) || params.replyToMessageId != null) {
+    return false;
+  }
+
+  if (
+    params.commandFragmentBuffer &&
+    params.accountId &&
+    params.chatId != null &&
+    params.senderId
+  ) {
+    const commandKey = buildCommandFragmentKey({
+      accountId: params.accountId,
+      chatId: params.chatId,
+      resolvedThreadId: params.threadId,
+      senderId: params.senderId,
+    });
+    if (params.commandFragmentBuffer.getAnchor(commandKey)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export const registerTelegramHandlers = ({
@@ -487,6 +515,11 @@ export const registerTelegramHandlers = ({
       shouldRouteTelegramTextToRepoChat({
         repoChatBackend: telegramCfg.repoChatBackend,
         replyToMessageId,
+        commandFragmentBuffer,
+        accountId,
+        chatId,
+        threadId: params.threadId,
+        senderId: String(params.msg.from?.id ?? "unknown"),
       })
     ) {
       return dispatchTelegramRepoChatForInboundText({
