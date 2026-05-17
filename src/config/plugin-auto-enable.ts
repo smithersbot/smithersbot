@@ -9,7 +9,7 @@ import {
   listChannelPluginCatalogEntries,
 } from "../channels/plugins/catalog.js";
 import { normalizeProviderId } from "../agents/model-selection.js";
-import { hasAnyWhatsAppAuth } from "../web/accounts.js";
+import { hasAnyWhatsAppAuth } from "./whatsapp-accounts.js";
 
 type PluginEnableChange = {
   pluginId: string;

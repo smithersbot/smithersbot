@@ -6,7 +6,7 @@ import {
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
 import { isSelfChatMode, normalizeE164 } from "../../utils.js";
-import { resolveWhatsAppAccount } from "../accounts.js";
+import { resolveWhatsAppAccount } from "../../config/whatsapp-accounts.js";
 
 export type InboundAccessControlResult = {
   allowed: boolean;

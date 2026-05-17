@@ -326,7 +326,7 @@ export {
   resolveDefaultWhatsAppAccountId,
   resolveWhatsAppAccount,
   type ResolvedWhatsAppAccount,
-} from "../web/accounts.js";
+} from "../config/whatsapp-accounts.js";
 export { isWhatsAppGroupJid, normalizeWhatsAppTarget } from "../whatsapp/normalize.js";
 export { whatsappOnboardingAdapter } from "../channels/plugins/onboarding/whatsapp.js";
 export { resolveWhatsAppHeartbeatRecipients } from "../channels/plugins/whatsapp-heartbeat.js";

@@ -7,7 +7,7 @@ import { buildSlackThreadingToolContext } from "../slack/threading-tool-context.
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
-import { resolveWhatsAppAccount } from "../web/accounts.js";
+import { resolveWhatsAppAccount } from "../config/whatsapp-accounts.js";
 import { normalizeWhatsAppTarget } from "../whatsapp/normalize.js";
 import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {

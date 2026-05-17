@@ -12,7 +12,7 @@ import { getChildLogger } from "../../logging.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
 import { formatCliCommand } from "../../cli/command-format.js";
-import { resolveWhatsAppAccount } from "../accounts.js";
+import { resolveWhatsAppAccount } from "../../config/whatsapp-accounts.js";
 import { setActiveWebListener } from "../active-listener.js";
 import { monitorWebInbox } from "../inbound.js";
 import {

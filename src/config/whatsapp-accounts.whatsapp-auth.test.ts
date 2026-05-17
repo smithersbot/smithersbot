@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { hasAnyWhatsAppAuth, listWhatsAppAuthDirs } from "./accounts.js";
+import { hasAnyWhatsAppAuth, listWhatsAppAuthDirs } from "./whatsapp-accounts.js";
 
 describe("hasAnyWhatsAppAuth", () => {
   let previousOauthDir: string | undefined;

@@ -1,12 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { MoltbotConfig } from "../config/config.js";
-import { resolveOAuthDir } from "../config/paths.js";
-import type { DmPolicy, GroupPolicy, WhatsAppAccountConfig } from "../config/types.js";
+import type { MoltbotConfig } from "./config.js";
+import { resolveOAuthDir } from "./paths.js";
+import type { DmPolicy, GroupPolicy, WhatsAppAccountConfig } from "./types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
-import { hasWebCredsSync } from "./auth-store.js";
 
 export type ResolvedWhatsAppAccount = {
   accountId: string;
@@ -29,6 +28,19 @@ export type ResolvedWhatsAppAccount = {
   groups?: WhatsAppAccountConfig["groups"];
   debounceMs?: number;
 };
+
+function resolveWebCredsPath(authDir: string): string {
+  return path.join(authDir, "creds.json");
+}
+
+export function hasWebCredsSync(authDir: string): boolean {
+  try {
+    const stats = fs.statSync(resolveWebCredsPath(authDir));
+    return stats.isFile() && stats.size > 1;
+  } catch {
+    return false;
+  }
+}
 
 function listConfiguredAccountIds(cfg: MoltbotConfig): string[] {
   const accounts = cfg.channels?.whatsapp?.accounts;

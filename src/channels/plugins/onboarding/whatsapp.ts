@@ -13,7 +13,7 @@ import {
   listWhatsAppAccountIds,
   resolveDefaultWhatsAppAccountId,
   resolveWhatsAppAuthDir,
-} from "../../../web/accounts.js";
+} from "../../../config/whatsapp-accounts.js";
 import type { WizardPrompter } from "../../../wizard/prompts.js";
 import type { ChannelOnboardingAdapter } from "../onboarding-types.js";
 import { promptAccountId } from "./helpers.js";

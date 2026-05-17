@@ -14,7 +14,7 @@ import { resolveIMessageAccount } from "../../imessage/accounts.js";
 import { resolveSignalAccount } from "../../signal/accounts.js";
 import { resolveSlackAccount } from "../../slack/accounts.js";
 import { resolveTelegramAccount } from "../../telegram/accounts.js";
-import { resolveWhatsAppAccount } from "../../web/accounts.js";
+import { resolveWhatsAppAccount } from "../../config/whatsapp-accounts.js";
 import { resolveSlackUserAllowlist } from "../../slack/resolve-users.js";
 import { resolveDiscordUserAllowlist } from "../../discord/resolve-users.js";
 import {
