@@ -429,90 +429,133 @@ describe("registerTelegramHandlers repo-chat routing", () => {
     );
   });
 
-  it("passes cfg to handleGoalAnswer for GOAL_ANSWER routes", async () => {
-    const goalCommands = await import("./goal-commands.js");
-    const handleGoalAnswerSpy = vi
-      .spyOn(goalCommands, "handleGoalAnswer")
-      .mockResolvedValue("Resuming: run-1234...");
-    const runGoalInBackgroundSpy = vi
-      .spyOn(goalCommands, "runGoalInBackground")
-      .mockImplementation((params) => {
-        void params.fn();
+  it.each([
+    {
+      routeKind: "GOAL_EDIT",
+      label: "goal-router:edit",
+      handlerName: "handleGoalEdit",
+    },
+    {
+      routeKind: "GOAL_ANSWER",
+      label: "goal-router:answer",
+      handlerName: "handleGoalAnswer",
+    },
+    {
+      routeKind: "GOAL_FEEDBACK",
+      label: "goal-router:feedback",
+      handlerName: "handleGoalFeedback",
+    },
+  ] as const)(
+    "threads reply-to context through $routeKind router runs and result replies",
+    async ({ routeKind, label, handlerName }) => {
+      const goalCommands = await import("./goal-commands.js");
+      const handlerSpy = vi
+        .spyOn(goalCommands, handlerName)
+        .mockResolvedValue("Resuming: run-1234..." as never);
+      const runGoalInBackgroundSpy = vi
+        .spyOn(goalCommands, "runGoalInBackground")
+        .mockImplementation((params) => {
+          void (async () => {
+            try {
+              await params.fn();
+              await params.onResult?.("Router result");
+            } finally {
+              params.releaseGoalLock?.();
+            }
+          })();
+        });
+
+      routeTelegramTextMock.mockReturnValue({ kind: routeKind, runId: "run-1234" });
+
+      const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+      const bot = {
+        on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+          messageHandlers.set(event, handler);
+        }),
+        api: {
+          answerCallbackQuery: vi.fn(async () => undefined),
+          editMessageText: vi.fn(async () => ({ message_id: 1 })),
+          sendMessage: vi.fn(async () => ({ message_id: 2 })),
+          setMessageReaction: vi.fn(async () => undefined),
+        },
+      };
+
+      const cfg = { goal: { claudeCodeAuth: "api_key" as const } };
+      registerTelegramHandlers({
+        cfg,
+        accountId: "telegram-account",
+        bot: bot as never,
+        opts: { token: "token" },
+        runtime: {
+          log: vi.fn(),
+          warn: vi.fn(),
+          error: vi.fn(),
+        } as never,
+        mediaMaxBytes: 8 * 1024 * 1024,
+        telegramCfg: {
+          repoChatBackend: null,
+          dmPolicy: "open",
+          chatMode: "chat",
+        } as never,
+        allowFrom: [],
+        groupAllowFrom: [],
+        resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+        resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+        shouldSkipUpdate: () => false,
+        processMessage: vi.fn(async () => undefined),
+        logger: {
+          debug: vi.fn(),
+          info: vi.fn(),
+          warn: vi.fn(),
+        } as never,
+        commandFragmentBuffer: undefined,
       });
 
-    routeTelegramTextMock.mockReturnValue({ kind: "GOAL_ANSWER", runId: "run-1234" });
+      const messageHandler = messageHandlers.get("message");
+      expect(messageHandler).toBeTypeOf("function");
+      if (!messageHandler) {
+        throw new Error("Expected Telegram message handler to be registered");
+      }
 
-    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
-    const bot = {
-      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
-        messageHandlers.set(event, handler);
-      }),
-      api: {
-        answerCallbackQuery: vi.fn(async () => undefined),
-        editMessageText: vi.fn(async () => ({ message_id: 1 })),
-        sendMessage: vi.fn(async () => ({ message_id: 2 })),
-        setMessageReaction: vi.fn(async () => undefined),
-      },
-    };
+      await messageHandler({
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 99, username: "tester" },
+          text: "details from telegram",
+          message_id: 501,
+          reply_to_message: { message_id: 400 },
+          date: 1,
+        },
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+      await vi.waitFor(() => expect(bot.api.sendMessage).toHaveBeenCalled());
 
-    const cfg = { goal: { claudeCodeAuth: "api_key" as const } };
-    registerTelegramHandlers({
-      cfg,
-      accountId: "telegram-account",
-      bot: bot as never,
-      opts: { token: "token" },
-      runtime: {
-        log: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-      } as never,
-      mediaMaxBytes: 8 * 1024 * 1024,
-      telegramCfg: {
-        repoChatBackend: null,
-        dmPolicy: "open",
-        chatMode: "chat",
-      } as never,
-      allowFrom: [],
-      groupAllowFrom: [],
-      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
-      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
-      shouldSkipUpdate: () => false,
-      processMessage: vi.fn(async () => undefined),
-      logger: {
-        debug: vi.fn(),
-        info: vi.fn(),
-        warn: vi.fn(),
-      } as never,
-      commandFragmentBuffer: undefined,
-    });
-
-    const messageHandler = messageHandlers.get("message");
-    expect(messageHandler).toBeTypeOf("function");
-    if (!messageHandler) {
-      throw new Error("Expected Telegram message handler to be registered");
-    }
-
-    await messageHandler({
-      message: {
-        chat: { id: 42, type: "private" },
-        from: { id: 99, username: "tester" },
-        text: "details from telegram",
-        message_id: 501,
-        date: 1,
-      },
-      me: { username: "moltbot_bot" },
-      getFile: async () => ({}),
-    });
-    await Promise.resolve();
-
-    expect(runGoalInBackgroundSpy).toHaveBeenCalledTimes(1);
-    expect(handleGoalAnswerSpy).toHaveBeenCalledWith(
-      "run-1234",
-      "details from telegram",
-      expect.any(Function),
-      cfg,
-    );
-  });
+      expect(runGoalInBackgroundSpy).toHaveBeenCalledTimes(1);
+      expect(runGoalInBackgroundSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          label,
+          replyToMessageId: 400,
+        }),
+      );
+      expect(handlerSpy).toHaveBeenCalledWith(
+        "run-1234",
+        "details from telegram",
+        ...(handlerName === "handleGoalEdit"
+          ? [cfg]
+          : handlerName === "handleGoalAnswer"
+            ? [expect.any(Function), cfg]
+            : [cfg, expect.any(Function)]),
+      );
+      expect(bot.api.sendMessage).toHaveBeenCalledWith(
+        42,
+        "Router result",
+        expect.objectContaining({
+          reply_parameters: { message_id: 400 },
+        }),
+      );
+    },
+  );
 
   it("appends command-anchor pending text and clears the pending callback", async () => {
     const appendHandler = vi.fn(async () => undefined);

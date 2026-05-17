@@ -781,12 +781,20 @@ export const registerTelegramHandlers = ({
             threadId: params.threadId,
             runtime,
             label: "goal-router:edit",
+            replyToMessageId,
             releaseGoalLock: editLock.release,
             fn: () => handleGoalEdit(runId, text, cfg),
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {
-                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+                await sendGoalReply(
+                  bot,
+                  chatId,
+                  result,
+                  runtime,
+                  params.threadId,
+                  replyToMessageId,
+                );
               } else {
                 await sendGoalPlanResult({
                   bot,
@@ -794,6 +802,7 @@ export const registerTelegramHandlers = ({
                   runtime,
                   result,
                   threadId: params.threadId,
+                  replyToMessageId,
                 });
               }
             },
@@ -824,12 +833,20 @@ export const registerTelegramHandlers = ({
             threadId: params.threadId,
             runtime,
             label: "goal-router:answer",
+            replyToMessageId,
             releaseGoalLock: answerLock.release,
             fn: () => handleGoalAnswer(runId, text, statusCb, cfg),
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {
-                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+                await sendGoalReply(
+                  bot,
+                  chatId,
+                  result,
+                  runtime,
+                  params.threadId,
+                  replyToMessageId,
+                );
               } else {
                 await sendGoalPlanResult({
                   bot,
@@ -837,6 +854,7 @@ export const registerTelegramHandlers = ({
                   runtime,
                   result,
                   threadId: params.threadId,
+                  replyToMessageId,
                 });
               }
             },
@@ -860,6 +878,7 @@ export const registerTelegramHandlers = ({
             threadId: params.threadId,
             runtime,
             label: "goal-router:feedback",
+            replyToMessageId,
             releaseGoalLock: feedbackLock.release,
             fn: () => {
               const statusCb = buildOnStatusChange({
@@ -874,7 +893,14 @@ export const registerTelegramHandlers = ({
             onResult: async (result) => {
               if (result == null) return;
               if (typeof result === "string") {
-                await sendGoalReply(bot, chatId, result, runtime, params.threadId);
+                await sendGoalReply(
+                  bot,
+                  chatId,
+                  result,
+                  runtime,
+                  params.threadId,
+                  replyToMessageId,
+                );
               } else {
                 await sendGoalPlanResult({
                   bot,
@@ -882,6 +908,7 @@ export const registerTelegramHandlers = ({
                   runtime,
                   result,
                   threadId: params.threadId,
+                  replyToMessageId,
                 });
               }
             },
