@@ -9,6 +9,7 @@ import {
   COMMAND_FRAGMENT_MIN_GAP_MS,
   COMMAND_FRAGMENT_MAX_PARTS,
   COMMAND_FRAGMENT_MAX_TOTAL_CHARS,
+  COMMAND_ANCHOR_TTL_MS,
   CommandFragmentBuffer,
   normalizeCommandFragmentParams,
 } from "./command-fragments.js";
@@ -248,10 +249,135 @@ describe("command-fragments", () => {
   });
 
   describe("CommandFragmentBuffer", () => {
+    function makeAnchor(nowMs: number, commandName: "new_goal" | "repo_chat" = "new_goal") {
+      return {
+        commandName,
+        anchoredAtMs: nowMs,
+        expiresAtMs: nowMs + COMMAND_ANCHOR_TTL_MS,
+        sourceMessageId: 123,
+        appendHandler: vi.fn(async () => undefined),
+      };
+    }
+
     it("clamps configured gaps to the supported range", () => {
       expect(clampCommandFragmentGapMs(1000)).toBe(COMMAND_FRAGMENT_MIN_GAP_MS);
       expect(clampCommandFragmentGapMs(15000)).toBe(COMMAND_FRAGMENT_MAX_GAP_MS);
       expect(clampCommandFragmentGapMs(120000)).toBe(COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS);
+    });
+
+    it("sets and retrieves a command anchor within its TTL", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+      const anchor = makeAnchor(Date.now());
+
+      buffer.setAnchor(key, anchor);
+      vi.advanceTimersByTime(COMMAND_ANCHOR_TTL_MS - 1);
+
+      expect(buffer.getAnchor(key)).toBe(anchor);
+    });
+
+    it("returns undefined for expired command anchors", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+
+      buffer.setAnchor(key, makeAnchor(Date.now()));
+      vi.advanceTimersByTime(COMMAND_ANCHOR_TTL_MS);
+
+      expect(buffer.getAnchor(key)).toBeUndefined();
+      expect(buffer.getAnchor(key)).toBeUndefined();
+    });
+
+    it("clears an existing anchor when buffering a different canonical command", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+      const anchor = makeAnchor(Date.now(), "new_goal");
+
+      buffer.setAnchor(key, anchor);
+      buffer.bufferCommand(key, {
+        commandName: "repo_chat",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.getAnchor(key)).toBeUndefined();
+    });
+
+    it("retains an existing anchor when rebuffering the same canonical command", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+      const anchor = makeAnchor(Date.now(), "repo_chat");
+
+      buffer.setAnchor(key, anchor);
+      buffer.bufferCommand(key, {
+        commandName: "repo_chat",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.getAnchor(key)).toBe(anchor);
+    });
+
+    it("logs command anchor set, hit, and clear decisions", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_000);
+      const logger = { debug: vi.fn() };
+      const buffer = new CommandFragmentBuffer(logger);
+      const key = "cmd:42:main:7";
+      const anchor = makeAnchor(Date.now(), "new_goal");
+
+      buffer.setAnchor(key, anchor);
+      expect(buffer.getAnchor(key)).toBe(anchor);
+      buffer.clearAnchor(key);
+
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key,
+          commandName: "new_goal",
+          anchoredAtMs: anchor.anchoredAtMs,
+          expiresAtMs: anchor.expiresAtMs,
+          sourceMessageId: anchor.sourceMessageId,
+        }),
+        "telegram command anchor set",
+      );
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key,
+          commandName: "new_goal",
+          expiresAtMs: anchor.expiresAtMs,
+        }),
+        "telegram command anchor hit",
+      );
+      expect(logger.debug).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key,
+          commandName: "new_goal",
+        }),
+        "telegram command anchor cleared",
+      );
     });
 
     it("buffers, appends, and flushes combined text", async () => {
