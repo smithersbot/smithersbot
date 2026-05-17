@@ -9,6 +9,7 @@ import {
 import { escapeRegExp, formatEnvelopeTimestamp } from "../../test/helpers/envelope-timestamp.js";
 import { expectInboundContextContract } from "../../test/helpers/inbound-contract.js";
 import { resolveTelegramFetch } from "./fetch.js";
+import { PUBLIC_TELEGRAM_MENU } from "./public-menu.js";
 import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config.js";
 
 let createTelegramBot: typeof import("./bot.js").createTelegramBot;
@@ -218,7 +219,7 @@ describe("createTelegramBot", () => {
     expect(useSpy).toHaveBeenCalledWith("throttler");
   });
 
-  it("merges custom commands with native commands", () => {
+  it("publishes only the SmithersBot public command menu", () => {
     const config = {
       channels: {
         telegram: {
@@ -237,22 +238,11 @@ describe("createTelegramBot", () => {
       command: string;
       description: string;
     }>;
-    const skillCommands = resolveSkillCommands(config);
-    const native = listNativeCommandSpecsForConfig(config, { skillCommands }).map((command) => ({
-      command: command.name,
-      description: command.description,
-    }));
-    expect(registered.slice(0, native.length)).toEqual(native);
-    // After native commands: goal command specs, then custom commands
-    const afterNative = registered.slice(native.length);
-    const customStart = afterNative.findIndex((c) => c.command === "custom_backup");
-    expect(customStart).toBeGreaterThanOrEqual(0);
-    expect(afterNative.slice(customStart)).toEqual([
-      { command: "custom_backup", description: "Git backup" },
-      { command: "custom_generate", description: "Create an image" },
-    ]);
-    // Goal commands appear before custom commands
-    expect(afterNative.some((c) => c.command === "new_goal")).toBe(true);
+    expect(registered.map((command) => command.command)).toEqual(
+      PUBLIC_TELEGRAM_MENU.map((command) => command.command),
+    );
+    expect(registered).not.toContainEqual(expect.objectContaining({ command: "custom_backup" }));
+    expect(registered).not.toContainEqual(expect.objectContaining({ command: "custom_generate" }));
   });
 
   it("ignores custom commands that collide with native commands", () => {
@@ -291,13 +281,13 @@ describe("createTelegramBot", () => {
     }));
     const nativeStatus = native.find((command) => command.command === "status");
     expect(nativeStatus).toBeDefined();
-    expect(registered).toContainEqual({ command: "custom_backup", description: "Git backup" });
+    expect(registered).not.toContainEqual({ command: "custom_backup", description: "Git backup" });
     expect(registered).not.toContainEqual({ command: "status", description: "Custom status" });
-    expect(registered.filter((command) => command.command === "status")).toEqual([nativeStatus]);
+    expect(registered.filter((command) => command.command === "status")).toEqual([]);
     expect(errorSpy).toHaveBeenCalled();
   });
 
-  it("registers custom commands when native commands are disabled", () => {
+  it("hides custom commands from the public menu when native commands are disabled", () => {
     const config = {
       commands: { native: false },
       channels: {
@@ -317,10 +307,7 @@ describe("createTelegramBot", () => {
       command: string;
       description: string;
     }>;
-    expect(registered).toEqual([
-      { command: "custom_backup", description: "Git backup" },
-      { command: "custom_generate", description: "Create an image" },
-    ]);
+    expect(registered).toEqual([]);
     const reserved = listNativeCommandSpecs().map((command) => command.name);
     expect(registered.some((command) => reserved.includes(command.command))).toBe(false);
   });

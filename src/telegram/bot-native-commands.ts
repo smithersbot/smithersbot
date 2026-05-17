@@ -54,6 +54,7 @@ import {
   NIGHTWATCH_COMMAND_SPECS,
   registerTelegramNightwatchCommand,
 } from "./nightwatch-commands.js";
+import { buildPublicTelegramMenu } from "./public-menu.js";
 import { REPO_CHAT_COMMAND_SPECS, registerTelegramRepoChatCommands } from "./repo-chat-commands.js";
 import type { CommandFragmentBuffer } from "./command-fragments.js";
 
@@ -185,12 +186,13 @@ export const registerTelegramNativeCommands = ({
     ...nightwatchSpecs,
     ...customCommands,
   ];
+  const publicMenuCommands = buildPublicTelegramMenu(allCommands);
 
   if (allCommands.length > 0) {
     withTelegramApiErrorLogging({
       operation: "setMyCommands",
       runtime,
-      fn: () => bot.api.setMyCommands(allCommands),
+      fn: () => bot.api.setMyCommands(publicMenuCommands),
     }).catch(() => {});
 
     if (typeof (bot as unknown as { command?: unknown }).command !== "function") {

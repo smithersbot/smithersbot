@@ -5,6 +5,7 @@ import type { MoltbotConfig } from "../config/config.js";
 import type { TelegramAccountConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { registerTelegramNativeCommands } from "./bot-native-commands.js";
+import { PUBLIC_TELEGRAM_MENU } from "./public-menu.js";
 
 const getPluginCommandSpecs = vi.hoisted(() => vi.fn());
 const matchPluginCommand = vi.hoisted(() => vi.fn());
@@ -102,5 +103,75 @@ describe("registerTelegramNativeCommands (plugin auth)", () => {
       }),
     );
     expect(bot.api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("publishes only the SmithersBot public menu while retaining hidden handlers", () => {
+    getPluginCommandSpecs.mockReturnValue([{ name: "plugin", description: "Plugin command" }]);
+
+    const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+    const bot = {
+      api: {
+        setMyCommands: vi.fn().mockResolvedValue(undefined),
+        sendMessage: vi.fn(),
+      },
+      on: vi.fn(),
+      command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+        const names = Array.isArray(name) ? name : [name];
+        for (const commandName of names) {
+          handlers[commandName] = handler;
+        }
+      },
+    } as const;
+
+    const cfg = {} as MoltbotConfig;
+    const telegramCfg = {} as TelegramAccountConfig;
+    const resolveGroupPolicy = () =>
+      ({
+        allowlistEnabled: false,
+        allowed: true,
+      }) as ChannelGroupPolicy;
+
+    registerTelegramNativeCommands({
+      bot: bot as unknown as Parameters<typeof registerTelegramNativeCommands>[0]["bot"],
+      cfg,
+      runtime: {} as RuntimeEnv,
+      accountId: "default",
+      telegramCfg,
+      allowFrom: ["999"],
+      groupAllowFrom: [],
+      replyToMode: "off",
+      textLimit: 4000,
+      useAccessGroups: false,
+      nativeEnabled: true,
+      nativeSkillsEnabled: false,
+      nativeDisabledExplicit: false,
+      resolveGroupPolicy,
+      resolveTelegramGroupConfig: () => ({
+        groupConfig: undefined,
+        topicConfig: undefined,
+      }),
+      shouldSkipUpdate: () => false,
+      opts: { token: "token" },
+    });
+
+    expect(bot.api.setMyCommands).toHaveBeenCalledWith(
+      PUBLIC_TELEGRAM_MENU.map(({ command }) => expect.objectContaining({ command })),
+    );
+    expect(
+      bot.api.setMyCommands.mock.calls[0]?.[0].map((entry: { command: string }) => entry.command),
+    ).toEqual(PUBLIC_TELEGRAM_MENU.map(({ command }) => command));
+    expect(handlers.goal_approve).toBeTypeOf("function");
+    expect(handlers.whoami).toBeTypeOf("function");
+    expect(handlers.goal).toBeTypeOf("function");
+    expect(handlers.rc).toBeTypeOf("function");
+    expect(bot.api.setMyCommands.mock.calls[0]?.[0]).not.toContainEqual(
+      expect.objectContaining({ command: "goal_approve" }),
+    );
+    expect(bot.api.setMyCommands.mock.calls[0]?.[0]).not.toContainEqual(
+      expect.objectContaining({ command: "whoami" }),
+    );
+    expect(bot.api.setMyCommands.mock.calls[0]?.[0]).not.toContainEqual(
+      expect.objectContaining({ command: "plugin" }),
+    );
   });
 });
