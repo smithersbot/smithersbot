@@ -131,10 +131,6 @@ type SignalMessageActions =
 type MonitorIMessageProvider = typeof import("../../imessage/monitor.js").monitorIMessageProvider;
 type ProbeIMessage = typeof import("../../imessage/probe.js").probeIMessage;
 type SendMessageIMessage = typeof import("../../imessage/send.js").sendMessageIMessage;
-type HandleWhatsAppAction =
-  typeof import("../../agents/tools/whatsapp-actions.js").handleWhatsAppAction;
-type CreateWhatsAppLoginTool =
-  typeof import("../../channels/plugins/agent-tools/whatsapp-login.js").createWhatsAppLoginTool;
 type GetActiveWebListener =
   typeof import("../../channels/plugins/whatsapp-stubs.js").getActiveWebListener;
 type GetWebAuthAgeMs = typeof import("../../channels/plugins/whatsapp-stubs.js").getWebAuthAgeMs;
@@ -331,8 +327,6 @@ export type PluginRuntime = {
       startWebLoginWithQr: StartWebLoginWithQr;
       waitForWebLogin: WaitForWebLogin;
       monitorWebChannel: MonitorWebChannel;
-      handleWhatsAppAction: HandleWhatsAppAction;
-      createLoginTool: CreateWhatsAppLoginTool;
     };
     line: {
       listLineAccountIds: ListLineAccountIds;

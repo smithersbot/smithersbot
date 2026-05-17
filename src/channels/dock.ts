@@ -8,7 +8,7 @@ import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
 import { resolveWhatsAppAccount } from "../config/whatsapp-accounts.js";
-import { normalizeWhatsAppTarget } from "../whatsapp/normalize.js";
+import { normalizeWhatsAppTarget } from "./plugins/whatsapp-normalize.js";
 import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {
   resolveDiscordGroupRequireMention,
