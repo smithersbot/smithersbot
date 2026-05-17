@@ -628,7 +628,6 @@ Look across the goal system and Telegram integration for:
 Look for inconsistencies across workflows where a bug fix, UX pattern, or quality-of-life improvement exists in one place but is missing from analogous workflows that would benefit equally.
 Concrete example:
 - For /new_goal, the "Right away, sir." acknowledgment replies to the user's message so the user sees which goal is being planned.
-- Plan and blocked-action button handlers add emoji reactions to acknowledge clicks, but done-message callbacks (gTD/gIF) do not add reactions, so users get inconsistent visual feedback across similar button workflows.
 Find and prioritize similar patterns where one workflow already has a good practice (like reply-to-message context) and other workflows lack it.
 This is one example pattern — look broadly for any good practice that exists in one workflow but is missing from analogous workflows.
 

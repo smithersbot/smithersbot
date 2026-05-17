@@ -192,6 +192,10 @@ describe("nightwatch cron", () => {
       expect(prompt).toContain("Telegram UX integration");
       expect(prompt).toContain("Architecture simplification");
       expect(prompt).toContain("Cross-workflow consistency");
+      expect(prompt).toContain(
+        "Find and prioritize similar patterns where one workflow already has a good practice",
+      );
+      expect(prompt).not.toContain("done-message callbacks (gTD/gIF) do not add reactions");
       expect(prompt).toContain("Security concerns");
       expect(prompt).toContain("src/security/audit.ts");
       expect(prompt).toContain("OWASP Top 10");
