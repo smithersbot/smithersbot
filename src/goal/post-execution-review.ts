@@ -15,6 +15,9 @@ import type { GoalSession, PlanStep } from "./types.js";
 export const POST_EXECUTION_REVIEW_TIMEOUT_MS = 300_000;
 export const POST_EXECUTION_REVIEW_MAX_ISSUES = 8;
 export const POST_EXECUTION_REVIEW_ERROR_MAX_CHARS = 400;
+// Rough ~45K-token budget; leaves headroom for the prompt scaffold and the
+// model's reply within ~200K input context.
+export const POST_EXECUTION_REVIEW_DIFF_MAX_CHARS = 180_000;
 
 export type PostExecutionReviewDecision = {
   approved: boolean;
@@ -141,11 +144,126 @@ export function truncateSingleLine(text: string): string {
   return truncateCompactSingleLine(text, POST_EXECUTION_REVIEW_ERROR_MAX_CHARS);
 }
 
+/**
+ * Parse the first balanced top-level JSON object from a Claude CLI stdout. If
+ * it looks like the structured api-error envelope (`is_error === true` and a
+ * numeric `api_error_status`), return a short human-readable reason. Otherwise
+ * return undefined so callers fall through to other failure heuristics.
+ */
+export function describeApiErrorEnvelope(stdout: string): string | undefined {
+  const [first] = extractJsonObjectCandidates(stdout);
+  if (!first) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(first);
+  } catch {
+    try {
+      parsed = JSON.parse(repairJsonText(first));
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!isRecord(parsed)) return undefined;
+  if (parsed.is_error !== true) return undefined;
+  if (typeof parsed.api_error_status !== "number") return undefined;
+
+  const resultText = typeof parsed.result === "string" ? parsed.result : undefined;
+  const stopReason = typeof parsed.stop_reason === "string" ? parsed.stop_reason : undefined;
+  const detail =
+    resultText && resultText.length > 0
+      ? resultText
+      : stopReason && stopReason.length > 0
+        ? stopReason
+        : "no detail";
+
+  let message = `API ${parsed.api_error_status}: ${detail}`;
+  if (
+    resultText &&
+    (resultText.includes("Prompt is too long") || resultText.includes("context length"))
+  ) {
+    message +=
+      " (diff likely too large — consider raising POST_EXECUTION_REVIEW_DIFF_MAX_CHARS or splitting the goal)";
+  }
+  return message;
+}
+
 export function describeCliFailure(result: RunCliProcessResult): string {
+  const envelope = describeApiErrorEnvelope(result.stdout);
+  if (envelope) return envelope;
   const detail = truncateSingleLine(result.stderr) || truncateSingleLine(result.stdout);
   if (detail) return detail;
   if (result.signal) return `terminated by ${result.signal}`;
   return `exit=${result.exitCode ?? "unknown"}`;
+}
+
+/**
+ * Split a unified diff on `diff --git a/<path> b/<path>` boundaries. Each
+ * returned chunk starts with its own header line so it remains a valid
+ * standalone diff when fed to a reviewer in isolation.
+ */
+export function splitDiffByFile(diff: string): Array<{ path: string; chunk: string }> {
+  if (!diff) return [];
+  const headerRegex = /^diff --git a\/(\S+) b\/\S+/gm;
+  const positions: Array<{ index: number; path: string }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = headerRegex.exec(diff)) !== null) {
+    positions.push({ index: match.index, path: match[1] ?? "<unknown>" });
+  }
+  if (positions.length === 0) return [];
+
+  const result: Array<{ path: string; chunk: string }> = [];
+  for (let i = 0; i < positions.length; i += 1) {
+    const start = positions[i]!.index;
+    const end = i + 1 < positions.length ? positions[i + 1]!.index : diff.length;
+    result.push({ path: positions[i]!.path, chunk: diff.slice(start, end) });
+  }
+  return result;
+}
+
+export type BoundedDiff =
+  | { kind: "single"; diff: string }
+  | {
+      kind: "chunks";
+      chunks: Array<{ path: string; diff: string }>;
+      truncatedFiles: string[];
+    };
+
+/**
+ * Return `{ kind: "single", diff }` when the diff fits the budget, otherwise
+ * return per-file chunks. Any single per-file chunk larger than `maxChars` is
+ * truncated to `maxChars` with a sentinel appended and its path recorded.
+ */
+export function buildBoundedDiffOrChunks(diff: string, maxChars: number): BoundedDiff {
+  if (diff.length <= maxChars) return { kind: "single", diff };
+
+  const parts = splitDiffByFile(diff);
+  if (parts.length === 0) {
+    // Diff doesn't match the standard `diff --git` shape — treat the whole
+    // thing as a single oversized chunk so callers still get a bounded review.
+    const overflow = diff.length - maxChars;
+    const truncated = `${diff.slice(0, maxChars)}\n... [diff truncated: ${overflow} more bytes in this file]`;
+    return {
+      kind: "chunks",
+      chunks: [{ path: "<diff>", diff: truncated }],
+      truncatedFiles: ["<diff>"],
+    };
+  }
+
+  const truncatedFiles: string[] = [];
+  const chunks: Array<{ path: string; diff: string }> = [];
+  for (const part of parts) {
+    if (part.chunk.length <= maxChars) {
+      chunks.push({ path: part.path, diff: part.chunk });
+      continue;
+    }
+    const overflow = part.chunk.length - maxChars;
+    const truncated = `${part.chunk.slice(0, maxChars)}\n... [diff truncated: ${overflow} more bytes in this file]`;
+    chunks.push({ path: part.path, diff: truncated });
+    truncatedFiles.push(part.path);
+  }
+  return { kind: "chunks", chunks, truncatedFiles };
 }
 
 export function resolvePostExecutionReviewBaseSha(
@@ -203,29 +321,17 @@ export function buildPostExecutionReviewPrompt(params: {
   ].join("\n");
 }
 
-export async function runPostExecutionReview(params: {
-  goal: string;
-  steps: PlanStep[];
-  diff: string;
+async function runSingleReviewPass(params: {
+  prompt: string;
   workingDir: string;
   claudeCodeAuth: ClaudeCodeAuthMode;
   abortSignal: AbortSignal;
+  claudeBinary: string;
 }): Promise<PostExecutionReviewResult> {
-  const claudeBinary = resolveClaudeBinary();
-  if (!claudeBinary) {
-    return { status: "error", reason: "claude binary not found on PATH" };
-  }
-
-  const reviewPrompt = buildPostExecutionReviewPrompt({
-    goal: params.goal,
-    steps: params.steps,
-    diff: params.diff,
-  });
-
   let result: RunCliProcessResult;
   try {
     result = await runCliProcess({
-      command: claudeBinary,
+      command: params.claudeBinary,
       args: [
         "-p",
         "--output-format",
@@ -239,7 +345,7 @@ export async function runPostExecutionReview(params: {
       ],
       cwd: params.workingDir,
       timeoutMs: POST_EXECUTION_REVIEW_TIMEOUT_MS,
-      stdin: reviewPrompt,
+      stdin: params.prompt,
       abortSignal: params.abortSignal,
       env: buildClaudeCodeEnv(params.claudeCodeAuth),
     });
@@ -268,4 +374,92 @@ export async function runPostExecutionReview(params: {
   return decision.approved
     ? { status: "approved", issues: decision.issues }
     : { status: "rejected", issues: decision.issues };
+}
+
+export async function runPostExecutionReview(params: {
+  goal: string;
+  steps: PlanStep[];
+  diff: string;
+  workingDir: string;
+  claudeCodeAuth: ClaudeCodeAuthMode;
+  abortSignal: AbortSignal;
+}): Promise<PostExecutionReviewResult> {
+  const claudeBinary = resolveClaudeBinary();
+  if (!claudeBinary) {
+    return { status: "error", reason: "claude binary not found on PATH" };
+  }
+
+  const bounded = buildBoundedDiffOrChunks(params.diff, POST_EXECUTION_REVIEW_DIFF_MAX_CHARS);
+
+  if (bounded.kind === "single") {
+    const prompt = buildPostExecutionReviewPrompt({
+      goal: params.goal,
+      steps: params.steps,
+      diff: bounded.diff,
+    });
+    return runSingleReviewPass({
+      prompt,
+      workingDir: params.workingDir,
+      claudeCodeAuth: params.claudeCodeAuth,
+      abortSignal: params.abortSignal,
+      claudeBinary,
+    });
+  }
+
+  const totalChunks = bounded.chunks.length;
+  const mergedIssues: string[] = [];
+  const seenIssues = new Set<string>();
+  let anyRejected = false;
+
+  for (let i = 0; i < totalChunks; i += 1) {
+    if (params.abortSignal.aborted) {
+      return { status: "error", reason: "review aborted" };
+    }
+    const chunk = bounded.chunks[i]!;
+    const basePrompt = buildPostExecutionReviewPrompt({
+      goal: params.goal,
+      steps: params.steps,
+      diff: chunk.diff,
+    });
+    const chunkPrompt = [
+      `You are reviewing one file out of ${totalChunks}. Focus on issues local to this file. Other files may add context you cannot see.`,
+      "",
+      basePrompt,
+    ].join("\n");
+
+    const chunkResult = await runSingleReviewPass({
+      prompt: chunkPrompt,
+      workingDir: params.workingDir,
+      claudeCodeAuth: params.claudeCodeAuth,
+      abortSignal: params.abortSignal,
+      claudeBinary,
+    });
+
+    if (chunkResult.status === "error") {
+      return { status: "error", reason: `${chunk.path}: ${chunkResult.reason}` };
+    }
+
+    if (chunkResult.status === "rejected") {
+      anyRejected = true;
+    }
+    for (const issue of chunkResult.issues) {
+      if (seenIssues.has(issue)) continue;
+      seenIssues.add(issue);
+      mergedIssues.push(issue);
+      if (mergedIssues.length >= POST_EXECUTION_REVIEW_MAX_ISSUES) break;
+    }
+    if (mergedIssues.length >= POST_EXECUTION_REVIEW_MAX_ISSUES) break;
+  }
+
+  if (bounded.truncatedFiles.length > 0 && mergedIssues.length < POST_EXECUTION_REVIEW_MAX_ISSUES) {
+    const truncationIssue = `Diff for these files was truncated and not fully reviewed: ${bounded.truncatedFiles.join(", ")}`;
+    if (!seenIssues.has(truncationIssue)) {
+      seenIssues.add(truncationIssue);
+      mergedIssues.push(truncationIssue);
+    }
+  }
+
+  return anyRejected
+    ? { status: "rejected", issues: mergedIssues }
+    : { status: "approved", issues: mergedIssues };
 }
