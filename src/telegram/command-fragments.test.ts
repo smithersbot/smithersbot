@@ -260,8 +260,8 @@ describe("command-fragments", () => {
     }
 
     it("clamps configured gaps to the supported range", () => {
-      expect(clampCommandFragmentGapMs(1000)).toBe(COMMAND_FRAGMENT_MIN_GAP_MS);
-      expect(clampCommandFragmentGapMs(15000)).toBe(COMMAND_FRAGMENT_MAX_GAP_MS);
+      expect(clampCommandFragmentGapMs(100)).toBe(COMMAND_FRAGMENT_MIN_GAP_MS);
+      expect(clampCommandFragmentGapMs(15000)).toBe(15000);
       expect(clampCommandFragmentGapMs(120000)).toBe(COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS);
     });
 
@@ -409,60 +409,6 @@ describe("command-fragments", () => {
       expect(buffer.hasPending(key)).toBe(false);
     });
 
-    it("sends the buffering ack once on bufferCommand and never on tryAppend", async () => {
-      vi.useFakeTimers();
-      const buffer = new CommandFragmentBuffer();
-      const flushCallback = vi.fn(async () => undefined);
-      const newGoalAck = vi.fn(async () => undefined);
-      const repoChatAck = vi.fn(async () => undefined);
-
-      buffer.bufferCommand("cmd:42:main:7", {
-        commandName: "new_goal",
-        text: "first",
-        firstMessageId: 100,
-        receivedAtMs: 10,
-        dispatch: {
-          chatId: 42,
-          senderId: "7",
-          sourceMessageId: 100,
-          accountId: "default",
-        },
-        flushCallback,
-        ackReply: newGoalAck,
-      });
-      await Promise.resolve();
-      expect(buffer.tryAppend("cmd:42:main:7", 101, "second", 20)).toBe(true);
-      await Promise.resolve();
-
-      expect(newGoalAck).toHaveBeenCalledTimes(1);
-      expect(newGoalAck).toHaveBeenCalledWith(
-        "Buffering /new_goal — keep pasting, I will combine for up to 15s.",
-      );
-
-      buffer.bufferCommand("cmd:42:main:8", {
-        commandName: "repo_chat",
-        text: "first",
-        firstMessageId: 200,
-        receivedAtMs: 10,
-        dispatch: {
-          chatId: 42,
-          senderId: "8",
-          sourceMessageId: 200,
-          accountId: "default",
-        },
-        flushCallback,
-        ackReply: repoChatAck,
-      });
-      await Promise.resolve();
-      expect(buffer.tryAppend("cmd:42:main:8", 201, "second", 20)).toBe(true);
-      await Promise.resolve();
-
-      expect(repoChatAck).toHaveBeenCalledTimes(1);
-      expect(repoChatAck).toHaveBeenCalledWith(
-        "Buffering /repo_chat — keep pasting, I will combine for up to 15s.",
-      );
-    });
-
     it("auto-flushes after timeout", async () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();
@@ -558,9 +504,9 @@ describe("command-fragments", () => {
       );
     });
 
-    it("allows append within the default 15s window", () => {
+    it("allows append within the default 2s window", () => {
       vi.useFakeTimers();
-      expect(COMMAND_FRAGMENT_MAX_GAP_MS).toBe(15000);
+      expect(COMMAND_FRAGMENT_MAX_GAP_MS).toBe(2000);
       const buffer = new CommandFragmentBuffer();
       const key = "cmd:42:main:7";
 
@@ -579,6 +525,45 @@ describe("command-fragments", () => {
       });
 
       expect(buffer.tryAppend(key, 101, "second", 10 + COMMAND_FRAGMENT_MAX_GAP_MS)).toBe(true);
+    });
+
+    it("merges 1500ms fragments but rejects fragments 2500ms apart by default", () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const firstKey = "cmd:42:main:7";
+      const secondKey = "cmd:42:main:8";
+
+      buffer.bufferCommand(firstKey, {
+        commandName: "new_goal",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.tryAppend(firstKey, 101, "second", 1510)).toBe(true);
+
+      buffer.bufferCommand(secondKey, {
+        commandName: "repo_chat",
+        text: "first",
+        firstMessageId: 200,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "8",
+          sourceMessageId: 200,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.tryAppend(secondKey, 201, "second", 2510)).toBe(false);
     });
 
     it("honors a per-instance gap override", () => {

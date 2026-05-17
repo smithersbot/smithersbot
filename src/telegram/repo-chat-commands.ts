@@ -484,15 +484,6 @@ export function registerTelegramRepoChatCommands({
             },
           });
         },
-        ackReply: (msg) =>
-          sendRepoChatReply({
-            bot,
-            runtime,
-            chatId: resolved.chatId,
-            threadId: resolved.threadIdForSend,
-            text: msg,
-            replyToMessageId: resolved.sourceMessageId,
-          }).then(() => undefined),
       });
       return;
     }

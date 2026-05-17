@@ -1,10 +1,12 @@
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 import type { TelegramMessage } from "./bot/types.js";
 
-// Wait up to 15s for the next chunk. Long Telegram pastes may be split and
-// delivered with human-scale pauses between chunks.
-export const COMMAND_FRAGMENT_MAX_GAP_MS = 15000;
-export const COMMAND_FRAGMENT_MIN_GAP_MS = 3000;
+// Wait up to 2s for the next chunk. Telegram client-side auto-splits a long
+// paste into ~4096-char parts that arrive back-to-back through the Bot API
+// (typically <500ms apart, ~1s worst-case on slow uplinks). Longer gaps risk
+// stitching unrelated user messages.
+export const COMMAND_FRAGMENT_MAX_GAP_MS = 2000;
+export const COMMAND_FRAGMENT_MIN_GAP_MS = 500;
 export const COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS = 60000;
 // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
 // The time gap is the primary guard against false matches.
@@ -40,7 +42,6 @@ export type CommandFragmentBufferEntry = {
   text: string;
   dispatch: CommandFragmentDispatchMetadata;
   flushCallback: (combinedText: string) => void | Promise<void>;
-  ackReply?: (text: string) => Promise<void>;
 };
 
 export type CommandAnchor = {
@@ -62,8 +63,6 @@ type CommandFragmentState = {
   lastReceivedAtMs: number;
   timer: ReturnType<typeof setTimeout>;
   flushCallback: (combinedText: string) => void | Promise<void>;
-  ackReply?: (text: string) => Promise<void>;
-  ackSent: boolean;
 };
 
 type CommandFragmentDebugLogger = {
@@ -139,12 +138,9 @@ export class CommandFragmentBuffer {
       lastReceivedAtMs: entry.receivedAtMs,
       timer: setTimeout(() => {}, this.gapMs),
       flushCallback: entry.flushCallback,
-      ackReply: entry.ackReply,
-      ackSent: false,
     };
 
     this.entries.set(key, state);
-    this.sendBufferAck(key, state);
     this.logDebug("telegram command fragment buffer created", {
       key,
       commandName: entry.commandName,
@@ -302,24 +298,6 @@ export class CommandFragmentBuffer {
     entry.timer = setTimeout(() => {
       void this.flush(key).catch(() => undefined);
     }, this.gapMs);
-  }
-
-  private sendBufferAck(key: string, entry: CommandFragmentState): void {
-    if (entry.ackSent || !entry.ackReply) return;
-
-    entry.ackSent = true;
-    const gapSeconds = Math.round(this.gapMs / 1000);
-    void entry
-      .ackReply(
-        `Buffering /${entry.commandName} — keep pasting, I will combine for up to ${gapSeconds}s.`,
-      )
-      .catch((err) => {
-        this.logDebug("telegram command fragment ack failed", {
-          key,
-          commandName: entry.commandName,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
   }
 
   private logDebug(message: string, fields: Record<string, unknown>): void {
