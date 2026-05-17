@@ -358,38 +358,6 @@ export async function withChatAction<T>(params: {
   }
 }
 
-/**
- * Send a short preface message, then run `fn` with an immediate typing loop.
- * Applied only to planning / replanning paths.
- */
-export async function withPlanningFeedback<T>(params: {
-  bot: Bot;
-  chatId: number;
-  threadId?: number;
-  label?: string;
-  fn: () => Promise<T>;
-}): Promise<T> {
-  const { bot, chatId, threadId, label, fn } = params;
-  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  const tag = label ? `${label} ` : "";
-
-  // Preface: instant acknowledgement
-  logTyping(`${tag}preface chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
-  await bot.api.sendMessage(chatId, PLANNING_PREFACE, threadParams).catch((err: unknown) => {
-    logTyping(
-      `${tag}preface error chatId=${chatId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  });
-
-  // Start typing immediately (no delay)
-  const loop = startTypingLoop({ bot, chatId, threadId, label });
-  try {
-    return await fn();
-  } finally {
-    loop.stop();
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Fire-and-forget helper for long-running goal ops
 // ---------------------------------------------------------------------------
