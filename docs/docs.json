@@ -999,7 +999,6 @@
           "channels/index",
           "channels/telegram",
           "channels/grammy",
-          "channels/discord",
           "channels/slack",
           "channels/googlechat",
           "channels/mattermost",

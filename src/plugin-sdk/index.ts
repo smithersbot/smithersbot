@@ -95,7 +95,6 @@ export type {
   MSTeamsTeamConfig,
 } from "../config/types.js";
 export {
-  DiscordConfigSchema,
   GoogleChatConfigSchema,
   IMessageConfigSchema,
   MSTeamsConfigSchema,
@@ -147,13 +146,11 @@ export { formatLocationText, toLocationContext } from "../channels/location.js";
 export { resolveControlCommandGate } from "../channels/command-gating.js";
 export {
   resolveBlueBubblesGroupRequireMention,
-  resolveDiscordGroupRequireMention,
   resolveGoogleChatGroupRequireMention,
   resolveIMessageGroupRequireMention,
   resolveSlackGroupRequireMention,
   resolveTelegramGroupRequireMention,
   resolveBlueBubblesGroupToolPolicy,
-  resolveDiscordGroupToolPolicy,
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupToolPolicy,
   resolveSlackGroupToolPolicy,
@@ -168,8 +165,6 @@ export {
   resolveNestedAllowlistDecision,
 } from "../channels/plugins/channel-config.js";
 export {
-  listDiscordDirectoryGroupsFromConfig,
-  listDiscordDirectoryPeersFromConfig,
   listSlackDirectoryGroupsFromConfig,
   listSlackDirectoryPeersFromConfig,
   listTelegramDirectoryGroupsFromConfig,
@@ -235,21 +230,6 @@ export type {
 } from "../infra/diagnostic-events.js";
 export { detectMime, extensionForMime, getFileExtension } from "../media/mime.js";
 export { extractOriginalFilename } from "../media/store.js";
-
-// Channel: Discord
-export {
-  listDiscordAccountIds,
-  resolveDefaultDiscordAccountId,
-  resolveDiscordAccount,
-  type ResolvedDiscordAccount,
-} from "../discord/accounts.js";
-export { collectDiscordAuditChannelIds } from "../discord/audit.js";
-export { discordOnboardingAdapter } from "../channels/plugins/onboarding/discord.js";
-export {
-  looksLikeDiscordTargetId,
-  normalizeDiscordMessagingTarget,
-} from "../channels/plugins/normalize/discord.js";
-export { collectDiscordStatusIssues } from "../channels/plugins/status-issues/discord.js";
 
 // Channel: iMessage
 export {

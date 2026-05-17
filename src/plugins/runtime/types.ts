@@ -85,22 +85,6 @@ type CreateMemoryGetTool = typeof import("../../agents/tools/memory-tool.js").cr
 type CreateMemorySearchTool =
   typeof import("../../agents/tools/memory-tool.js").createMemorySearchTool;
 type RegisterMemoryCli = typeof import("../../cli/memory-cli.js").registerMemoryCli;
-type DiscordMessageActions =
-  typeof import("../../channels/plugins/actions/discord.js").discordMessageActions;
-type AuditDiscordChannelPermissions =
-  typeof import("../../discord/audit.js").auditDiscordChannelPermissions;
-type ListDiscordDirectoryGroupsLive =
-  typeof import("../../discord/directory-live.js").listDiscordDirectoryGroupsLive;
-type ListDiscordDirectoryPeersLive =
-  typeof import("../../discord/directory-live.js").listDiscordDirectoryPeersLive;
-type ProbeDiscord = typeof import("../../discord/probe.js").probeDiscord;
-type ResolveDiscordChannelAllowlist =
-  typeof import("../../discord/resolve-channels.js").resolveDiscordChannelAllowlist;
-type ResolveDiscordUserAllowlist =
-  typeof import("../../discord/resolve-users.js").resolveDiscordUserAllowlist;
-type SendMessageDiscord = typeof import("../../discord/send.js").sendMessageDiscord;
-type SendPollDiscord = typeof import("../../discord/send.js").sendPollDiscord;
-type MonitorDiscordProvider = typeof import("../../discord/monitor.js").monitorDiscordProvider;
 type ListSlackDirectoryGroupsLive =
   typeof import("../../slack/directory-live.js").listSlackDirectoryGroupsLive;
 type ListSlackDirectoryPeersLive =
@@ -255,18 +239,6 @@ export type PluginRuntime = {
       isControlCommandMessage: IsControlCommandMessage;
       shouldComputeCommandAuthorized: ShouldComputeCommandAuthorized;
       shouldHandleTextCommands: ShouldHandleTextCommands;
-    };
-    discord: {
-      messageActions: DiscordMessageActions;
-      auditChannelPermissions: AuditDiscordChannelPermissions;
-      listDirectoryGroupsLive: ListDiscordDirectoryGroupsLive;
-      listDirectoryPeersLive: ListDiscordDirectoryPeersLive;
-      probeDiscord: ProbeDiscord;
-      resolveChannelAllowlist: ResolveDiscordChannelAllowlist;
-      resolveUserAllowlist: ResolveDiscordUserAllowlist;
-      sendMessageDiscord: SendMessageDiscord;
-      sendPollDiscord: SendPollDiscord;
-      monitorDiscordProvider: MonitorDiscordProvider;
     };
     slack: {
       listDirectoryGroupsLive: ListSlackDirectoryGroupsLive;

@@ -3,7 +3,6 @@ import { getChannelPlugin } from "../../channels/plugins/index.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
 import type { MoltbotConfig } from "../../config/config.js";
 import { recordSessionMetaFromInbound, resolveStorePath } from "../../config/sessions.js";
-import { parseDiscordTarget } from "../../discord/targets.js";
 import { parseIMessageTarget, normalizeIMessageHandle } from "../../imessage/targets.js";
 import {
   buildAgentSessionKey,
@@ -222,42 +221,6 @@ async function resolveSlackSession(
           : `slack:channel:${parsed.id}`,
     to: peerKind === "dm" ? `user:${parsed.id}` : `channel:${parsed.id}`,
     threadId,
-  };
-}
-
-function resolveDiscordSession(
-  params: ResolveOutboundSessionRouteParams,
-): OutboundSessionRoute | null {
-  const parsed = parseDiscordTarget(params.target, { defaultKind: "channel" });
-  if (!parsed) return null;
-  const isDm = parsed.kind === "user";
-  const peer: RoutePeer = {
-    kind: isDm ? "dm" : "channel",
-    id: parsed.id,
-  };
-  const baseSessionKey = buildBaseSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    channel: "discord",
-    accountId: params.accountId,
-    peer,
-  });
-  const explicitThreadId = normalizeThreadId(params.threadId);
-  const threadCandidate = explicitThreadId ?? normalizeThreadId(params.replyToId);
-  // Discord threads use their own channel id; avoid adding a :thread suffix.
-  const threadKeys = resolveThreadSessionKeys({
-    baseSessionKey,
-    threadId: threadCandidate,
-    useSuffix: false,
-  });
-  return {
-    sessionKey: threadKeys.sessionKey,
-    baseSessionKey,
-    peer,
-    chatType: isDm ? "direct" : "channel",
-    from: isDm ? `discord:${parsed.id}` : `discord:channel:${parsed.id}`,
-    to: isDm ? `user:${parsed.id}` : `channel:${parsed.id}`,
-    threadId: explicitThreadId ?? undefined,
   };
 }
 
@@ -762,8 +725,6 @@ export async function resolveOutboundSessionRoute(
   switch (params.channel) {
     case "slack":
       return await resolveSlackSession({ ...params, target });
-    case "discord":
-      return resolveDiscordSession({ ...params, target });
     case "telegram":
       return resolveTelegramSession({ ...params, target });
     case "signal":

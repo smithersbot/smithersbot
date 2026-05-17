@@ -10,7 +10,6 @@ import { loadChannelOutboundAdapter } from "../../channels/plugins/outbound/load
 import type { ChannelOutboundAdapter } from "../../channels/plugins/types.js";
 import type { MoltbotConfig } from "../../config/config.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
-import type { sendMessageDiscord } from "../../discord/send.js";
 import type { sendMessageIMessage } from "../../imessage/send.js";
 import { markdownToSignalTextChunks, type SignalTextStyleRange } from "../../signal/format.js";
 import { sendMessageSignal } from "../../signal/send.js";
@@ -35,7 +34,6 @@ type SendMatrixMessage = (
 
 export type OutboundSendDeps = {
   sendTelegram?: typeof sendMessageTelegram;
-  sendDiscord?: typeof sendMessageDiscord;
   sendSlack?: typeof sendMessageSlack;
   sendSignal?: typeof sendMessageSignal;
   sendIMessage?: typeof sendMessageIMessage;

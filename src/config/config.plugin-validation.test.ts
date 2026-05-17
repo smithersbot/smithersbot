@@ -145,7 +145,7 @@ describe("config plugin validation", () => {
       const { validateConfigObjectWithPlugins } = await import("./config.js");
       const res = validateConfigObjectWithPlugins({
         agents: { list: [{ id: "pi" }] },
-        plugins: { enabled: false, entries: { discord: { enabled: true } } },
+        plugins: { enabled: false, entries: { slack: { enabled: true } } },
       });
       expect(res.ok).toBe(true);
     });

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MoltbotConfig } from "../config/config.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { runSecurityAudit } from "./audit.js";
-import { discordPlugin } from "../../extensions/discord/src/channel.js";
 import { slackPlugin } from "../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import fs from "node:fs/promises";
@@ -390,141 +389,6 @@ describe("security audit", () => {
     );
   });
 
-  it("flags Discord native commands without a guild user allowlist", async () => {
-    const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-discord-"));
-    process.env.CLAWDBOT_STATE_DIR = tmp;
-    await fs.mkdir(path.join(tmp, "credentials"), { recursive: true, mode: 0o700 });
-    try {
-      const cfg: MoltbotConfig = {
-        channels: {
-          discord: {
-            enabled: true,
-            token: "t",
-            groupPolicy: "allowlist",
-            guilds: {
-              "123": {
-                channels: {
-                  general: { allow: true },
-                },
-              },
-            },
-          },
-        },
-      };
-
-      const res = await runSecurityAudit({
-        config: cfg,
-        includeFilesystem: false,
-        includeChannelSecurity: true,
-        plugins: [discordPlugin],
-      });
-
-      expect(res.findings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            checkId: "channels.discord.commands.native.no_allowlists",
-            severity: "warn",
-          }),
-        ]),
-      );
-    } finally {
-      if (prevStateDir == null) delete process.env.CLAWDBOT_STATE_DIR;
-      else process.env.CLAWDBOT_STATE_DIR = prevStateDir;
-    }
-  });
-
-  it("does not flag Discord slash commands when dm.allowFrom includes a Discord snowflake id", async () => {
-    const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
-    const tmp = await fs.mkdtemp(
-      path.join(os.tmpdir(), "moltbot-security-audit-discord-allowfrom-snowflake-"),
-    );
-    process.env.CLAWDBOT_STATE_DIR = tmp;
-    await fs.mkdir(path.join(tmp, "credentials"), { recursive: true, mode: 0o700 });
-    try {
-      const cfg: MoltbotConfig = {
-        channels: {
-          discord: {
-            enabled: true,
-            token: "t",
-            dm: { allowFrom: ["387380367612706819"] },
-            groupPolicy: "allowlist",
-            guilds: {
-              "123": {
-                channels: {
-                  general: { allow: true },
-                },
-              },
-            },
-          },
-        },
-      };
-
-      const res = await runSecurityAudit({
-        config: cfg,
-        includeFilesystem: false,
-        includeChannelSecurity: true,
-        plugins: [discordPlugin],
-      });
-
-      expect(res.findings).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            checkId: "channels.discord.commands.native.no_allowlists",
-          }),
-        ]),
-      );
-    } finally {
-      if (prevStateDir == null) delete process.env.CLAWDBOT_STATE_DIR;
-      else process.env.CLAWDBOT_STATE_DIR = prevStateDir;
-    }
-  });
-
-  it("flags Discord slash commands when access-group enforcement is disabled and no users allowlist exists", async () => {
-    const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-discord-open-"));
-    process.env.CLAWDBOT_STATE_DIR = tmp;
-    await fs.mkdir(path.join(tmp, "credentials"), { recursive: true, mode: 0o700 });
-    try {
-      const cfg: MoltbotConfig = {
-        commands: { useAccessGroups: false },
-        channels: {
-          discord: {
-            enabled: true,
-            token: "t",
-            groupPolicy: "allowlist",
-            guilds: {
-              "123": {
-                channels: {
-                  general: { allow: true },
-                },
-              },
-            },
-          },
-        },
-      };
-
-      const res = await runSecurityAudit({
-        config: cfg,
-        includeFilesystem: false,
-        includeChannelSecurity: true,
-        plugins: [discordPlugin],
-      });
-
-      expect(res.findings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            checkId: "channels.discord.commands.native.unrestricted",
-            severity: "critical",
-          }),
-        ]),
-      );
-    } finally {
-      if (prevStateDir == null) delete process.env.CLAWDBOT_STATE_DIR;
-      else process.env.CLAWDBOT_STATE_DIR = prevStateDir;
-    }
-  });
-
   it("flags Slack slash commands without a channel users allowlist", async () => {
     const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-slack-"));
@@ -874,11 +738,9 @@ describe("security audit", () => {
   });
 
   it("flags extensions without plugins.allow", async () => {
-    const prevDiscordToken = process.env.DISCORD_BOT_TOKEN;
     const prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
     const prevSlackBotToken = process.env.SLACK_BOT_TOKEN;
     const prevSlackAppToken = process.env.SLACK_APP_TOKEN;
-    delete process.env.DISCORD_BOT_TOKEN;
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.SLACK_BOT_TOKEN;
     delete process.env.SLACK_APP_TOKEN;
@@ -905,8 +767,6 @@ describe("security audit", () => {
         ]),
       );
     } finally {
-      if (prevDiscordToken == null) delete process.env.DISCORD_BOT_TOKEN;
-      else process.env.DISCORD_BOT_TOKEN = prevDiscordToken;
       if (prevTelegramToken == null) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
       if (prevSlackBotToken == null) delete process.env.SLACK_BOT_TOKEN;
@@ -917,8 +777,8 @@ describe("security audit", () => {
   });
 
   it("flags unallowlisted extensions as critical when native skill commands are exposed", async () => {
-    const prevDiscordToken = process.env.DISCORD_BOT_TOKEN;
-    delete process.env.DISCORD_BOT_TOKEN;
+    const prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_BOT_TOKEN;
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-"));
     const stateDir = path.join(tmp, "state");
     await fs.mkdir(path.join(stateDir, "extensions", "some-plugin"), {
@@ -929,7 +789,7 @@ describe("security audit", () => {
     try {
       const cfg: MoltbotConfig = {
         channels: {
-          discord: { enabled: true, token: "t" },
+          telegram: { enabled: true, botToken: "t" },
         },
       };
       const res = await runSecurityAudit({
@@ -949,8 +809,8 @@ describe("security audit", () => {
         ]),
       );
     } finally {
-      if (prevDiscordToken == null) delete process.env.DISCORD_BOT_TOKEN;
-      else process.env.DISCORD_BOT_TOKEN = prevDiscordToken;
+      if (prevTelegramToken == null) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
     }
   });
 

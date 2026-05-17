@@ -25,11 +25,6 @@ vi.mock("../gateway/call.js", () => ({
   randomIdempotencyKey: () => "idem-1",
 }));
 
-const handleDiscordAction = vi.fn(async () => ({ details: { ok: true } }));
-vi.mock("../agents/tools/discord-actions.js", () => ({
-  handleDiscordAction: (...args: unknown[]) => handleDiscordAction(...args),
-}));
-
 const handleSlackAction = vi.fn(async () => ({ details: { ok: true } }));
 vi.mock("../agents/tools/slack-actions.js", () => ({
   handleSlackAction: (...args: unknown[]) => handleSlackAction(...args),
@@ -41,7 +36,7 @@ vi.mock("../agents/tools/telegram-actions.js", () => ({
 }));
 
 const originalTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
-const originalDiscordToken = process.env.DISCORD_BOT_TOKEN;
+const originalSlackBotToken = process.env.SLACK_BOT_TOKEN;
 
 const setRegistry = async (registry: ReturnType<typeof createTestRegistry>) => {
   const { setActivePluginRegistry } = await import("../plugins/runtime.js");
@@ -50,19 +45,18 @@ const setRegistry = async (registry: ReturnType<typeof createTestRegistry>) => {
 
 beforeEach(async () => {
   process.env.TELEGRAM_BOT_TOKEN = "";
-  process.env.DISCORD_BOT_TOKEN = "";
+  process.env.SLACK_BOT_TOKEN = "";
   testConfig = {};
   vi.resetModules();
   await setRegistry(createTestRegistry([]));
   callGatewayMock.mockReset();
-  handleDiscordAction.mockReset();
   handleSlackAction.mockReset();
   handleTelegramAction.mockReset();
 });
 
 afterAll(() => {
   process.env.TELEGRAM_BOT_TOKEN = originalTelegramToken;
-  process.env.DISCORD_BOT_TOKEN = originalDiscordToken;
+  process.env.SLACK_BOT_TOKEN = originalSlackBotToken;
 });
 
 const runtime: RuntimeEnv = {
@@ -75,7 +69,6 @@ const runtime: RuntimeEnv = {
 
 const makeDeps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
   sendMessageTelegram: vi.fn(),
-  sendMessageDiscord: vi.fn(),
   sendMessageSlack: vi.fn(),
   sendMessageSignal: vi.fn(),
   sendMessageIMessage: vi.fn(),
@@ -144,7 +137,7 @@ describe("messageCommand", () => {
 
   it("requires channel when multiple configured", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "token-abc";
-    process.env.DISCORD_BOT_TOKEN = "token-discord";
+    process.env.SLACK_BOT_TOKEN = "xoxb-test";
     await setRegistry(
       createTestRegistry([
         {
@@ -164,15 +157,15 @@ describe("messageCommand", () => {
           }),
         },
         {
-          pluginId: "discord",
+          pluginId: "slack",
           source: "test",
           plugin: createStubPlugin({
-            id: "discord",
-            label: "Discord",
+            id: "slack",
+            label: "Slack",
             actions: {
-              listActions: () => ["poll"],
+              listActions: () => ["send"],
               handleAction: async ({ action, params, cfg, accountId }) =>
-                await handleDiscordAction(
+                await handleSlackAction(
                   { action, to: params.to, accountId: accountId ?? undefined },
                   cfg,
                 ),
@@ -193,48 +186,5 @@ describe("messageCommand", () => {
         runtime,
       ),
     ).rejects.toThrow(/Channel is required/);
-  });
-
-  it("routes discord polls through message action", async () => {
-    await setRegistry(
-      createTestRegistry([
-        {
-          pluginId: "discord",
-          source: "test",
-          plugin: createStubPlugin({
-            id: "discord",
-            label: "Discord",
-            actions: {
-              listActions: () => ["poll"],
-              handleAction: async ({ action, params, cfg, accountId }) =>
-                await handleDiscordAction(
-                  { action, to: params.to, accountId: accountId ?? undefined },
-                  cfg,
-                ),
-            },
-          }),
-        },
-      ]),
-    );
-    const deps = makeDeps();
-    const { messageCommand } = await loadMessageCommand();
-    await messageCommand(
-      {
-        action: "poll",
-        channel: "discord",
-        target: "channel:123456789",
-        pollQuestion: "Snack?",
-        pollOption: ["Pizza", "Sushi"],
-      },
-      deps,
-      runtime,
-    );
-    expect(handleDiscordAction).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: "poll",
-        to: "channel:123456789",
-      }),
-      expect.any(Object),
-    );
   });
 });

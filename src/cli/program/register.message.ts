@@ -4,7 +4,6 @@ import { theme } from "../../terminal/theme.js";
 import { formatHelpExamples } from "../help-format.js";
 import type { ProgramContext } from "./context.js";
 import { createMessageCliHelpers } from "./message/helpers.js";
-import { registerMessageDiscordAdminCommands } from "./message/register.discord-admin.js";
 import {
   registerMessageEmojiCommands,
   registerMessageStickerCommands,
@@ -37,11 +36,11 @@ ${formatHelpExamples([
     "Send a message with media.",
   ],
   [
-    'moltbot message poll --channel discord --target channel:123 --poll-question "Snack?" --poll-option Pizza --poll-option Sushi',
-    "Create a Discord poll.",
+    'moltbot message poll --channel telegram --target -1001234567890 --poll-question "Snack?" --poll-option Pizza --poll-option Sushi',
+    "Create a poll.",
   ],
   [
-    'moltbot message react --channel discord --target 123 --message-id 456 --emoji "✅"',
+    'moltbot message react --channel telegram --target -1001234567890 --message-id 456 --emoji "✅"',
     "React to a message.",
   ],
 ])}
@@ -64,5 +63,4 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/message", "docs.molt.bot/cli/mess
   registerMessageThreadCommands(message, helpers);
   registerMessageEmojiCommands(message, helpers);
   registerMessageStickerCommands(message, helpers);
-  registerMessageDiscordAdminCommands(message, helpers);
 }

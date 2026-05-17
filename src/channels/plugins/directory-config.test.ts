@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  listDiscordDirectoryGroupsFromConfig,
-  listDiscordDirectoryPeersFromConfig,
   listSlackDirectoryGroupsFromConfig,
   listSlackDirectoryPeersFromConfig,
   listTelegramDirectoryGroupsFromConfig,
@@ -42,44 +40,6 @@ describe("directory (config-backed)", () => {
       limit: null,
     });
     expect(groups?.map((e) => e.id)).toEqual(["channel:c111"]);
-  });
-
-  it("lists Discord peers/groups from config (numeric ids only)", async () => {
-    const cfg = {
-      channels: {
-        discord: {
-          token: "discord-test",
-          dm: { allowFrom: ["<@111>", "nope"] },
-          dms: { "222": {} },
-          guilds: {
-            "123": {
-              users: ["<@12345>", "not-an-id"],
-              channels: {
-                "555": {},
-                "channel:666": {},
-                general: {},
-              },
-            },
-          },
-        },
-      },
-    } as any;
-
-    const peers = await listDiscordDirectoryPeersFromConfig({
-      cfg,
-      accountId: "default",
-      query: null,
-      limit: null,
-    });
-    expect(peers?.map((e) => e.id).sort()).toEqual(["user:111", "user:12345", "user:222"]);
-
-    const groups = await listDiscordDirectoryGroupsFromConfig({
-      cfg,
-      accountId: "default",
-      query: null,
-      limit: null,
-    });
-    expect(groups?.map((e) => e.id).sort()).toEqual(["channel:555", "channel:666"]);
   });
 
   it("lists Telegram peers/groups from config", async () => {

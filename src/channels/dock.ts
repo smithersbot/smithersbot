@@ -1,5 +1,4 @@
 import type { MoltbotConfig } from "../config/config.js";
-import { resolveDiscordAccount } from "../discord/accounts.js";
 import { resolveIMessageAccount } from "../imessage/accounts.js";
 import { resolveSignalAccount } from "../signal/accounts.js";
 import { resolveSlackAccount, resolveSlackReplyToMode } from "../slack/accounts.js";
@@ -9,8 +8,6 @@ import { normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
 import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {
-  resolveDiscordGroupRequireMention,
-  resolveDiscordGroupToolPolicy,
   resolveGoogleChatGroupRequireMention,
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupRequireMention,
@@ -117,46 +114,6 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
           hasRepliedRef,
         };
       },
-    },
-  },
-  discord: {
-    id: "discord",
-    capabilities: {
-      chatTypes: ["direct", "channel", "thread"],
-      polls: true,
-      reactions: true,
-      media: true,
-      nativeCommands: true,
-      threads: true,
-    },
-    outbound: { textChunkLimit: 2000 },
-    streaming: {
-      blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
-    },
-    elevated: {
-      allowFromFallback: ({ cfg }) => cfg.channels?.discord?.dm?.allowFrom,
-    },
-    config: {
-      resolveAllowFrom: ({ cfg, accountId }) =>
-        (resolveDiscordAccount({ cfg, accountId }).config.dm?.allowFrom ?? []).map((entry) =>
-          String(entry),
-        ),
-      formatAllowFrom: ({ allowFrom }) => formatLower(allowFrom),
-    },
-    groups: {
-      resolveRequireMention: resolveDiscordGroupRequireMention,
-      resolveToolPolicy: resolveDiscordGroupToolPolicy,
-    },
-    mentions: {
-      stripPatterns: () => ["<@!?\\d+>"],
-    },
-    threading: {
-      resolveReplyToMode: ({ cfg }) => cfg.channels?.discord?.replyToMode ?? "off",
-      buildToolContext: ({ context, hasRepliedRef }) => ({
-        currentChannelId: context.To?.trim() || undefined,
-        currentThreadTs: context.ReplyToId,
-        hasRepliedRef,
-      }),
     },
   },
   googlechat: {

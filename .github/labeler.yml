@@ -3,12 +3,6 @@
       - any-glob-to-any-file:
           - "extensions/bluebubbles/**"
           - "docs/channels/bluebubbles.md"
-"channel: discord":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src/discord/**"
-          - "extensions/discord/**"
-          - "docs/channels/discord.md"
 "channel: googlechat":
   - changed-files:
       - any-glob-to-any-file:

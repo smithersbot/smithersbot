@@ -6,7 +6,6 @@ import { requireActivePluginRegistry } from "../plugins/runtime.js";
 // register the plugin in its extension entrypoint and keep protocol IDs in sync.
 export const CHAT_CHANNEL_ORDER = [
   "telegram",
-  "discord",
   "googlechat",
   "slack",
   "signal",
@@ -36,16 +35,6 @@ const CHAT_CHANNEL_META: Record<ChatChannelId, ChannelMeta> = {
     selectionDocsPrefix: "",
     selectionDocsOmitLabel: true,
     selectionExtras: [WEBSITE_URL],
-  },
-  discord: {
-    id: "discord",
-    label: "Discord",
-    selectionLabel: "Discord (Bot API)",
-    detailLabel: "Discord Bot",
-    docsPath: "/channels/discord",
-    docsLabel: "discord",
-    blurb: "very well supported right now.",
-    systemImage: "bubble.left.and.bubble.right",
   },
   googlechat: {
     id: "googlechat",

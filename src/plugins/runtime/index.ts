@@ -39,7 +39,6 @@ import { handleSlackAction } from "../../agents/tools/slack-actions.js";
 import { removeAckReactionAfterReply, shouldAckReaction } from "../../channels/ack-reactions.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
 import { recordInboundSession } from "../../channels/session.js";
-import { discordMessageActions } from "../../channels/plugins/actions/discord.js";
 import { signalMessageActions } from "../../channels/plugins/actions/signal.js";
 import { telegramMessageActions } from "../../channels/plugins/actions/telegram.js";
 import {
@@ -55,16 +54,6 @@ import {
   resolveStorePath,
   updateLastRoute,
 } from "../../config/sessions.js";
-import { auditDiscordChannelPermissions } from "../../discord/audit.js";
-import {
-  listDiscordDirectoryGroupsLive,
-  listDiscordDirectoryPeersLive,
-} from "../../discord/directory-live.js";
-import { monitorDiscordProvider } from "../../discord/monitor.js";
-import { probeDiscord } from "../../discord/probe.js";
-import { resolveDiscordChannelAllowlist } from "../../discord/resolve-channels.js";
-import { resolveDiscordUserAllowlist } from "../../discord/resolve-users.js";
-import { sendMessageDiscord, sendPollDiscord } from "../../discord/send.js";
 import { getChannelActivity, recordChannelActivity } from "../../infra/channel-activity.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { monitorIMessageProvider } from "../../imessage/monitor.js";
@@ -245,18 +234,6 @@ export function createPluginRuntime(): PluginRuntime {
         isControlCommandMessage,
         shouldComputeCommandAuthorized,
         shouldHandleTextCommands,
-      },
-      discord: {
-        messageActions: discordMessageActions,
-        auditChannelPermissions: auditDiscordChannelPermissions,
-        listDirectoryGroupsLive: listDiscordDirectoryGroupsLive,
-        listDirectoryPeersLive: listDiscordDirectoryPeersLive,
-        probeDiscord,
-        resolveChannelAllowlist: resolveDiscordChannelAllowlist,
-        resolveUserAllowlist: resolveDiscordUserAllowlist,
-        sendMessageDiscord,
-        sendPollDiscord,
-        monitorDiscordProvider,
       },
       slack: {
         listDirectoryGroupsLive: listSlackDirectoryGroupsLive,
