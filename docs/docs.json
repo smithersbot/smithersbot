@@ -126,14 +126,6 @@
       "destination": "/channels/mattermost"
     },
     {
-      "source": "/line",
-      "destination": "/channels/line"
-    },
-    {
-      "source": "/line/",
-      "destination": "/channels/line"
-    },
-    {
       "source": "/glm",
       "destination": "/providers/glm"
     },
@@ -212,14 +204,6 @@
     {
       "source": "/providers/msteams/",
       "destination": "/channels/msteams"
-    },
-    {
-      "source": "/providers/line",
-      "destination": "/channels/line"
-    },
-    {
-      "source": "/providers/line/",
-      "destination": "/channels/line"
     },
     {
       "source": "/providers/signal",
@@ -1002,7 +986,6 @@
           "channels/googlechat",
           "channels/mattermost",
           "channels/msteams",
-          "channels/line",
           "channels/matrix",
           "channels/zalo",
           "channels/zalouser",

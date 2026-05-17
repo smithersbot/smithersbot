@@ -83,25 +83,6 @@ import { loadWebMedia } from "../../media/load.js";
 import { registerMemoryCli } from "../../cli/memory-cli.js";
 import { formatNativeDependencyHint } from "./native-deps.js";
 import { textToSpeechTelephony } from "../../tts/tts.js";
-import {
-  listLineAccountIds,
-  normalizeAccountId as normalizeLineAccountId,
-  resolveDefaultLineAccountId,
-  resolveLineAccount,
-} from "../../line/accounts.js";
-import { probeLineBot } from "../../line/probe.js";
-import {
-  createQuickReplyItems,
-  pushMessageLine,
-  pushMessagesLine,
-  pushFlexMessage,
-  pushTemplateMessage,
-  pushLocationMessage,
-  pushTextMessageWithQuickReplies,
-  sendMessageLine,
-} from "../../line/send.js";
-import { monitorLineProvider } from "../../line/monitor.js";
-import { buildTemplateMessageFromPayload } from "../../line/template-messages.js";
 
 import type { PluginRuntime } from "./types.js";
 
@@ -226,23 +207,6 @@ export function createPluginRuntime(): PluginRuntime {
         sendMessageTelegram,
         monitorTelegramProvider,
         messageActions: telegramMessageActions,
-      },
-      line: {
-        listLineAccountIds,
-        resolveDefaultLineAccountId,
-        resolveLineAccount,
-        normalizeAccountId: normalizeLineAccountId,
-        probeLineBot,
-        sendMessageLine,
-        pushMessageLine,
-        pushMessagesLine,
-        pushFlexMessage,
-        pushTemplateMessage,
-        pushLocationMessage,
-        pushTextMessageWithQuickReplies,
-        createQuickReplyItems,
-        buildTemplateMessageFromPayload,
-        monitorLineProvider,
       },
     },
     logging: {
