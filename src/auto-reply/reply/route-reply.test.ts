@@ -27,7 +27,6 @@ const mocks = vi.hoisted(() => ({
   sendMessageSignal: vi.fn(async () => ({ messageId: "t1" })),
   sendMessageSlack: vi.fn(async () => ({ messageId: "m1", channelId: "c1" })),
   sendMessageTelegram: vi.fn(async () => ({ messageId: "m1", chatId: "c1" })),
-  sendMessageWhatsApp: vi.fn(async () => ({ messageId: "m1", toJid: "jid" })),
   deliverOutboundPayloads: vi.fn(),
 }));
 
@@ -45,10 +44,6 @@ vi.mock("../../slack/send.js", () => ({
 }));
 vi.mock("../../telegram/send.js", () => ({
   sendMessageTelegram: mocks.sendMessageTelegram,
-}));
-vi.mock("../../web/outbound.js", () => ({
-  sendMessageWhatsApp: mocks.sendMessageWhatsApp,
-  sendPollWhatsApp: mocks.sendMessageWhatsApp,
 }));
 vi.mock("../../infra/outbound/deliver.js", async () => {
   const actual = await vi.importActual<typeof import("../../infra/outbound/deliver.js")>(
@@ -308,22 +303,6 @@ describe("routeReply", () => {
       "channel:C123",
       "",
       expect.objectContaining({ mediaUrl: "b" }),
-    );
-  });
-
-  it("routes WhatsApp via outbound sender (accountId honored)", async () => {
-    mocks.sendMessageWhatsApp.mockClear();
-    await routeReply({
-      payload: { text: "hi" },
-      channel: "whatsapp",
-      to: "+15551234567",
-      accountId: "acc-1",
-      cfg: {} as never,
-    });
-    expect(mocks.sendMessageWhatsApp).toHaveBeenCalledWith(
-      "+15551234567",
-      "hi",
-      expect.objectContaining({ accountId: "acc-1", verbose: false }),
     );
   });
 

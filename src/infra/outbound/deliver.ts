@@ -33,7 +33,19 @@ type SendMatrixMessage = (
   opts?: { mediaUrl?: string; replyToId?: string; threadId?: string; timeoutMs?: number },
 ) => Promise<{ messageId: string; roomId: string }>;
 
+type SendWhatsAppMessage = (
+  to: string,
+  text: string,
+  opts?: {
+    verbose?: boolean;
+    mediaUrl?: string;
+    accountId?: string;
+    gifPlayback?: boolean;
+  },
+) => Promise<{ messageId: string; toJid: string }>;
+
 export type OutboundSendDeps = {
+  sendWhatsApp?: SendWhatsAppMessage;
   sendTelegram?: typeof sendMessageTelegram;
   sendDiscord?: typeof sendMessageDiscord;
   sendSlack?: typeof sendMessageSlack;

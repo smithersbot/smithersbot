@@ -21,10 +21,6 @@ vi.mock("node:fs/promises", () => ({
   },
 }));
 
-vi.mock("../channel-web.js", () => ({
-  loginWeb: vi.fn(async () => {}),
-}));
-
 vi.mock("./onboard-helpers.js", () => ({
   detectBinary: vi.fn(async () => false),
 }));
