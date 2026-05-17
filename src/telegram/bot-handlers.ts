@@ -401,6 +401,87 @@ export const registerTelegramHandlers = ({
     });
   }
 
+  async function replyToCommandAnchorCallback(params: {
+    chatId: number;
+    threadId?: number;
+    text: string;
+  }): Promise<void> {
+    const options = params.threadId != null ? { message_thread_id: params.threadId } : undefined;
+    await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      runtime,
+      fn: () => bot.api.sendMessage(params.chatId, params.text, options),
+    });
+  }
+
+  async function handleCommandAnchorCallback(params: {
+    data: string;
+    callbackMessage: TelegramMessage;
+    threadId?: number;
+  }): Promise<boolean> {
+    const match = params.data.match(/^cmd_anchor:(append|new|ignore):([a-z0-9]{1,8})$/);
+    if (!match) return false;
+
+    const choice = match[1] as "append" | "new" | "ignore";
+    const shortId = match[2];
+    pruneExpiredCommandAnchorTexts();
+    const pending = pendingCommandAnchorTexts.get(shortId);
+    const chatId = params.callbackMessage.chat.id;
+
+    if (!pending) {
+      await replyToCommandAnchorCallback({
+        chatId,
+        threadId: params.threadId,
+        text: "That follow-up expired. Send it again if you still want me to use it.",
+      });
+      return true;
+    }
+
+    const anchor = commandFragmentBuffer?.getAnchor(pending.key);
+    if (!anchor) {
+      pendingCommandAnchorTexts.delete(shortId);
+      await replyToCommandAnchorCallback({
+        chatId,
+        threadId: params.threadId,
+        text: "That command window expired. Send it again if you still want me to use it.",
+      });
+      return true;
+    }
+
+    if (choice === "append") {
+      await anchor.appendHandler(pending.text);
+      pendingCommandAnchorTexts.delete(shortId);
+      logger.info?.(
+        { key: pending.key, commandName: anchor.commandName, choice },
+        "telegram command anchor follow-up selected",
+      );
+      return true;
+    }
+
+    pendingCommandAnchorTexts.delete(shortId);
+    commandFragmentBuffer?.clearAnchor(pending.key);
+    logger.info?.(
+      { key: pending.key, commandName: anchor.commandName, choice },
+      "telegram command anchor follow-up selected",
+    );
+
+    if (choice === "new") {
+      dispatchTelegramRepoChatForInboundText({
+        bot,
+        runtime,
+        telegramCfg,
+        claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+        chatId,
+        threadId: params.threadId,
+        prompt: pending.text,
+        sourceMessageId: params.callbackMessage.message_id,
+        replyToMessageId: undefined,
+      });
+    }
+
+    return true;
+  }
+
   const debounceMs = resolveInboundDebounceMs({ cfg, channel: "telegram" });
   type TelegramDebounceEntry = {
     ctx: unknown;
@@ -1059,6 +1140,13 @@ export const registerTelegramHandlers = ({
           if (!allowed) return;
         }
       }
+
+      const handledCommandAnchorCallback = await handleCommandAnchorCallback({
+        data,
+        callbackMessage,
+        threadId: resolvedThreadId,
+      });
+      if (handledCommandAnchorCallback) return;
 
       const paginationMatch = data.match(/^commands_page_(\d+|noop)(?::(.+))?$/);
       if (paginationMatch) {
