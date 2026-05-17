@@ -2023,6 +2023,15 @@ export function registerTelegramGoalCommands({
         flushCallback: (combinedText) => {
           runGoal(combinedText);
         },
+        ackReply: (msg) =>
+          sendGoalReply(
+            bot,
+            resolved.chatId,
+            msg,
+            runtime,
+            resolved.threadIdForSend,
+            replyToMessageId,
+          ).then(() => undefined),
       });
       return;
     }

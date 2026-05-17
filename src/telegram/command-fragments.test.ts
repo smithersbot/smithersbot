@@ -283,6 +283,60 @@ describe("command-fragments", () => {
       expect(buffer.hasPending(key)).toBe(false);
     });
 
+    it("sends the buffering ack once on bufferCommand and never on tryAppend", async () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const flushCallback = vi.fn(async () => undefined);
+      const newGoalAck = vi.fn(async () => undefined);
+      const repoChatAck = vi.fn(async () => undefined);
+
+      buffer.bufferCommand("cmd:42:main:7", {
+        commandName: "new_goal",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback,
+        ackReply: newGoalAck,
+      });
+      await Promise.resolve();
+      expect(buffer.tryAppend("cmd:42:main:7", 101, "second", 20)).toBe(true);
+      await Promise.resolve();
+
+      expect(newGoalAck).toHaveBeenCalledTimes(1);
+      expect(newGoalAck).toHaveBeenCalledWith(
+        "Buffering /new_goal — keep pasting, I will combine for up to 15s.",
+      );
+
+      buffer.bufferCommand("cmd:42:main:8", {
+        commandName: "repo_chat",
+        text: "first",
+        firstMessageId: 200,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "8",
+          sourceMessageId: 200,
+          accountId: "default",
+        },
+        flushCallback,
+        ackReply: repoChatAck,
+      });
+      await Promise.resolve();
+      expect(buffer.tryAppend("cmd:42:main:8", 201, "second", 20)).toBe(true);
+      await Promise.resolve();
+
+      expect(repoChatAck).toHaveBeenCalledTimes(1);
+      expect(repoChatAck).toHaveBeenCalledWith(
+        "Buffering /repo_chat — keep pasting, I will combine for up to 15s.",
+      );
+    });
+
     it("auto-flushes after timeout", async () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();

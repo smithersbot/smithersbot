@@ -40,6 +40,7 @@ export type CommandFragmentBufferEntry = {
   text: string;
   dispatch: CommandFragmentDispatchMetadata;
   flushCallback: (combinedText: string) => void | Promise<void>;
+  ackReply?: (text: string) => Promise<void>;
 };
 
 export type CommandAnchor = {
@@ -61,6 +62,8 @@ type CommandFragmentState = {
   lastReceivedAtMs: number;
   timer: ReturnType<typeof setTimeout>;
   flushCallback: (combinedText: string) => void | Promise<void>;
+  ackReply?: (text: string) => Promise<void>;
+  ackSent: boolean;
 };
 
 type CommandFragmentDebugLogger = {
@@ -136,9 +139,12 @@ export class CommandFragmentBuffer {
       lastReceivedAtMs: entry.receivedAtMs,
       timer: setTimeout(() => {}, this.gapMs),
       flushCallback: entry.flushCallback,
+      ackReply: entry.ackReply,
+      ackSent: false,
     };
 
     this.entries.set(key, state);
+    this.sendBufferAck(key, state);
     this.logDebug("telegram command fragment buffer created", {
       key,
       commandName: entry.commandName,
@@ -151,6 +157,10 @@ export class CommandFragmentBuffer {
 
   getAnchorTtlMs(): number {
     return this.anchorTtlMs;
+  }
+
+  getGapMs(): number {
+    return this.gapMs;
   }
 
   setAnchor(key: string, anchor: CommandAnchor): void {
@@ -292,6 +302,24 @@ export class CommandFragmentBuffer {
     entry.timer = setTimeout(() => {
       void this.flush(key).catch(() => undefined);
     }, this.gapMs);
+  }
+
+  private sendBufferAck(key: string, entry: CommandFragmentState): void {
+    if (entry.ackSent || !entry.ackReply) return;
+
+    entry.ackSent = true;
+    const gapSeconds = Math.round(this.gapMs / 1000);
+    void entry
+      .ackReply(
+        `Buffering /${entry.commandName} — keep pasting, I will combine for up to ${gapSeconds}s.`,
+      )
+      .catch((err) => {
+        this.logDebug("telegram command fragment ack failed", {
+          key,
+          commandName: entry.commandName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   private logDebug(message: string, fields: Record<string, unknown>): void {
