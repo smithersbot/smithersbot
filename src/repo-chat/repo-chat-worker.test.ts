@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const runCliProcessMock = vi.fn();
 const getCodexAskForApprovalPlacementMock = vi.fn();
 const buildClaudeCodeEnvMock = vi.fn();
+const loggerWarnMock = vi.fn();
 
 vi.mock("../goal/cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
@@ -19,6 +20,12 @@ vi.mock("../goal/backend-availability.js", () => ({
 
 vi.mock("../goal/claude-code-env.js", () => ({
   buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
+}));
+
+vi.mock("../logging/logger.js", () => ({
+  getLogger: () => ({
+    warn: (...args: unknown[]) => loggerWarnMock(...args),
+  }),
 }));
 
 import {
@@ -41,6 +48,7 @@ describe("repo-chat-worker", () => {
     runCliProcessMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReset();
     buildClaudeCodeEnvMock.mockReset();
+    loggerWarnMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReturnValue("before_exec");
     buildClaudeCodeEnvMock.mockReturnValue({ TEST_ENV: "1" });
     vi.spyOn(crypto, "randomUUID").mockReturnValue(FIXED_UUID);
@@ -989,6 +997,39 @@ describe("repo-chat-worker", () => {
       });
 
       expect(result.cliSessionId).toBeUndefined();
+      expect(result.text).toBe(
+        "Answer\n\n⚠️ Note: this codex run did not return a session id; the next reply will start a fresh chat.",
+      );
+      expect(loggerWarnMock).toHaveBeenCalledTimes(1);
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        "codex emitted no session id; next /repo_chat turn will start a new conversation",
+        { runId: undefined, workerPath: "/repo" },
+      );
+    });
+
+    it("does not warn or footer on a codex resume path without a new session id", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: ['{"type":"turn.started"}', '{"type":"turn.completed"}'].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 21,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "status?",
+        workingDir: "/repo",
+        cliSessionId: "codex-existing-session",
+      });
+
+      expect(result.cliSessionId).toBe("codex-existing-session");
+      expect(result.text).toBe("Answer");
+      expect(loggerWarnMock).not.toHaveBeenCalled();
     });
 
     it("extracts session id from multiline stdout json object", async () => {

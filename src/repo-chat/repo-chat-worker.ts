@@ -10,6 +10,7 @@ import {
 } from "../goal/claude-code-constants.js";
 import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
+import { getLogger } from "../logging/logger.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
@@ -19,6 +20,8 @@ const CODEX_STYLE_DIRECTIVE =
   "Answer directly and concisely — the user sees only your final answer";
 const MAX_ERROR_DETAIL_CHARS = 1_000;
 const REPAIR_TIMEOUT_MS = 60_000;
+const CODEX_NO_SESSION_ID_FOOTER =
+  "⚠️ Note: this codex run did not return a session id; the next reply will start a fresh chat.";
 
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
@@ -447,6 +450,14 @@ export async function runRepoChatWorker(
           rejectedPlaceholderFallback ? " (placeholder stdout reply rejected)" : ""
         }`,
       );
+    }
+
+    if (params.backend === "codex" && !params.cliSessionId && !cliSessionId) {
+      getLogger().warn(
+        "codex emitted no session id; next /repo_chat turn will start a new conversation",
+        { runId: undefined, workerPath: params.workingDir },
+      );
+      responseText = `${responseText}\n\n${CODEX_NO_SESSION_ID_FOOTER}`;
     }
 
     return {
