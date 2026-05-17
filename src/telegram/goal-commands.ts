@@ -33,7 +33,12 @@ import { generateManualTests } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
-import { acquireGoalOpLock, forceReleaseGoalOpLock } from "../goal/goal-lock.js";
+import {
+  acquireGoalOpLock,
+  forceReleaseGoalOpLock,
+  isGoalOpLocked,
+  type GoalOpLockResult,
+} from "../goal/goal-lock.js";
 import { loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -920,23 +925,25 @@ export async function handleGoalAnswer(
   const key = run.blocked.requiredInputKey;
   const prefix = resolvedId.slice(0, 8);
   const cap = createCaptureRuntime();
+  const trackedStatus = trackBlockedStatusChange(onStatusChange);
   try {
     const outcome = await goalAnswerCommand(
       resolvedId,
-      { key, value, quiet: true, config, onStatusChange },
+      { key, value, quiet: true, config, onStatusChange: trackedStatus.onStatusChange },
       cap.runtime,
     );
 
     const errors = cap.getErrors();
     if (errors) return errors;
 
-    // When onStatusChange is wired, it already sent DAG PNGs for blocked/done —
-    // return undefined so callers don't send a stray message after the notifications.
-    if (onStatusChange) return undefined;
-
     if (outcome?.status === "blocked") {
+      if (trackedStatus.didSendFullyBlocked()) return undefined;
       return `Still blocked: ${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`;
     }
+
+    // When onStatusChange is wired, it already sent DAG PNGs for done/step-level events —
+    // return undefined so callers don't send a stray message after the notifications.
+    if (trackedStatus.onStatusChange) return undefined;
 
     return `Resuming: ${prefix}...`;
   } catch (err) {
@@ -1101,17 +1108,27 @@ export async function handleGoalFeedback(
     const cap = createCaptureRuntime();
     resumeCapture = cap;
     const trackedStatus = trackBlockedStatusChange(onStatusChange);
-    const outcome = await goalResumeCommand(
-      resolvedId,
-      {
-        yes: true,
-        quiet: true,
-        config,
-        allowDoneStateResume: true,
-        onStatusChange: trackedStatus.onStatusChange,
-      },
-      cap.runtime,
-    );
+    let transientRunLock: Extract<GoalOpLockResult, { acquired: true }> | undefined;
+    if (!isGoalOpLocked(resolvedId).locked) {
+      const lock = acquireGoalOpLock(resolvedId, "feedback");
+      if (lock.acquired) transientRunLock = lock;
+    }
+    let outcome: Awaited<ReturnType<typeof goalResumeCommand>>;
+    try {
+      outcome = await goalResumeCommand(
+        resolvedId,
+        {
+          yes: true,
+          quiet: true,
+          config,
+          allowDoneStateResume: true,
+          onStatusChange: trackedStatus.onStatusChange,
+        },
+        cap.runtime,
+      );
+    } finally {
+      transientRunLock?.release();
+    }
 
     const errors = cap.getErrors();
     if (errors) return errors;

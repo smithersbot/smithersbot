@@ -2110,8 +2110,18 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("suppresses duplicate blocked reply when resume emitted fully_blocked event", async () => {
-      saveRunFixture(makeRun({ state: "executing" }));
-      mockGoalResumeCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt:
+              "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+            requiredInputKey: "resume_execution",
+          },
+        }),
+      );
+      mockGoalAnswerCommand.mockImplementation(async (_id: unknown, opts: unknown) => {
         const onStatusChange = (opts as { onStatusChange?: (event: unknown) => Promise<void> })
           .onStatusChange;
         await onStatusChange?.({
@@ -2131,12 +2141,23 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
       expect(result).toBeUndefined();
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       expect(statusCb).toHaveBeenCalledWith(expect.objectContaining({ type: "fully_blocked" }));
     });
 
     it("returns blocked reply when resume blocks before status callback emits", async () => {
-      saveRunFixture(makeRun({ state: "executing" }));
-      mockGoalResumeCommand.mockResolvedValue({
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt:
+              "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+            requiredInputKey: "resume_execution",
+          },
+        }),
+      );
+      mockGoalAnswerCommand.mockResolvedValue({
         status: "blocked",
         question: "Need credentials",
         requiredInputKey: "task:1:input",
@@ -2147,7 +2168,8 @@ describe("goal-commands telegram adapter", () => {
       const statusCb = vi.fn();
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
-      expect(result).toContain("Run blocked: Need credentials");
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(result).toContain("Still blocked: Need credentials");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {
