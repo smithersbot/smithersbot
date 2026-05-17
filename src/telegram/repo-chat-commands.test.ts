@@ -9,7 +9,11 @@ import {
   resetRepoChatStoreIndexForTests,
 } from "../repo-chat/repo-chat-store.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { dispatchTelegramRepoChatForInboundText } from "./repo-chat-commands.js";
+import { buildCommandFragmentKey, CommandFragmentBuffer } from "./command-fragments.js";
+import {
+  dispatchTelegramRepoChatForInboundText,
+  registerTelegramRepoChatCommands,
+} from "./repo-chat-commands.js";
 
 const runRepoChatWorkerMock = vi.hoisted(() => vi.fn());
 const withChatActionMock = vi.hoisted(() => vi.fn());
@@ -56,6 +60,66 @@ function buildRuntime(): RuntimeEnv {
     warn: vi.fn(),
     error: vi.fn(),
   } as unknown as RuntimeEnv;
+}
+
+function makeRepoChatCommandHarness(
+  options: {
+    commandFragmentBuffer?: CommandFragmentBuffer;
+  } = {},
+): {
+  handlers: Record<string, (ctx: unknown) => Promise<void>>;
+  sendMessage: ReturnType<typeof vi.fn>;
+} {
+  const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+  const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
+  const bot = {
+    api: {
+      sendMessage,
+    },
+    command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+      if (Array.isArray(name)) {
+        for (const entry of name) handlers[entry] = handler;
+        return;
+      }
+      handlers[name] = handler;
+    },
+  };
+
+  registerTelegramRepoChatCommands({
+    bot: bot as never,
+    cfg: { goal: { claudeCodeAuth: "subscription" } } as never,
+    runtime: buildRuntime(),
+    accountId: "default",
+    telegramCfg: buildTelegramCfg(),
+    allowFrom: ["42"],
+    groupAllowFrom: [],
+    useAccessGroups: false,
+    resolveGroupPolicy: () =>
+      ({
+        allowlistEnabled: false,
+        allowed: true,
+      }) as never,
+    resolveTelegramGroupConfig: () => ({
+      groupConfig: undefined,
+      topicConfig: undefined,
+    }),
+    shouldSkipUpdate: () => false,
+    commandFragmentBuffer: options.commandFragmentBuffer,
+  });
+
+  return { handlers, sendMessage };
+}
+
+function makeRepoChatCommandCtx(match: string, messageId: number): Record<string, unknown> {
+  return {
+    match,
+    message: {
+      chat: { id: 42, type: "private" },
+      from: { id: 42, username: "tester" },
+      message_id: messageId,
+      date: 123_456,
+    },
+  };
 }
 
 describe("repo-chat-commands", () => {
@@ -241,5 +305,75 @@ describe("repo-chat-commands", () => {
       );
       expect(session?.messageRefs).toHaveLength(9);
     });
+  });
+
+  it("sets a repo_chat anchor after a buffered command flush", async () => {
+    runRepoChatWorkerMock.mockResolvedValue({
+      text: "worker output",
+      cliSessionId: "session-anchor",
+    });
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const setAnchor = vi.spyOn(commandFragmentBuffer, "setAnchor");
+    const harness = makeRepoChatCommandHarness({ commandFragmentBuffer });
+
+    await harness.handlers.repo_chat!(makeRepoChatCommandCtx("first part", 1201));
+    const key = buildCommandFragmentKey({
+      accountId: "default",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "42",
+    });
+    await commandFragmentBuffer.cancelAndFlush(key);
+
+    expect(setAnchor).toHaveBeenCalledTimes(1);
+    expect(setAnchor.mock.calls[0]?.[0]).toBe(key);
+    expect(setAnchor.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        commandName: "repo_chat",
+        sourceMessageId: 1201,
+      }),
+    );
+    expect(commandFragmentBuffer.getAnchor(key)?.commandName).toBe("repo_chat");
+  });
+
+  it("routes appended repo_chat anchor text through inbound repo-chat dispatch", async () => {
+    runRepoChatWorkerMock
+      .mockResolvedValueOnce({
+        text: "initial output",
+        cliSessionId: "session-anchor-1",
+      })
+      .mockResolvedValueOnce({
+        text: "follow-up output",
+        cliSessionId: "session-anchor-2",
+      });
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeRepoChatCommandHarness({ commandFragmentBuffer });
+
+    await harness.handlers.repo_chat!(makeRepoChatCommandCtx("first part", 1301));
+    const key = buildCommandFragmentKey({
+      accountId: "default",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "42",
+    });
+    await commandFragmentBuffer.cancelAndFlush(key);
+
+    await waitForAssertion(() => {
+      expect(findRepoChatSessionByMessageId({ chatId: 42, messageId: 1301 })).toBeDefined();
+    });
+
+    const anchor = commandFragmentBuffer.getAnchor(key);
+    expect(anchor).toBeDefined();
+    await anchor!.appendHandler("appended part");
+
+    await waitForAssertion(() => {
+      expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(2);
+    });
+    expect(runRepoChatWorkerMock.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({
+        prompt: "appended part",
+        cliSessionId: "session-anchor-1",
+      }),
+    );
   });
 });

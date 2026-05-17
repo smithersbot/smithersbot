@@ -414,7 +414,7 @@ export function registerTelegramRepoChatCommands({
       return;
     }
 
-    const runRepoChat = (textPrompt: string) => {
+    const runRepoChat = (textPrompt: string): boolean | Promise<boolean> => {
       const result = startRepoChat({
         bot,
         runtime,
@@ -435,9 +435,9 @@ export function registerTelegramRepoChatCommands({
           threadId: resolved.threadIdForSend,
           text: REPO_CHAT_DISABLED_MESSAGE,
           replyToMessageId: resolved.sourceMessageId,
-        });
+        }).then(() => false);
       }
-      return undefined;
+      return result.started;
     };
 
     const msg = ctx.message;
@@ -461,7 +461,28 @@ export function registerTelegramRepoChatCommands({
           accountId,
         },
         flushCallback: async (combinedText) => {
-          await runRepoChat(combinedText);
+          const started = await runRepoChat(combinedText);
+          if (!started) return;
+          const anchoredAtMs = Date.now();
+          commandFragmentBuffer.setAnchor(key, {
+            commandName: "repo_chat",
+            anchoredAtMs,
+            expiresAtMs: anchoredAtMs + commandFragmentBuffer.getAnchorTtlMs(),
+            sourceMessageId: msg.message_id,
+            appendHandler: async (appendedText) => {
+              dispatchTelegramRepoChatForInboundText({
+                bot,
+                runtime,
+                telegramCfg,
+                chatId: resolved.chatId,
+                threadId: resolved.threadIdForSend,
+                prompt: appendedText,
+                sourceMessageId: resolved.sourceMessageId,
+                replyToMessageId: resolved.sourceMessageId,
+                claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+              });
+            },
+          });
         },
         ackReply: (msg) =>
           sendRepoChatReply({
