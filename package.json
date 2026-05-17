@@ -30,7 +30,6 @@
     "dist/gateway/**",
     "dist/hooks/**",
     "dist/infra/**",
-    "dist/macos/**",
     "dist/media/**",
     "dist/media-understanding/**",
     "dist/link-understanding/**",
@@ -263,8 +262,7 @@
     ],
     "exclude": [
       "dist/**",
-      "**/vendor/**",
-      "dist/Moltbot.app/**"
+      "**/vendor/**"
     ]
   }
 }
