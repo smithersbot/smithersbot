@@ -14,6 +14,7 @@ let capturedBashOps: BashOperations | undefined;
 
 afterEach(() => {
   capturedBashOps = undefined;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -75,6 +76,29 @@ function createMockSpawnChild(exitCode = 0) {
   queueMicrotask(() => {
     for (const handler of closeHandlers) {
       handler(exitCode);
+    }
+  });
+
+  return child;
+}
+
+function createMockSpawnErrorChild() {
+  const errorHandlers: Array<() => void> = [];
+  const child = {
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "error") {
+        errorHandlers.push(handler as () => void);
+      }
+      return child;
+    }),
+    kill: vi.fn(),
+  };
+
+  queueMicrotask(() => {
+    for (const handler of errorHandlers) {
+      handler();
     }
   });
 
@@ -227,6 +251,38 @@ describe("createEnforcedBashOperations", () => {
         else process.env[key] = prior;
       }
     }
+  });
+
+  it("clears default bash exec timeout after the process exits", async () => {
+    vi.useFakeTimers();
+    mockSpawn.mockImplementation(() => createMockSpawnChild());
+
+    createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    expect(capturedBashOps).toBeTruthy();
+
+    const result = await capturedBashOps!.exec("printf ok", WORKING_DIR, {
+      onData: vi.fn(),
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears default bash exec timeout after a spawn error", async () => {
+    vi.useFakeTimers();
+    mockSpawn.mockImplementation(() => createMockSpawnErrorChild());
+
+    createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    expect(capturedBashOps).toBeTruthy();
+
+    const result = await capturedBashOps!.exec("printf ok", WORKING_DIR, {
+      onData: vi.fn(),
+      timeout: 10_000,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

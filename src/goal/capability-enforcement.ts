@@ -177,8 +177,18 @@ function createDefaultBashOps(): BashOperations {
           });
         }
 
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+
+        const finish = (exitCode: number | null) => {
+          if (timeout) {
+            clearTimeout(timeout);
+            timeout = undefined;
+          }
+          resolve({ exitCode });
+        };
+
         if (options.timeout) {
-          setTimeout(() => {
+          timeout = setTimeout(() => {
             child.kill("SIGTERM");
           }, options.timeout);
         }
@@ -186,12 +196,10 @@ function createDefaultBashOps(): BashOperations {
         child.stdout?.on("data", (data: Buffer) => options.onData(data));
         child.stderr?.on("data", (data: Buffer) => options.onData(data));
 
-        child.on("close", (code) => {
-          resolve({ exitCode: code });
-        });
+        child.on("close", finish);
 
         child.on("error", () => {
-          resolve({ exitCode: 1 });
+          finish(1);
         });
       });
     },
