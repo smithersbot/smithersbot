@@ -1,3 +1,5 @@
+> **Status:** Upstream-derived from the OpenClaw fork. Deferred from SmithersBot v0 and **not currently supported**. Code is preserved in-tree for reference only.
+
 # @clawdbot/zalo
 
 Zalo channel plugin for Clawdbot (Bot API).

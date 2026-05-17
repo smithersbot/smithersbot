@@ -1,3 +1,5 @@
+> **Status:** Upstream-derived from the OpenClaw fork. Deferred from SmithersBot v0 and **not currently supported**. Code is preserved in-tree for reference only.
+
 # Copilot Proxy (Clawdbot plugin)
 
 Provider plugin for the **Copilot Proxy** VS Code extension.

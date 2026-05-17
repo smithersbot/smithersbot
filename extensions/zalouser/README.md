@@ -1,3 +1,5 @@
+> **Status:** Upstream-derived from the OpenClaw fork. Deferred from SmithersBot v0 and **not currently supported**. Code is preserved in-tree for reference only.
+
 # @clawdbot/zalouser
 
 Clawdbot extension for Zalo Personal Account messaging via [zca-cli](https://zca-cli.dev).

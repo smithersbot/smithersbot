@@ -1,79 +1,85 @@
 # Bundled Hooks
 
-This directory contains hooks that ship with Clawdbot. These hooks are automatically discovered and can be enabled/disabled via CLI or configuration.
+This directory contains hooks that ship with SmithersBot. These hooks are discovered automatically and can be enabled or disabled through the CLI or configuration.
 
 ## Available Hooks
 
-### 💾 session-memory
+### session-memory
 
 Automatically saves session context to memory when you issue `/new`.
 
-**Events**: `command:new`
-**What it does**: Creates a dated memory file with LLM-generated slug based on conversation content.
-**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md` (defaults to `~/clawd`)
+**Events**: `command:new`  
+**What it does**: Creates a dated memory file with an LLM-generated slug based on conversation content.  
+**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md`
 
 **Enable**:
 
 ```bash
-clawdbot hooks enable session-memory
+smithersbot hooks enable session-memory
 ```
 
-### 📝 command-logger
+See `src/hooks/bundled/session-memory/HOOK.md`.
 
-Logs all command events to a centralized audit file.
+### command-logger
 
-**Events**: `command` (all commands)
-**What it does**: Appends JSONL entries to command log file.
-**Output**: `~/.clawdbot/logs/commands.log`
+Logs command events to a centralized audit file.
+
+**Events**: `command`  
+**What it does**: Appends JSONL entries to the command log file.
 
 **Enable**:
 
 ```bash
-clawdbot hooks enable command-logger
+smithersbot hooks enable command-logger
 ```
 
-### 😈 soul-evil
+See `src/hooks/bundled/command-logger/HOOK.md`.
+
+### soul-evil
 
 Swaps injected `SOUL.md` content with `SOUL_EVIL.md` during a purge window or by random chance.
 
-**Events**: `agent:bootstrap`
-**What it does**: Overrides the injected SOUL content before the system prompt is built.
-**Output**: No files written; swaps happen in-memory only.
-**Docs**: https://docs.molt.bot/hooks/soul-evil
+**Events**: `agent:bootstrap`  
+**What it does**: Overrides the injected SOUL content before the system prompt is built.  
+**Output**: No files written; swaps happen in memory only.
 
 **Enable**:
 
 ```bash
-clawdbot hooks enable soul-evil
+smithersbot hooks enable soul-evil
 ```
 
-### 🚀 boot-md
+See `src/hooks/bundled/soul-evil/HOOK.md`.
 
-Runs `BOOT.md` whenever the gateway starts (after channels start).
+### boot-md
 
-**Events**: `gateway:startup`
-**What it does**: Executes BOOT.md instructions via the agent runner.
-**Output**: Whatever the instructions request (for example, outbound messages).
+Runs `BOOT.md` whenever the gateway starts after channels start.
+
+**Events**: `gateway:startup`  
+**What it does**: Executes `BOOT.md` instructions through the agent runner.  
+**Output**: Whatever the instructions request, such as outbound messages.
 
 **Enable**:
 
 ```bash
-clawdbot hooks enable boot-md
+smithersbot hooks enable boot-md
 ```
+
+See `src/hooks/bundled/boot-md/HOOK.md`.
 
 ## Hook Structure
 
 Each hook is a directory containing:
 
-- **HOOK.md**: Metadata and documentation in YAML frontmatter + Markdown
-- **handler.ts**: The hook handler function (default export)
+- `HOOK.md`: metadata and documentation in YAML frontmatter plus Markdown
+- `handler.ts`: the hook handler function
 
 Example structure:
 
-```
+```text
 session-memory/
-├── HOOK.md          # Metadata + docs
-└── handler.ts       # Handler implementation
+├── HOOK.md
+└── handler.ts
 ```
 
 ## HOOK.md Format
@@ -82,33 +88,35 @@ session-memory/
 ---
 name: my-hook
 description: "Short description"
-homepage: https://docs.molt.bot/hooks#my-hook
 metadata:
-  { "clawdbot": { "emoji": "🔗", "events": ["command:new"], "requires": { "bins": ["node"] } } }
+  { "smithersbot": { "emoji": "link", "events": ["command:new"], "requires": { "bins": ["node"] } } }
 ---
 # Hook Title
 
-Documentation goes here...
+Documentation goes here.
 ```
 
 ### Metadata Fields
 
-- **emoji**: Display emoji for CLI
-- **events**: Array of events to listen for (e.g., `["command:new", "session:start"]`)
-- **requires**: Optional requirements
-  - **bins**: Required binaries on PATH
-  - **anyBins**: At least one of these binaries must be present
-  - **env**: Required environment variables
-  - **config**: Required config paths (e.g., `["workspace.dir"]`)
-  - **os**: Required platforms (e.g., `["darwin", "linux"]`)
-- **install**: Installation methods (for bundled hooks: `[{"id":"bundled","kind":"bundled"}]`)
+- `emoji`: display marker for CLI output
+- `events`: events to listen for, such as `["command:new", "session:start"]`
+- `requires`: optional requirements
+- `install`: installation methods for bundled hooks
+
+Requirements can include:
+
+- `bins`: required binaries on PATH
+- `anyBins`: at least one binary from the list must be present
+- `env`: required environment variables
+- `config`: required config paths, such as `["workspace.dir"]`
+- `os`: required platforms, such as `["darwin", "linux"]`
 
 ## Creating Custom Hooks
 
 To create your own hooks, place them in:
 
-- **Workspace hooks**: `<workspace>/hooks/` (highest precedence)
-- **Managed hooks**: `~/.clawdbot/hooks/` (shared across workspaces)
+- Workspace hooks: `<workspace>/hooks/`
+- Managed hooks: `~/.smithersbot/hooks/`
 
 Custom hooks follow the same structure as bundled hooks.
 
@@ -117,31 +125,31 @@ Custom hooks follow the same structure as bundled hooks.
 List all hooks:
 
 ```bash
-clawdbot hooks list
+smithersbot hooks list
 ```
 
 Show hook details:
 
 ```bash
-clawdbot hooks info session-memory
+smithersbot hooks info session-memory
 ```
 
 Check hook status:
 
 ```bash
-clawdbot hooks check
+smithersbot hooks check
 ```
 
-Enable/disable:
+Enable or disable hooks:
 
 ```bash
-clawdbot hooks enable session-memory
-clawdbot hooks disable command-logger
+smithersbot hooks enable session-memory
+smithersbot hooks disable command-logger
 ```
 
 ## Configuration
 
-Hooks can be configured in `~/.clawdbot/clawdbot.json`:
+Hooks can be configured in `~/.smithersbot/smithersbot.json`:
 
 ```json
 {
@@ -165,14 +173,12 @@ Hooks can be configured in `~/.clawdbot/clawdbot.json`:
 
 Currently supported events:
 
-- **command**: All command events
-- **command:new**: `/new` command specifically
-- **command:reset**: `/reset` command
-- **command:stop**: `/stop` command
-- **agent:bootstrap**: Before workspace bootstrap files are injected
-- **gateway:startup**: Gateway startup (after channels start)
-
-More event types coming soon (session lifecycle, agent errors, etc.).
+- `command`: all command events
+- `command:new`: `/new` command specifically
+- `command:reset`: `/reset` command
+- `command:stop`: `/stop` command
+- `agent:bootstrap`: before workspace bootstrap files are injected
+- `gateway:startup`: gateway startup after channels start
 
 ## Handler API
 
@@ -181,11 +187,11 @@ Hook handlers receive an `InternalHookEvent` object:
 ```typescript
 interface InternalHookEvent {
   type: "command" | "session" | "agent" | "gateway";
-  action: string; // e.g., 'new', 'reset', 'stop'
+  action: string;
   sessionKey: string;
   context: Record<string, unknown>;
   timestamp: Date;
-  messages: string[]; // Push messages here to send to user
+  messages: string[];
 }
 ```
 
@@ -199,11 +205,7 @@ const myHandler: HookHandler = async (event) => {
     return;
   }
 
-  // Your logic here
-  console.log("New command triggered!");
-
-  // Optionally send message to user
-  event.messages.push("✨ Hook executed!");
+  event.messages.push("Hook executed.");
 };
 
 export default myHandler;
@@ -213,12 +215,8 @@ export default myHandler;
 
 Test your hooks by:
 
-1. Place hook in workspace hooks directory
-2. Restart gateway: `pkill -9 -f 'clawdbot.*gateway' && pnpm clawdbot gateway`
-3. Enable the hook: `clawdbot hooks enable my-hook`
-4. Trigger the event (e.g., send `/new` command)
-5. Check gateway logs for hook execution
-
-## Documentation
-
-Full documentation: https://docs.molt.bot/hooks
+1. Place the hook in the workspace hooks directory.
+2. Restart the gateway using the normal local development command for this repository.
+3. Enable the hook: `smithersbot hooks enable my-hook`.
+4. Trigger the event, such as sending `/new`.
+5. Check gateway logs for hook execution.

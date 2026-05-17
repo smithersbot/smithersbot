@@ -1,3 +1,5 @@
+> **Status:** Upstream-derived from the OpenClaw fork. Deferred from SmithersBot v0 and **not currently supported**. Code is preserved in-tree for reference only.
+
 # @clawdbot/nostr
 
 Nostr DM channel plugin for Clawdbot using NIP-04 encrypted direct messages.
