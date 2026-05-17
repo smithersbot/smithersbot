@@ -285,9 +285,6 @@ export async function setupChannels(
   const accountOverrides: Partial<Record<ChannelChoice, string>> = {
     ...options?.accountIds,
   };
-  if (options?.whatsappAccountId?.trim()) {
-    accountOverrides.whatsapp = options.whatsappAccountId.trim();
-  }
 
   const { installedPlugins, catalogEntries, statusByChannel, statusLines } =
     await collectChannelStatus({ cfg: next, options, accountOverrides });
