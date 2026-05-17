@@ -1,28 +1,53 @@
 # SmithersBot
 
-A Telegram-controlled multi-agent goal execution harness for local coding and research work.
+## Leave agents running without giving up control.
 
-<!-- TODO: refine one-liner using Marketing Made Simple. -->
+SmithersBot is for people who want Claude Code and Codex to keep working together for hours, but do not want to babysit every permission prompt or blindly trust an agent with their machine.
 
-SmithersBot is built around one operator chat: Telegram. You send `/new_goal <description>`, review the plan as a flowchart, ask for detail or edits, and approve execution from inline Telegram controls.
+You send a goal from Telegram. SmithersBot turns it into a reviewed plan, runs each task with a fresh worker, git checkpoints before each step, verifies work outside the agent, and asks you only when human judgement is needed.
 
-Under the hood, SmithersBot turns that operator-approved plan into a DAG of local Codex or Claude Code workers. It persists every plan, prompt, attempt, journal note, and run state file to disk; gates code changes with your own build and test commands; can run Semgrep, the developer-friendly static analysis / code security tool; and creates a local recoverability checkpoint before each task. The CLI exists as a supporting path for debugging, inspection, and automation, not as the intended day-to-day interface.
+The result is a local agent workflow that keeps moving in the background while staying inspectable, recoverable, and operator-controlled.
 
-Candidate one-liners using a Problem -> Solution -> Result frame:
+## Why SmithersBot exists
 
-- Coding agents drift without oversight; SmithersBot runs them from Telegram with plans, checkpoints, and gates; you get useful automation without losing the operator seat.
-- Local agent work is hard to trust; SmithersBot records every decision, prompt, and attempt; you can inspect what happened and recover when it goes wrong.
-- Multi-step coding tasks stall on unclear handoffs; SmithersBot plans, delegates, verifies, and asks focused questions; projects keep moving with fewer context switches.
-- Autonomous coding feels risky on a real machine; SmithersBot runs inside an isolated workspace with hard-deny rules and checkpoints; you get practical agency with practical boundaries.
-- Agent runs are opaque after the fact; SmithersBot saves the full execution trail and lets repo chat inspect it; you can understand, debug, and improve every run.
-
-Best current pick: "Coding agents drift without oversight; SmithersBot runs them from Telegram with plans, checkpoints, and gates; you get useful automation without losing the operator seat."
+- **Context degradation:** long Claude Code or Codex agent sessions need compaction. Compaction makes agents forget critical information, making them act unreliably. [Anthropic’s compaction docs](https://platform.claude.com/docs/en/build-with-claude/compaction) describe how long conversations are summarized and prior message blocks are dropped from later requests.
+    
+    **SmithersBot’s answer:** break the goal into tasks. Each task gets a fresh worker that can inspect previous work when needed, instead of dragging one agent through a long cycle of information loss from expansion and compaction.
+    
+- **Unattended work without blind trust:** permission prompts force babysitting or unsafe permission skipping.
+    
+    **SmithersBot’s answer:** add a configurable middle layer with planning, approvals, working-directory boundaries, hard-deny rules, and git checkpoints.
+    
+- **Long runs become hard to understand:** after compaction, retries, and multiple sessions, it becomes hard to know what happened, why a decision was made, or where things went wrong.
+    
+    **SmithersBot’s answer:** write the execution trail to disk: plans, prompts, attempts, stdout/stderr, journals, state, checkpoints, and lessons.
+    
+- **Linear plans stall too easily:** Claude Code and Codex can make plans, but the plans are one-dimensional. If one task gets blocked, everything stops and waits for the user.
+    
+    **SmithersBot’s answer:** plan as a DAG, calculate the critical path, and keep working on tasks that are not downstream of the blocked task.
+    
+- **Agents are bad witnesses of their own work:** they often say tests passed when they did not, call failures "preexisting bugs" or avoid accountability when stuck.
+    
+    **SmithersBot’s answer:** run verification tests outside the worker after each task. The worker cannot simply claim success and bypass the build/test gate.
+    
+- **Different models are good at different things:** Claude Code and Codex have different strengths. When I started this, Claude Code was generally accepted to be stronger at tool use and planning, while Codex was considered stronger at code creation and debugging.
+    
+    **SmithersBot’s answer:** use them together: Claude Code drafts plans, Codex reviews them, and local Codex or Claude Code workers are assigned to execute tasks where they fit best.
+    
+- **Sometimes the operator needs a thinking partner before acting:** the hard part of agentic execution is figuring out what to prompt, whether the plan is good, or what to do when something is blocked.
+    
+    **SmithersBot’s answer:** repo chat gives you a Telegram-native way to ask questions with full repo and agent context. Use it to write a better `/new_goal` prompt, sanity-check a plan before approval, understand what happened during a run, or decide how to unblock a stuck task.
+    
 
 ## Demo
 
 Demo coming soon.
 
+The demo should show the real operator loop: repo chat creating or refining a prompt, `/new_goal`, the plan flowchart, Plan Detail, Request changes, approval, task execution, completion, manual review, and Incorporate Feedback if needed.
+
 ## Quick start
+
+**Strongly Recommended:** run SmithersBot in an isolated environment such as a VirtualBox VM, VPS, Docker container, dedicated machine, or isolated development machine, not directly on your primary personal computer.
 
 Start with Telegram. Send this to your configured SmithersBot chat:
 
@@ -111,37 +136,126 @@ flowchart LR
 - **Execution** runs one fresh worker per task and tests it outside the worker; on failure SmithersBot retries from a checkpoint or asks the user a focused Telegram question.
 - **User Review** starts after SmithersBot finishes the work it can run itself. SmithersBot tells the user what it could not test automatically, the user runs those manual checks, passing checks complete the goal, and failed checks can be fed back into planning.
 
+## Example operator flows
+
+### Smooth path: approve and let it run
+
+- You write and send `/new_goal <description>` through Telegram.
+    
+- Claude Code drafts the plan.
+    
+- Codex reviews and accepts it.
+    
+- You approve the plan.
+    
+- SmithersBot runs task by task.
+    
+- SmithersBot suggests a manual test it could not run itself.
+    
+- You run the test and it passes.
+    
+- Your goal is achieved.
+    
+
+### Full operator loop: prompt, revise, recover, unblock, feedback
+
+- You are not sure exactly how to phrase the goal, so you send a Telegram message to repo chat describing what you want.
+    
+- Repo chat inspects the repo and helps write a strong `/new_goal` prompt.
+    
+- You copy and paste that `/new_goal` prompt into Telegram.
+    
+- Claude Code drafts the plan.
+    
+- Codex reviews the plan.
+    
+- If Codex sees a problem, it gives feedback and Claude Code revises the plan.
+    
+- Once Codex accepts the plan, SmithersBot shows you the flowchart in Telegram.
+    
+- You spot an issue with the plan, click **Request changes**, and describe what needs to change.
+    
+- Claude Code revises the plan and Codex reviews it again.
+    
+- You approve the edited plan.
+    
+- SmithersBot completes the first task and passes the automatic build and test gate.
+    
+- On the second task, the worker tries an approach that does not work.
+    
+- SmithersBot records what failed, reverts the repo to the checkpoint from before that task, and starts a fresh worker with the failure context and suggestion of how to try again.
+    
+- The second attempt succeeds.
+    
+- On a later task, SmithersBot realizes it needs a missing API key and asks you a focused question in Telegram.
+    
+- While it waits, SmithersBot continues working on tasks that are not downstream of the blocked task.
+    
+- You add the API key manually and tell SmithersBot.
+    
+- SmithersBot returns to the blocked task, completes it, and keeps going.
+    
+- When all tasks are complete, SmithersBot suggests a critical manual test it could not run itself.
+    
+- The manual test fails, so you send the failed logs back through **Incorporate Feedback**.
+    
+- SmithersBot goes back to planning, adds a fix task, runs it, and asks you to test again.
+    
+- The test passes.
+    
+- Your goal is achieved.
+    
+
 ## Telegram controls
 
 - Plan messages carry inline buttons for **Approve**, **Plan Detail**, **Request changes**, and **Reject**.
+    
 - Reply to the plan to revise it.
+    
 - Reply to a blocked question to unblock the run.
+    
 - Reply to the done message to suggest follow-up work via **Incorporate Feedback**.
+    
 - Routing is scoped to the chat and topic thread the run was started in.
+    
 
 Telegram commands:
 
 - `/new_goal <description>` starts a new goal.
+    
 - `/goal_status` shows the current state of the flowchart/DAG for a goal.
+    
 - `/goal_list` shows a summary of all goals.
+    
 - `/repo_chat <question>` asks repo and active-goal context questions.
+    
 - `/chat_backend` configures repo chat to use Codex or Claude Code.
+    
 - `/nightwatch` configures the scheduled daily review.
+    
 
 ## Repo chat
+
+Repo chat is the operator’s way to ask questions with repo and goal context.
 
 The main way to use repo chat is to send a normal Telegram message with no slash command. That starts a new repo chat session. If you reply to the last message in a repo chat, it keeps that repo chat going.
 
 `/repo_chat <question>` is also available when you want to force a repo-chat question explicitly.
 
-Repo chat is very powerful. It can access every action each agent has taken and can see every file available inside the environment where SmithersBot is running. Use it before `/new_goal` to sharpen the prompt, after the flowchart is created to sanity-check the plan, or during execution to reason about a blocked run.
+Repo chat can access every action each agent has taken and can see every file available inside the environment where SmithersBot is running. Use it before `/new_goal` to sharpen the prompt, after the flowchart is created to sanity-check the plan, or during execution to reason about a blocked run.
 
 Examples:
 
 - Have a question about how SmithersBot works? Ask repo chat.
+    
 - Is a goal blocked and you need options for what to say or do to unblock it? Ask repo chat.
+    
 - See behavior in one of your projects you do not understand? Ask repo chat.
+    
 - Want a better prompt before starting a goal? Ask repo chat.
+    
+- Want to know whether a plan looks good to approve? Ask repo chat.
+    
 
 The backend is configurable with `/chat_backend`, which selects Codex or Claude Code for future repo-chat sessions.
 
@@ -171,7 +285,7 @@ After a task completes, the configured build/test commands run outside the agent
 
 ### Semgrep
 
-Semgrep can run after each code-related step or at the end of a goal depending on configuration. If Semgrep fails, the task is blocked the same way a failed build/test gate blocks the task.
+Semgrep, the developer-friendly static analysis / code security tool, can run after each code-related step or at the end of a goal depending on configuration. If Semgrep fails, the task is blocked the same way a failed build/test gate blocks the task.
 
 ### Hard-deny checks
 
@@ -185,15 +299,13 @@ SmithersBot also has a lessons system. Completed runs can extract lessons. Lesso
 
 Each working directory can also have its own skills or plugins added. SmithersBot can be used to use, create, or edit skills or plugins.
 
-## What gets saved on disk
+## Full execution trail
 
-Every plan, worker prompt, stdout/stderr capture, attempt bundle, journal note, and run state file lives on disk under the goals state directory and can be inspected after the fact.
+Every plan, worker prompt, stdout/stderr capture, attempt bundle, journal note, run state file, and checkpoint lives on disk under the goals state directory and can be inspected after the fact.
 
 **This sounds simple, but it is one of the most powerful features: full transparency means repo chat can answer questions about what happened and goal workers can see why upstream decisions were made.**
 
-Each working directory has its own `CLAUDE.md`, skills, and plugins. SmithersBot remembers per-directory and global lessons and injects the relevant ones into the worker prompt under a labelled section.
-
-When a task fails, SmithersBot can assess whether there is a lesson to learn from the failure. It can extract scoped lessons. Later workers in the same working directory or globally automatically receive relevant lessons in their prompt under a labelled lesson section.
+The execution trail is also what makes recovery and memory useful. When a task fails, SmithersBot can assess whether there is a lesson to learn from the failure. It can extract scoped lessons. Later workers in the same working directory or globally automatically receive relevant lessons in their prompt under a labelled lesson section.
 
 ## Execution and recovery
 
@@ -213,11 +325,29 @@ Nightwatch is a scheduled daily code review that runs in the background and deli
 
 ## Status and limitations
 
-SmithersBot is a personal, single-operator harness. A few things are worth knowing up front:
+SmithersBot is a personal, single-operator harness.
+
+Not for:
+
+- hosted SaaS
+    
+- multi-user deployment
+    
+- running directly on your main personal machine
+    
+- replacing human judgement
+    
+- guaranteeing that agents behave safely
+    
+- skipping code review or manual testing
+    
+
+A few things are worth knowing up front:
 
 - Execution is sequential, not parallel.
-- Read-only repo chat: Claude Code excludes the `Write` tool but allows shell commands; Codex runs in a workspace sandbox and relies on prompt compliance.
+    
 - Subscription-mode auth strips Anthropic credential env vars from the worker environment so the local CLI uses its own login; it is not a free or unlimited Claude.
+    
 - Crash recovery is best-effort and rolls the interrupted step back to `pending` to be replayed; it is not a formal guarantee.
 
 ## Attribution
