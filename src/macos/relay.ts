@@ -30,17 +30,10 @@ async function main() {
     process.exit(0);
   }
 
-  const { parseRelaySmokeTest, runRelaySmokeTest } = await import("./relay-smoke.js");
-  const smokeTest = parseRelaySmokeTest(args, process.env);
-  if (smokeTest) {
-    try {
-      await runRelaySmokeTest(smokeTest);
-      process.exit(0);
-    } catch (err) {
-      console.error(`Relay smoke test failed (${smokeTest}):`, err); // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
-      process.exit(1);
-    }
-  }
+  const { parseRelaySmokeTest } = await import("./relay-smoke.js");
+  // parseRelaySmokeTest currently throws for any smoke-test argument; no tests
+  // are supported in this build.
+  parseRelaySmokeTest(args, process.env);
 
   await patchBunLongForProtobuf();
 

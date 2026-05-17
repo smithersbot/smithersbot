@@ -1,9 +1,14 @@
 import { chunkText } from "../../../auto-reply/chunk.js";
-import { shouldLogVerbose } from "../../../globals.js";
-import { sendPollWhatsApp } from "../../../web/outbound.js";
 import { isWhatsAppGroupJid, normalizeWhatsAppTarget } from "../../../whatsapp/normalize.js";
-import type { ChannelOutboundAdapter } from "../types.js";
 import { missingTargetError } from "../../../infra/outbound/target-errors.js";
+import type { ChannelOutboundAdapter } from "../types.js";
+
+// WhatsApp source channel removed from v0; this adapter preserves resolveTarget
+// for tests that only exercise target normalization, while text/media/poll send
+// paths report the channel as unavailable.
+const unavailable = (): never => {
+  throw new Error("WhatsApp delivery is not available in this build.");
+};
 
 export const whatsappOutbound: ChannelOutboundAdapter = {
   deliveryMode: "gateway",
@@ -57,30 +62,7 @@ export const whatsappOutbound: ChannelOutboundAdapter = {
       error: missingTargetError("WhatsApp", "<E.164|group JID> or channels.whatsapp.allowFrom[0]"),
     };
   },
-  sendText: async ({ to, text, accountId, deps, gifPlayback }) => {
-    const send =
-      deps?.sendWhatsApp ?? (await import("../../../web/outbound.js")).sendMessageWhatsApp;
-    const result = await send(to, text, {
-      verbose: false,
-      accountId: accountId ?? undefined,
-      gifPlayback,
-    });
-    return { channel: "whatsapp", ...result };
-  },
-  sendMedia: async ({ to, text, mediaUrl, accountId, deps, gifPlayback }) => {
-    const send =
-      deps?.sendWhatsApp ?? (await import("../../../web/outbound.js")).sendMessageWhatsApp;
-    const result = await send(to, text, {
-      verbose: false,
-      mediaUrl,
-      accountId: accountId ?? undefined,
-      gifPlayback,
-    });
-    return { channel: "whatsapp", ...result };
-  },
-  sendPoll: async ({ to, poll, accountId }) =>
-    await sendPollWhatsApp(to, poll, {
-      verbose: shouldLogVerbose(),
-      accountId: accountId ?? undefined,
-    }),
+  sendText: async () => unavailable(),
+  sendMedia: async () => unavailable(),
+  sendPoll: async () => unavailable(),
 };

@@ -131,22 +131,26 @@ type SignalMessageActions =
 type MonitorIMessageProvider = typeof import("../../imessage/monitor.js").monitorIMessageProvider;
 type ProbeIMessage = typeof import("../../imessage/probe.js").probeIMessage;
 type SendMessageIMessage = typeof import("../../imessage/send.js").sendMessageIMessage;
-type GetActiveWebListener = typeof import("../../web/active-listener.js").getActiveWebListener;
-type GetWebAuthAgeMs = typeof import("../../web/auth-store.js").getWebAuthAgeMs;
-type LogoutWeb = typeof import("../../web/auth-store.js").logoutWeb;
-type LogWebSelfId = typeof import("../../web/auth-store.js").logWebSelfId;
-type ReadWebSelfId = typeof import("../../web/auth-store.js").readWebSelfId;
-type WebAuthExists = typeof import("../../web/auth-store.js").webAuthExists;
-type SendMessageWhatsApp = typeof import("../../web/outbound.js").sendMessageWhatsApp;
-type SendPollWhatsApp = typeof import("../../web/outbound.js").sendPollWhatsApp;
-type LoginWeb = typeof import("../../web/login.js").loginWeb;
-type StartWebLoginWithQr = typeof import("../../web/login-qr.js").startWebLoginWithQr;
-type WaitForWebLogin = typeof import("../../web/login-qr.js").waitForWebLogin;
-type MonitorWebChannel = typeof import("../../channels/web/index.js").monitorWebChannel;
 type HandleWhatsAppAction =
   typeof import("../../agents/tools/whatsapp-actions.js").handleWhatsAppAction;
 type CreateWhatsAppLoginTool =
   typeof import("../../channels/plugins/agent-tools/whatsapp-login.js").createWhatsAppLoginTool;
+type GetActiveWebListener =
+  typeof import("../../channels/plugins/whatsapp-stubs.js").getActiveWebListener;
+type GetWebAuthAgeMs = typeof import("../../channels/plugins/whatsapp-stubs.js").getWebAuthAgeMs;
+type LogoutWeb = typeof import("../../channels/plugins/whatsapp-stubs.js").logoutWeb;
+type LogWebSelfId = typeof import("../../channels/plugins/whatsapp-stubs.js").logWebSelfId;
+type ReadWebSelfId = typeof import("../../channels/plugins/whatsapp-stubs.js").readWebSelfId;
+type WebAuthExists = typeof import("../../channels/plugins/whatsapp-stubs.js").webAuthExists;
+type SendMessageWhatsApp =
+  typeof import("../../channels/plugins/whatsapp-stubs.js").sendMessageWhatsApp;
+type SendPollWhatsApp = typeof import("../../channels/plugins/whatsapp-stubs.js").sendPollWhatsApp;
+type LoginWeb = typeof import("../../channels/plugins/whatsapp-stubs.js").loginWeb;
+type StartWebLoginWithQr =
+  typeof import("../../channels/plugins/whatsapp-stubs.js").startWebLoginWithQr;
+type WaitForWebLogin = typeof import("../../channels/plugins/whatsapp-stubs.js").waitForWebLogin;
+type MonitorWebChannel =
+  typeof import("../../channels/plugins/whatsapp-stubs.js").monitorWebChannel;
 
 // LINE channel types
 type ListLineAccountIds = typeof import("../../line/accounts.js").listLineAccountIds;

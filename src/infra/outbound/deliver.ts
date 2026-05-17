@@ -16,7 +16,6 @@ import { markdownToSignalTextChunks, type SignalTextStyleRange } from "../../sig
 import { sendMessageSignal } from "../../signal/send.js";
 import type { sendMessageSlack } from "../../slack/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
-import type { sendMessageWhatsApp } from "../../web/outbound.js";
 import {
   appendAssistantMessageToSessionTranscript,
   resolveMirroredTranscriptText,
@@ -35,7 +34,6 @@ type SendMatrixMessage = (
 ) => Promise<{ messageId: string; roomId: string }>;
 
 export type OutboundSendDeps = {
-  sendWhatsApp?: typeof sendMessageWhatsApp;
   sendTelegram?: typeof sendMessageTelegram;
   sendDiscord?: typeof sendMessageDiscord;
   sendSlack?: typeof sendMessageSlack;
