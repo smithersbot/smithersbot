@@ -2,7 +2,7 @@ import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { mediaKindFromMime } from "../media/constants.js";
 import { saveMediaBuffer } from "../media/store.js";
-import { loadWebMedia } from "../web/media.js";
+import { loadWebMedia } from "../media/load.js";
 import { convertMarkdownTables } from "../markdown/tables.js";
 import { resolveIMessageAccount } from "./accounts.js";
 import { createIMessageRpcClient, type IMessageRpcClient } from "./client.js";

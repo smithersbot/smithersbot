@@ -3,16 +3,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { logVerbose, shouldLogVerbose } from "../globals.js";
-import { type MediaKind, maxBytesForKind, mediaKindFromMime } from "../media/constants.js";
+import { type MediaKind, maxBytesForKind, mediaKindFromMime } from "./constants.js";
 import { resolveUserPath } from "../utils.js";
-import { fetchRemoteMedia } from "../media/fetch.js";
+import { fetchRemoteMedia } from "./fetch.js";
 import {
   convertHeicToJpeg,
   hasAlphaChannel,
   optimizeImageToPng,
   resizeToJpeg,
-} from "../media/image-ops.js";
-import { detectMime, extensionForMime } from "../media/mime.js";
+} from "./image-ops.js";
+import { detectMime, extensionForMime } from "./mime.js";
 
 export type WebMediaResult = {
   buffer: Buffer;

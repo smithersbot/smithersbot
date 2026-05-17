@@ -40,7 +40,7 @@ import {
 import { executePollAction, executeSendAction } from "./outbound-send-service.js";
 import { actionHasTarget, actionRequiresTarget } from "./message-action-spec.js";
 import { resolveChannelTarget, type ResolvedMessagingTarget } from "./target-resolver.js";
-import { loadWebMedia } from "../../web/media.js";
+import { loadWebMedia } from "../../media/load.js";
 import { extensionForMime } from "../../media/mime.js";
 import { parseSlackTarget } from "../../slack/targets.js";
 

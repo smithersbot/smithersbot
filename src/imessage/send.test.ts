@@ -20,7 +20,7 @@ vi.mock("./client.js", () => ({
   }),
 }));
 
-vi.mock("../web/media.js", () => ({
+vi.mock("../media/load.js", () => ({
   loadWebMedia: vi.fn().mockResolvedValue({
     buffer: Buffer.from("data"),
     contentType: "image/jpeg",

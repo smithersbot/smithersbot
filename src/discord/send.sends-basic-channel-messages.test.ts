@@ -16,7 +16,7 @@ import {
   unpinMessageDiscord,
 } from "./send.js";
 
-vi.mock("../web/media.js", () => ({
+vi.mock("../media/load.js", () => ({
   loadWebMedia: vi.fn().mockResolvedValue({
     buffer: Buffer.from("img"),
     fileName: "photo.jpg",

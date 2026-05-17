@@ -3,7 +3,7 @@ import type { MarkdownTableMode } from "../../config/types.base.js";
 import { convertMarkdownTables } from "../../markdown/tables.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { logVerbose, shouldLogVerbose } from "../../globals.js";
-import { loadWebMedia } from "../media.js";
+import { loadWebMedia } from "../../media/load.js";
 import { newConnectionId } from "../reconnect.js";
 import { formatError } from "../session.js";
 import { whatsappOutboundLog } from "./loggers.js";

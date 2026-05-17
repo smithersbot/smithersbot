@@ -8,7 +8,7 @@ import { loadConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { convertMarkdownTables } from "../markdown/tables.js";
 import { type ActiveWebSendOptions, requireActiveWebListener } from "./active-listener.js";
-import { loadWebMedia } from "./media.js";
+import { loadWebMedia } from "../media/load.js";
 
 const outboundLog = createSubsystemLogger("gateway/channels/whatsapp").child("outbound");
 

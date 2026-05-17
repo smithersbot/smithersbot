@@ -5,8 +5,8 @@ import path from "node:path";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { optimizeImageToPng } from "../media/image-ops.js";
-import { loadWebMedia, optimizeImageToJpeg } from "./media.js";
+import { optimizeImageToPng } from "./image-ops.js";
+import { loadWebMedia, optimizeImageToJpeg } from "./load.js";
 
 const tmpFiles: string[] = [];
 

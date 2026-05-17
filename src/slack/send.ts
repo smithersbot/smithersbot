@@ -7,7 +7,7 @@ import {
 } from "../auto-reply/chunk.js";
 import { loadConfig } from "../config/config.js";
 import { logVerbose } from "../globals.js";
-import { loadWebMedia } from "../web/media.js";
+import { loadWebMedia } from "../media/load.js";
 import type { SlackTokenSource } from "./accounts.js";
 import { resolveSlackAccount } from "./accounts.js";
 import { createSlackWebClient } from "./client.js";
