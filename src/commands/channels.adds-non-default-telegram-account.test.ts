@@ -5,7 +5,6 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
 import { signalPlugin } from "../../extensions/signal/src/channel.js";
-import { slackPlugin } from "../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 
 const configMocks = vi.hoisted(() => ({
@@ -72,7 +71,6 @@ describe("channels command", () => {
     });
     setActivePluginRegistry(
       createTestRegistry([
-        { pluginId: "slack", plugin: slackPlugin, source: "test" },
         { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
         { pluginId: "signal", plugin: signalPlugin, source: "test" },
         { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
@@ -99,59 +97,6 @@ describe("channels command", () => {
     };
     expect(next.channels?.telegram?.enabled).toBe(true);
     expect(next.channels?.telegram?.accounts?.alerts?.botToken).toBe("123:abc");
-  });
-
-  it("adds a default slack account with tokens", async () => {
-    configMocks.readConfigFileSnapshot.mockResolvedValue({ ...baseSnapshot });
-    await channelsAddCommand(
-      {
-        channel: "slack",
-        account: "default",
-        botToken: "xoxb-1",
-        appToken: "xapp-1",
-      },
-      runtime,
-      { hasFlags: true },
-    );
-
-    expect(configMocks.writeConfigFile).toHaveBeenCalledTimes(1);
-    const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: {
-        slack?: { enabled?: boolean; botToken?: string; appToken?: string };
-      };
-    };
-    expect(next.channels?.slack?.enabled).toBe(true);
-    expect(next.channels?.slack?.botToken).toBe("xoxb-1");
-    expect(next.channels?.slack?.appToken).toBe("xapp-1");
-  });
-
-  it("deletes a non-default slack account", async () => {
-    configMocks.readConfigFileSnapshot.mockResolvedValue({
-      ...baseSnapshot,
-      config: {
-        channels: {
-          slack: {
-            accounts: {
-              default: { botToken: "xoxb-0", appToken: "xapp-0" },
-              work: { botToken: "xoxb-1", appToken: "xapp-1" },
-            },
-          },
-        },
-      },
-    });
-
-    await channelsRemoveCommand({ channel: "slack", account: "work", delete: true }, runtime, {
-      hasFlags: true,
-    });
-
-    expect(configMocks.writeConfigFile).toHaveBeenCalledTimes(1);
-    const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: {
-        slack?: { accounts?: Record<string, { botToken?: string }> };
-      };
-    };
-    expect(next.channels?.slack?.accounts?.work).toBeUndefined();
-    expect(next.channels?.slack?.accounts?.default?.botToken).toBe("xoxb-0");
   });
 
   it("adds a second signal account with a distinct name", async () => {
@@ -195,7 +140,7 @@ describe("channels command", () => {
     configMocks.readConfigFileSnapshot.mockResolvedValue({
       ...baseSnapshot,
       config: {
-        channels: { slack: { botToken: "xoxb-0", appToken: "xapp-0", enabled: true } },
+        channels: { telegram: { botToken: "tg-0", enabled: true } },
       },
     });
 
@@ -205,14 +150,14 @@ describe("channels command", () => {
       .spyOn(prompterModule, "createClackPrompter")
       .mockReturnValue(prompt as never);
 
-    await channelsRemoveCommand({ channel: "slack", account: "default" }, runtime, {
+    await channelsRemoveCommand({ channel: "telegram", account: "default" }, runtime, {
       hasFlags: true,
     });
 
     const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: { slack?: { enabled?: boolean } };
+      channels?: { telegram?: { enabled?: boolean } };
     };
-    expect(next.channels?.slack?.enabled).toBe(false);
+    expect(next.channels?.telegram?.enabled).toBe(false);
     promptSpy.mockRestore();
   });
 
@@ -290,54 +235,19 @@ describe("channels command", () => {
     expect(next.channels?.telegram?.accounts?.default?.name).toBe("Primary Bot");
   });
 
-  it("migrates base names when adding non-default accounts", async () => {
-    configMocks.readConfigFileSnapshot.mockResolvedValue({
-      ...baseSnapshot,
-      config: {
-        channels: {
-          slack: {
-            name: "Primary Bot",
-            botToken: "xoxb-0",
-            appToken: "xapp-0",
-          },
-        },
-      },
-    });
-
-    await channelsAddCommand(
-      { channel: "slack", account: "work", botToken: "xoxb-1", appToken: "xapp-1" },
-      runtime,
-      {
-        hasFlags: true,
-      },
-    );
-
-    const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: {
-        slack?: {
-          name?: string;
-          accounts?: Record<string, { name?: string; botToken?: string }>;
-        };
-      };
-    };
-    expect(next.channels?.slack?.name).toBeUndefined();
-    expect(next.channels?.slack?.accounts?.default?.name).toBe("Primary Bot");
-    expect(next.channels?.slack?.accounts?.work?.botToken).toBe("xoxb-1");
-  });
-
   it("formats gateway channel status lines in registry order", () => {
     const lines = formatGatewayChannelsStatusLines({
       channelAccounts: {
         telegram: [{ accountId: "default", configured: true }],
-        slack: [{ accountId: "default", configured: true }],
+        signal: [{ accountId: "default", configured: true }],
       },
     });
 
     const telegramIndex = lines.findIndex((line) => line.includes("Telegram default"));
-    const slackIndex = lines.findIndex((line) => line.includes("Slack default"));
+    const signalIndex = lines.findIndex((line) => line.includes("Signal default"));
     expect(telegramIndex).toBeGreaterThan(-1);
-    expect(slackIndex).toBeGreaterThan(-1);
-    expect(telegramIndex).toBeLessThan(slackIndex);
+    expect(signalIndex).toBeGreaterThan(-1);
+    expect(telegramIndex).toBeLessThan(signalIndex);
   });
 
   it("surfaces Telegram privacy-mode hints when allowUnmentionedGroups is enabled", () => {

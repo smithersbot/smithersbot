@@ -10,15 +10,11 @@ import {
   type RoutePeerKind,
 } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
-import { resolveSlackAccount } from "../../slack/accounts.js";
-import { createSlackWebClient } from "../../slack/client.js";
-import { normalizeAllowListLower } from "../../slack/monitor/allow-list.js";
 import {
   resolveSignalPeerId,
   resolveSignalRecipient,
   resolveSignalSender,
 } from "../../signal/identity.js";
-import { parseSlackTarget } from "../../slack/targets.js";
 import { buildTelegramGroupPeerId } from "../../telegram/bot/helpers.js";
 import { resolveTelegramTargetChatType } from "../../telegram/inline-buttons.js";
 import { parseTelegramTarget } from "../../telegram/targets.js";
@@ -47,8 +43,6 @@ export type ResolveOutboundSessionRouteParams = {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const UUID_COMPACT_RE = /^[0-9a-f]{32}$/i;
-// Cache Slack channel type lookups to avoid repeated API calls.
-const SLACK_CHANNEL_TYPE_CACHE = new Map<string, "channel" | "group" | "dm" | "unknown">();
 
 function looksLikeUuid(value: string): boolean {
   if (UUID_RE.test(value) || UUID_COMPACT_RE.test(value)) return true;
@@ -112,116 +106,6 @@ function buildBaseSessionKey(params: {
     dmScope: params.cfg.session?.dmScope ?? "main",
     identityLinks: params.cfg.session?.identityLinks,
   });
-}
-
-// Best-effort mpim detection: allowlist/config, then Slack API (if token available).
-async function resolveSlackChannelType(params: {
-  cfg: MoltbotConfig;
-  accountId?: string | null;
-  channelId: string;
-}): Promise<"channel" | "group" | "dm" | "unknown"> {
-  const channelId = params.channelId.trim();
-  if (!channelId) return "unknown";
-  const cached = SLACK_CHANNEL_TYPE_CACHE.get(`${params.accountId ?? "default"}:${channelId}`);
-  if (cached) return cached;
-
-  const account = resolveSlackAccount({ cfg: params.cfg, accountId: params.accountId });
-  const groupChannels = normalizeAllowListLower(account.dm?.groupChannels);
-  const channelIdLower = channelId.toLowerCase();
-  if (
-    groupChannels.includes(channelIdLower) ||
-    groupChannels.includes(`slack:${channelIdLower}`) ||
-    groupChannels.includes(`channel:${channelIdLower}`) ||
-    groupChannels.includes(`group:${channelIdLower}`) ||
-    groupChannels.includes(`mpim:${channelIdLower}`)
-  ) {
-    SLACK_CHANNEL_TYPE_CACHE.set(`${account.accountId}:${channelId}`, "group");
-    return "group";
-  }
-
-  const channelKeys = Object.keys(account.channels ?? {});
-  if (
-    channelKeys.some((key) => {
-      const normalized = key.trim().toLowerCase();
-      return (
-        normalized === channelIdLower ||
-        normalized === `channel:${channelIdLower}` ||
-        normalized.replace(/^#/, "") === channelIdLower
-      );
-    })
-  ) {
-    SLACK_CHANNEL_TYPE_CACHE.set(`${account.accountId}:${channelId}`, "channel");
-    return "channel";
-  }
-
-  const token =
-    account.botToken?.trim() ||
-    (typeof account.config.userToken === "string" ? account.config.userToken.trim() : "");
-  if (!token) {
-    SLACK_CHANNEL_TYPE_CACHE.set(`${account.accountId}:${channelId}`, "unknown");
-    return "unknown";
-  }
-
-  try {
-    const client = createSlackWebClient(token);
-    const info = await client.conversations.info({ channel: channelId });
-    const channel = info.channel as { is_im?: boolean; is_mpim?: boolean } | undefined;
-    const type = channel?.is_im ? "dm" : channel?.is_mpim ? "group" : "channel";
-    SLACK_CHANNEL_TYPE_CACHE.set(`${account.accountId}:${channelId}`, type);
-    return type;
-  } catch {
-    SLACK_CHANNEL_TYPE_CACHE.set(`${account.accountId}:${channelId}`, "unknown");
-    return "unknown";
-  }
-}
-
-async function resolveSlackSession(
-  params: ResolveOutboundSessionRouteParams,
-): Promise<OutboundSessionRoute | null> {
-  const parsed = parseSlackTarget(params.target, { defaultKind: "channel" });
-  if (!parsed) return null;
-  const isDm = parsed.kind === "user";
-  let peerKind: RoutePeerKind = isDm ? "dm" : "channel";
-  if (!isDm && /^G/i.test(parsed.id)) {
-    // Slack mpim/group DMs share the G-prefix; detect to align session keys with inbound.
-    const channelType = await resolveSlackChannelType({
-      cfg: params.cfg,
-      accountId: params.accountId,
-      channelId: parsed.id,
-    });
-    if (channelType === "group") peerKind = "group";
-    if (channelType === "dm") peerKind = "dm";
-  }
-  const peer: RoutePeer = {
-    kind: peerKind,
-    id: parsed.id,
-  };
-  const baseSessionKey = buildBaseSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    channel: "slack",
-    accountId: params.accountId,
-    peer,
-  });
-  const threadId = normalizeThreadId(params.threadId ?? params.replyToId);
-  const threadKeys = resolveThreadSessionKeys({
-    baseSessionKey,
-    threadId,
-  });
-  return {
-    sessionKey: threadKeys.sessionKey,
-    baseSessionKey,
-    peer,
-    chatType: peerKind === "dm" ? "direct" : "channel",
-    from:
-      peerKind === "dm"
-        ? `slack:${parsed.id}`
-        : peerKind === "group"
-          ? `slack:group:${parsed.id}`
-          : `slack:channel:${parsed.id}`,
-    to: peerKind === "dm" ? `user:${parsed.id}` : `channel:${parsed.id}`,
-    threadId,
-  };
 }
 
 function resolveTelegramSession(
@@ -723,8 +607,6 @@ export async function resolveOutboundSessionRoute(
   const target = params.target.trim();
   if (!target) return null;
   switch (params.channel) {
-    case "slack":
-      return await resolveSlackSession({ ...params, target });
     case "telegram":
       return resolveTelegramSession({ ...params, target });
     case "signal":

@@ -148,12 +148,10 @@ export {
   resolveBlueBubblesGroupRequireMention,
   resolveGoogleChatGroupRequireMention,
   resolveIMessageGroupRequireMention,
-  resolveSlackGroupRequireMention,
   resolveTelegramGroupRequireMention,
   resolveBlueBubblesGroupToolPolicy,
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupToolPolicy,
-  resolveSlackGroupToolPolicy,
   resolveTelegramGroupToolPolicy,
 } from "../channels/plugins/group-mentions.js";
 export { recordInboundSession } from "../channels/session.js";
@@ -165,8 +163,6 @@ export {
   resolveNestedAllowlistDecision,
 } from "../channels/plugins/channel-config.js";
 export {
-  listSlackDirectoryGroupsFromConfig,
-  listSlackDirectoryPeersFromConfig,
   listTelegramDirectoryGroupsFromConfig,
   listTelegramDirectoryPeersFromConfig,
 } from "../channels/plugins/directory-config.js";
@@ -243,22 +239,6 @@ export {
   looksLikeIMessageTargetId,
   normalizeIMessageMessagingTarget,
 } from "../channels/plugins/normalize/imessage.js";
-
-// Channel: Slack
-export {
-  listEnabledSlackAccounts,
-  listSlackAccountIds,
-  resolveDefaultSlackAccountId,
-  resolveSlackAccount,
-  resolveSlackReplyToMode,
-  type ResolvedSlackAccount,
-} from "../slack/accounts.js";
-export { slackOnboardingAdapter } from "../channels/plugins/onboarding/slack.js";
-export {
-  looksLikeSlackTargetId,
-  normalizeSlackMessagingTarget,
-} from "../channels/plugins/normalize/slack.js";
-export { buildSlackThreadingToolContext } from "../slack/threading-tool-context.js";
 
 // Channel: Telegram
 export {

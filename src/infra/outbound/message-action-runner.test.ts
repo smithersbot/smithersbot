@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoltbotConfig } from "../../config/config.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createIMessageTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
-import { slackPlugin } from "../../../extensions/slack/src/channel.js";
-import { telegramPlugin } from "../../../extensions/telegram/src/channel.js";
 import { loadWebMedia } from "../../media/load.js";
 import { runMessageAction } from "./message-action-runner.js";
 import { jsonResult } from "../../agents/tools/common.js";
@@ -18,15 +16,6 @@ vi.mock("../../media/load.js", async () => {
   };
 });
 
-const slackConfig = {
-  channels: {
-    slack: {
-      botToken: "xoxb-test",
-      appToken: "xapp-test",
-    },
-  },
-} as MoltbotConfig;
-
 const imessageConfig = {
   channels: {
     imessage: {
@@ -37,24 +26,8 @@ const imessageConfig = {
 
 describe("runMessageAction context isolation", () => {
   beforeEach(async () => {
-    const { createPluginRuntime } = await import("../../plugins/runtime/index.js");
-    const { setSlackRuntime } = await import("../../../extensions/slack/src/runtime.js");
-    const { setTelegramRuntime } = await import("../../../extensions/telegram/src/runtime.js");
-    const runtime = createPluginRuntime();
-    setSlackRuntime(runtime);
-    setTelegramRuntime(runtime);
     setActivePluginRegistry(
       createTestRegistry([
-        {
-          pluginId: "slack",
-          source: "test",
-          plugin: slackPlugin,
-        },
-        {
-          pluginId: "telegram",
-          source: "test",
-          plugin: telegramPlugin,
-        },
         {
           pluginId: "imessage",
           source: "test",
@@ -66,115 +39,6 @@ describe("runMessageAction context isolation", () => {
 
   afterEach(() => {
     setActivePluginRegistry(createTestRegistry([]));
-  });
-
-  it("allows send when target matches current channel", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "send",
-      params: {
-        channel: "slack",
-        target: "#C12345678",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "C12345678" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("accepts legacy to parameter for send", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "send",
-      params: {
-        channel: "slack",
-        to: "#C12345678",
-        message: "hi",
-      },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("defaults to current channel when target is omitted", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "send",
-      params: {
-        channel: "slack",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "C12345678" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("allows media-only send when target matches current channel", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "send",
-      params: {
-        channel: "slack",
-        target: "#C12345678",
-        media: "https://example.com/note.ogg",
-      },
-      toolContext: { currentChannelId: "C12345678" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("requires message when no media hint is provided", async () => {
-    await expect(
-      runMessageAction({
-        cfg: slackConfig,
-        action: "send",
-        params: {
-          channel: "slack",
-          target: "#C12345678",
-        },
-        toolContext: { currentChannelId: "C12345678" },
-        dryRun: true,
-      }),
-    ).rejects.toThrow(/message required/i);
-  });
-
-  it("blocks send when target differs from current channel", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "send",
-      params: {
-        channel: "slack",
-        target: "channel:C99999999",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "C12345678", currentChannelProvider: "slack" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("blocks thread-reply when channelId differs from current channel", async () => {
-    const result = await runMessageAction({
-      cfg: slackConfig,
-      action: "thread-reply",
-      params: {
-        channel: "slack",
-        target: "C99999999",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "C12345678", currentChannelProvider: "slack" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("action");
   });
 
   it("allows iMessage send when target matches current handle", async () => {
@@ -212,106 +76,17 @@ describe("runMessageAction context isolation", () => {
     expect(result.kind).toBe("send");
   });
 
-  it("infers channel + target from tool context when missing", async () => {
-    const multiConfig = {
-      channels: {
-        slack: {
-          botToken: "xoxb-test",
-          appToken: "xapp-test",
-        },
-        telegram: {
-          token: "tg-test",
-        },
-      },
-    } as MoltbotConfig;
-
-    const result = await runMessageAction({
-      cfg: multiConfig,
-      action: "send",
-      params: {
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "C12345678", currentChannelProvider: "slack" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-    expect(result.channel).toBe("slack");
-  });
-
-  it("blocks cross-provider sends by default", async () => {
-    await expect(
-      runMessageAction({
-        cfg: slackConfig,
-        action: "send",
-        params: {
-          channel: "telegram",
-          target: "telegram:@ops",
-          message: "hi",
-        },
-        toolContext: { currentChannelId: "C12345678", currentChannelProvider: "slack" },
-        dryRun: true,
-      }),
-    ).rejects.toThrow(/Cross-context messaging denied/);
-  });
-
-  it("blocks same-provider cross-context when disabled", async () => {
-    const cfg = {
-      ...slackConfig,
-      tools: {
-        message: {
-          crossContext: {
-            allowWithinProvider: false,
-          },
-        },
-      },
-    } as MoltbotConfig;
-
-    await expect(
-      runMessageAction({
-        cfg,
-        action: "send",
-        params: {
-          channel: "slack",
-          target: "channel:C99999999",
-          message: "hi",
-        },
-        toolContext: { currentChannelId: "C12345678", currentChannelProvider: "slack" },
-        dryRun: true,
-      }),
-    ).rejects.toThrow(/Cross-context messaging denied/);
-  });
-
   it("aborts send when abortSignal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();
 
     await expect(
       runMessageAction({
-        cfg: slackConfig,
+        cfg: imessageConfig,
         action: "send",
         params: {
-          channel: "slack",
-          target: "#C12345678",
-          message: "hi",
-        },
-        dryRun: true,
-        abortSignal: controller.signal,
-      }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-  });
-
-  it("aborts broadcast when abortSignal is already aborted", async () => {
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      runMessageAction({
-        cfg: slackConfig,
-        action: "broadcast",
-        params: {
-          targets: ["channel:C12345678"],
-          channel: "slack",
+          channel: "imessage",
+          target: "imessage:+15551234567",
           message: "hi",
         },
         dryRun: true,

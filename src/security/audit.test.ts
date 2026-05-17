@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { MoltbotConfig } from "../config/config.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import { runSecurityAudit } from "./audit.js";
-import { slackPlugin } from "../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -389,85 +388,6 @@ describe("security audit", () => {
     );
   });
 
-  it("flags Slack slash commands without a channel users allowlist", async () => {
-    const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-slack-"));
-    process.env.CLAWDBOT_STATE_DIR = tmp;
-    await fs.mkdir(path.join(tmp, "credentials"), { recursive: true, mode: 0o700 });
-    try {
-      const cfg: MoltbotConfig = {
-        channels: {
-          slack: {
-            enabled: true,
-            botToken: "xoxb-test",
-            appToken: "xapp-test",
-            groupPolicy: "open",
-            slashCommand: { enabled: true },
-          },
-        },
-      };
-
-      const res = await runSecurityAudit({
-        config: cfg,
-        includeFilesystem: false,
-        includeChannelSecurity: true,
-        plugins: [slackPlugin],
-      });
-
-      expect(res.findings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            checkId: "channels.slack.commands.slash.no_allowlists",
-            severity: "warn",
-          }),
-        ]),
-      );
-    } finally {
-      if (prevStateDir == null) delete process.env.CLAWDBOT_STATE_DIR;
-      else process.env.CLAWDBOT_STATE_DIR = prevStateDir;
-    }
-  });
-
-  it("flags Slack slash commands when access-group enforcement is disabled", async () => {
-    const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-slack-open-"));
-    process.env.CLAWDBOT_STATE_DIR = tmp;
-    await fs.mkdir(path.join(tmp, "credentials"), { recursive: true, mode: 0o700 });
-    try {
-      const cfg: MoltbotConfig = {
-        commands: { useAccessGroups: false },
-        channels: {
-          slack: {
-            enabled: true,
-            botToken: "xoxb-test",
-            appToken: "xapp-test",
-            groupPolicy: "open",
-            slashCommand: { enabled: true },
-          },
-        },
-      };
-
-      const res = await runSecurityAudit({
-        config: cfg,
-        includeFilesystem: false,
-        includeChannelSecurity: true,
-        plugins: [slackPlugin],
-      });
-
-      expect(res.findings).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            checkId: "channels.slack.commands.slash.useAccessGroups_off",
-            severity: "critical",
-          }),
-        ]),
-      );
-    } finally {
-      if (prevStateDir == null) delete process.env.CLAWDBOT_STATE_DIR;
-      else process.env.CLAWDBOT_STATE_DIR = prevStateDir;
-    }
-  });
-
   it("flags Telegram group commands without a sender allowlist", async () => {
     const prevStateDir = process.env.CLAWDBOT_STATE_DIR;
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-telegram-"));
@@ -739,11 +659,7 @@ describe("security audit", () => {
 
   it("flags extensions without plugins.allow", async () => {
     const prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
-    const prevSlackBotToken = process.env.SLACK_BOT_TOKEN;
-    const prevSlackAppToken = process.env.SLACK_APP_TOKEN;
     delete process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.SLACK_BOT_TOKEN;
-    delete process.env.SLACK_APP_TOKEN;
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-audit-"));
     const stateDir = path.join(tmp, "state");
     await fs.mkdir(path.join(stateDir, "extensions", "some-plugin"), {
@@ -769,10 +685,6 @@ describe("security audit", () => {
     } finally {
       if (prevTelegramToken == null) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
-      if (prevSlackBotToken == null) delete process.env.SLACK_BOT_TOKEN;
-      else process.env.SLACK_BOT_TOKEN = prevSlackBotToken;
-      if (prevSlackAppToken == null) delete process.env.SLACK_APP_TOKEN;
-      else process.env.SLACK_APP_TOKEN = prevSlackAppToken;
     }
   });
 

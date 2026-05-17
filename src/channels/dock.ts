@@ -1,8 +1,6 @@
 import type { MoltbotConfig } from "../config/config.js";
 import { resolveIMessageAccount } from "../imessage/accounts.js";
 import { resolveSignalAccount } from "../signal/accounts.js";
-import { resolveSlackAccount, resolveSlackReplyToMode } from "../slack/accounts.js";
-import { buildSlackThreadingToolContext } from "../slack/threading-tool-context.js";
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
@@ -12,8 +10,6 @@ import {
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupRequireMention,
   resolveIMessageGroupToolPolicy,
-  resolveSlackGroupRequireMention,
-  resolveSlackGroupToolPolicy,
   resolveTelegramGroupRequireMention,
   resolveTelegramGroupToolPolicy,
 } from "./plugins/group-mentions.js";
@@ -62,12 +58,6 @@ type ChannelDockStreaming = {
     idleMs?: number;
   };
 };
-
-const formatLower = (allowFrom: Array<string | number>) =>
-  allowFrom
-    .map((entry) => String(entry).trim())
-    .filter(Boolean)
-    .map((entry) => entry.toLowerCase());
 
 // Channel docks: lightweight channel metadata/behavior for shared code paths.
 //
@@ -172,35 +162,6 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
           hasRepliedRef,
         };
       },
-    },
-  },
-  slack: {
-    id: "slack",
-    capabilities: {
-      chatTypes: ["direct", "channel", "thread"],
-      reactions: true,
-      media: true,
-      nativeCommands: true,
-      threads: true,
-    },
-    outbound: { textChunkLimit: 4000 },
-    streaming: {
-      blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
-    },
-    config: {
-      resolveAllowFrom: ({ cfg, accountId }) =>
-        (resolveSlackAccount({ cfg, accountId }).dm?.allowFrom ?? []).map((entry) => String(entry)),
-      formatAllowFrom: ({ allowFrom }) => formatLower(allowFrom),
-    },
-    groups: {
-      resolveRequireMention: resolveSlackGroupRequireMention,
-      resolveToolPolicy: resolveSlackGroupToolPolicy,
-    },
-    threading: {
-      resolveReplyToMode: ({ cfg, accountId, chatType }) =>
-        resolveSlackReplyToMode(resolveSlackAccount({ cfg, accountId }), chatType),
-      allowTagsWhenOff: true,
-      buildToolContext: (params) => buildSlackThreadingToolContext(params),
     },
   },
   signal: {

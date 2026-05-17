@@ -35,7 +35,6 @@ import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-di
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { resolveEffectiveMessagesConfig, resolveHumanDelayConfig } from "../../agents/identity.js";
 import { createMemoryGetTool, createMemorySearchTool } from "../../agents/tools/memory-tool.js";
-import { handleSlackAction } from "../../agents/tools/slack-actions.js";
 import { removeAckReactionAfterReply, shouldAckReaction } from "../../channels/ack-reactions.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
 import { recordInboundSession } from "../../channels/session.js";
@@ -79,15 +78,6 @@ import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { monitorSignalProvider } from "../../signal/index.js";
 import { probeSignal } from "../../signal/probe.js";
 import { sendMessageSignal } from "../../signal/send.js";
-import { monitorSlackProvider } from "../../slack/index.js";
-import {
-  listSlackDirectoryGroupsLive,
-  listSlackDirectoryPeersLive,
-} from "../../slack/directory-live.js";
-import { probeSlack } from "../../slack/probe.js";
-import { resolveSlackChannelAllowlist } from "../../slack/resolve-channels.js";
-import { resolveSlackUserAllowlist } from "../../slack/resolve-users.js";
-import { sendMessageSlack } from "../../slack/send.js";
 import {
   auditTelegramGroupMembership,
   collectTelegramUnmentionedGroupIds,
@@ -234,16 +224,6 @@ export function createPluginRuntime(): PluginRuntime {
         isControlCommandMessage,
         shouldComputeCommandAuthorized,
         shouldHandleTextCommands,
-      },
-      slack: {
-        listDirectoryGroupsLive: listSlackDirectoryGroupsLive,
-        listDirectoryPeersLive: listSlackDirectoryPeersLive,
-        probeSlack,
-        resolveChannelAllowlist: resolveSlackChannelAllowlist,
-        resolveUserAllowlist: resolveSlackUserAllowlist,
-        sendMessageSlack,
-        monitorSlackProvider,
-        handleSlackAction,
       },
       telegram: {
         auditGroupMembership: auditTelegramGroupMembership,

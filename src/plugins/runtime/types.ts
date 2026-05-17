@@ -85,18 +85,6 @@ type CreateMemoryGetTool = typeof import("../../agents/tools/memory-tool.js").cr
 type CreateMemorySearchTool =
   typeof import("../../agents/tools/memory-tool.js").createMemorySearchTool;
 type RegisterMemoryCli = typeof import("../../cli/memory-cli.js").registerMemoryCli;
-type ListSlackDirectoryGroupsLive =
-  typeof import("../../slack/directory-live.js").listSlackDirectoryGroupsLive;
-type ListSlackDirectoryPeersLive =
-  typeof import("../../slack/directory-live.js").listSlackDirectoryPeersLive;
-type ProbeSlack = typeof import("../../slack/probe.js").probeSlack;
-type ResolveSlackChannelAllowlist =
-  typeof import("../../slack/resolve-channels.js").resolveSlackChannelAllowlist;
-type ResolveSlackUserAllowlist =
-  typeof import("../../slack/resolve-users.js").resolveSlackUserAllowlist;
-type SendMessageSlack = typeof import("../../slack/send.js").sendMessageSlack;
-type MonitorSlackProvider = typeof import("../../slack/index.js").monitorSlackProvider;
-type HandleSlackAction = typeof import("../../agents/tools/slack-actions.js").handleSlackAction;
 type AuditTelegramGroupMembership =
   typeof import("../../telegram/audit.js").auditTelegramGroupMembership;
 type CollectTelegramUnmentionedGroupIds =
@@ -239,16 +227,6 @@ export type PluginRuntime = {
       isControlCommandMessage: IsControlCommandMessage;
       shouldComputeCommandAuthorized: ShouldComputeCommandAuthorized;
       shouldHandleTextCommands: ShouldHandleTextCommands;
-    };
-    slack: {
-      listDirectoryGroupsLive: ListSlackDirectoryGroupsLive;
-      listDirectoryPeersLive: ListSlackDirectoryPeersLive;
-      probeSlack: ProbeSlack;
-      resolveChannelAllowlist: ResolveSlackChannelAllowlist;
-      resolveUserAllowlist: ResolveSlackUserAllowlist;
-      sendMessageSlack: SendMessageSlack;
-      monitorSlackProvider: MonitorSlackProvider;
-      handleSlackAction: HandleSlackAction;
     };
     telegram: {
       auditGroupMembership: AuditTelegramGroupMembership;

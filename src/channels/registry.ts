@@ -4,13 +4,7 @@ import { requireActivePluginRegistry } from "../plugins/runtime.js";
 
 // Channel docking: add new core channels here (order + meta + aliases), then
 // register the plugin in its extension entrypoint and keep protocol IDs in sync.
-export const CHAT_CHANNEL_ORDER = [
-  "telegram",
-  "googlechat",
-  "slack",
-  "signal",
-  "imessage",
-] as const;
+export const CHAT_CHANNEL_ORDER = ["telegram", "googlechat", "signal", "imessage"] as const;
 
 export type ChatChannelId = (typeof CHAT_CHANNEL_ORDER)[number];
 
@@ -45,16 +39,6 @@ const CHAT_CHANNEL_META: Record<ChatChannelId, ChannelMeta> = {
     docsLabel: "googlechat",
     blurb: "Google Workspace Chat app with HTTP webhook.",
     systemImage: "message.badge",
-  },
-  slack: {
-    id: "slack",
-    label: "Slack",
-    selectionLabel: "Slack (Socket Mode)",
-    detailLabel: "Slack Bot",
-    docsPath: "/channels/slack",
-    docsLabel: "slack",
-    blurb: "supported (Socket Mode).",
-    systemImage: "number",
   },
   signal: {
     id: "signal",

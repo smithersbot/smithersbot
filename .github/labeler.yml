@@ -50,12 +50,6 @@
           - "src/signal/**"
           - "extensions/signal/**"
           - "docs/channels/signal.md"
-"channel: slack":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src/slack/**"
-          - "extensions/slack/**"
-          - "docs/channels/slack.md"
 "channel: telegram":
   - changed-files:
       - any-glob-to-any-file:

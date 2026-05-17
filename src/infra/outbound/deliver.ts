@@ -13,7 +13,6 @@ import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import type { sendMessageIMessage } from "../../imessage/send.js";
 import { markdownToSignalTextChunks, type SignalTextStyleRange } from "../../signal/format.js";
 import { sendMessageSignal } from "../../signal/send.js";
-import type { sendMessageSlack } from "../../slack/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
 import {
   appendAssistantMessageToSessionTranscript,
@@ -34,7 +33,6 @@ type SendMatrixMessage = (
 
 export type OutboundSendDeps = {
   sendTelegram?: typeof sendMessageTelegram;
-  sendSlack?: typeof sendMessageSlack;
   sendSignal?: typeof sendMessageSignal;
   sendIMessage?: typeof sendMessageIMessage;
   sendMatrix?: SendMatrixMessage;

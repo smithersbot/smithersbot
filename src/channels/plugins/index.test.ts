@@ -33,7 +33,7 @@ describe("channel plugin registry", () => {
 
   it("sorts channel plugins by configured order", () => {
     const registry = createTestRegistry(
-      ["slack", "telegram", "signal"].map((id) => ({
+      ["signal", "telegram", "imessage"].map((id) => ({
         pluginId: id,
         plugin: createPlugin(id),
         source: "test",
@@ -41,6 +41,6 @@ describe("channel plugin registry", () => {
     );
     setActivePluginRegistry(registry);
     const pluginIds = listChannelPlugins().map((plugin) => plugin.id);
-    expect(pluginIds).toEqual(["telegram", "slack", "signal"]);
+    expect(pluginIds).toEqual(["telegram", "signal", "imessage"]);
   });
 });

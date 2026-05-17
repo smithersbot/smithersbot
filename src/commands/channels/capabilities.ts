@@ -4,7 +4,6 @@ import type { ChannelCapabilities, ChannelPlugin } from "../../channels/plugins/
 import { danger } from "../../globals.js";
 import type { MoltbotConfig } from "../../config/config.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
-import { fetchSlackScopes, type SlackScopesResult } from "../../slack/scopes.js";
 import { theme } from "../../terminal/theme.js";
 import { formatChannelAccountLabel, requireValidConfig } from "./shared.js";
 
@@ -24,10 +23,6 @@ type ChannelCapabilitiesReport = {
   support?: ChannelCapabilities;
   actions?: string[];
   probe?: unknown;
-  slackScopes?: Array<{
-    tokenType: "bot" | "user";
-    result: SlackScopesResult;
-  }>;
 };
 
 const TEAMS_GRAPH_PERMISSION_HINTS: Record<string, string> = {
@@ -90,18 +85,6 @@ function formatProbeLines(channelId: string, probe: unknown): string[] {
     const webhook = probeObj.webhook as { url?: string | null } | undefined;
     if (webhook?.url !== undefined) {
       lines.push(`Webhook: ${webhook.url || "none"}`);
-    }
-  }
-
-  if (channelId === "slack") {
-    const bot = probeObj.bot as { name?: string } | undefined;
-    const team = probeObj.team as { name?: string; id?: string } | undefined;
-    if (bot?.name) {
-      lines.push(`Bot: ${theme.accent(`@${bot.name}`)}`);
-    }
-    if (team?.name || team?.id) {
-      const id = team?.id ? ` (${team.id})` : "";
-      lines.push(`Team: ${team?.name ?? "unknown"}${id}`);
     }
   }
 
@@ -204,33 +187,6 @@ async function resolveChannelReports(params: {
       }
     }
 
-    let slackScopes: ChannelCapabilitiesReport["slackScopes"];
-    if (plugin.id === "slack" && configured && enabled) {
-      const botToken = (resolvedAccount as { botToken?: string }).botToken?.trim();
-      const userToken = (
-        resolvedAccount as { config?: { userToken?: string } }
-      ).config?.userToken?.trim();
-      const scopeReports: NonNullable<ChannelCapabilitiesReport["slackScopes"]> = [];
-      if (botToken) {
-        scopeReports.push({
-          tokenType: "bot",
-          result: await fetchSlackScopes(botToken, timeoutMs),
-        });
-      } else {
-        scopeReports.push({
-          tokenType: "bot",
-          result: { ok: false, error: "Slack bot token missing." },
-        });
-      }
-      if (userToken) {
-        scopeReports.push({
-          tokenType: "user",
-          result: await fetchSlackScopes(userToken, timeoutMs),
-        });
-      }
-      slackScopes = scopeReports;
-    }
-
     reports.push({
       channel: plugin.id,
       accountId,
@@ -243,7 +199,6 @@ async function resolveChannelReports(params: {
       support: plugin.capabilities,
       probe,
       actions,
-      slackScopes,
     });
   }
   return reports;
@@ -322,17 +277,6 @@ export async function channelsCapabilitiesCommand(
       lines.push(...probeLines);
     } else if (report.configured && report.enabled) {
       lines.push(theme.muted("Probe: unavailable"));
-    }
-    if (report.channel === "slack" && report.slackScopes) {
-      for (const entry of report.slackScopes) {
-        const source = entry.result.source ? ` (${entry.result.source})` : "";
-        const label = entry.tokenType === "user" ? "User scopes" : "Bot scopes";
-        if (entry.result.ok && entry.result.scopes?.length) {
-          lines.push(`${label}${source}: ${entry.result.scopes.join(", ")}`);
-        } else if (entry.result.error) {
-          lines.push(`${label}: ${theme.error(entry.result.error)}`);
-        }
-      }
     }
     lines.push("");
   }

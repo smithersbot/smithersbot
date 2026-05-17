@@ -1,12 +1,10 @@
 import { sendMessageIMessage } from "../imessage/send.js";
 import type { OutboundSendDeps } from "../infra/outbound/deliver.js";
 import { sendMessageSignal } from "../signal/send.js";
-import { sendMessageSlack } from "../slack/send.js";
 import { sendMessageTelegram } from "../telegram/send.js";
 
 export type CliDeps = {
   sendMessageTelegram: typeof sendMessageTelegram;
-  sendMessageSlack: typeof sendMessageSlack;
   sendMessageSignal: typeof sendMessageSignal;
   sendMessageIMessage: typeof sendMessageIMessage;
 };
@@ -14,7 +12,6 @@ export type CliDeps = {
 export function createDefaultDeps(): CliDeps {
   return {
     sendMessageTelegram,
-    sendMessageSlack,
     sendMessageSignal,
     sendMessageIMessage,
   };
@@ -24,7 +21,6 @@ export function createDefaultDeps(): CliDeps {
 export function createOutboundSendDeps(deps: CliDeps): OutboundSendDeps {
   return {
     sendTelegram: deps.sendMessageTelegram,
-    sendSlack: deps.sendMessageSlack,
     sendSignal: deps.sendMessageSignal,
     sendIMessage: deps.sendMessageIMessage,
   };

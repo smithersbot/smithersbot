@@ -86,11 +86,6 @@ const createStubPluginRegistry = (): PluginRegistry => ({
       }),
     },
     {
-      pluginId: "slack",
-      source: "test",
-      plugin: createStubChannelPlugin({ id: "slack", label: "Slack" }),
-    },
-    {
       pluginId: "signal",
       source: "test",
       plugin: createStubChannelPlugin({

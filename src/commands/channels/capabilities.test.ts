@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelPlugin } from "../../channels/plugins/types.js";
 import { channelsCapabilitiesCommand } from "./capabilities.js";
-import { fetchSlackScopes } from "../../slack/scopes.js";
 import { getChannelPlugin, listChannelPlugins } from "../../channels/plugins/index.js";
 
 const logs: string[] = [];
@@ -20,10 +19,6 @@ vi.mock("./shared.js", () => ({
 vi.mock("../../channels/plugins/index.js", () => ({
   listChannelPlugins: vi.fn(),
   getChannelPlugin: vi.fn(),
-}));
-
-vi.mock("../../slack/scopes.js", () => ({
-  fetchSlackScopes: vi.fn(),
 }));
 
 const runtime = {
@@ -79,36 +74,6 @@ describe("channelsCapabilitiesCommand", () => {
   beforeEach(() => {
     resetOutput();
     vi.clearAllMocks();
-  });
-
-  it("prints Slack bot + user scopes when user token is configured", async () => {
-    const plugin = buildPlugin({
-      id: "slack",
-      account: {
-        accountId: "default",
-        botToken: "xoxb-bot",
-        config: { userToken: "xoxp-user" },
-      },
-      probe: { ok: true, bot: { name: "moltbot" }, team: { name: "team" } },
-    });
-    vi.mocked(listChannelPlugins).mockReturnValue([plugin]);
-    vi.mocked(getChannelPlugin).mockReturnValue(plugin);
-    vi.mocked(fetchSlackScopes).mockImplementation(async (token: string) => {
-      if (token === "xoxp-user") {
-        return { ok: true, scopes: ["users:read"], source: "auth.scopes" };
-      }
-      return { ok: true, scopes: ["chat:write"], source: "auth.scopes" };
-    });
-
-    await channelsCapabilitiesCommand({ channel: "slack" }, runtime);
-
-    const output = logs.join("\n");
-    expect(output).toContain("Bot scopes");
-    expect(output).toContain("User scopes");
-    expect(output).toContain("chat:write");
-    expect(output).toContain("users:read");
-    expect(fetchSlackScopes).toHaveBeenCalledWith("xoxb-bot", expect.any(Number));
-    expect(fetchSlackScopes).toHaveBeenCalledWith("xoxp-user", expect.any(Number));
   });
 
   it("prints Teams Graph permission hints when present", async () => {

@@ -50,8 +50,6 @@ export function normalizeChannelId(raw?: string | null): ChannelId | null {
   return normalizeAnyChannelId(raw);
 }
 export {
-  listSlackDirectoryGroupsFromConfig,
-  listSlackDirectoryPeersFromConfig,
   listTelegramDirectoryGroupsFromConfig,
   listTelegramDirectoryPeersFromConfig,
 } from "./directory-config.js";

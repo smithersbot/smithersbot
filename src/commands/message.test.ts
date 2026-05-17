@@ -25,18 +25,12 @@ vi.mock("../gateway/call.js", () => ({
   randomIdempotencyKey: () => "idem-1",
 }));
 
-const handleSlackAction = vi.fn(async () => ({ details: { ok: true } }));
-vi.mock("../agents/tools/slack-actions.js", () => ({
-  handleSlackAction: (...args: unknown[]) => handleSlackAction(...args),
-}));
-
 const handleTelegramAction = vi.fn(async () => ({ details: { ok: true } }));
 vi.mock("../agents/tools/telegram-actions.js", () => ({
   handleTelegramAction: (...args: unknown[]) => handleTelegramAction(...args),
 }));
 
 const originalTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
-const originalSlackBotToken = process.env.SLACK_BOT_TOKEN;
 
 const setRegistry = async (registry: ReturnType<typeof createTestRegistry>) => {
   const { setActivePluginRegistry } = await import("../plugins/runtime.js");
@@ -45,18 +39,15 @@ const setRegistry = async (registry: ReturnType<typeof createTestRegistry>) => {
 
 beforeEach(async () => {
   process.env.TELEGRAM_BOT_TOKEN = "";
-  process.env.SLACK_BOT_TOKEN = "";
   testConfig = {};
   vi.resetModules();
   await setRegistry(createTestRegistry([]));
   callGatewayMock.mockReset();
-  handleSlackAction.mockReset();
   handleTelegramAction.mockReset();
 });
 
 afterAll(() => {
   process.env.TELEGRAM_BOT_TOKEN = originalTelegramToken;
-  process.env.SLACK_BOT_TOKEN = originalSlackBotToken;
 });
 
 const runtime: RuntimeEnv = {
@@ -69,7 +60,6 @@ const runtime: RuntimeEnv = {
 
 const makeDeps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
   sendMessageTelegram: vi.fn(),
-  sendMessageSlack: vi.fn(),
   sendMessageSignal: vi.fn(),
   sendMessageIMessage: vi.fn(),
   ...overrides,
@@ -137,7 +127,6 @@ describe("messageCommand", () => {
 
   it("requires channel when multiple configured", async () => {
     process.env.TELEGRAM_BOT_TOKEN = "token-abc";
-    process.env.SLACK_BOT_TOKEN = "xoxb-test";
     await setRegistry(
       createTestRegistry([
         {
@@ -157,18 +146,14 @@ describe("messageCommand", () => {
           }),
         },
         {
-          pluginId: "slack",
+          pluginId: "signal",
           source: "test",
           plugin: createStubPlugin({
-            id: "slack",
-            label: "Slack",
+            id: "signal",
+            label: "Signal",
             actions: {
               listActions: () => ["send"],
-              handleAction: async ({ action, params, cfg, accountId }) =>
-                await handleSlackAction(
-                  { action, to: params.to, accountId: accountId ?? undefined },
-                  cfg,
-                ),
+              handleAction: async () => ({ details: { ok: true } }),
             },
           }),
         },
