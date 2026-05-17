@@ -95,11 +95,6 @@ type SendMessageTelegram = typeof import("../../telegram/send.js").sendMessageTe
 type MonitorTelegramProvider = typeof import("../../telegram/monitor.js").monitorTelegramProvider;
 type TelegramMessageActions =
   typeof import("../../channels/plugins/actions/telegram.js").telegramMessageActions;
-type ProbeSignal = typeof import("../../signal/probe.js").probeSignal;
-type SendMessageSignal = typeof import("../../signal/send.js").sendMessageSignal;
-type MonitorSignalProvider = typeof import("../../signal/index.js").monitorSignalProvider;
-type SignalMessageActions =
-  typeof import("../../channels/plugins/actions/signal.js").signalMessageActions;
 type MonitorIMessageProvider = typeof import("../../imessage/monitor.js").monitorIMessageProvider;
 type ProbeIMessage = typeof import("../../imessage/probe.js").probeIMessage;
 type SendMessageIMessage = typeof import("../../imessage/send.js").sendMessageIMessage;
@@ -236,12 +231,6 @@ export type PluginRuntime = {
       sendMessageTelegram: SendMessageTelegram;
       monitorTelegramProvider: MonitorTelegramProvider;
       messageActions: TelegramMessageActions;
-    };
-    signal: {
-      probeSignal: ProbeSignal;
-      sendMessageSignal: SendMessageSignal;
-      monitorSignalProvider: MonitorSignalProvider;
-      messageActions: SignalMessageActions;
     };
     imessage: {
       monitorIMessageProvider: MonitorIMessageProvider;

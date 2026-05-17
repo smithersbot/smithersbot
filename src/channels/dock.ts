@@ -1,9 +1,7 @@
 import type { MoltbotConfig } from "../config/config.js";
 import { resolveIMessageAccount } from "../imessage/accounts.js";
-import { resolveSignalAccount } from "../signal/accounts.js";
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeAccountId } from "../routing/session-key.js";
-import { normalizeE164 } from "../utils.js";
 import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {
   resolveGoogleChatGroupRequireMention,
@@ -159,42 +157,6 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
         return {
           currentChannelId: context.To?.trim() || undefined,
           currentThreadTs: threadId != null ? String(threadId) : undefined,
-          hasRepliedRef,
-        };
-      },
-    },
-  },
-  signal: {
-    id: "signal",
-    capabilities: {
-      chatTypes: ["direct", "group"],
-      reactions: true,
-      media: true,
-    },
-    outbound: { textChunkLimit: 4000 },
-    streaming: {
-      blockStreamingCoalesceDefaults: { minChars: 1500, idleMs: 1000 },
-    },
-    config: {
-      resolveAllowFrom: ({ cfg, accountId }) =>
-        (resolveSignalAccount({ cfg, accountId }).config.allowFrom ?? []).map((entry) =>
-          String(entry),
-        ),
-      formatAllowFrom: ({ allowFrom }) =>
-        allowFrom
-          .map((entry) => String(entry).trim())
-          .filter(Boolean)
-          .map((entry) => (entry === "*" ? "*" : normalizeE164(entry.replace(/^signal:/i, ""))))
-          .filter(Boolean),
-    },
-    threading: {
-      buildToolContext: ({ context, hasRepliedRef }) => {
-        const isDirect = context.ChatType?.toLowerCase() === "direct";
-        const channelId =
-          (isDirect ? (context.From ?? context.To) : context.To)?.trim() || undefined;
-        return {
-          currentChannelId: channelId,
-          currentThreadTs: context.ReplyToId,
           hasRepliedRef,
         };
       },

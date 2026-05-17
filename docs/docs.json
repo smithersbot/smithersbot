@@ -1001,7 +1001,6 @@
           "channels/grammy",
           "channels/googlechat",
           "channels/mattermost",
-          "channels/signal",
           "channels/imessage",
           "channels/msteams",
           "channels/line",

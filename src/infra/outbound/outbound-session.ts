@@ -10,11 +10,6 @@ import {
   type RoutePeerKind,
 } from "../../routing/resolve-route.js";
 import { resolveThreadSessionKeys } from "../../routing/session-key.js";
-import {
-  resolveSignalPeerId,
-  resolveSignalRecipient,
-  resolveSignalSender,
-} from "../../signal/identity.js";
 import { buildTelegramGroupPeerId } from "../../telegram/bot/helpers.js";
 import { resolveTelegramTargetChatType } from "../../telegram/inline-buttons.js";
 import { parseTelegramTarget } from "../../telegram/targets.js";
@@ -40,16 +35,6 @@ export type ResolveOutboundSessionRouteParams = {
   replyToId?: string | null;
   threadId?: string | number | null;
 };
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const UUID_COMPACT_RE = /^[0-9a-f]{32}$/i;
-
-function looksLikeUuid(value: string): boolean {
-  if (UUID_RE.test(value) || UUID_COMPACT_RE.test(value)) return true;
-  const compact = value.replace(/-/g, "");
-  if (!/^[0-9a-f]+$/i.test(compact)) return false;
-  return /[a-f]/i.test(compact);
-}
 
 function normalizeThreadId(value?: string | number | null): string | undefined {
   if (value == null) return undefined;
@@ -146,67 +131,6 @@ function resolveTelegramSession(
     from: isGroup ? `telegram:group:${peerId}` : `telegram:${chatId}`,
     to: `telegram:${chatId}`,
     threadId: resolvedThreadId,
-  };
-}
-
-function resolveSignalSession(
-  params: ResolveOutboundSessionRouteParams,
-): OutboundSessionRoute | null {
-  const stripped = stripProviderPrefix(params.target, "signal");
-  const lowered = stripped.toLowerCase();
-  if (lowered.startsWith("group:")) {
-    const groupId = stripped.slice("group:".length).trim();
-    if (!groupId) return null;
-    const peer: RoutePeer = { kind: "group", id: groupId };
-    const baseSessionKey = buildBaseSessionKey({
-      cfg: params.cfg,
-      agentId: params.agentId,
-      channel: "signal",
-      accountId: params.accountId,
-      peer,
-    });
-    return {
-      sessionKey: baseSessionKey,
-      baseSessionKey,
-      peer,
-      chatType: "group",
-      from: `group:${groupId}`,
-      to: `group:${groupId}`,
-    };
-  }
-
-  let recipient = stripped.trim();
-  if (lowered.startsWith("username:")) {
-    recipient = stripped.slice("username:".length).trim();
-  } else if (lowered.startsWith("u:")) {
-    recipient = stripped.slice("u:".length).trim();
-  }
-  if (!recipient) return null;
-
-  const uuidCandidate = recipient.toLowerCase().startsWith("uuid:")
-    ? recipient.slice("uuid:".length)
-    : recipient;
-  const sender = resolveSignalSender({
-    sourceUuid: looksLikeUuid(uuidCandidate) ? uuidCandidate : null,
-    sourceNumber: looksLikeUuid(uuidCandidate) ? null : recipient,
-  });
-  const peerId = sender ? resolveSignalPeerId(sender) : recipient;
-  const displayRecipient = sender ? resolveSignalRecipient(sender) : recipient;
-  const peer: RoutePeer = { kind: "dm", id: peerId };
-  const baseSessionKey = buildBaseSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    channel: "signal",
-    accountId: params.accountId,
-    peer,
-  });
-  return {
-    sessionKey: baseSessionKey,
-    baseSessionKey,
-    peer,
-    chatType: "direct",
-    from: `signal:${displayRecipient}`,
-    to: `signal:${displayRecipient}`,
   };
 }
 
@@ -609,8 +533,6 @@ export async function resolveOutboundSessionRoute(
   switch (params.channel) {
     case "telegram":
       return resolveTelegramSession({ ...params, target });
-    case "signal":
-      return resolveSignalSession({ ...params, target });
     case "imessage":
       return resolveIMessageSession({ ...params, target });
     case "matrix":

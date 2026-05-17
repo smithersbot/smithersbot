@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MoltbotConfig } from "../../config/config.js";
-import { signalOutbound } from "../../channels/plugins/outbound/signal.js";
 import { telegramOutbound } from "../../channels/plugins/outbound/telegram.js";
-import { markdownToSignalTextChunks } from "../../signal/format.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   createIMessageTestPlugin,
@@ -88,62 +86,6 @@ describe("deliverOutboundPayloads", () => {
       "hi",
       expect.objectContaining({ accountId: "default", verbose: false, textMode: "html" }),
     );
-  });
-
-  it("uses signal media maxBytes from config", async () => {
-    const sendSignal = vi.fn().mockResolvedValue({ messageId: "s1", timestamp: 123 });
-    const cfg: MoltbotConfig = { channels: { signal: { mediaMaxMb: 2 } } };
-
-    const results = await deliverOutboundPayloads({
-      cfg,
-      channel: "signal",
-      to: "+1555",
-      payloads: [{ text: "hi", mediaUrl: "https://x.test/a.jpg" }],
-      deps: { sendSignal },
-    });
-
-    expect(sendSignal).toHaveBeenCalledWith(
-      "+1555",
-      "hi",
-      expect.objectContaining({
-        mediaUrl: "https://x.test/a.jpg",
-        maxBytes: 2 * 1024 * 1024,
-        textMode: "plain",
-        textStyles: [],
-      }),
-    );
-    expect(results[0]).toMatchObject({ channel: "signal", messageId: "s1" });
-  });
-
-  it("chunks Signal markdown using the format-first chunker", async () => {
-    const sendSignal = vi.fn().mockResolvedValue({ messageId: "s1", timestamp: 123 });
-    const cfg: MoltbotConfig = {
-      channels: { signal: { textChunkLimit: 20 } },
-    };
-    const text = `Intro\\n\\n\`\`\`\`md\\n${"y".repeat(60)}\\n\`\`\`\\n\\nOutro`;
-    const expectedChunks = markdownToSignalTextChunks(text, 20);
-
-    await deliverOutboundPayloads({
-      cfg,
-      channel: "signal",
-      to: "+1555",
-      payloads: [{ text }],
-      deps: { sendSignal },
-    });
-
-    expect(sendSignal).toHaveBeenCalledTimes(expectedChunks.length);
-    expectedChunks.forEach((chunk, index) => {
-      expect(sendSignal).toHaveBeenNthCalledWith(
-        index + 1,
-        "+1555",
-        chunk.text,
-        expect.objectContaining({
-          accountId: undefined,
-          textMode: "plain",
-          textStyles: chunk.styles,
-        }),
-      );
-    });
   });
 
   it("preserves fenced blocks for markdown chunkers in newline mode", async () => {
@@ -330,11 +272,6 @@ const defaultRegistry = createTestRegistry([
   {
     pluginId: "telegram",
     plugin: createOutboundTestPlugin({ id: "telegram", outbound: telegramOutbound }),
-    source: "test",
-  },
-  {
-    pluginId: "signal",
-    plugin: createOutboundTestPlugin({ id: "signal", outbound: signalOutbound }),
     source: "test",
   },
   {

@@ -86,15 +86,6 @@ const createStubPluginRegistry = (): PluginRegistry => ({
       }),
     },
     {
-      pluginId: "signal",
-      source: "test",
-      plugin: createStubChannelPlugin({
-        id: "signal",
-        label: "Signal",
-        summary: { lastProbeAt: null },
-      }),
-    },
-    {
       pluginId: "imessage",
       source: "test",
       plugin: createStubChannelPlugin({ id: "imessage", label: "iMessage" }),

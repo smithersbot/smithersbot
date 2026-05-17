@@ -328,7 +328,6 @@ describe("agentCommand", () => {
         sendMessageTelegram: vi.fn().mockResolvedValue({ messageId: "t1", chatId: "123" }),
         sendMessageDiscord: vi.fn(),
         sendMessageSlack: vi.fn(),
-        sendMessageSignal: vi.fn(),
         sendMessageIMessage: vi.fn(),
       };
 

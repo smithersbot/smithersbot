@@ -25,7 +25,6 @@ const optionNamesAdd = [
   "tokenFile",
   "botToken",
   "appToken",
-  "signalNumber",
   "cliPath",
   "dbPath",
   "service",

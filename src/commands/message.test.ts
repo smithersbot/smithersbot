@@ -60,7 +60,6 @@ const runtime: RuntimeEnv = {
 
 const makeDeps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
   sendMessageTelegram: vi.fn(),
-  sendMessageSignal: vi.fn(),
   sendMessageIMessage: vi.fn(),
   ...overrides,
 });
@@ -146,11 +145,11 @@ describe("messageCommand", () => {
           }),
         },
         {
-          pluginId: "signal",
+          pluginId: "imessage",
           source: "test",
           plugin: createStubPlugin({
-            id: "signal",
-            label: "Signal",
+            id: "imessage",
+            label: "iMessage",
             actions: {
               listActions: () => ["send"],
               handleAction: async () => ({ details: { ok: true } }),

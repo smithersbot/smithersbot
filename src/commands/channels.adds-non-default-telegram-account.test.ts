@@ -4,7 +4,6 @@ import type { RuntimeEnv } from "../runtime.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
-import { signalPlugin } from "../../extensions/signal/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 
 const configMocks = vi.hoisted(() => ({
@@ -72,7 +71,6 @@ describe("channels command", () => {
     setActivePluginRegistry(
       createTestRegistry([
         { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
-        { pluginId: "signal", plugin: signalPlugin, source: "test" },
         { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
       ]),
     );
@@ -97,43 +95,6 @@ describe("channels command", () => {
     };
     expect(next.channels?.telegram?.enabled).toBe(true);
     expect(next.channels?.telegram?.accounts?.alerts?.botToken).toBe("123:abc");
-  });
-
-  it("adds a second signal account with a distinct name", async () => {
-    configMocks.readConfigFileSnapshot.mockResolvedValue({
-      ...baseSnapshot,
-      config: {
-        channels: {
-          signal: {
-            accounts: {
-              default: { account: "+15555550111", name: "Primary" },
-            },
-          },
-        },
-      },
-    });
-
-    await channelsAddCommand(
-      {
-        channel: "signal",
-        account: "lab",
-        name: "Lab",
-        signalNumber: "+15555550123",
-      },
-      runtime,
-      { hasFlags: true },
-    );
-
-    const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: {
-        signal?: {
-          accounts?: Record<string, { account?: string; name?: string }>;
-        };
-      };
-    };
-    expect(next.channels?.signal?.accounts?.lab?.account).toBe("+15555550123");
-    expect(next.channels?.signal?.accounts?.lab?.name).toBe("Lab");
-    expect(next.channels?.signal?.accounts?.default?.name).toBe("Primary");
   });
 
   it("disables a default provider account when remove has no delete flag", async () => {
@@ -239,15 +200,15 @@ describe("channels command", () => {
     const lines = formatGatewayChannelsStatusLines({
       channelAccounts: {
         telegram: [{ accountId: "default", configured: true }],
-        signal: [{ accountId: "default", configured: true }],
+        imessage: [{ accountId: "default", configured: true }],
       },
     });
 
     const telegramIndex = lines.findIndex((line) => line.includes("Telegram default"));
-    const signalIndex = lines.findIndex((line) => line.includes("Signal default"));
+    const imessageIndex = lines.findIndex((line) => line.includes("iMessage default"));
     expect(telegramIndex).toBeGreaterThan(-1);
-    expect(signalIndex).toBeGreaterThan(-1);
-    expect(telegramIndex).toBeLessThan(signalIndex);
+    expect(imessageIndex).toBeGreaterThan(-1);
+    expect(telegramIndex).toBeLessThan(imessageIndex);
   });
 
   it("surfaces Telegram privacy-mode hints when allowUnmentionedGroups is enabled", () => {

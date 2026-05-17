@@ -23,7 +23,6 @@ export type ChannelsAddOptions = {
   tokenFile?: string;
   botToken?: string;
   appToken?: string;
-  signalNumber?: string;
   cliPath?: string;
   dbPath?: string;
   service?: "imessage" | "sms" | "auto";
@@ -87,7 +86,6 @@ export async function channelsAddCommand(
     await prompter.intro("Channel setup");
     let nextConfig = await setupChannels(cfg, runtime, prompter, {
       allowDisable: false,
-      allowSignalInstall: true,
       promptAccountIds: true,
       onSelection: (value) => {
         selection = value;
@@ -191,7 +189,6 @@ export async function channelsAddCommand(
       tokenFile: opts.tokenFile,
       botToken: opts.botToken,
       appToken: opts.appToken,
-      signalNumber: opts.signalNumber,
       cliPath: opts.cliPath,
       dbPath: opts.dbPath,
       service: opts.service,
@@ -234,7 +231,6 @@ export async function channelsAddCommand(
     tokenFile: opts.tokenFile,
     botToken: opts.botToken,
     appToken: opts.appToken,
-    signalNumber: opts.signalNumber,
     cliPath: opts.cliPath,
     dbPath: opts.dbPath,
     service: opts.service,

@@ -98,7 +98,6 @@ export {
   GoogleChatConfigSchema,
   IMessageConfigSchema,
   MSTeamsConfigSchema,
-  SignalConfigSchema,
   SlackConfigSchema,
   TelegramConfigSchema,
 } from "../config/zod-schema.providers-core.js";
@@ -253,19 +252,6 @@ export {
   normalizeTelegramMessagingTarget,
 } from "../channels/plugins/normalize/telegram.js";
 export { collectTelegramStatusIssues } from "../channels/plugins/status-issues/telegram.js";
-
-// Channel: Signal
-export {
-  listSignalAccountIds,
-  resolveDefaultSignalAccountId,
-  resolveSignalAccount,
-  type ResolvedSignalAccount,
-} from "../signal/accounts.js";
-export { signalOnboardingAdapter } from "../channels/plugins/onboarding/signal.js";
-export {
-  looksLikeSignalTargetId,
-  normalizeSignalMessagingTarget,
-} from "../channels/plugins/normalize/signal.js";
 
 // Channel: BlueBubbles
 export { collectBlueBubblesStatusIssues } from "../channels/plugins/status-issues/bluebubbles.js";

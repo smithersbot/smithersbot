@@ -38,7 +38,6 @@ import { createMemoryGetTool, createMemorySearchTool } from "../../agents/tools/
 import { removeAckReactionAfterReply, shouldAckReaction } from "../../channels/ack-reactions.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
 import { recordInboundSession } from "../../channels/session.js";
-import { signalMessageActions } from "../../channels/plugins/actions/signal.js";
 import { telegramMessageActions } from "../../channels/plugins/actions/telegram.js";
 import {
   resolveChannelGroupPolicy,
@@ -75,9 +74,6 @@ import {
 } from "../../pairing/pairing-store.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
-import { monitorSignalProvider } from "../../signal/index.js";
-import { probeSignal } from "../../signal/probe.js";
-import { sendMessageSignal } from "../../signal/send.js";
 import {
   auditTelegramGroupMembership,
   collectTelegramUnmentionedGroupIds,
@@ -233,12 +229,6 @@ export function createPluginRuntime(): PluginRuntime {
         sendMessageTelegram,
         monitorTelegramProvider,
         messageActions: telegramMessageActions,
-      },
-      signal: {
-        probeSignal,
-        sendMessageSignal,
-        monitorSignalProvider,
-        messageActions: signalMessageActions,
       },
       imessage: {
         monitorIMessageProvider,
