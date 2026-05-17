@@ -1,4 +1,5 @@
 import { JsonExitError } from "../cli/cli-utils.js";
+import { forceReleaseGoalOpLock } from "../goal/goal-lock.js";
 import { loadRun, saveRun, resolveRunId } from "../goal/run-store.js";
 import type { RuntimeEnv } from "../runtime.js";
 
@@ -115,6 +116,7 @@ export async function goalStopCommand(
   run.blocked = null;
 
   saveRun(run);
+  forceReleaseGoalOpLock(resolvedId);
 
   if (isJson) {
     runtime.log(

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JsonExitError } from "../cli/cli-utils.js";
+import { acquireGoalOpLock, isGoalOpLocked } from "../goal/goal-lock.js";
 import { saveRun, loadRun } from "../goal/run-store.js";
 import type { Plan, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -88,6 +89,12 @@ function makeRun(overrides: Partial<SerializedRun>): SerializedRun {
   };
 }
 
+function saveActiveRun(run: SerializedRun): void {
+  saveRun(run);
+  const lock = acquireGoalOpLock(run.runId, "execute", testGoalsDir);
+  expect(lock.acquired).toBe(true);
+}
+
 describe("goal-stop command", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-stop-test-"));
@@ -104,7 +111,7 @@ describe("goal-stop command", () => {
       state: "executing",
       plan: samplePlan,
     });
-    saveRun(run);
+    saveActiveRun(run);
 
     const { goalStopCommand } = await import("./goal-stop.js");
     const rt = mockRuntime();
@@ -166,7 +173,7 @@ describe("goal-stop command", () => {
       ],
     };
 
-    saveRun(
+    saveActiveRun(
       makeRun({
         runId: "mixed-run",
         state: "executing",
@@ -314,7 +321,7 @@ describe("goal-stop command", () => {
       ],
     };
 
-    saveRun(
+    saveActiveRun(
       makeRun({
         runId: "partial-run",
         state: "executing",
@@ -331,7 +338,7 @@ describe("goal-stop command", () => {
   });
 
   it("outputs JSON when --json is passed", async () => {
-    saveRun(
+    saveActiveRun(
       makeRun({
         runId: "json-run",
         state: "executing",
@@ -352,7 +359,7 @@ describe("goal-stop command", () => {
 
   it("resolves run by short prefix", async () => {
     const fullId = "abcd1234-5678-90ab-cdef-1234567890ab";
-    saveRun(
+    saveActiveRun(
       makeRun({
         runId: fullId,
         state: "executing",
@@ -368,7 +375,7 @@ describe("goal-stop command", () => {
   });
 
   it("clears blocked state when stopping", async () => {
-    saveRun(
+    saveActiveRun(
       makeRun({
         runId: "blocked-exec-run",
         state: "executing",
@@ -388,5 +395,25 @@ describe("goal-stop command", () => {
     const updated = loadRun("blocked-exec-run");
     expect(updated?.state).toBe("cancelled");
     expect(updated?.blocked).toBeNull();
+  });
+
+  it("force-releases the goal op lock when cancelling a run", async () => {
+    const runId = "locked-run";
+    saveRun(
+      makeRun({
+        runId,
+        state: "executing",
+      }),
+    );
+    const lock = acquireGoalOpLock(runId, "approve", testGoalsDir);
+    expect(lock.acquired).toBe(true);
+    expect(isGoalOpLocked(runId, testGoalsDir)).toEqual({ locked: true, label: "approve" });
+
+    const { goalStopCommand } = await import("./goal-stop.js");
+    const rt = mockRuntime();
+    await goalStopCommand(runId, {}, rt);
+
+    expect(loadRun(runId)?.state).toBe("cancelled");
+    expect(isGoalOpLocked(runId, testGoalsDir)).toEqual({ locked: false });
   });
 });
