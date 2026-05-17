@@ -447,10 +447,8 @@ export function registerTelegramRepoChatCommands({
       if (commandFragmentBuffer.hasPending(key)) {
         await commandFragmentBuffer.cancelAndFlush(key);
       }
-      const rawCommand = (msg.text ?? "").trim().slice(1).split(/\s+/, 1)[0] ?? "";
-      const commandName = rawCommand.split("@")[0] || "repo_chat";
       commandFragmentBuffer.bufferCommand(key, {
-        commandName,
+        commandName: "repo_chat",
         text: prompt,
         firstMessageId: msg.message_id,
         receivedAtMs: Date.now(),

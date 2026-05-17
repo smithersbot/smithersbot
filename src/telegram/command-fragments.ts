@@ -11,6 +11,11 @@ export const COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS = 60000;
 export const COMMAND_FRAGMENT_MAX_ID_GAP = 5;
 export const COMMAND_FRAGMENT_MAX_PARTS = 12;
 export const COMMAND_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
+export const COMMAND_ANCHOR_TTL_MS = 60000;
+export const COMMAND_ANCHOR_MIN_TTL_MS = 10000;
+export const COMMAND_ANCHOR_MAX_TTL_MS = 60000;
+
+export type CommandFragmentCommandName = "new_goal" | "repo_chat";
 
 export type CommandFragmentKeyParams = {
   accountId: string;
@@ -29,7 +34,7 @@ export type CommandFragmentDispatchMetadata = {
 };
 
 export type CommandFragmentBufferEntry = {
-  commandName: string;
+  commandName: CommandFragmentCommandName;
   firstMessageId: number;
   receivedAtMs: number;
   text: string;
@@ -37,8 +42,16 @@ export type CommandFragmentBufferEntry = {
   flushCallback: (combinedText: string) => void | Promise<void>;
 };
 
+export type CommandAnchor = {
+  commandName: CommandFragmentCommandName;
+  anchoredAtMs: number;
+  expiresAtMs: number;
+  sourceMessageId?: number;
+  appendHandler: (text: string) => Promise<void>;
+};
+
 type CommandFragmentState = {
-  commandName: string;
+  commandName: CommandFragmentCommandName;
   textParts: string[];
   totalChars: number;
   dispatch: CommandFragmentDispatchMetadata;
@@ -80,15 +93,20 @@ export function normalizeCommandFragmentParams(
 
 export class CommandFragmentBuffer {
   private readonly entries = new Map<string, CommandFragmentState>();
+  private readonly anchors = new Map<string, CommandAnchor>();
   private readonly gapMs: number;
+  private readonly anchorTtlMs: number;
 
   constructor(
     private readonly logger?: CommandFragmentDebugLogger,
     gapMs: number = COMMAND_FRAGMENT_MAX_GAP_MS,
+    anchorTtlMs: number = COMMAND_ANCHOR_TTL_MS,
   ) {
     this.gapMs = clampCommandFragmentGapMs(gapMs);
+    this.anchorTtlMs = clampCommandAnchorTtlMs(anchorTtlMs);
     this.logDebug("telegram command fragment buffer initialized", {
       gapMs: this.gapMs,
+      anchorTtlMs: this.anchorTtlMs,
     });
   }
 
@@ -101,6 +119,10 @@ export class CommandFragmentBuffer {
     if (existing) {
       clearTimeout(existing.timer);
       this.entries.delete(key);
+    }
+    const existingAnchor = this.getAnchor(key);
+    if (existingAnchor && existingAnchor.commandName !== entry.commandName) {
+      this.clearAnchor(key);
     }
 
     const state: CommandFragmentState = {
@@ -125,6 +147,49 @@ export class CommandFragmentBuffer {
       replacedExisting: Boolean(existing),
     });
     this.scheduleFlush(key, state);
+  }
+
+  getAnchorTtlMs(): number {
+    return this.anchorTtlMs;
+  }
+
+  setAnchor(key: string, anchor: CommandAnchor): void {
+    this.anchors.set(key, anchor);
+    this.logDebug("telegram command anchor set", {
+      key,
+      commandName: anchor.commandName,
+      anchoredAtMs: anchor.anchoredAtMs,
+      expiresAtMs: anchor.expiresAtMs,
+      sourceMessageId: anchor.sourceMessageId,
+    });
+  }
+
+  getAnchor(key: string): CommandAnchor | undefined {
+    const anchor = this.anchors.get(key);
+    if (!anchor) return undefined;
+
+    if (Date.now() >= anchor.expiresAtMs) {
+      this.clearAnchor(key);
+      return undefined;
+    }
+
+    this.logDebug("telegram command anchor hit", {
+      key,
+      commandName: anchor.commandName,
+      expiresAtMs: anchor.expiresAtMs,
+    });
+    return anchor;
+  }
+
+  clearAnchor(key: string): void {
+    const anchor = this.anchors.get(key);
+    if (!anchor) return;
+
+    this.anchors.delete(key);
+    this.logDebug("telegram command anchor cleared", {
+      key,
+      commandName: anchor.commandName,
+    });
   }
 
   tryAppend(key: string, messageId: number, text: string, receivedAtMs: number): boolean {
@@ -238,5 +303,12 @@ export function clampCommandFragmentGapMs(gapMs: number): number {
   return Math.min(
     COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS,
     Math.max(COMMAND_FRAGMENT_MIN_GAP_MS, Math.floor(gapMs)),
+  );
+}
+
+export function clampCommandAnchorTtlMs(ttlMs: number): number {
+  return Math.min(
+    COMMAND_ANCHOR_MAX_TTL_MS,
+    Math.max(COMMAND_ANCHOR_MIN_TTL_MS, Math.floor(ttlMs)),
   );
 }

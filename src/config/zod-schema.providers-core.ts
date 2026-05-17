@@ -102,6 +102,11 @@ export const TelegramAccountSchemaBase = z
       .int()
       .optional()
       .transform((value) => (value == null ? undefined : Math.min(60000, Math.max(3000, value)))),
+    commandAnchorTtlMs: z
+      .number()
+      .int()
+      .optional()
+      .transform((value) => (value == null ? undefined : Math.min(60000, Math.max(10000, value)))),
     botToken: z.string().optional(),
     tokenFile: z.string().optional(),
     replyToMode: ReplyToModeSchema.optional(),

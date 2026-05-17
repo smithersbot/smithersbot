@@ -47,8 +47,10 @@ import {
 import { resolveTelegramFetch } from "./fetch.js";
 import { wasSentByBot } from "./sent-message-cache.js";
 import {
+  clampCommandAnchorTtlMs,
   clampCommandFragmentGapMs,
   CommandFragmentBuffer,
+  COMMAND_ANCHOR_TTL_MS,
   COMMAND_FRAGMENT_MAX_GAP_MS,
 } from "./command-fragments.js";
 
@@ -375,7 +377,14 @@ export function createTelegramBot(opts: TelegramBotOptions) {
   const commandFragmentGapMs = clampCommandFragmentGapMs(
     telegramCfg.commandFragmentMaxGapMs ?? COMMAND_FRAGMENT_MAX_GAP_MS,
   );
-  const commandFragmentBuffer = new CommandFragmentBuffer(logger, commandFragmentGapMs);
+  const commandAnchorTtlMs = clampCommandAnchorTtlMs(
+    telegramCfg.commandAnchorTtlMs ?? COMMAND_ANCHOR_TTL_MS,
+  );
+  const commandFragmentBuffer = new CommandFragmentBuffer(
+    logger,
+    commandFragmentGapMs,
+    commandAnchorTtlMs,
+  );
 
   registerTelegramNativeCommands({
     bot,

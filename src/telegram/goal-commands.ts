@@ -2007,10 +2007,8 @@ export function registerTelegramGoalCommands({
       if (commandFragmentBuffer.hasPending(key)) {
         await commandFragmentBuffer.cancelAndFlush(key);
       }
-      const rawCommand = (msg.text ?? "").trim().slice(1).split(/\s+/, 1)[0] ?? "";
-      const commandName = rawCommand.split("@")[0] || "new_goal";
       commandFragmentBuffer.bufferCommand(key, {
-        commandName,
+        commandName: "new_goal",
         text,
         firstMessageId: msg.message_id,
         receivedAtMs: Date.now(),
