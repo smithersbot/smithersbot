@@ -23,9 +23,6 @@ export type ChannelSetupInput = {
   botToken?: string;
   appToken?: string;
   cliPath?: string;
-  dbPath?: string;
-  service?: "imessage" | "sms" | "auto";
-  region?: string;
   authDir?: string;
   httpUrl?: string;
   httpHost?: string;

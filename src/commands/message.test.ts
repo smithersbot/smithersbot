@@ -60,7 +60,6 @@ const runtime: RuntimeEnv = {
 
 const makeDeps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
   sendMessageTelegram: vi.fn(),
-  sendMessageIMessage: vi.fn(),
   ...overrides,
 });
 

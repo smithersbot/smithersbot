@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeEnv } from "../runtime.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
-import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 
 const configMocks = vi.hoisted(() => ({
@@ -69,10 +68,7 @@ describe("channels command", () => {
       profiles: {},
     });
     setActivePluginRegistry(
-      createTestRegistry([
-        { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
-        { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
-      ]),
+      createTestRegistry([{ pluginId: "telegram", plugin: telegramPlugin, source: "test" }]),
     );
   });
 
@@ -200,15 +196,11 @@ describe("channels command", () => {
     const lines = formatGatewayChannelsStatusLines({
       channelAccounts: {
         telegram: [{ accountId: "default", configured: true }],
-        imessage: [{ accountId: "default", configured: true }],
       },
     });
 
     const telegramIndex = lines.findIndex((line) => line.includes("Telegram default"));
-    const imessageIndex = lines.findIndex((line) => line.includes("iMessage default"));
     expect(telegramIndex).toBeGreaterThan(-1);
-    expect(imessageIndex).toBeGreaterThan(-1);
-    expect(telegramIndex).toBeLessThan(imessageIndex);
   });
 
   it("surfaces Telegram privacy-mode hints when allowUnmentionedGroups is enabled", () => {

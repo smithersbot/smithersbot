@@ -6,7 +6,6 @@ import type { WizardPrompter } from "../wizard/prompts.js";
 import { setupChannels } from "./onboard-channels.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
-import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 
 vi.mock("node:fs/promises", () => ({
@@ -24,10 +23,7 @@ vi.mock("./onboard-helpers.js", () => ({
 describe("setupChannels", () => {
   beforeEach(() => {
     setActivePluginRegistry(
-      createTestRegistry([
-        { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
-        { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
-      ]),
+      createTestRegistry([{ pluginId: "telegram", plugin: telegramPlugin, source: "test" }]),
     );
   });
   it("prompts for configured channel action and skips configuration when told to skip", async () => {

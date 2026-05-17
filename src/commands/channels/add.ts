@@ -24,9 +24,6 @@ export type ChannelsAddOptions = {
   botToken?: string;
   appToken?: string;
   cliPath?: string;
-  dbPath?: string;
-  service?: "imessage" | "sms" | "auto";
-  region?: string;
   authDir?: string;
   httpUrl?: string;
   httpHost?: string;
@@ -190,9 +187,6 @@ export async function channelsAddCommand(
       botToken: opts.botToken,
       appToken: opts.appToken,
       cliPath: opts.cliPath,
-      dbPath: opts.dbPath,
-      service: opts.service,
-      region: opts.region,
       authDir: opts.authDir,
       httpUrl: opts.httpUrl,
       httpHost: opts.httpHost,
@@ -232,9 +226,6 @@ export async function channelsAddCommand(
     botToken: opts.botToken,
     appToken: opts.appToken,
     cliPath: opts.cliPath,
-    dbPath: opts.dbPath,
-    service: opts.service,
-    region: opts.region,
     authDir: opts.authDir,
     httpUrl: opts.httpUrl,
     httpHost: opts.httpHost,

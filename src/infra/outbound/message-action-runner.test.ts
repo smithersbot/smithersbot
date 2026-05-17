@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MoltbotConfig } from "../../config/config.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createIMessageTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { loadWebMedia } from "../../media/load.js";
 import { runMessageAction } from "./message-action-runner.js";
 import { jsonResult } from "../../agents/tools/common.js";
@@ -14,86 +14,6 @@ vi.mock("../../media/load.js", async () => {
     ...actual,
     loadWebMedia: vi.fn(actual.loadWebMedia),
   };
-});
-
-const imessageConfig = {
-  channels: {
-    imessage: {
-      allowFrom: ["*"],
-    },
-  },
-} as MoltbotConfig;
-
-describe("runMessageAction context isolation", () => {
-  beforeEach(async () => {
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "imessage",
-          source: "test",
-          plugin: createIMessageTestPlugin(),
-        },
-      ]),
-    );
-  });
-
-  afterEach(() => {
-    setActivePluginRegistry(createTestRegistry([]));
-  });
-
-  it("allows iMessage send when target matches current handle", async () => {
-    const result = await runMessageAction({
-      cfg: imessageConfig,
-      action: "send",
-      params: {
-        channel: "imessage",
-        target: "imessage:+15551234567",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "imessage:+15551234567" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("blocks iMessage send when target differs from current handle", async () => {
-    const result = await runMessageAction({
-      cfg: imessageConfig,
-      action: "send",
-      params: {
-        channel: "imessage",
-        target: "imessage:+15551230000",
-        message: "hi",
-      },
-      toolContext: {
-        currentChannelId: "imessage:+15551234567",
-        currentChannelProvider: "imessage",
-      },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("aborts send when abortSignal is already aborted", async () => {
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      runMessageAction({
-        cfg: imessageConfig,
-        action: "send",
-        params: {
-          channel: "imessage",
-          target: "imessage:+15551234567",
-          message: "hi",
-        },
-        dryRun: true,
-        abortSignal: controller.signal,
-      }),
-    ).rejects.toMatchObject({ name: "AbortError" });
-  });
 });
 
 describe("runMessageAction sendAttachment hydration", () => {

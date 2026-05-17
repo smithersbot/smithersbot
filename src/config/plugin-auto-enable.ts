@@ -122,13 +122,6 @@ function isSignalConfigured(cfg: MoltbotConfig): boolean {
   return recordHasKeys(entry);
 }
 
-function isIMessageConfigured(cfg: MoltbotConfig): boolean {
-  const entry = resolveChannelConfig(cfg, "imessage");
-  if (!entry) return false;
-  if (hasNonEmptyString(entry.cliPath)) return true;
-  return recordHasKeys(entry);
-}
-
 function isWhatsAppConfigured(cfg: MoltbotConfig): boolean {
   if (hasAnyWhatsAppAuth(cfg)) return true;
   const entry = resolveChannelConfig(cfg, "whatsapp");
@@ -157,8 +150,6 @@ export function isChannelConfigured(
       return isSlackConfigured(cfg, env);
     case "signal":
       return isSignalConfigured(cfg);
-    case "imessage":
-      return isIMessageConfigured(cfg);
     default:
       return isGenericChannelConfigured(cfg, channelId);
   }

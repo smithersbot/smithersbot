@@ -8,7 +8,6 @@ import type { ReplyPayload } from "../../auto-reply/types.js";
 import { loadChannelOutboundAdapter } from "../../channels/plugins/outbound/load.js";
 import type { ChannelOutboundAdapter } from "../../channels/plugins/types.js";
 import type { MoltbotConfig } from "../../config/config.js";
-import type { sendMessageIMessage } from "../../imessage/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
 import {
   appendAssistantMessageToSessionTranscript,
@@ -29,7 +28,6 @@ type SendMatrixMessage = (
 
 export type OutboundSendDeps = {
   sendTelegram?: typeof sendMessageTelegram;
-  sendIMessage?: typeof sendMessageIMessage;
   sendMatrix?: SendMatrixMessage;
   sendMSTeams?: (
     to: string,

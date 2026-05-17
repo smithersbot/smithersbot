@@ -8,12 +8,6 @@
       - any-glob-to-any-file:
           - "extensions/googlechat/**"
           - "docs/channels/googlechat.md"
-"channel: imessage":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src/imessage/**"
-          - "extensions/imessage/**"
-          - "docs/channels/imessage.md"
 "channel: line":
   - changed-files:
       - any-glob-to-any-file:

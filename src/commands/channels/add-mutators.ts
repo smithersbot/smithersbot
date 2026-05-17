@@ -27,9 +27,6 @@ export function applyChannelAccountConfig(params: {
   botToken?: string;
   appToken?: string;
   cliPath?: string;
-  dbPath?: string;
-  service?: "imessage" | "sms" | "auto";
-  region?: string;
   authDir?: string;
   httpUrl?: string;
   httpHost?: string;
@@ -63,9 +60,6 @@ export function applyChannelAccountConfig(params: {
     botToken: params.botToken,
     appToken: params.appToken,
     cliPath: params.cliPath,
-    dbPath: params.dbPath,
-    service: params.service,
-    region: params.region,
     authDir: params.authDir,
     httpUrl: params.httpUrl,
     httpHost: params.httpHost,
