@@ -122,12 +122,12 @@ vi.mock("../channels/plugins/index.js", () => ({
   listChannelPlugins: () =>
     [
       {
-        id: "whatsapp",
+        id: "telegram",
         meta: {
-          id: "whatsapp",
-          label: "WhatsApp",
-          selectionLabel: "WhatsApp",
-          docsPath: "/platforms/whatsapp",
+          id: "telegram",
+          label: "Telegram",
+          selectionLabel: "Telegram",
+          docsPath: "/platforms/telegram",
           blurb: "mock",
         },
         config: {
@@ -319,7 +319,7 @@ describe("statusCommand", () => {
     expect(logs.some((l) => l.includes("macos 14.0 (arm64)"))).toBe(true);
     expect(logs.some((l) => l.includes("Memory"))).toBe(true);
     expect(logs.some((l) => l.includes("Channels"))).toBe(true);
-    expect(logs.some((l) => l.includes("WhatsApp"))).toBe(true);
+    expect(logs.some((l) => l.includes("Telegram"))).toBe(true);
     expect(logs.some((l) => l.includes("Sessions"))).toBe(true);
     expect(logs.some((l) => l.includes("+1000"))).toBe(true);
     expect(logs.some((l) => l.includes("50%"))).toBe(true);

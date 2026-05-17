@@ -997,7 +997,6 @@
         "group": "Channels",
         "pages": [
           "channels/index",
-          "channels/whatsapp",
           "channels/telegram",
           "channels/grammy",
           "channels/discord",

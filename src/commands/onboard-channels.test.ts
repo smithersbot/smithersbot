@@ -11,7 +11,6 @@ import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
 import { signalPlugin } from "../../extensions/signal/src/channel.js";
 import { slackPlugin } from "../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
-import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
 
 vi.mock("node:fs/promises", () => ({
   default: {
@@ -32,58 +31,11 @@ describe("setupChannels", () => {
         { pluginId: "discord", plugin: discordPlugin, source: "test" },
         { pluginId: "slack", plugin: slackPlugin, source: "test" },
         { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
-        { pluginId: "whatsapp", plugin: whatsappPlugin, source: "test" },
         { pluginId: "signal", plugin: signalPlugin, source: "test" },
         { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
       ]),
     );
   });
-  it("QuickStart uses single-select (no multiselect) and doesn't prompt for Telegram token when WhatsApp is chosen", async () => {
-    const select = vi.fn(async () => "whatsapp");
-    const multiselect = vi.fn(async () => {
-      throw new Error("unexpected multiselect");
-    });
-    const text = vi.fn(async ({ message }: { message: string }) => {
-      if (message.includes("Enter Telegram bot token")) {
-        throw new Error("unexpected Telegram token prompt");
-      }
-      if (message.includes("Your personal WhatsApp number")) {
-        return "+15555550123";
-      }
-      throw new Error(`unexpected text prompt: ${message}`);
-    });
-
-    const prompter: WizardPrompter = {
-      intro: vi.fn(async () => {}),
-      outro: vi.fn(async () => {}),
-      note: vi.fn(async () => {}),
-      select,
-      multiselect,
-      text: text as unknown as WizardPrompter["text"],
-      confirm: vi.fn(async () => false),
-      progress: vi.fn(() => ({ update: vi.fn(), stop: vi.fn() })),
-    };
-
-    const runtime: RuntimeEnv = {
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn((code: number) => {
-        throw new Error(`exit:${code}`);
-      }),
-    };
-
-    await setupChannels({} as MoltbotConfig, runtime, prompter, {
-      skipConfirm: true,
-      quickstartDefaults: true,
-      forceAllowFromChannels: ["whatsapp"],
-    });
-
-    expect(select).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "Select channel (QuickStart)" }),
-    );
-    expect(multiselect).not.toHaveBeenCalled();
-  });
-
   it("prompts for configured channel action and skips configuration when told to skip", async () => {
     const select = vi.fn(async ({ message }: { message: string }) => {
       if (message === "Select channel (QuickStart)") return "telegram";

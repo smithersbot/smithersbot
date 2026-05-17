@@ -25,11 +25,6 @@ vi.mock("../gateway/call.js", () => ({
   randomIdempotencyKey: () => "idem-1",
 }));
 
-const webAuthExists = vi.fn(async () => false);
-vi.mock("../web/session.js", () => ({
-  webAuthExists: (...args: unknown[]) => webAuthExists(...args),
-}));
-
 const handleDiscordAction = vi.fn(async () => ({ details: { ok: true } }));
 vi.mock("../agents/tools/discord-actions.js", () => ({
   handleDiscordAction: (...args: unknown[]) => handleDiscordAction(...args),
@@ -43,11 +38,6 @@ vi.mock("../agents/tools/slack-actions.js", () => ({
 const handleTelegramAction = vi.fn(async () => ({ details: { ok: true } }));
 vi.mock("../agents/tools/telegram-actions.js", () => ({
   handleTelegramAction: (...args: unknown[]) => handleTelegramAction(...args),
-}));
-
-const handleWhatsAppAction = vi.fn(async () => ({ details: { ok: true } }));
-vi.mock("../agents/tools/whatsapp-actions.js", () => ({
-  handleWhatsAppAction: (...args: unknown[]) => handleWhatsAppAction(...args),
 }));
 
 const originalTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -65,11 +55,9 @@ beforeEach(async () => {
   vi.resetModules();
   await setRegistry(createTestRegistry([]));
   callGatewayMock.mockReset();
-  webAuthExists.mockReset().mockResolvedValue(false);
   handleDiscordAction.mockReset();
   handleSlackAction.mockReset();
   handleTelegramAction.mockReset();
-  handleWhatsAppAction.mockReset();
 });
 
 afterAll(() => {
@@ -86,7 +74,6 @@ const runtime: RuntimeEnv = {
 };
 
 const makeDeps = (overrides: Partial<CliDeps> = {}): CliDeps => ({
-  sendMessageWhatsApp: vi.fn(),
   sendMessageTelegram: vi.fn(),
   sendMessageDiscord: vi.fn(),
   sendMessageSlack: vi.fn(),
@@ -206,38 +193,6 @@ describe("messageCommand", () => {
         runtime,
       ),
     ).rejects.toThrow(/Channel is required/);
-  });
-
-  it("sends via gateway for WhatsApp", async () => {
-    callGatewayMock.mockResolvedValueOnce({ messageId: "g1" });
-    await setRegistry(
-      createTestRegistry([
-        {
-          pluginId: "whatsapp",
-          source: "test",
-          plugin: createStubPlugin({
-            id: "whatsapp",
-            label: "WhatsApp",
-            outbound: {
-              deliveryMode: "gateway",
-            },
-          }),
-        },
-      ]),
-    );
-    const deps = makeDeps();
-    const { messageCommand } = await loadMessageCommand();
-    await messageCommand(
-      {
-        action: "send",
-        channel: "whatsapp",
-        target: "+15551234567",
-        message: "hi",
-      },
-      deps,
-      runtime,
-    );
-    expect(callGatewayMock).toHaveBeenCalled();
   });
 
   it("routes discord polls through message action", async () => {

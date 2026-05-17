@@ -103,7 +103,6 @@ export {
   SlackConfigSchema,
   TelegramConfigSchema,
 } from "../config/zod-schema.providers-core.js";
-export { WhatsAppConfigSchema } from "../config/zod-schema.providers-whatsapp.js";
 export {
   BlockStreamingCoalesceSchema,
   DmConfigSchema,
@@ -137,16 +136,8 @@ export {
   resolveMentionGating,
   resolveMentionGatingWithBypass,
 } from "../channels/mention-gating.js";
-export type {
-  AckReactionGateParams,
-  AckReactionScope,
-  WhatsAppAckReactionMode,
-} from "../channels/ack-reactions.js";
-export {
-  removeAckReactionAfterReply,
-  shouldAckReaction,
-  shouldAckReactionForWhatsApp,
-} from "../channels/ack-reactions.js";
+export type { AckReactionGateParams, AckReactionScope } from "../channels/ack-reactions.js";
+export { removeAckReactionAfterReply, shouldAckReaction } from "../channels/ack-reactions.js";
 export { createTypingCallbacks } from "../channels/typing.js";
 export { createReplyPrefixContext } from "../channels/reply-prefix.js";
 export { logAckFailure, logInboundDrop, logTypingFailure } from "../channels/logging.js";
@@ -161,14 +152,12 @@ export {
   resolveIMessageGroupRequireMention,
   resolveSlackGroupRequireMention,
   resolveTelegramGroupRequireMention,
-  resolveWhatsAppGroupRequireMention,
   resolveBlueBubblesGroupToolPolicy,
   resolveDiscordGroupToolPolicy,
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupToolPolicy,
   resolveSlackGroupToolPolicy,
   resolveTelegramGroupToolPolicy,
-  resolveWhatsAppGroupToolPolicy,
 } from "../channels/plugins/group-mentions.js";
 export { recordInboundSession } from "../channels/session.js";
 export {
@@ -185,8 +174,6 @@ export {
   listSlackDirectoryPeersFromConfig,
   listTelegramDirectoryGroupsFromConfig,
   listTelegramDirectoryPeersFromConfig,
-  listWhatsAppDirectoryGroupsFromConfig,
-  listWhatsAppDirectoryPeersFromConfig,
 } from "../channels/plugins/directory-config.js";
 export type { AllowlistMatch } from "../channels/plugins/allowlist-match.js";
 export { formatAllowlistMatchMeta } from "../channels/plugins/allowlist-match.js";
@@ -319,18 +306,6 @@ export {
   looksLikeSignalTargetId,
   normalizeSignalMessagingTarget,
 } from "../channels/plugins/normalize/signal.js";
-
-// Channel: WhatsApp
-export {
-  listWhatsAppAccountIds,
-  resolveDefaultWhatsAppAccountId,
-  resolveWhatsAppAccount,
-  type ResolvedWhatsAppAccount,
-} from "../config/whatsapp-accounts.js";
-export {
-  isWhatsAppGroupJid,
-  normalizeWhatsAppTarget,
-} from "../channels/plugins/whatsapp-normalize.js";
 
 // Channel: BlueBubbles
 export { collectBlueBubblesStatusIssues } from "../channels/plugins/status-issues/bluebubbles.js";

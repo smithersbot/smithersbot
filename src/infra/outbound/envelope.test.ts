@@ -6,7 +6,7 @@ import type { OutboundDeliveryJson } from "./format.js";
 describe("buildOutboundResultEnvelope", () => {
   it("flattens delivery-only payloads by default", () => {
     const delivery: OutboundDeliveryJson = {
-      provider: "whatsapp",
+      provider: "telegram",
       via: "gateway",
       to: "+1",
       messageId: "m1",

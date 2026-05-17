@@ -54,23 +54,6 @@ describe("buildOutboundDeliveryJson", () => {
     });
   });
 
-  it("supports whatsapp metadata when present", () => {
-    expect(
-      buildOutboundDeliveryJson({
-        channel: "whatsapp",
-        to: "+1",
-        result: { channel: "whatsapp", messageId: "w1", toJid: "jid" },
-      }),
-    ).toEqual({
-      channel: "whatsapp",
-      via: "direct",
-      to: "+1",
-      messageId: "w1",
-      mediaUrl: null,
-      toJid: "jid",
-    });
-  });
-
   it("keeps timestamp for signal", () => {
     expect(
       buildOutboundDeliveryJson({
@@ -91,8 +74,8 @@ describe("buildOutboundDeliveryJson", () => {
 
 describe("formatGatewaySummary", () => {
   it("formats gateway summaries with channel", () => {
-    expect(formatGatewaySummary({ channel: "whatsapp", messageId: "m1" })).toBe(
-      "✅ Sent via gateway (whatsapp). Message ID: m1",
+    expect(formatGatewaySummary({ channel: "telegram", messageId: "m1" })).toBe(
+      "✅ Sent via gateway (telegram). Message ID: m1",
     );
   });
 

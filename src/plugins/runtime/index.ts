@@ -43,20 +43,6 @@ import { discordMessageActions } from "../../channels/plugins/actions/discord.js
 import { signalMessageActions } from "../../channels/plugins/actions/signal.js";
 import { telegramMessageActions } from "../../channels/plugins/actions/telegram.js";
 import {
-  getActiveWebListener,
-  getWebAuthAgeMs,
-  logoutWeb,
-  logWebSelfId,
-  loginWeb,
-  monitorWebChannel,
-  readWebSelfId,
-  sendMessageWhatsApp,
-  sendPollWhatsApp,
-  startWebLoginWithQr,
-  waitForWebLogin,
-  webAuthExists,
-} from "../../channels/plugins/whatsapp-stubs.js";
-import {
   resolveChannelGroupPolicy,
   resolveChannelGroupRequireMention,
 } from "../../config/group-policy.js";
@@ -301,20 +287,6 @@ export function createPluginRuntime(): PluginRuntime {
         monitorIMessageProvider,
         probeIMessage,
         sendMessageIMessage,
-      },
-      whatsapp: {
-        getActiveWebListener,
-        getWebAuthAgeMs,
-        logoutWeb,
-        logWebSelfId,
-        readWebSelfId,
-        webAuthExists,
-        sendMessageWhatsApp,
-        sendPollWhatsApp,
-        loginWeb,
-        startWebLoginWithQr,
-        waitForWebLogin,
-        monitorWebChannel,
       },
       line: {
         listLineAccountIds,

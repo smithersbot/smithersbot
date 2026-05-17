@@ -8,7 +8,7 @@ import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.j
 import type { PluginRegistry } from "../plugins/registry.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
-import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
+import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import {
   agentCommand,
   connectOk,
@@ -105,9 +105,9 @@ const createMSTeamsPlugin = (params?: { aliases?: string[] }): ChannelPlugin => 
 const emptyRegistry = createRegistry([]);
 const defaultRegistry = createRegistry([
   {
-    pluginId: "whatsapp",
+    pluginId: "telegram",
     source: "test",
-    plugin: whatsappPlugin,
+    plugin: telegramPlugin,
   },
 ]);
 
@@ -254,7 +254,7 @@ describe("gateway server agent", () => {
 
     const spy = vi.mocked(agentCommand);
     const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expectChannels(call, "whatsapp");
+    expectChannels(call, "telegram");
     expect(call.to).toBe("+1555");
     expect(call.deliver).toBe(true);
     expect(call.bestEffortDeliver).toBe(true);

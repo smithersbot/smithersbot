@@ -6,7 +6,6 @@ import { requireActivePluginRegistry } from "../plugins/runtime.js";
 // register the plugin in its extension entrypoint and keep protocol IDs in sync.
 export const CHAT_CHANNEL_ORDER = [
   "telegram",
-  "whatsapp",
   "discord",
   "googlechat",
   "slack",
@@ -18,7 +17,7 @@ export type ChatChannelId = (typeof CHAT_CHANNEL_ORDER)[number];
 
 export const CHANNEL_IDS = [...CHAT_CHANNEL_ORDER] as const;
 
-export const DEFAULT_CHAT_CHANNEL: ChatChannelId = "whatsapp";
+export const DEFAULT_CHAT_CHANNEL: ChatChannelId = "telegram";
 
 export type ChatChannelMeta = ChannelMeta;
 
@@ -37,16 +36,6 @@ const CHAT_CHANNEL_META: Record<ChatChannelId, ChannelMeta> = {
     selectionDocsPrefix: "",
     selectionDocsOmitLabel: true,
     selectionExtras: [WEBSITE_URL],
-  },
-  whatsapp: {
-    id: "whatsapp",
-    label: "WhatsApp",
-    selectionLabel: "WhatsApp (QR link)",
-    detailLabel: "WhatsApp Web",
-    docsPath: "/channels/whatsapp",
-    docsLabel: "whatsapp",
-    blurb: "works with your own number; recommend a separate phone + eSIM.",
-    systemImage: "message",
   },
   discord: {
     id: "discord",

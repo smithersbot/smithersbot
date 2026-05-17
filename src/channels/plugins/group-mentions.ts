@@ -120,15 +120,6 @@ export function resolveTelegramGroupRequireMention(
   });
 }
 
-export function resolveWhatsAppGroupRequireMention(params: GroupMentionParams): boolean {
-  return resolveChannelGroupRequireMention({
-    cfg: params.cfg,
-    channel: "whatsapp",
-    groupId: params.groupId,
-    accountId: params.accountId,
-  });
-}
-
 export function resolveIMessageGroupRequireMention(params: GroupMentionParams): boolean {
   return resolveChannelGroupRequireMention({
     cfg: params.cfg,
@@ -237,21 +228,6 @@ export function resolveTelegramGroupToolPolicy(
     cfg: params.cfg,
     channel: "telegram",
     groupId: chatId ?? params.groupId,
-    accountId: params.accountId,
-    senderId: params.senderId,
-    senderName: params.senderName,
-    senderUsername: params.senderUsername,
-    senderE164: params.senderE164,
-  });
-}
-
-export function resolveWhatsAppGroupToolPolicy(
-  params: GroupMentionParams,
-): GroupToolPolicyConfig | undefined {
-  return resolveChannelGroupToolsPolicy({
-    cfg: params.cfg,
-    channel: "whatsapp",
-    groupId: params.groupId,
     accountId: params.accountId,
     senderId: params.senderId,
     senderName: params.senderName,

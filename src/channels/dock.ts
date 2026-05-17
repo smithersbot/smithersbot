@@ -7,8 +7,6 @@ import { buildSlackThreadingToolContext } from "../slack/threading-tool-context.
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { normalizeE164 } from "../utils.js";
-import { resolveWhatsAppAccount } from "../config/whatsapp-accounts.js";
-import { normalizeWhatsAppTarget } from "./plugins/whatsapp-normalize.js";
 import { requireActivePluginRegistry } from "../plugins/runtime.js";
 import {
   resolveDiscordGroupRequireMention,
@@ -21,8 +19,6 @@ import {
   resolveSlackGroupToolPolicy,
   resolveTelegramGroupRequireMention,
   resolveTelegramGroupToolPolicy,
-  resolveWhatsAppGroupRequireMention,
-  resolveWhatsAppGroupToolPolicy,
 } from "./plugins/group-mentions.js";
 import type {
   ChannelCapabilities,
@@ -76,8 +72,6 @@ const formatLower = (allowFrom: Array<string | number>) =>
     .filter(Boolean)
     .map((entry) => entry.toLowerCase());
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 // Channel docks: lightweight channel metadata/behavior for shared code paths.
 //
 // Rules:
@@ -120,54 +114,6 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
         return {
           currentChannelId: context.To?.trim() || undefined,
           currentThreadTs: threadId != null ? String(threadId) : undefined,
-          hasRepliedRef,
-        };
-      },
-    },
-  },
-  whatsapp: {
-    id: "whatsapp",
-    capabilities: {
-      chatTypes: ["direct", "group"],
-      polls: true,
-      reactions: true,
-      media: true,
-    },
-    commands: {
-      enforceOwnerForCommands: true,
-      skipWhenConfigEmpty: true,
-    },
-    outbound: { textChunkLimit: 4000 },
-    config: {
-      resolveAllowFrom: ({ cfg, accountId }) =>
-        resolveWhatsAppAccount({ cfg, accountId }).allowFrom ?? [],
-      formatAllowFrom: ({ allowFrom }) =>
-        allowFrom
-          .map((entry) => String(entry).trim())
-          .filter((entry): entry is string => Boolean(entry))
-          .map((entry) => (entry === "*" ? entry : normalizeWhatsAppTarget(entry)))
-          .filter((entry): entry is string => Boolean(entry)),
-    },
-    groups: {
-      resolveRequireMention: resolveWhatsAppGroupRequireMention,
-      resolveToolPolicy: resolveWhatsAppGroupToolPolicy,
-      resolveGroupIntroHint: () =>
-        "WhatsApp IDs: SenderId is the participant JID; [message_id: ...] is the message id for reactions (use SenderId as participant).",
-    },
-    mentions: {
-      stripPatterns: ({ ctx }) => {
-        const selfE164 = (ctx.To ?? "").replace(/^whatsapp:/, "");
-        if (!selfE164) return [];
-        const escaped = escapeRegExp(selfE164);
-        return [escaped, `@${escaped}`];
-      },
-    },
-    threading: {
-      buildToolContext: ({ context, hasRepliedRef }) => {
-        const channelId = context.From?.trim() || context.To?.trim() || undefined;
-        return {
-          currentChannelId: channelId,
-          currentThreadTs: context.ReplyToId,
           hasRepliedRef,
         };
       },

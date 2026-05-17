@@ -31,8 +31,8 @@ const probeGateway = vi.fn(async ({ url }: { url: string }) => {
       health: { ok: true },
       status: {
         linkChannel: {
-          id: "whatsapp",
-          label: "WhatsApp",
+          id: "telegram",
+          label: "Telegram",
           linked: false,
           authAgeMs: null,
         },

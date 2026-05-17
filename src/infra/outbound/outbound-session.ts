@@ -23,10 +23,6 @@ import { parseSlackTarget } from "../../slack/targets.js";
 import { buildTelegramGroupPeerId } from "../../telegram/bot/helpers.js";
 import { resolveTelegramTargetChatType } from "../../telegram/inline-buttons.js";
 import { parseTelegramTarget } from "../../telegram/targets.js";
-import {
-  isWhatsAppGroupJid,
-  normalizeWhatsAppTarget,
-} from "../../channels/plugins/whatsapp-normalize.js";
 import type { ResolvedMessagingTarget } from "./target-resolver.js";
 
 export type OutboundSessionRoute = {
@@ -303,33 +299,6 @@ function resolveTelegramSession(
     from: isGroup ? `telegram:group:${peerId}` : `telegram:${chatId}`,
     to: `telegram:${chatId}`,
     threadId: resolvedThreadId,
-  };
-}
-
-function resolveWhatsAppSession(
-  params: ResolveOutboundSessionRouteParams,
-): OutboundSessionRoute | null {
-  const normalized = normalizeWhatsAppTarget(params.target);
-  if (!normalized) return null;
-  const isGroup = isWhatsAppGroupJid(normalized);
-  const peer: RoutePeer = {
-    kind: isGroup ? "group" : "dm",
-    id: normalized,
-  };
-  const baseSessionKey = buildBaseSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    channel: "whatsapp",
-    accountId: params.accountId,
-    peer,
-  });
-  return {
-    sessionKey: baseSessionKey,
-    baseSessionKey,
-    peer,
-    chatType: isGroup ? "group" : "direct",
-    from: normalized,
-    to: normalized,
   };
 }
 
@@ -797,8 +766,6 @@ export async function resolveOutboundSessionRoute(
       return resolveDiscordSession({ ...params, target });
     case "telegram":
       return resolveTelegramSession({ ...params, target });
-    case "whatsapp":
-      return resolveWhatsAppSession({ ...params, target });
     case "signal":
       return resolveSignalSession({ ...params, target });
     case "imessage":

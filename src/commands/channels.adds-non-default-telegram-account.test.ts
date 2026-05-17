@@ -8,7 +8,6 @@ import { imessagePlugin } from "../../extensions/imessage/src/channel.js";
 import { signalPlugin } from "../../extensions/signal/src/channel.js";
 import { slackPlugin } from "../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
-import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
 
 const configMocks = vi.hoisted(() => ({
   readConfigFileSnapshot: vi.fn(),
@@ -77,7 +76,6 @@ describe("channels command", () => {
         { pluginId: "discord", plugin: discordPlugin, source: "test" },
         { pluginId: "slack", plugin: slackPlugin, source: "test" },
         { pluginId: "telegram", plugin: telegramPlugin, source: "test" },
-        { pluginId: "whatsapp", plugin: whatsappPlugin, source: "test" },
         { pluginId: "signal", plugin: signalPlugin, source: "test" },
         { pluginId: "imessage", plugin: imessagePlugin, source: "test" },
       ]),
@@ -156,22 +154,6 @@ describe("channels command", () => {
     };
     expect(next.channels?.discord?.accounts?.work).toBeUndefined();
     expect(next.channels?.discord?.accounts?.default?.token).toBe("d0");
-  });
-
-  it("adds a named WhatsApp account", async () => {
-    configMocks.readConfigFileSnapshot.mockResolvedValue({ ...baseSnapshot });
-    await channelsAddCommand(
-      { channel: "whatsapp", account: "family", name: "Family Phone" },
-      runtime,
-      { hasFlags: true },
-    );
-
-    const next = configMocks.writeConfigFile.mock.calls[0]?.[0] as {
-      channels?: {
-        whatsapp?: { accounts?: Record<string, { name?: string }> };
-      };
-    };
-    expect(next.channels?.whatsapp?.accounts?.family?.name).toBe("Family Phone");
   });
 
   it("adds a second signal account with a distinct name", async () => {
@@ -344,15 +326,15 @@ describe("channels command", () => {
     const lines = formatGatewayChannelsStatusLines({
       channelAccounts: {
         telegram: [{ accountId: "default", configured: true }],
-        whatsapp: [{ accountId: "default", linked: true }],
+        discord: [{ accountId: "default", configured: true }],
       },
     });
 
     const telegramIndex = lines.findIndex((line) => line.includes("Telegram default"));
-    const whatsappIndex = lines.findIndex((line) => line.includes("WhatsApp default"));
+    const discordIndex = lines.findIndex((line) => line.includes("Discord default"));
     expect(telegramIndex).toBeGreaterThan(-1);
-    expect(whatsappIndex).toBeGreaterThan(-1);
-    expect(telegramIndex).toBeLessThan(whatsappIndex);
+    expect(discordIndex).toBeGreaterThan(-1);
+    expect(telegramIndex).toBeLessThan(discordIndex);
   });
 
   it("surfaces Discord privileged intent issues in channels status output", () => {
@@ -460,32 +442,5 @@ describe("channels command", () => {
     expect(lines.join("\n")).toMatch(/Warnings:/);
     expect(lines.join("\n")).toMatch(/membership probing is not possible/i);
     expect(lines.join("\n")).toMatch(/Group -1001/i);
-  });
-
-  it("surfaces WhatsApp auth/runtime hints when unlinked or disconnected", () => {
-    const unlinked = formatGatewayChannelsStatusLines({
-      channelAccounts: {
-        whatsapp: [{ accountId: "default", enabled: true, linked: false }],
-      },
-    });
-    expect(unlinked.join("\n")).toMatch(/WhatsApp/i);
-    expect(unlinked.join("\n")).toMatch(/Not linked/i);
-
-    const disconnected = formatGatewayChannelsStatusLines({
-      channelAccounts: {
-        whatsapp: [
-          {
-            accountId: "default",
-            enabled: true,
-            linked: true,
-            running: true,
-            connected: false,
-            reconnectAttempts: 5,
-            lastError: "connection closed",
-          },
-        ],
-      },
-    });
-    expect(disconnected.join("\n")).toMatch(/disconnected/i);
   });
 });

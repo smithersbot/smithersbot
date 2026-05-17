@@ -131,22 +131,6 @@ type SignalMessageActions =
 type MonitorIMessageProvider = typeof import("../../imessage/monitor.js").monitorIMessageProvider;
 type ProbeIMessage = typeof import("../../imessage/probe.js").probeIMessage;
 type SendMessageIMessage = typeof import("../../imessage/send.js").sendMessageIMessage;
-type GetActiveWebListener =
-  typeof import("../../channels/plugins/whatsapp-stubs.js").getActiveWebListener;
-type GetWebAuthAgeMs = typeof import("../../channels/plugins/whatsapp-stubs.js").getWebAuthAgeMs;
-type LogoutWeb = typeof import("../../channels/plugins/whatsapp-stubs.js").logoutWeb;
-type LogWebSelfId = typeof import("../../channels/plugins/whatsapp-stubs.js").logWebSelfId;
-type ReadWebSelfId = typeof import("../../channels/plugins/whatsapp-stubs.js").readWebSelfId;
-type WebAuthExists = typeof import("../../channels/plugins/whatsapp-stubs.js").webAuthExists;
-type SendMessageWhatsApp =
-  typeof import("../../channels/plugins/whatsapp-stubs.js").sendMessageWhatsApp;
-type SendPollWhatsApp = typeof import("../../channels/plugins/whatsapp-stubs.js").sendPollWhatsApp;
-type LoginWeb = typeof import("../../channels/plugins/whatsapp-stubs.js").loginWeb;
-type StartWebLoginWithQr =
-  typeof import("../../channels/plugins/whatsapp-stubs.js").startWebLoginWithQr;
-type WaitForWebLogin = typeof import("../../channels/plugins/whatsapp-stubs.js").waitForWebLogin;
-type MonitorWebChannel =
-  typeof import("../../channels/plugins/whatsapp-stubs.js").monitorWebChannel;
 
 // LINE channel types
 type ListLineAccountIds = typeof import("../../line/accounts.js").listLineAccountIds;
@@ -313,20 +297,6 @@ export type PluginRuntime = {
       monitorIMessageProvider: MonitorIMessageProvider;
       probeIMessage: ProbeIMessage;
       sendMessageIMessage: SendMessageIMessage;
-    };
-    whatsapp: {
-      getActiveWebListener: GetActiveWebListener;
-      getWebAuthAgeMs: GetWebAuthAgeMs;
-      logoutWeb: LogoutWeb;
-      logWebSelfId: LogWebSelfId;
-      readWebSelfId: ReadWebSelfId;
-      webAuthExists: WebAuthExists;
-      sendMessageWhatsApp: SendMessageWhatsApp;
-      sendPollWhatsApp: SendPollWhatsApp;
-      loginWeb: LoginWeb;
-      startWebLoginWithQr: StartWebLoginWithQr;
-      waitForWebLogin: WaitForWebLogin;
-      monitorWebChannel: MonitorWebChannel;
     };
     line: {
       listLineAccountIds: ListLineAccountIds;

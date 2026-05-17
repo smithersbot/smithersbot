@@ -77,12 +77,6 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/voice-call/**"
-"channel: whatsapp-web":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src/web/**"
-          - "extensions/whatsapp/**"
-          - "docs/channels/whatsapp.md"
 "channel: zalo":
   - changed-files:
       - any-glob-to-any-file:

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoltbotConfig } from "../../config/config.js";
 import { signalOutbound } from "../../channels/plugins/outbound/signal.js";
 import { telegramOutbound } from "../../channels/plugins/outbound/telegram.js";
-import { whatsappOutbound } from "../../channels/plugins/outbound/whatsapp.js";
 import { markdownToSignalTextChunks } from "../../signal/format.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
@@ -147,56 +146,6 @@ describe("deliverOutboundPayloads", () => {
     });
   });
 
-  it("chunks WhatsApp text and returns all results", async () => {
-    const sendWhatsApp = vi
-      .fn()
-      .mockResolvedValueOnce({ messageId: "w1", toJid: "jid" })
-      .mockResolvedValueOnce({ messageId: "w2", toJid: "jid" });
-    const cfg: MoltbotConfig = {
-      channels: { whatsapp: { textChunkLimit: 2 } },
-    };
-
-    const results = await deliverOutboundPayloads({
-      cfg,
-      channel: "whatsapp",
-      to: "+1555",
-      payloads: [{ text: "abcd" }],
-      deps: { sendWhatsApp },
-    });
-
-    expect(sendWhatsApp).toHaveBeenCalledTimes(2);
-    expect(results.map((r) => r.messageId)).toEqual(["w1", "w2"]);
-  });
-
-  it("respects newline chunk mode for WhatsApp", async () => {
-    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
-    const cfg: MoltbotConfig = {
-      channels: { whatsapp: { textChunkLimit: 4000, chunkMode: "newline" } },
-    };
-
-    await deliverOutboundPayloads({
-      cfg,
-      channel: "whatsapp",
-      to: "+1555",
-      payloads: [{ text: "Line one\n\nLine two" }],
-      deps: { sendWhatsApp },
-    });
-
-    expect(sendWhatsApp).toHaveBeenCalledTimes(2);
-    expect(sendWhatsApp).toHaveBeenNthCalledWith(
-      1,
-      "+1555",
-      "Line one",
-      expect.objectContaining({ verbose: false }),
-    );
-    expect(sendWhatsApp).toHaveBeenNthCalledWith(
-      2,
-      "+1555",
-      "Line two",
-      expect.objectContaining({ verbose: false }),
-    );
-  });
-
   it("preserves fenced blocks for markdown chunkers in newline mode", async () => {
     const chunker = vi.fn((text: string) => (text ? [text] : []));
     const sendText = vi.fn().mockImplementation(async ({ text }: { text: string }) => ({
@@ -288,48 +237,66 @@ describe("deliverOutboundPayloads", () => {
   });
 
   it("continues on errors when bestEffort is enabled", async () => {
-    const sendWhatsApp = vi
+    const sendTelegram = vi
       .fn()
       .mockRejectedValueOnce(new Error("fail"))
-      .mockResolvedValueOnce({ messageId: "w2", toJid: "jid" });
+      .mockResolvedValueOnce({ messageId: "m2", chatId: "c1" });
     const onError = vi.fn();
-    const cfg: MoltbotConfig = {};
+    const cfg: MoltbotConfig = {
+      channels: { telegram: { botToken: "tok-1", textChunkLimit: 4000 } },
+    };
 
-    const results = await deliverOutboundPayloads({
-      cfg,
-      channel: "whatsapp",
-      to: "+1555",
-      payloads: [{ text: "a" }, { text: "b" }],
-      deps: { sendWhatsApp },
-      bestEffort: true,
-      onError,
-    });
+    const prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "";
+    try {
+      const results = await deliverOutboundPayloads({
+        cfg,
+        channel: "telegram",
+        to: "123",
+        payloads: [{ text: "a" }, { text: "b" }],
+        deps: { sendTelegram },
+        bestEffort: true,
+        onError,
+      });
 
-    expect(sendWhatsApp).toHaveBeenCalledTimes(2);
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(results).toEqual([{ channel: "whatsapp", messageId: "w2", toJid: "jid" }]);
+      expect(sendTelegram).toHaveBeenCalledTimes(2);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(results.map((r) => r.messageId)).toEqual(["m2"]);
+    } finally {
+      if (prevTelegramToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
+    }
   });
 
   it("passes normalized payload to onError", async () => {
-    const sendWhatsApp = vi.fn().mockRejectedValue(new Error("boom"));
+    const sendTelegram = vi.fn().mockRejectedValue(new Error("boom"));
     const onError = vi.fn();
-    const cfg: MoltbotConfig = {};
+    const cfg: MoltbotConfig = {
+      channels: { telegram: { botToken: "tok-1", textChunkLimit: 4000 } },
+    };
 
-    await deliverOutboundPayloads({
-      cfg,
-      channel: "whatsapp",
-      to: "+1555",
-      payloads: [{ text: "hi", mediaUrl: "https://x.test/a.jpg" }],
-      deps: { sendWhatsApp },
-      bestEffort: true,
-      onError,
-    });
+    const prevTelegramToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "";
+    try {
+      await deliverOutboundPayloads({
+        cfg,
+        channel: "telegram",
+        to: "123",
+        payloads: [{ text: "hi", mediaUrl: "https://x.test/a.jpg" }],
+        deps: { sendTelegram },
+        bestEffort: true,
+        onError,
+      });
 
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({ text: "hi", mediaUrls: ["https://x.test/a.jpg"] }),
-    );
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({ text: "hi", mediaUrls: ["https://x.test/a.jpg"] }),
+      );
+    } finally {
+      if (prevTelegramToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = prevTelegramToken;
+    }
   });
 
   it("mirrors delivered output when mirror options are provided", async () => {
@@ -368,11 +335,6 @@ const defaultRegistry = createTestRegistry([
   {
     pluginId: "signal",
     plugin: createOutboundTestPlugin({ id: "signal", outbound: signalOutbound }),
-    source: "test",
-  },
-  {
-    pluginId: "whatsapp",
-    plugin: createOutboundTestPlugin({ id: "whatsapp", outbound: whatsappOutbound }),
     source: "test",
   },
   {

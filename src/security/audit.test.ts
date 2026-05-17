@@ -15,8 +15,8 @@ const isWindows = process.platform === "win32";
 describe("security audit", () => {
   it("includes an attack surface summary (info)", async () => {
     const cfg: MoltbotConfig = {
-      channels: { whatsapp: { groupPolicy: "open" }, telegram: { groupPolicy: "allowlist" } },
-      tools: { elevated: { enabled: true, allowFrom: { whatsapp: ["+1"] } } },
+      channels: { telegram: { groupPolicy: "allowlist" } },
+      tools: { elevated: { enabled: true, allowFrom: { telegram: ["+1"] } } },
       hooks: { enabled: true },
       browser: { enabled: true },
     };
@@ -253,7 +253,7 @@ describe("security audit", () => {
     const cfg: MoltbotConfig = {
       tools: {
         elevated: {
-          allowFrom: { whatsapp: ["*"] },
+          allowFrom: { telegram: ["*"] },
         },
       },
     };
@@ -267,7 +267,7 @@ describe("security audit", () => {
     expect(res.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          checkId: "tools.elevated.allowFrom.whatsapp.wildcard",
+          checkId: "tools.elevated.allowFrom.telegram.wildcard",
           severity: "critical",
         }),
       ]),
@@ -346,12 +346,12 @@ describe("security audit", () => {
     const cfg: MoltbotConfig = { session: { dmScope: "main" } };
     const plugins: ChannelPlugin[] = [
       {
-        id: "whatsapp",
+        id: "telegram",
         meta: {
-          id: "whatsapp",
-          label: "WhatsApp",
-          selectionLabel: "WhatsApp",
-          docsPath: "/channels/whatsapp",
+          id: "telegram",
+          label: "Telegram",
+          selectionLabel: "Telegram",
+          docsPath: "/channels/telegram",
           blurb: "Test",
         },
         capabilities: { chatTypes: ["direct"] },
@@ -365,8 +365,8 @@ describe("security audit", () => {
           resolveDmPolicy: () => ({
             policy: "allowlist",
             allowFrom: ["user-a", "user-b"],
-            policyPath: "channels.whatsapp.dmPolicy",
-            allowFromPath: "channels.whatsapp.",
+            policyPath: "channels.telegram.dmPolicy",
+            allowFromPath: "channels.telegram.",
             approveHint: "approve",
           }),
         },
@@ -383,7 +383,7 @@ describe("security audit", () => {
     expect(res.findings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          checkId: "channels.whatsapp.dm.scope_main_multiuser",
+          checkId: "channels.telegram.dm.scope_main_multiuser",
           severity: "warn",
         }),
       ]),
@@ -956,8 +956,8 @@ describe("security audit", () => {
 
   it("flags open groupPolicy when tools.elevated is enabled", async () => {
     const cfg: MoltbotConfig = {
-      tools: { elevated: { enabled: true, allowFrom: { whatsapp: ["+1"] } } },
-      channels: { whatsapp: { groupPolicy: "open" } },
+      tools: { elevated: { enabled: true, allowFrom: { telegram: ["+1"] } } },
+      channels: { telegram: { groupPolicy: "open" } },
     };
 
     const res = await runSecurityAudit({

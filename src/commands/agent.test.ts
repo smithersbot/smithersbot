@@ -325,9 +325,9 @@ describe("agentCommand", () => {
         createTestRegistry([{ pluginId: "telegram", plugin: telegramPlugin, source: "test" }]),
       );
       const deps = {
-        sendMessageWhatsApp: vi.fn(),
         sendMessageTelegram: vi.fn().mockResolvedValue({ messageId: "t1", chatId: "123" }),
         sendMessageDiscord: vi.fn(),
+        sendMessageSlack: vi.fn(),
         sendMessageSignal: vi.fn(),
         sendMessageIMessage: vi.fn(),
       };
@@ -382,7 +382,7 @@ describe("agentCommand", () => {
         {
           message: "hi",
           to: "+1555",
-          channel: "whatsapp",
+          channel: "telegram",
           runContext: { messageChannel: "slack", accountId: "acct-2" },
         },
         runtime,

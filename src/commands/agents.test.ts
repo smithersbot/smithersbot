@@ -34,7 +34,7 @@ describe("agents helpers", () => {
       bindings: [
         {
           agentId: "work",
-          match: { channel: "whatsapp", accountId: "biz" },
+          match: { channel: "discord", accountId: "biz" },
         },
         { agentId: "main", match: { channel: "telegram" } },
       ],
@@ -84,7 +84,7 @@ describe("agents helpers", () => {
       bindings: [
         {
           agentId: "main",
-          match: { channel: "whatsapp", accountId: "default" },
+          match: { channel: "discord", accountId: "default" },
         },
       ],
     };
@@ -92,11 +92,11 @@ describe("agents helpers", () => {
     const result = applyAgentBindings(cfg, [
       {
         agentId: "main",
-        match: { channel: "whatsapp", accountId: "default" },
+        match: { channel: "discord", accountId: "default" },
       },
       {
         agentId: "work",
-        match: { channel: "whatsapp", accountId: "default" },
+        match: { channel: "discord", accountId: "default" },
       },
       {
         agentId: "work",
@@ -119,7 +119,7 @@ describe("agents helpers", () => {
         ],
       },
       bindings: [
-        { agentId: "work", match: { channel: "whatsapp" } },
+        { agentId: "work", match: { channel: "discord" } },
         { agentId: "home", match: { channel: "telegram" } },
       ],
       tools: {

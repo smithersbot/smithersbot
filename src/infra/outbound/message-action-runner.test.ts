@@ -5,7 +5,6 @@ import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createIMessageTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { slackPlugin } from "../../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../../extensions/telegram/src/channel.js";
-import { whatsappPlugin } from "../../../extensions/whatsapp/src/channel.js";
 import { loadWebMedia } from "../../media/load.js";
 import { runMessageAction } from "./message-action-runner.js";
 import { jsonResult } from "../../agents/tools/common.js";
@@ -28,9 +27,9 @@ const slackConfig = {
   },
 } as MoltbotConfig;
 
-const whatsappConfig = {
+const imessageConfig = {
   channels: {
-    whatsapp: {
+    imessage: {
       allowFrom: ["*"],
     },
   },
@@ -41,22 +40,15 @@ describe("runMessageAction context isolation", () => {
     const { createPluginRuntime } = await import("../../plugins/runtime/index.js");
     const { setSlackRuntime } = await import("../../../extensions/slack/src/runtime.js");
     const { setTelegramRuntime } = await import("../../../extensions/telegram/src/runtime.js");
-    const { setWhatsAppRuntime } = await import("../../../extensions/whatsapp/src/runtime.js");
     const runtime = createPluginRuntime();
     setSlackRuntime(runtime);
     setTelegramRuntime(runtime);
-    setWhatsAppRuntime(runtime);
     setActivePluginRegistry(
       createTestRegistry([
         {
           pluginId: "slack",
           source: "test",
           plugin: slackPlugin,
-        },
-        {
-          pluginId: "whatsapp",
-          source: "test",
-          plugin: whatsappPlugin,
         },
         {
           pluginId: "telegram",
@@ -185,41 +177,9 @@ describe("runMessageAction context isolation", () => {
     expect(result.kind).toBe("action");
   });
 
-  it("allows WhatsApp send when target matches current chat", async () => {
-    const result = await runMessageAction({
-      cfg: whatsappConfig,
-      action: "send",
-      params: {
-        channel: "whatsapp",
-        target: "123@g.us",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "123@g.us" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
-  it("blocks WhatsApp send when target differs from current chat", async () => {
-    const result = await runMessageAction({
-      cfg: whatsappConfig,
-      action: "send",
-      params: {
-        channel: "whatsapp",
-        target: "456@g.us",
-        message: "hi",
-      },
-      toolContext: { currentChannelId: "123@g.us", currentChannelProvider: "whatsapp" },
-      dryRun: true,
-    });
-
-    expect(result.kind).toBe("send");
-  });
-
   it("allows iMessage send when target matches current handle", async () => {
     const result = await runMessageAction({
-      cfg: whatsappConfig,
+      cfg: imessageConfig,
       action: "send",
       params: {
         channel: "imessage",
@@ -235,7 +195,7 @@ describe("runMessageAction context isolation", () => {
 
   it("blocks iMessage send when target differs from current handle", async () => {
     const result = await runMessageAction({
-      cfg: whatsappConfig,
+      cfg: imessageConfig,
       action: "send",
       params: {
         channel: "imessage",
