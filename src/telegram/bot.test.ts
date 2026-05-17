@@ -252,7 +252,7 @@ describe("createTelegramBot", () => {
       { command: "custom_generate", description: "Create an image" },
     ]);
     // Goal commands appear before custom commands
-    expect(afterNative.some((c) => c.command === "goal")).toBe(true);
+    expect(afterNative.some((c) => c.command === "new_goal")).toBe(true);
   });
 
   it("ignores custom commands that collide with native commands", () => {

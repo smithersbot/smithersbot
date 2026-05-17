@@ -63,29 +63,37 @@ export function startTypingLoop(params: {
   let stopped = false;
   let errorLogged = false;
 
+  const logSendActionError = (err: unknown) => {
+    if (errorLogged) return;
+    errorLogged = true;
+    const errMsg = err instanceof Error ? err.message : String(err);
+    let cause = "";
+    if (err instanceof Error && err.cause != null) {
+      let causeValue = "[non-string]";
+      if (typeof err.cause === "string") {
+        causeValue = err.cause;
+      } else if (err.cause instanceof Error) {
+        causeValue = err.cause.message;
+      }
+      cause = ` cause=${causeValue}`;
+    }
+    logTyping(`${tag}sendChatAction error chatId=${chatId}: ${errMsg}${cause}`);
+  };
+
   const sendAction = () => {
     if (stopped) return;
-    const p =
-      threadId != null
-        ? bot.api.raw.sendChatAction({ chat_id: chatId, action, message_thread_id: threadId })
-        : bot.api.sendChatAction(chatId, action);
-    p.catch((err: unknown) => {
-      if (!errorLogged) {
-        errorLogged = true;
-        const errMsg = err instanceof Error ? err.message : String(err);
-        let cause = "";
-        if (err instanceof Error && err.cause != null) {
-          let causeValue = "[non-string]";
-          if (typeof err.cause === "string") {
-            causeValue = err.cause;
-          } else if (err.cause instanceof Error) {
-            causeValue = err.cause.message;
-          }
-          cause = ` cause=${causeValue}`;
-        }
-        logTyping(`${tag}sendChatAction error chatId=${chatId}: ${errMsg}${cause}`);
-      }
-    });
+    // Wrap both the synchronous call and any promise rejection so the typing
+    // loop never crashes the surrounding handler (e.g. partially mocked
+    // clients in tests, or transient SDK errors in production).
+    try {
+      const p =
+        threadId != null
+          ? bot.api.raw.sendChatAction({ chat_id: chatId, action, message_thread_id: threadId })
+          : bot.api.sendChatAction(chatId, action);
+      Promise.resolve(p).catch(logSendActionError);
+    } catch (err) {
+      logSendActionError(err);
+    }
   };
 
   logTyping(`${tag}start chatId=${chatId}${threadId != null ? ` threadId=${threadId}` : ""}`);
