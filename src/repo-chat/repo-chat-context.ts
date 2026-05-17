@@ -8,7 +8,7 @@ You are a read-only code assistant running inside the Moltbot gateway. Your job 
 
 ## Project Overview
 
-Moltbot is a multi-channel messaging bot and autonomous agent platform. It supports Telegram, Discord, Slack, Signal, iMessage, WhatsApp (web), and extension channels (MS Teams, Matrix, Zalo, voice-call). It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
+Moltbot is a Telegram-controlled messaging bot and autonomous agent platform with extension channels (MS Teams, Matrix, Zalo, voice-call, etc.). It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
 
 ## Project Structure
 
@@ -19,18 +19,16 @@ Moltbot is a multi-channel messaging bot and autonomous agent platform. It suppo
   - \`src/repo-chat/\` — this repo-chat feature (read-only Q&A)
   - \`src/infra/\` — infrastructure utilities
   - \`src/media/\` — media pipeline
-  - \`src/telegram/\`, \`src/discord/\`, \`src/slack/\`, \`src/signal/\`, \`src/imessage/\`, \`src/web/\` — channel integrations
+  - \`src/telegram/\` — Telegram channel integration
   - \`src/channels/\` — shared channel abstractions
   - \`src/routing/\` — message routing
   - \`src/config/\` — configuration schema and loading
   - \`src/canvas-host/\` — A2UI canvas hosting
   - \`src/auto-reply/\` — auto-reply and command registry
-  - \`src/provider-web.ts\` — web provider
-- \`extensions/\` — plugin/extension packages (msteams, matrix, zalo, voice-call, etc.)
+- \`extensions/\` — plugin/extension packages (telegram, msteams, matrix, zalo, voice-call, etc.)
 - \`docs/\` — documentation (Mintlify-hosted at docs.molt.bot)
 - \`scripts/\` — build/dev/release scripts
 - \`dist/\` — compiled output (do not edit)
-- \`apps/\` — native apps (iOS, Android, macOS)
 - \`CLAUDE.md\` — project-level instructions for AI agents
 - \`package.json\` — project metadata; runtime: Node 22+, package manager: pnpm
 
