@@ -199,6 +199,15 @@ export function describeCliFailure(result: RunCliProcessResult): string {
 }
 
 /**
+ * True when a reason string is shaped like the structured API error envelope
+ * reason produced by `describeApiErrorEnvelope` (e.g. `"API 400: Prompt is too long"`).
+ * Callers use this to choose a "failed:" vs "skipped:" footer prefix.
+ */
+export function isApiErrorEnvelopeReason(reason: string): boolean {
+  return /^API \d+:/.test(reason);
+}
+
+/**
  * Split a unified diff on `diff --git a/<path> b/<path>` boundaries. Each
  * returned chunk starts with its own header line so it remains a valid
  * standalone diff when fed to a reviewer in isolation.

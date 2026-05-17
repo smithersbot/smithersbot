@@ -1215,6 +1215,79 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
+  it("surfaces API-envelope review errors with a failed: prefix", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-api-error" } };
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 400,
+        duration_ms: 7447,
+        duration_api_ms: 0,
+        num_turns: 1,
+        result: "Prompt is too long",
+        stop_reason: "stop_sequence",
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 20,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-review-api-error",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    if (outcome.status === "done") {
+      expect(outcome.summary).toContain("**Post-Execution Review**");
+      expect(outcome.summary).toContain(
+        "Post-execution review failed: API 400: Prompt is too long",
+      );
+      expect(outcome.summary).not.toContain("Post-execution review skipped:");
+    }
+  });
+
+  it("keeps the skipped: prefix when no base SHA is available", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    // No taskCheckpoints, so resolvePostExecutionReviewBaseSha returns undefined.
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-review-no-base-sha",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    if (outcome.status === "done") {
+      expect(outcome.summary).toContain("Post-execution review skipped: no base SHA available.");
+      expect(outcome.summary).not.toContain("Post-execution review failed:");
+    }
+  });
+
   it("blocks when the selected backend is unavailable", async () => {
     availability = [
       { id: "pi", available: true },

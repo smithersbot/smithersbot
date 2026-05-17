@@ -52,6 +52,7 @@ import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { generateManualTests } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import {
+  isApiErrorEnvelopeReason,
   runPostExecutionReview,
   resolvePostExecutionReviewBaseSha,
   truncateSingleLine,
@@ -792,7 +793,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         });
 
         if (initialReview.status === "error") {
-          postExecutionReviewNote = `Post-execution review skipped: ${initialReview.reason}.`;
+          const prefix = isApiErrorEnvelopeReason(initialReview.reason)
+            ? "Post-execution review failed"
+            : "Post-execution review skipped";
+          postExecutionReviewNote = `${prefix}: ${initialReview.reason}.`;
         } else if (initialReview.status === "approved") {
           postExecutionReviewNote = "Approved.";
         } else {
