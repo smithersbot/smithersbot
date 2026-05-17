@@ -48,7 +48,12 @@ import { findRepoChatSessionByMessageId } from "../repo-chat/repo-chat-store.js"
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
-import { buildCommandFragmentKey, normalizeCommandFragmentParams } from "./command-fragments.js";
+import {
+  buildCommandFragmentKey,
+  clampCommandFragmentGapMs,
+  COMMAND_FRAGMENT_MAX_GAP_MS,
+  normalizeCommandFragmentParams,
+} from "./command-fragments.js";
 
 const GOAL_HELP_MESSAGE = [
   "Moltbot goal mode:",
@@ -250,11 +255,12 @@ export const registerTelegramHandlers = ({
   commandFragmentBuffer,
 }) => {
   const TELEGRAM_TEXT_FRAGMENT_START_THRESHOLD_CHARS = 4000;
-  // Wait up to 3s for the next chunk. Telegram delivery can exceed 1500ms
-  // when bot replies cause message ID interleaving.
-  const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = 3000;
+  // Mirror command-fragment buffering so long Telegram pastes have one timeout policy.
+  const TELEGRAM_TEXT_FRAGMENT_MAX_GAP_MS = clampCommandFragmentGapMs(
+    telegramCfg.commandFragmentMaxGapMs ?? COMMAND_FRAGMENT_MAX_GAP_MS,
+  );
   // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
-  // The 3000ms time gap is the primary guard against false matches.
+  // The configured time gap is the primary guard against false matches.
   const TELEGRAM_TEXT_FRAGMENT_MAX_ID_GAP = 5;
   const TELEGRAM_TEXT_FRAGMENT_MAX_PARTS = 12;
   const TELEGRAM_TEXT_FRAGMENT_MAX_TOTAL_CHARS = 50_000;

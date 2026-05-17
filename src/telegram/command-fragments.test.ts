@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramMessage } from "./bot/types.js";
 import {
   buildCommandFragmentKey,
+  clampCommandFragmentGapMs,
+  COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS,
   COMMAND_FRAGMENT_MAX_GAP_MS,
+  COMMAND_FRAGMENT_MIN_GAP_MS,
   COMMAND_FRAGMENT_MAX_PARTS,
   COMMAND_FRAGMENT_MAX_TOTAL_CHARS,
   CommandFragmentBuffer,
@@ -245,6 +248,12 @@ describe("command-fragments", () => {
   });
 
   describe("CommandFragmentBuffer", () => {
+    it("clamps configured gaps to the supported range", () => {
+      expect(clampCommandFragmentGapMs(1000)).toBe(COMMAND_FRAGMENT_MIN_GAP_MS);
+      expect(clampCommandFragmentGapMs(15000)).toBe(COMMAND_FRAGMENT_MAX_GAP_MS);
+      expect(clampCommandFragmentGapMs(120000)).toBe(COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS);
+    });
+
     it("buffers, appends, and flushes combined text", async () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();
@@ -367,6 +376,52 @@ describe("command-fragments", () => {
       expect(buffer.tryAppend(key, 101, "second", 10 + COMMAND_FRAGMENT_MAX_GAP_MS + 1)).toBe(
         false,
       );
+    });
+
+    it("allows append within the default 15s window", () => {
+      vi.useFakeTimers();
+      expect(COMMAND_FRAGMENT_MAX_GAP_MS).toBe(15000);
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+
+      buffer.bufferCommand(key, {
+        commandName: "new_goal",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.tryAppend(key, 101, "second", 10 + COMMAND_FRAGMENT_MAX_GAP_MS)).toBe(true);
+    });
+
+    it("honors a per-instance gap override", () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer(undefined, 5000);
+      const key = "cmd:42:main:7";
+
+      buffer.bufferCommand(key, {
+        commandName: "new_goal",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.tryAppend(key, 101, "second", 5010)).toBe(true);
+      expect(buffer.tryAppend(key, 102, "third", 10011)).toBe(false);
     });
 
     it("rejects slash-prefixed continuation text", () => {

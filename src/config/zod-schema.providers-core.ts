@@ -97,6 +97,11 @@ export const TelegramAccountSchemaBase = z
     goalRouter: z.boolean().optional(),
     chatMode: z.enum(["help", "chat"]).optional(),
     repoChatBackend: z.enum(["codex", "claude_code"]).nullable().optional(),
+    commandFragmentMaxGapMs: z
+      .number()
+      .int()
+      .optional()
+      .transform((value) => (value == null ? undefined : Math.min(60000, Math.max(3000, value)))),
     botToken: z.string().optional(),
     tokenFile: z.string().optional(),
     replyToMode: ReplyToModeSchema.optional(),

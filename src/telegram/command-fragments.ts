@@ -1,11 +1,13 @@
 import { resolveTelegramForumThreadId } from "./bot/helpers.js";
 import type { TelegramMessage } from "./bot/types.js";
 
-// Wait up to 3s for the next chunk. Telegram delivery can exceed 1500ms
-// when bot replies cause message ID interleaving.
-export const COMMAND_FRAGMENT_MAX_GAP_MS = 3000;
+// Wait up to 15s for the next chunk. Long Telegram pastes may be split and
+// delivered with human-scale pauses between chunks.
+export const COMMAND_FRAGMENT_MAX_GAP_MS = 15000;
+export const COMMAND_FRAGMENT_MIN_GAP_MS = 3000;
+export const COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS = 60000;
 // Allow up to 4 intervening messages (bot replies, service messages) between user-sent chunks.
-// The 3000ms time gap is the primary guard against false matches.
+// The time gap is the primary guard against false matches.
 export const COMMAND_FRAGMENT_MAX_ID_GAP = 5;
 export const COMMAND_FRAGMENT_MAX_PARTS = 12;
 export const COMMAND_FRAGMENT_MAX_TOTAL_CHARS = 50_000;
@@ -78,8 +80,17 @@ export function normalizeCommandFragmentParams(
 
 export class CommandFragmentBuffer {
   private readonly entries = new Map<string, CommandFragmentState>();
+  private readonly gapMs: number;
 
-  constructor(private readonly logger?: CommandFragmentDebugLogger) {}
+  constructor(
+    private readonly logger?: CommandFragmentDebugLogger,
+    gapMs: number = COMMAND_FRAGMENT_MAX_GAP_MS,
+  ) {
+    this.gapMs = clampCommandFragmentGapMs(gapMs);
+    this.logDebug("telegram command fragment buffer initialized", {
+      gapMs: this.gapMs,
+    });
+  }
 
   hasPending(key: string): boolean {
     return this.entries.has(key);
@@ -101,7 +112,7 @@ export class CommandFragmentBuffer {
       lastMessageId: entry.firstMessageId,
       receivedAtMs: entry.receivedAtMs,
       lastReceivedAtMs: entry.receivedAtMs,
-      timer: setTimeout(() => {}, COMMAND_FRAGMENT_MAX_GAP_MS),
+      timer: setTimeout(() => {}, this.gapMs),
       flushCallback: entry.flushCallback,
     };
 
@@ -148,13 +159,13 @@ export class CommandFragmentBuffer {
       });
       return false;
     }
-    if (timeGapMs < 0 || timeGapMs > COMMAND_FRAGMENT_MAX_GAP_MS) {
+    if (timeGapMs < 0 || timeGapMs > this.gapMs) {
       this.logDebug("telegram command fragment append failed", {
         key,
         messageId,
         reason: "time gap exceeded",
         timeGapMs,
-        maxGapMs: COMMAND_FRAGMENT_MAX_GAP_MS,
+        maxGapMs: this.gapMs,
       });
       return false;
     }
@@ -215,10 +226,17 @@ export class CommandFragmentBuffer {
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       void this.flush(key).catch(() => undefined);
-    }, COMMAND_FRAGMENT_MAX_GAP_MS);
+    }, this.gapMs);
   }
 
   private logDebug(message: string, fields: Record<string, unknown>): void {
     this.logger?.debug?.(fields, message);
   }
+}
+
+export function clampCommandFragmentGapMs(gapMs: number): number {
+  return Math.min(
+    COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS,
+    Math.max(COMMAND_FRAGMENT_MIN_GAP_MS, Math.floor(gapMs)),
+  );
 }

@@ -46,7 +46,11 @@ import {
 } from "./bot-updates.js";
 import { resolveTelegramFetch } from "./fetch.js";
 import { wasSentByBot } from "./sent-message-cache.js";
-import { CommandFragmentBuffer } from "./command-fragments.js";
+import {
+  clampCommandFragmentGapMs,
+  CommandFragmentBuffer,
+  COMMAND_FRAGMENT_MAX_GAP_MS,
+} from "./command-fragments.js";
 
 export type TelegramBotOptions = {
   token: string;
@@ -368,7 +372,10 @@ export function createTelegramBot(opts: TelegramBotOptions) {
     opts,
     resolveBotTopicsEnabled,
   });
-  const commandFragmentBuffer = new CommandFragmentBuffer(logger);
+  const commandFragmentGapMs = clampCommandFragmentGapMs(
+    telegramCfg.commandFragmentMaxGapMs ?? COMMAND_FRAGMENT_MAX_GAP_MS,
+  );
+  const commandFragmentBuffer = new CommandFragmentBuffer(logger, commandFragmentGapMs);
 
   registerTelegramNativeCommands({
     bot,

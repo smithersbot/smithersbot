@@ -314,6 +314,7 @@ const FIELD_LABELS: Record<string, string> = {
   "channels.telegram.network.autoSelectFamily": "Telegram autoSelectFamily",
   "channels.telegram.timeoutSeconds": "Telegram API Timeout (seconds)",
   "channels.telegram.capabilities.inlineButtons": "Telegram Inline Buttons",
+  "channels.telegram.commandFragmentMaxGapMs": "Telegram Command Fragment Gap (ms)",
   "channels.whatsapp.dmPolicy": "WhatsApp DM Policy",
   "channels.whatsapp.selfChatMode": "WhatsApp Self-Phone Mode",
   "channels.whatsapp.debounceMs": "WhatsApp Message Debounce (ms)",
@@ -639,6 +640,8 @@ const FIELD_HELP: Record<string, string> = {
     'Non-command Telegram chat mode: "help" (deterministic help) or "chat" (LLM fallback).',
   "channels.telegram.repoChatBackend":
     'Read-only repo chat backend for non-command text: "codex", "claude_code", or null/off.',
+  "channels.telegram.commandFragmentMaxGapMs":
+    "Max milliseconds to wait for split Telegram command paste chunks (default: 15000; clamped 3000-60000).",
   "channels.telegram.streamMode":
     "Draft streaming mode for Telegram replies (off | partial | block). Separate from block streaming; requires private topics + sendMessageDraft.",
   "channels.telegram.draftChunk.minChars":
