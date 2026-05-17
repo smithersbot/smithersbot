@@ -2,48 +2,39 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/bluebubbles/**"
-          - "docs/channels/bluebubbles.md"
 "channel: googlechat":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/googlechat/**"
-          - "docs/channels/googlechat.md"
 "channel: matrix":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/matrix/**"
-          - "docs/channels/matrix.md"
 "channel: mattermost":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/mattermost/**"
-          - "docs/channels/mattermost.md"
 "channel: msteams":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/msteams/**"
-          - "docs/channels/msteams.md"
 "channel: nextcloud-talk":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/nextcloud-talk/**"
-          - "docs/channels/nextcloud-talk.md"
 "channel: nostr":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/nostr/**"
-          - "docs/channels/nostr.md"
 "channel: telegram":
   - changed-files:
       - any-glob-to-any-file:
           - "src/telegram/**"
           - "extensions/telegram/**"
-          - "docs/channels/telegram.md"
 "channel: tlon":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/tlon/**"
-          - "docs/channels/tlon.md"
 "channel: voice-call":
   - changed-files:
       - any-glob-to-any-file:
@@ -52,26 +43,10 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/zalo/**"
-          - "docs/channels/zalo.md"
 "channel: zalouser":
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/zalouser/**"
-          - "docs/channels/zalouser.md"
-
-"app: android":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "docs/platforms/android.md"
-"app: ios":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "docs/platforms/ios.md"
-"app: macos":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "docs/platforms/macos.md"
-          - "docs/platforms/mac/**"
 "app: web-ui":
   - changed-files:
       - any-glob-to-any-file:
@@ -87,12 +62,10 @@
       - any-glob-to-any-file:
           - "src/gateway/**"
           - "src/daemon/**"
-          - "docs/gateway/**"
 
 "docs":
   - changed-files:
       - any-glob-to-any-file:
-          - "docs/**"
           - "docs.acp.md"
 
 "cli":
@@ -126,21 +99,11 @@
           - "src/cli/sandbox-cli.ts"
           - "src/docker-setup.test.ts"
           - "src/config/**/*sandbox*"
-          - "docs/cli/sandbox.md"
-          - "docs/gateway/sandbox*.md"
-          - "docs/install/docker.md"
-          - "docs/multi-agent-sandbox-tools.md"
 
 "agents":
   - changed-files:
       - any-glob-to-any-file:
           - "src/agents/**"
-
-"security":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "docs/cli/security.md"
-          - "docs/gateway/security.md"
 
 "extensions: copilot-proxy":
   - changed-files:
