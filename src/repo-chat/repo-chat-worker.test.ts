@@ -512,6 +512,45 @@ describe("repo-chat-worker", () => {
       expect(result.text).toBe("Recovered from empty file");
     });
 
+    it("preserves cliSessionId across the repair pass when response file is empty", async () => {
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "", "utf-8");
+          return {
+            stdout: '{"type":"thread.started","thread_id":"codex-thread-preserve"}',
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 25,
+          };
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered with preserved session", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 26,
+          };
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "Need codex repair path with session preservation",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
+        args: string[];
+      };
+      expect(result.cliSessionId).toBe("codex-thread-preserve");
+      expect(repairCall.args.join(" ")).toContain("resume codex-thread-preserve");
+    });
+
     it("extracts codex response from stdout after repair fails to produce a response file", async () => {
       runCliProcessMock
         .mockResolvedValueOnce({
