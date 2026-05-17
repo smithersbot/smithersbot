@@ -205,6 +205,109 @@ describe("registerTelegramHandlers repo-chat routing", () => {
     expect(routeTelegramTextMock).not.toHaveBeenCalled();
   });
 
+  it("prompts for an explicit choice when a live command anchor blocks repo-chat routing", async () => {
+    const commandFragmentBuffer = new CommandFragmentBuffer();
+    const commandKey = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+    });
+    commandFragmentBuffer.setAnchor(commandKey, {
+      commandName: "new_goal",
+      anchoredAtMs: Date.now(),
+      expiresAtMs: Date.now() + 60_000,
+      appendHandler: vi.fn(async () => undefined),
+    });
+
+    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        messageHandlers.set(event, handler);
+      }),
+      api: {
+        answerCallbackQuery: vi.fn(async () => undefined),
+        editMessageText: vi.fn(async () => ({ message_id: 1 })),
+        sendMessage: vi.fn(async () => ({ message_id: 2 })),
+        setMessageReaction: vi.fn(async () => undefined),
+      },
+    };
+
+    registerTelegramHandlers({
+      cfg: { goal: { claudeCodeAuth: "subscription" } },
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: "claude_code",
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: logger as never,
+      commandFragmentBuffer,
+    });
+
+    const messageHandler = messageHandlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    if (!messageHandler) {
+      throw new Error("Expected Telegram message handler to be registered");
+    }
+
+    await messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "At minimum:\nmore goal details",
+        message_id: 501,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+    expect(routeTelegramTextMock).not.toHaveBeenCalled();
+    expect(bot.api.sendMessage).toHaveBeenCalledTimes(1);
+    const sendCall = bot.api.sendMessage.mock.calls[0];
+    expect(sendCall?.[0]).toBe(42);
+    expect(sendCall?.[1]).toContain("/new_goal");
+    const sendOptions = sendCall?.[2] as {
+      reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    };
+    const callbackData =
+      sendOptions.reply_markup?.inline_keyboard
+        ?.flat()
+        .map((button) => button.callback_data)
+        .filter((value): value is string => typeof value === "string") ?? [];
+    expect(callbackData).toHaveLength(3);
+    expect(callbackData[0]).toMatch(/^cmd_anchor:append:[a-z0-9]{1,8}$/);
+    expect(callbackData[1]).toMatch(/^cmd_anchor:new:[a-z0-9]{1,8}$/);
+    expect(callbackData[2]).toMatch(/^cmd_anchor:ignore:[a-z0-9]{1,8}$/);
+    const ids = callbackData.map((value) => value.split(":").at(-1));
+    expect(new Set(ids).size).toBe(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      { key: commandKey, commandName: "new_goal", choice: "prompted" },
+      "telegram command anchor surfaced follow-up",
+    );
+  });
+
   it("passes cfg to handleGoalAnswer for GOAL_ANSWER routes", async () => {
     const goalCommands = await import("./goal-commands.js");
     const handleGoalAnswerSpy = vi

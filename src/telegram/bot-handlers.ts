@@ -52,6 +52,7 @@ import {
   buildCommandFragmentKey,
   clampCommandFragmentGapMs,
   COMMAND_FRAGMENT_MAX_GAP_MS,
+  type CommandAnchor,
   normalizeCommandFragmentParams,
 } from "./command-fragments.js";
 
@@ -303,10 +304,102 @@ export const registerTelegramHandlers = ({
   };
   const textFragmentBuffer = new Map<string, TextFragmentEntry>();
   let textFragmentProcessing: Promise<void> = Promise.resolve();
+  type PendingCommandAnchorText = {
+    text: string;
+    key: string;
+    expiresAtMs: number;
+  };
+  const pendingCommandAnchorTexts = new Map<string, PendingCommandAnchorText>();
   const goalRouterEnabled = telegramCfg.goalRouter !== false;
   const logTextFragmentDebug = (message: string, fields: Record<string, unknown>) => {
     logger.debug?.(fields, message);
   };
+
+  function pruneExpiredCommandAnchorTexts(nowMs: number = Date.now()): void {
+    for (const [id, pending] of pendingCommandAnchorTexts) {
+      if (nowMs >= pending.expiresAtMs) {
+        pendingCommandAnchorTexts.delete(id);
+      }
+    }
+  }
+
+  function createCommandAnchorPendingId(): string {
+    pruneExpiredCommandAnchorTexts();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const id = Math.random().toString(36).slice(2, 10);
+      if (id.length > 0 && !pendingCommandAnchorTexts.has(id)) return id;
+    }
+    return Date.now().toString(36).slice(-8);
+  }
+
+  function resolveLiveCommandAnchor(params: {
+    chatId: number;
+    threadId?: number;
+    senderId: string;
+  }): { key: string; anchor: CommandAnchor } | undefined {
+    if (!commandFragmentBuffer) return undefined;
+    const key = buildCommandFragmentKey({
+      accountId,
+      chatId: params.chatId,
+      resolvedThreadId: params.threadId,
+      senderId: params.senderId,
+    });
+    const anchor = commandFragmentBuffer.getAnchor(key) as CommandAnchor | undefined;
+    if (!anchor) return undefined;
+    return { key, anchor };
+  }
+
+  async function promptForCommandAnchorFollowUp(params: {
+    chatId: number;
+    threadId?: number;
+    text: string;
+    key: string;
+    anchor: CommandAnchor;
+  }): Promise<void> {
+    const shortId = createCommandAnchorPendingId();
+    pendingCommandAnchorTexts.set(shortId, {
+      text: params.text,
+      key: params.key,
+      expiresAtMs: params.anchor.expiresAtMs,
+    });
+    logger.info?.(
+      { key: params.key, commandName: params.anchor.commandName, choice: "prompted" },
+      "telegram command anchor surfaced follow-up",
+    );
+    const commandLabel = `/${params.anchor.commandName}`;
+    await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      runtime,
+      fn: () =>
+        bot.api.sendMessage(
+          params.chatId,
+          `This looks like more text for ${commandLabel}. What should I do with it?`,
+          {
+            ...(params.threadId != null ? { message_thread_id: params.threadId } : {}),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: `append to ${commandLabel}`,
+                    callback_data: `cmd_anchor:append:${shortId}`,
+                  },
+                ],
+                [
+                  {
+                    text: "start new chat",
+                    callback_data: `cmd_anchor:new:${shortId}`,
+                  },
+                  {
+                    text: "ignore",
+                    callback_data: `cmd_anchor:ignore:${shortId}`,
+                  },
+                ],
+              ],
+            },
+          },
+        ),
+    });
+  }
 
   const debounceMs = resolveInboundDebounceMs({ cfg, channel: "telegram" });
   type TelegramDebounceEntry = {
@@ -533,6 +626,25 @@ export const registerTelegramHandlers = ({
         sourceMessageId: params.msg.message_id,
         replyToMessageId,
       });
+    }
+
+    const liveCommandAnchor =
+      repoChatEnabled && replyToMessageId == null
+        ? resolveLiveCommandAnchor({
+            chatId,
+            threadId: params.threadId,
+            senderId: String(params.msg.from?.id ?? "unknown"),
+          })
+        : undefined;
+    if (liveCommandAnchor) {
+      await promptForCommandAnchorFollowUp({
+        chatId,
+        threadId: params.threadId,
+        text: params.text,
+        key: liveCommandAnchor.key,
+        anchor: liveCommandAnchor.anchor,
+      });
+      return true;
     }
 
     const statusId = matchGoalStatusIntent(params.text);
