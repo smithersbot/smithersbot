@@ -1052,7 +1052,6 @@
         "pages": [
           "tools",
           "tools/lobster",
-          "tools/llm-task",
           "plugin",
           "plugins/voice-call",
           "plugins/zalouser",
@@ -1133,7 +1132,6 @@
           "scripts",
           "reference/session-management-compaction",
           "reference/rpc",
-          "reference/device-models",
           "reference/test",
           "reference/RELEASING",
           "reference/AGENTS.default",

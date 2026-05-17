@@ -12,7 +12,7 @@ describe("canvas a2ui copy", () => {
 
     try {
       await expect(copyA2uiAssets({ srcDir: dir, outDir: path.join(dir, "out") })).rejects.toThrow(
-        'Run "pnpm canvas:a2ui:bundle"',
+        "Restore the bundle assets",
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

@@ -24,7 +24,6 @@ When the operator says “release”, immediately do this preflight (no extra qu
 - [ ] If dependencies changed, run `pnpm install` so `pnpm-lock.yaml` is current.
 
 2) **Build & artifacts**
-- [ ] If A2UI inputs changed, run `pnpm canvas:a2ui:bundle` and commit any updated [`src/canvas-host/a2ui/a2ui.bundle.js`](https://github.com/moltbot/moltbot/blob/main/src/canvas-host/a2ui/a2ui.bundle.js).
 - [ ] `pnpm run build` (regenerates `dist/`).
 - [ ] Verify npm package `files` includes all required `dist/*` folders (notably `dist/node-host/**` and `dist/acp/**` for headless node + ACP CLI).
 - [ ] Confirm `dist/build-info.json` exists and includes the expected `commit` hash (CLI banner uses this for npm installs).
@@ -92,7 +91,6 @@ Process to derive the list:
 
 Current npm plugin list (update as needed):
 - @moltbot/bluebubbles
-- @moltbot/diagnostics-otel
 - @moltbot/discord
 - @moltbot/lobster
 - @moltbot/matrix

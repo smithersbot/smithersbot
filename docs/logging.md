@@ -216,48 +216,6 @@ Notes:
 - Output is still redacted according to `logging.redactSensitive`.
 - Full guide: [/diagnostics/flags](/diagnostics/flags).
 
-### Export to OpenTelemetry
-
-Diagnostics can be exported via the `diagnostics-otel` plugin (OTLP/HTTP). This
-works with any OpenTelemetry collector/backend that accepts OTLP/HTTP.
-
-```json
-{
-  "plugins": {
-    "allow": ["diagnostics-otel"],
-    "entries": {
-      "diagnostics-otel": {
-        "enabled": true
-      }
-    }
-  },
-  "diagnostics": {
-    "enabled": true,
-    "otel": {
-      "enabled": true,
-      "endpoint": "http://otel-collector:4318",
-      "protocol": "http/protobuf",
-      "serviceName": "moltbot-gateway",
-      "traces": true,
-      "metrics": true,
-      "logs": true,
-      "sampleRate": 0.2,
-      "flushIntervalMs": 60000
-    }
-  }
-}
-```
-
-Notes:
-- You can also enable the plugin with `moltbot plugins enable diagnostics-otel`.
-- `protocol` currently supports `http/protobuf` only. `grpc` is ignored.
-- Metrics include token usage, cost, context size, run duration, and message-flow
-  counters/histograms (webhooks, queueing, session state, queue depth/wait).
-- Traces/metrics can be toggled with `traces` / `metrics` (default: on). Traces
-  include model usage spans plus webhook/message processing spans when enabled.
-- Set `headers` when your collector requires auth.
-- Environment variables supported: `OTEL_EXPORTER_OTLP_ENDPOINT`,
-  `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 ### Exported metrics (names + types)
 

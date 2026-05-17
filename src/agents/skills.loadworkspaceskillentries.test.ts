@@ -44,14 +44,20 @@ describe("loadWorkspaceSkillEntries", () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-"));
     const managedDir = path.join(workspaceDir, ".managed");
     const bundledDir = path.join(workspaceDir, ".bundled");
-    const pluginRoot = path.join(workspaceDir, ".clawdbot", "extensions", "open-prose");
+    const pluginRoot = path.join(workspaceDir, ".clawdbot", "extensions", "local-skill-plugin");
 
     await fs.mkdir(path.join(pluginRoot, "skills", "prose"), { recursive: true });
+    await fs.writeFile(
+      path.join(pluginRoot, "package.json"),
+      JSON.stringify({ name: "local-skill-plugin", moltbot: { extensions: ["./index.ts"] } }),
+      "utf-8",
+    );
+    await fs.writeFile(path.join(pluginRoot, "index.ts"), "export default {};\n", "utf-8");
     await fs.writeFile(
       path.join(pluginRoot, "moltbot.plugin.json"),
       JSON.stringify(
         {
-          id: "open-prose",
+          id: "local-skill-plugin",
           skills: ["./skills"],
           configSchema: { type: "object", additionalProperties: false, properties: {} },
         },
@@ -69,7 +75,7 @@ describe("loadWorkspaceSkillEntries", () => {
     const entries = loadWorkspaceSkillEntries(workspaceDir, {
       config: {
         plugins: {
-          entries: { "open-prose": { enabled: true } },
+          entries: { "local-skill-plugin": { enabled: true } },
         },
       },
       managedSkillsDir: managedDir,
@@ -83,14 +89,20 @@ describe("loadWorkspaceSkillEntries", () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-"));
     const managedDir = path.join(workspaceDir, ".managed");
     const bundledDir = path.join(workspaceDir, ".bundled");
-    const pluginRoot = path.join(workspaceDir, ".clawdbot", "extensions", "open-prose");
+    const pluginRoot = path.join(workspaceDir, ".clawdbot", "extensions", "local-skill-plugin");
 
     await fs.mkdir(path.join(pluginRoot, "skills", "prose"), { recursive: true });
+    await fs.writeFile(
+      path.join(pluginRoot, "package.json"),
+      JSON.stringify({ name: "local-skill-plugin", moltbot: { extensions: ["./index.ts"] } }),
+      "utf-8",
+    );
+    await fs.writeFile(path.join(pluginRoot, "index.ts"), "export default {};\n", "utf-8");
     await fs.writeFile(
       path.join(pluginRoot, "moltbot.plugin.json"),
       JSON.stringify(
         {
-          id: "open-prose",
+          id: "local-skill-plugin",
           skills: ["./skills"],
           configSchema: { type: "object", additionalProperties: false, properties: {} },
         },

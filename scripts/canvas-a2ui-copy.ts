@@ -24,8 +24,7 @@ export async function copyA2uiAssets({
     await fs.stat(path.join(srcDir, "index.html"));
     await fs.stat(path.join(srcDir, "a2ui.bundle.js"));
   } catch (err) {
-    const message =
-      'Missing A2UI bundle assets. Run "pnpm canvas:a2ui:bundle" and retry.';
+    const message = "Missing A2UI bundle assets. Restore the bundle assets and retry.";
     if (skipMissing) {
       console.warn(`${message} Skipping copy (CLAWDBOT_A2UI_SKIP_MISSING=1).`);
       return;

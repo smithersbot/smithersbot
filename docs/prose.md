@@ -17,18 +17,6 @@ Official site: https://www.prose.md
 - Repeatable approval-safe workflows (code review, incident triage, content pipelines).
 - Reusable `.prose` programs you can run across supported agent runtimes.
 
-## Install + enable
-
-Bundled plugins are disabled by default. Enable OpenProse:
-
-```bash
-moltbot plugins enable open-prose
-```
-
-Restart the Gateway after enabling the plugin.
-
-Dev/local checkout: `moltbot plugins install ./extensions/open-prose`
-
 Related docs: [Plugins](/plugin), [Plugin manifest](/plugins/manifest), [Skills](/tools/skills).
 
 ## Slash command
