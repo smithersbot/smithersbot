@@ -125,28 +125,81 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
     "thread_id",
     "threadId",
   ];
+  const nestedSessionIdFields = ["id", "session_id", "thread_id", "conversation_id"];
+  const nestedSessionEnvelopes = ["session_configured", "session", "thread"];
+
+  function findInSessionObject(
+    obj: Record<string, unknown>,
+    fields: readonly string[],
+  ): string | undefined {
+    let latest: string | undefined;
+
+    for (const field of fields) {
+      const value = obj[field];
+      if (typeof value === "string" && value.trim()) {
+        latest = value.trim();
+      }
+    }
+
+    return latest;
+  }
 
   function findInObject(obj: Record<string, unknown>): string | undefined {
+    let latest: string | undefined;
+
     for (const field of sessionIdFields) {
       const value = obj[field];
       if (typeof value === "string" && value.trim()) {
-        return value.trim();
+        latest = value.trim();
       }
     }
+
+    for (const envelope of nestedSessionEnvelopes) {
+      const value = obj[envelope];
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        latest =
+          findInSessionObject(value as Record<string, unknown>, nestedSessionIdFields) ?? latest;
+      }
+    }
+
+    return latest;
+  }
+
+  function findLatestInParsedJson(parsed: unknown): string | undefined {
+    if (Array.isArray(parsed)) {
+      let latest: string | undefined;
+
+      for (const item of parsed) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          latest = findInObject(item as Record<string, unknown>) ?? latest;
+        }
+      }
+
+      return latest;
+    }
+
+    if (parsed && typeof parsed === "object") {
+      return findInObject(parsed as Record<string, unknown>);
+    }
+
     return undefined;
   }
+
+  let latest: string | undefined;
 
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("{")) continue;
 
     try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      const found = findInObject(parsed);
-      if (found) return found;
+      latest = findLatestInParsedJson(JSON.parse(trimmed) as unknown) ?? latest;
     } catch {
       continue;
     }
+  }
+
+  if (latest) {
+    return latest;
   }
 
   const wholeStdout = stdout.trim();
@@ -156,21 +209,8 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
 
   try {
     const parsed = JSON.parse(wholeStdout) as unknown;
-
-    // Handle JSON array (Claude Code --output-format json emits an array of event objects)
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (item && typeof item === "object" && !Array.isArray(item)) {
-          const found = findInObject(item as Record<string, unknown>);
-          if (found) return found;
-        }
-      }
-      return undefined;
-    }
-
-    if (parsed && typeof parsed === "object") {
-      return findInObject(parsed as Record<string, unknown>);
-    }
+    // Handle JSON array (Claude Code --output-format json emits an array of event objects).
+    return findLatestInParsedJson(parsed);
   } catch {}
 
   return undefined;
@@ -359,7 +399,7 @@ export async function runRepoChatWorker(
     const cliSessionId =
       extractSessionIdFromStdout(stdout) ??
       extractSessionIdFromStdout(stderr) ??
-      params.cliSessionId;
+      (params.cliSessionId?.trim() || undefined);
     let responseText = readSubstantiveResponseFile(manualResponseFilePath);
 
     if (!responseText) {

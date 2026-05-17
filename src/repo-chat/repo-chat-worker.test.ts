@@ -271,7 +271,7 @@ describe("repo-chat-worker", () => {
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Codex answer from file");
-      expect(result.cliSessionId).toBe("codex-session-file");
+      expect(result.cliSessionId).toBe("codex-thread-file");
     });
 
     it("returns manual markdown when Codex last-message and stdout are Done.", async () => {
@@ -300,7 +300,7 @@ describe("repo-chat-worker", () => {
 
       expect(result.text).toBe(fullMarkdown);
       expect(result.text).not.toBe("Done.");
-      expect(result.cliSessionId).toBe("codex-session-624");
+      expect(result.cliSessionId).toBe("codex-thread-624");
     });
 
     it("captures codex thread_id as cliSessionId on a successful turn", async () => {
@@ -498,7 +498,7 @@ describe("repo-chat-worker", () => {
         args: string[];
       };
       expect(repairCall.args).toContain("resume");
-      expect(repairCall.args).toContain("codex-session-1");
+      expect(repairCall.args).toContain("codex-thread-1");
       expect(repairCall.args).not.toContain("--json");
       expect(repairCall.args.at(-1)).toContain("Write the file and nothing else.");
       expect(result.text).toBe("Recovered from empty file");
@@ -546,11 +546,11 @@ describe("repo-chat-worker", () => {
         args: string[];
       };
       expect(repairCall.args).toContain("resume");
-      expect(repairCall.args).toContain("codex-session-stdout");
+      expect(repairCall.args).toContain("codex-thread-stdout");
       expect(repairCall.args).not.toContain("--output-last-message");
       expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Final answer from codex stdout");
-      expect(result.cliSessionId).toBe("codex-session-stdout");
+      expect(result.cliSessionId).toBe("codex-thread-stdout");
     });
 
     it("extracts codex response from stdout for resumed sessions after repair fails", async () => {
@@ -918,6 +918,79 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("claude-session-99");
     });
 
+    it("uses the latest codex session id when multiple thread events appear", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: [
+            '{"type":"thread.started","thread_id":"codex-thread-old"}',
+            '{"type":"turn.started"}',
+            '{"type":"thread.started","thread_id":"codex-thread-new"}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 21,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "status?",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBe("codex-thread-new");
+    });
+
+    it("extracts nested codex session_configured id", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: [
+            '{"type":"turn.started"}',
+            '{"type":"session_configured","session_configured":{"id":"codex-nested-session"}}',
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 21,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "status?",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBe("codex-nested-session");
+    });
+
+    it("returns undefined when no session id event is present", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
+        return {
+          stdout: ['{"type":"turn.started"}', '{"type":"turn.completed"}'].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 21,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "status?",
+        workingDir: "/repo",
+      });
+
+      expect(result.cliSessionId).toBeUndefined();
+    });
+
     it("extracts session id from multiline stdout json object", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
@@ -962,12 +1035,12 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("from-stderr-123");
     });
 
-    it("extracts session id from Claude Code JSON array stderr (real format)", async () => {
+    it("extracts latest session id from Claude Code JSON array stderr (real format)", async () => {
       const realStderr = JSON.stringify([
         {
           type: "system",
           subtype: "init",
-          session_id: "797f6446-af22-416e-884d-849f1a06ca61",
+          session_id: "797f6446-af22-416e-884d-849f1a06ca61-old",
           tools: ["Read", "Glob", "Grep", "Bash"],
           model: "claude-opus-4-6",
         },
