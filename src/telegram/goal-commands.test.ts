@@ -3092,16 +3092,23 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("registerTelegramGoalCommands /new_goal", () => {
-    function makeCommandHarness(cfg: Record<string, unknown> = {}): {
+    function makeCommandHarness(
+      cfg: Record<string, unknown> = {},
+      options: {
+        commandFragmentBuffer?: import("./command-fragments.js").CommandFragmentBuffer;
+      } = {},
+    ): {
       handlers: Record<string, (ctx: unknown) => Promise<void>>;
       sendMessage: ReturnType<typeof vi.fn>;
       sendPhoto: ReturnType<typeof vi.fn>;
       register: () => Promise<void>;
+      commandFragmentBuffer?: import("./command-fragments.js").CommandFragmentBuffer;
     } {
       const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 100 });
       const sendChatAction = vi.fn().mockResolvedValue(true);
+      const commandFragmentBuffer = options.commandFragmentBuffer;
       const bot = {
         api: {
           sendMessage,
@@ -3150,10 +3157,11 @@ describe("goal-commands telegram adapter", () => {
           }),
           shouldSkipUpdate: () => false,
           textLimit: 4000,
+          commandFragmentBuffer,
         });
       };
 
-      return { handlers, sendMessage, sendPhoto, register };
+      return { handlers, sendMessage, sendPhoto, register, commandFragmentBuffer };
     }
 
     function makeCommandCtx(match: string, messageId: number): Record<string, unknown> {
@@ -3230,6 +3238,76 @@ describe("goal-commands telegram adapter", () => {
       await waitForAssertion(() => {
         expect(harness.sendPhoto).toHaveBeenCalledTimes(2);
       });
+    });
+
+    it("sets a new_goal anchor after a buffered command flush", async () => {
+      const { CommandFragmentBuffer, buildCommandFragmentKey } =
+        await import("./command-fragments.js");
+      const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+      const setAnchor = vi.spyOn(commandFragmentBuffer, "setAnchor");
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
+          runtime.log("## Plan\n1. Do something");
+        },
+      );
+
+      const harness = makeCommandHarness({}, { commandFragmentBuffer });
+      await harness.register();
+
+      await harness.handlers.new_goal!(makeCommandCtx("first part", 2001));
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "42",
+      });
+      await commandFragmentBuffer.cancelAndFlush(key);
+
+      expect(setAnchor).toHaveBeenCalledTimes(1);
+      expect(setAnchor.mock.calls[0]?.[0]).toBe(key);
+      expect(setAnchor.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({
+          commandName: "new_goal",
+          sourceMessageId: 2001,
+        }),
+      );
+      expect(commandFragmentBuffer.getAnchor(key)?.commandName).toBe("new_goal");
+    });
+
+    it("routes appended anchor text through the same planner dispatch helper", async () => {
+      const { CommandFragmentBuffer, buildCommandFragmentKey } =
+        await import("./command-fragments.js");
+      const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+      mockGoalCommand.mockImplementation(
+        async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
+          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
+          runtime.log("## Plan\n1. Do something");
+        },
+      );
+
+      const harness = makeCommandHarness({}, { commandFragmentBuffer });
+      await harness.register();
+
+      await harness.handlers.new_goal!(makeCommandCtx("first part", 2101));
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "42",
+      });
+      await commandFragmentBuffer.cancelAndFlush(key);
+
+      const anchor = commandFragmentBuffer.getAnchor(key);
+      expect(anchor).toBeDefined();
+      await anchor!.appendHandler("appended part");
+
+      await waitForAssertion(() => {
+        expect(mockGoalCommand).toHaveBeenCalledTimes(2);
+      });
+      expect(mockGoalCommand.mock.calls[1]?.[0]).toEqual(
+        expect.objectContaining({ goal: "appended part" }),
+      );
     });
   });
 

@@ -2022,6 +2022,16 @@ export function registerTelegramGoalCommands({
         },
         flushCallback: (combinedText) => {
           runGoal(combinedText);
+          const anchoredAtMs = Date.now();
+          commandFragmentBuffer.setAnchor(key, {
+            commandName: "new_goal",
+            anchoredAtMs,
+            expiresAtMs: anchoredAtMs + commandFragmentBuffer.getAnchorTtlMs(),
+            sourceMessageId: msg.message_id,
+            appendHandler: async (appendedText) => {
+              runGoal(appendedText);
+            },
+          });
         },
         ackReply: (msg) =>
           sendGoalReply(
