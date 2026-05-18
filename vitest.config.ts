@@ -29,7 +29,6 @@ export default defineConfig({
       "dist/**",
       "**/node_modules/**",
       "extensions/_deferred/**",
-      "**/vendor/**",
       "**/*.live.test.ts",
       "**/*.e2e.test.ts",
       // Stage 2E: known-broken legacy Telegram mock; tracked in STAGE2E_REPORT.md

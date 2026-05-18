@@ -8,7 +8,6 @@ export default defineConfig({
     setupFiles: ["test/setup.ts"],
     exclude: [
       "dist/**",
-      "**/vendor/**",
     ],
   },
 });

@@ -25,8 +25,7 @@ bin/
 bin/docs-list
 **/*.bun-build
 
-# Vendor build artifacts
-vendor/a2ui/renderers/lit/dist/
+# Runtime canvas bundle artifacts
 src/canvas-host/a2ui/*.bundle.js
 src/canvas-host/a2ui/*.map
 .bundle.hash
