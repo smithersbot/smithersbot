@@ -1,5 +1,7 @@
 # SmithersBot
 
+[![CI](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml/badge.svg)](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml)
+
 ## Leave agents running without giving up control.
 
 SmithersBot is for people who want Claude Code and Codex to keep working together for hours, but do not want to babysit every permission prompt or blindly trust an agent with their machine.
@@ -41,9 +43,9 @@ The result is a local agent workflow that keeps moving in the background while s
 
 ## Demo
 
-Demo coming soon.
+Demo coming soon. The demo asset is not included in this repository yet.
 
-The demo should show the real operator loop: repo chat creating or refining a prompt, `/new_goal`, the plan flowchart, Plan Detail, Request changes, approval, task execution, completion, manual review, and Incorporate Feedback if needed.
+The planned demo will show the real operator loop: repo chat creating or refining a prompt, `/new_goal`, the plan flowchart, Plan Detail, Request changes, approval, task execution, completion, manual review, and Incorporate Feedback if needed.
 
 ## Quick start
 
@@ -66,7 +68,7 @@ Goal state is persisted on disk. Set the state directory environment variable wh
 ## How it works
 
 <p align="center">
-  <img src="./assets/smithersbot-flowchart.png" alt="SmithersBot operator flow" width="720">
+  <img src="assets/smithersbot-flowchart.png" alt="SmithersBot operator flow" width="720">
 </p>
 
 <details><summary>Mermaid source</summary>
@@ -221,11 +223,17 @@ flowchart LR
 
 Telegram commands:
 
+- `/help` shows SmithersBot operator help.
+    
+- `/commands` lists the public SmithersBot command surface.
+    
 - `/new_goal <description>` starts a new goal.
     
 - `/goal_status` shows the current state of the flowchart/DAG for a goal.
     
 - `/goal_list` shows a summary of all goals.
+    
+- `/goal_resume <runId>` resumes an interrupted goal run.
     
 - `/goal_stop` stops a running goal.
     
@@ -233,7 +241,19 @@ Telegram commands:
     
 - `/chat_backend` configures repo chat to use Codex or Claude Code.
     
+- `/goal_lessons` shows or manages goal lessons.
+    
+- `/goal_plan_autocheck` toggles automatic plan checks.
+    
+- `/goal_semgrep` configures Semgrep checks for goals.
+    
+- `/goal_workers` configures goal worker concurrency.
+    
+- `/goal_github_push` toggles automatic GitHub push and PR creation for completed runs.
+    
 - `/nightwatch` configures the scheduled daily review.
+    
+- `/gateway_restart` restarts the local gateway service from an authorized private chat.
     
 
 ## Repo chat
