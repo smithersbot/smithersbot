@@ -56,11 +56,6 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     publicDescription: "Set the repo chat backend.",
   },
   {
-    command: "nightwatch",
-    label: "Advanced & admin",
-    publicDescription: "Configure scheduled code review.",
-  },
-  {
     command: "goal_lessons",
     label: "Goal diagnostics & tuning",
     publicDescription: "Show or manage goal lessons.",
@@ -84,6 +79,11 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     command: "goal_github_push",
     label: "Goal diagnostics & tuning",
     publicDescription: "Dangerous/admin: toggle automatic GitHub push and PR creation.",
+  },
+  {
+    command: "nightwatch",
+    label: "Advanced & admin",
+    publicDescription: "Configure scheduled code review.",
   },
   {
     command: "gateway_restart",

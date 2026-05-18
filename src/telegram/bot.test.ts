@@ -245,7 +245,7 @@ describe("createTelegramBot", () => {
     expect(registered).not.toContainEqual(expect.objectContaining({ command: "custom_generate" }));
   });
 
-  it("ignores custom commands that collide with native commands", () => {
+  it("warns when a custom command collides with a native command and excludes both from the public menu", () => {
     const errorSpy = vi.fn();
     const config = {
       channels: {
@@ -270,10 +270,6 @@ describe("createTelegramBot", () => {
       },
     });
 
-    const registered = setMyCommandsSpy.mock.calls[0]?.[0] as Array<{
-      command: string;
-      description: string;
-    }>;
     const skillCommands = resolveSkillCommands(config);
     const native = listNativeCommandSpecsForConfig(config, { skillCommands }).map((command) => ({
       command: command.name,
@@ -281,10 +277,19 @@ describe("createTelegramBot", () => {
     }));
     const nativeStatus = native.find((command) => command.command === "status");
     expect(nativeStatus).toBeDefined();
+    expect(errorSpy).toHaveBeenCalled();
+
+    const registered = setMyCommandsSpy.mock.calls[0]?.[0] as Array<{
+      command: string;
+      description: string;
+    }>;
+    // status is in the legacy auto-reply surface (hidden from public menu);
+    // custom_backup is not in the public allow-list either. Both are absent
+    // regardless of the collision; this assertion is about the public-menu
+    // filter, not the collision behavior.
     expect(registered).not.toContainEqual({ command: "custom_backup", description: "Git backup" });
     expect(registered).not.toContainEqual({ command: "status", description: "Custom status" });
     expect(registered.filter((command) => command.command === "status")).toEqual([]);
-    expect(errorSpy).toHaveBeenCalled();
   });
 
   it("hides custom commands from the public menu when native commands are disabled", () => {

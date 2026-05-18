@@ -524,16 +524,14 @@ export function buildCommandsMessage(
 }
 
 export function buildCommandsMessagePaginated(
-  cfg?: MoltbotConfig,
-  skillCommands?: SkillCommandSpec[],
+  _cfg?: MoltbotConfig,
+  _skillCommands?: SkillCommandSpec[],
   options?: CommandsMessageOptions,
 ): CommandsMessageResult {
   const page = Math.max(1, options?.page ?? 1);
   const surface = options?.surface?.toLowerCase();
   const isTelegram = surface === "telegram";
 
-  void cfg;
-  void skillCommands;
   const pluginCommands = listPluginCommands();
   const items = buildCommandItems(pluginCommands);
 

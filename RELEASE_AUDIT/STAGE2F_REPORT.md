@@ -42,6 +42,39 @@ plugin, goal, repo-chat, gateway-restart, create-repo, nightwatch,
 custom) before calling `bot.api.setMyCommands`. Handler registration is
 unchanged; only the menu payload is filtered.
 
+`PUBLIC_TELEGRAM_MENU` is also the array order Telegram's
+`setMyCommands` renders to operators, so `/nightwatch` sits next to
+`/gateway_restart` in the array and the Advanced & admin commands
+appear contiguously in the live menu (matching the label order
+`/help` renders).
+
+### Group Taxonomy Deviations From Operator Decisions
+
+The operator instructions enumerated groups two different ways. The
+final implementation uses a third (simpler) taxonomy. Recording the
+deviations explicitly:
+
+- Operator decision #1 ("Public Telegram command menu should expose
+  these commands") listed `/nightwatch` under the **Core** group
+  alongside `/repo_chat` and `/chat_backend`. The implementation
+  places `/nightwatch` under **Advanced & admin** to keep all
+  scheduler/admin surfaces together and away from the day-to-day
+  `/new_goal` workflow.
+- Operator decision #2 ("/help and /commands must be rewritten")
+  enumerated groups as **Core workflow / Recovery/control / Repo chat
+  / Goal diagnostics/tuning / Advanced/admin**. The implementation
+  drops the **Recovery/control** group entirely and folds
+  `/goal_resume` and `/goal_stop` into **Core workflow** alongside
+  `/new_goal`, `/goal_status`, and `/goal_list`, on the grounds that
+  resume/stop are part of the normal operator loop rather than a
+  separate recovery surface.
+
+Both deviations are deliberate and consistent across the public menu,
+`/help`, and `/commands` because all three render from the same
+`PUBLIC_TELEGRAM_MENU` / `PUBLIC_TELEGRAM_MENU_LABEL_ORDER` source. A
+later stage may restore the operator-prescribed taxonomy without
+changing the underlying allow-list.
+
 ## Commands Hidden From The Menu But Still Handled
 
 Full enumeration lives in the ledger (Sections A, B, C). At a glance:
@@ -179,7 +212,27 @@ already excluded from the v0 verification slice (which was
 `src/infra/outbound/ src/telegram/ src/goal/ src/repo-chat/ src/memory/`).
 None of them exercise `PUBLIC_TELEGRAM_MENU`, `buildHelpMessage`,
 `buildCommandsMessage*`, `bot-native-commands.ts`, or the bundled hook
-docs that Stage 2F changed:
+docs that Stage 2F changed.
+
+**Pre-Stage-2F evidence.** Stage 2F began from commit
+`16a428658` (`claw: minimal-ci-and-final-report`, the Stage 2E
+final commit). The Discord text-command-gating failure
+(`commands registry > respects text command gating`) was
+reproduced at that exact commit by running
+`./node_modules/.bin/vitest run src/auto-reply/commands-registry.test.ts`
+in a checkout of `16a428658`. Output: `1 failed | 15 passed (16)` with
+the same `AssertionError: expected true to be false` at
+`src/auto-reply/commands-registry.test.ts:132:7`. The Stage 2F
+commits (`81af4eb03`, `364ef8ba8`, `d75e8dc72`, `2c7b9ae66`) do not
+touch `src/auto-reply/commands-registry.ts`,
+`src/auto-reply/commands-registry.data.ts`,
+`src/auto-reply/commands-registry.types.ts`,
+`src/auto-reply/commands-registry.test.ts`, `src/plugins/runtime.ts`,
+or `src/test-utils/channel-plugins.ts`, so the other 15 auto-reply
+failures (which exercise Discord/Slack/WhatsApp/iMessage routing,
+threading, sender resolution, and reply-mode resolution code paths
+that Stage 2F also did not modify) were already failing at
+`16a428658` for the same reason.
 
 - `src/auto-reply/command-control.test.ts`
   - resolveCommandAuthorization > falls back to From when SenderId and SenderE164 are whitespace
@@ -241,9 +294,11 @@ Stage 2F actually changed.
 
 Exact blocker: 16 failing tests under `src/auto-reply/` exercise
 Discord, Slack, WhatsApp, and iMessage code paths that pre-date Stage
-2F (the `separate-menu-from-handlers` worker result already recorded
-the `commands-registry > respects text command gating` failure before
-Stage 2F began). Stage 2F's public-Telegram-menu, `/help`,
+2F. The `commands-registry > respects text command gating` failure was
+reproduced at commit `16a428658` (`claw: minimal-ci-and-final-report`,
+the Stage 2E final commit, immediately before Stage 2F began), and
+the test/source files for it were not touched by any Stage 2F commit.
+Stage 2F's public-Telegram-menu, `/help`,
 `/commands`, README, AGENTS, and bundled-hook documentation changes
 are independently green under typecheck, build, lint, and the
 Stage 2F-affected vitest slice
