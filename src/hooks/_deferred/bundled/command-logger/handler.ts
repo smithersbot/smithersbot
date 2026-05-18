@@ -26,7 +26,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { HookHandler } from "../../hooks.js";
+import type { HookHandler } from "../../../hooks.js";
 
 /**
  * Log all command events to a file

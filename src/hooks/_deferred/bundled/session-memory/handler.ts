@@ -9,11 +9,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import type { MoltbotConfig } from "../../../config/config.js";
-import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
-import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
-import { resolveHookConfig } from "../../config.js";
-import type { HookHandler } from "../../hooks.js";
+import type { MoltbotConfig } from "../../../../config/config.js";
+import { resolveAgentWorkspaceDir } from "../../../../agents/agent-scope.js";
+import { resolveAgentIdFromSessionKey } from "../../../../routing/session-key.js";
+import { resolveHookConfig } from "../../../config.js";
+import type { HookHandler } from "../../../hooks.js";
 
 /**
  * Read recent messages from session file for slug generation
@@ -115,9 +115,9 @@ const saveSessionToMemory: HookHandler = async (event) => {
       if (sessionContent && cfg) {
         console.log("[session-memory] Calling generateSlugViaLLM...");
         // Dynamically import the LLM slug generator (avoids module caching issues)
-        // When compiled, handler is at dist/hooks/bundled/session-memory/handler.js
-        // Going up ../.. puts us at dist/hooks/, so just add llm-slug-generator.js
-        const moltbotRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+        // When quarantined, handler is at hooks/_deferred/bundled/session-memory/handler.js.
+        // Going up ../../.. puts us at hooks/, so just add llm-slug-generator.js.
+        const moltbotRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
         const slugGenPath = path.join(moltbotRoot, "llm-slug-generator.js");
         const { generateSlugViaLLM } = await import(slugGenPath);
 

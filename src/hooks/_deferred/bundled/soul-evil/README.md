@@ -2,7 +2,7 @@
 
 Small persona swap hook for SmithersBot.
 
-See `src/hooks/bundled/soul-evil/HOOK.md`.
+See `src/hooks/_deferred/bundled/soul-evil/HOOK.md`.
 
 ## Setup
 
