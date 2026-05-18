@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { MoltbotPluginApi } from "clawdbot/plugin-sdk";
+import type { MoltbotPluginApi } from "smithersbot/plugin-sdk";
 
 import plugin from "./index.js";
 

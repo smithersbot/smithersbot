@@ -25,7 +25,7 @@ import {
   type ChannelPlugin,
   type MoltbotConfig,
   type ResolvedTelegramAccount,
-} from "clawdbot/plugin-sdk";
+} from "smithersbot/plugin-sdk";
 
 import { getTelegramRuntime } from "./runtime.js";
 
