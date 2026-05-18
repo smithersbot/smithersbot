@@ -14,7 +14,6 @@ export default defineConfig({
     exclude: [
       "dist/**",
       "**/vendor/**",
-      "dist/Moltbot.app/**",
     ],
   },
 });

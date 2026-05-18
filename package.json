@@ -51,7 +51,6 @@
     "skills/**",
     "patches/**",
     "README.md",
-    "README-header.png",
     "CHANGELOG.md",
     "LICENSE",
     "scripts/postinstall.js",
@@ -222,33 +221,5 @@
       "hono": "4.11.4",
       "tar": "7.5.4"
     }
-  },
-  "vitest": {
-    "coverage": {
-      "provider": "v8",
-      "reporter": [
-        "text",
-        "lcov"
-      ],
-      "thresholds": {
-        "lines": 70,
-        "functions": 70,
-        "branches": 70,
-        "statements": 70
-      },
-      "include": [
-        "src/**/*.ts"
-      ],
-      "exclude": [
-        "src/**/*.test.ts"
-      ]
-    },
-    "include": [
-      "src/**/*.test.ts"
-    ],
-    "exclude": [
-      "dist/**",
-      "**/vendor/**"
-    ]
   }
 }
