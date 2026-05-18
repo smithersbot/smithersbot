@@ -38,6 +38,7 @@ import {
   runRepoChatWorker,
 } from "./repo-chat-worker.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
+import { EMPTY_MCP_CONFIG_PATH } from "../goal/claude-code-mcp-isolation.js";
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
@@ -82,6 +83,68 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--output-format");
       expect(args).toContain("json");
       expect(args).not.toContain("stream-json");
+    });
+
+    it("isolates Claude from global MCP config with strict empty MCP flags", () => {
+      const args = buildClaudeRepoChatArgs({
+        prompt: "Explain repo structure",
+        model: "claude-sonnet-4-5",
+        cliSessionId: "claude-session-mcp",
+      });
+
+      expect(args).toContain("--strict-mcp-config");
+      expect(args).toContain("--mcp-config");
+      const mcpIdx = args.indexOf("--mcp-config");
+      expect(args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
+
+      // MCP flags must come before --model / --resume / prompt so they are part of
+      // the static portion of the args list (and the prompt remains last).
+      const strictIdx = args.indexOf("--strict-mcp-config");
+      const modelIdx = args.indexOf("--model");
+      const resumeIdx = args.indexOf("--resume");
+      const promptIdx = args.length - 1;
+      expect(strictIdx).toBeLessThan(modelIdx);
+      expect(mcpIdx).toBeLessThan(modelIdx);
+      expect(strictIdx).toBeLessThan(resumeIdx);
+      expect(mcpIdx).toBeLessThan(resumeIdx);
+      expect(strictIdx).toBeLessThan(promptIdx);
+      expect(mcpIdx).toBeLessThan(promptIdx);
+
+      // The prompt is still the last arg.
+      expect(args.at(-1)).toBe("Explain repo structure");
+
+      // The empty MCP config file exists and contains exactly { "mcpServers": {} }.
+      const raw = fs.readFileSync(EMPTY_MCP_CONFIG_PATH, "utf-8");
+      expect(JSON.parse(raw)).toEqual({ mcpServers: {} });
+    });
+
+    it("includes strict empty MCP flags on initial Claude args without a session id", () => {
+      const args = buildClaudeRepoChatArgs({ prompt: "Initial repo question" });
+      expect(args).toContain("--strict-mcp-config");
+      expect(args).toContain("--mcp-config");
+      const mcpIdx = args.indexOf("--mcp-config");
+      expect(args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
+      expect(args.at(-1)).toBe("Initial repo question");
+    });
+
+    it("does not add MCP isolation flags to Codex initial args", () => {
+      const args = buildCodexRepoChatArgs({
+        prompt: "Codex initial",
+        workingDir: "/repo",
+        lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
+      });
+      expect(args).not.toContain("--strict-mcp-config");
+      expect(args).not.toContain("--mcp-config");
+    });
+
+    it("does not add MCP isolation flags to Codex resume args", () => {
+      const args = buildCodexRepoChatArgs({
+        prompt: "Codex resume",
+        workingDir: "/repo",
+        cliSessionId: "codex-resume-no-mcp",
+      });
+      expect(args).not.toContain("--strict-mcp-config");
+      expect(args).not.toContain("--mcp-config");
     });
 
     it("builds Codex initial args with workspace-write sandbox", () => {
@@ -426,6 +489,10 @@ describe("repo-chat-worker", () => {
       expect(call.env).toEqual({ TEST_ENV: "1" });
       expect(call.args.at(-1)).toContain("RESPONSE FILE");
       expect(call.args.at(-1)).toContain(RESPONSE_FILE_PATH);
+      expect(call.args).toContain("--strict-mcp-config");
+      expect(call.args).toContain("--mcp-config");
+      const mcpIdx = call.args.indexOf("--mcp-config");
+      expect(call.args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
       expect(result.text).toBe("Repository answer from file");
       expect(result.cliSessionId).toBe("claude-session-42");
     });
@@ -466,6 +533,16 @@ describe("repo-chat-worker", () => {
       expect(repairCall.timeoutMs).toBe(60_000);
       expect(repairCall.args).toContain("--resume");
       expect(repairCall.args).toContain("claude-session-repair");
+      // Repair must preserve the MCP isolation flags so the repair invocation also
+      // stays isolated from the user's global MCP/plugin set.
+      expect(repairCall.args).toContain("--strict-mcp-config");
+      expect(repairCall.args).toContain("--mcp-config");
+      const repairMcpIdx = repairCall.args.indexOf("--mcp-config");
+      expect(repairCall.args[repairMcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
+      // The --resume <sessionId> pair is spliced in before the prompt, after the MCP flags.
+      const repairResumeIdx = repairCall.args.indexOf("--resume");
+      expect(repairResumeIdx).toBeGreaterThan(repairMcpIdx);
+      expect(repairCall.args[repairResumeIdx + 1]).toBe("claude-session-repair");
       expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Recovered response");
     });

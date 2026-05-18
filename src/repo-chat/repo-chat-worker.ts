@@ -8,6 +8,7 @@ import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
 } from "../goal/claude-code-constants.js";
+import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-mcp-isolation.js";
 import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { getLogger } from "../logging/logger.js";
@@ -28,7 +29,7 @@ export function buildClaudeRepoChatArgs(params: {
   cliSessionId?: string;
   model?: string;
 }): string[] {
-  const args = [
+  const baseArgs = [
     "-p",
     "--output-format",
     "json",
@@ -38,6 +39,9 @@ export function buildClaudeRepoChatArgs(params: {
     "--append-system-prompt",
     CLAUDE_APPENDED_PROMPT,
   ];
+
+  const mcpConfigPath = ensureEmptyMcpConfig();
+  const args = appendStrictMcpArgs(baseArgs, mcpConfigPath);
 
   if (params.model) {
     args.push("--model", params.model);
