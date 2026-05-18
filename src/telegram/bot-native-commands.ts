@@ -2,6 +2,7 @@ import type { Bot, Context } from "grammy";
 
 import { resolveEffectiveMessagesConfig } from "../agents/identity.js";
 import { resolveChunkMode } from "../auto-reply/chunk.js";
+import { buildCommandsMessagePaginated, buildHelpMessage } from "../auto-reply/status.js";
 import {
   buildCommandTextFromArgs,
   findCommandByNativeName,
@@ -14,6 +15,7 @@ import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import type { CommandArgs } from "../auto-reply/commands-registry.js";
 import { resolveTelegramCustomCommands } from "../config/telegram-custom-commands.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../auto-reply/reply/provider-dispatcher.js";
+import { buildCommandsPaginationKeyboard } from "../auto-reply/reply/commands-info.js";
 import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { danger, logVerbose } from "../globals.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
@@ -231,6 +233,53 @@ export const registerTelegramNativeCommands = ({
           const threadIdForSend = isGroup ? resolvedThreadId : messageThreadId;
 
           const commandDefinition = findCommandByNativeName(command.name, "telegram");
+          const nativeReplyTableMode = resolveMarkdownTableMode({
+            cfg,
+            channel: "telegram",
+            accountId,
+          });
+          const nativeReplyChunkMode = resolveChunkMode(cfg, "telegram", accountId);
+          if (commandDefinition?.key === "help" || commandDefinition?.key === "commands") {
+            const reply =
+              commandDefinition.key === "help"
+                ? { text: buildHelpMessage(cfg) }
+                : (() => {
+                    const result = buildCommandsMessagePaginated(cfg, skillCommands, {
+                      page: 1,
+                      surface: "telegram",
+                    });
+                    return {
+                      text: result.text,
+                      ...(result.totalPages > 1
+                        ? {
+                            channelData: {
+                              telegram: {
+                                buttons: buildCommandsPaginationKeyboard(
+                                  result.currentPage,
+                                  result.totalPages,
+                                ),
+                              },
+                            },
+                          }
+                        : {}),
+                    };
+                  })();
+
+            await deliverReplies({
+              replies: [reply],
+              chatId: String(chatId),
+              token: opts.token,
+              runtime,
+              bot,
+              replyToMode,
+              textLimit,
+              messageThreadId: threadIdForSend,
+              tableMode: nativeReplyTableMode,
+              chunkMode: nativeReplyChunkMode,
+              linkPreview: telegramCfg.linkPreview,
+            });
+            return;
+          }
           const rawText = ctx.match?.trim() ?? "";
           const commandArgs = commandDefinition
             ? parseCommandArgs(commandDefinition, rawText)
