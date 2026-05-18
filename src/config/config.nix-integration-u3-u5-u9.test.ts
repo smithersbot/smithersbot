@@ -176,12 +176,8 @@ describe("Nix integration (U3, U5, U9)", () => {
                 ],
               },
               channels: {
-                whatsapp: {
-                  accounts: {
-                    personal: {
-                      authDir: "~/.clawdbot/credentials/wa-personal",
-                    },
-                  },
+                telegram: {
+                  tokenFile: "~/.clawdbot/credentials/telegram-token",
                 },
               },
             },
@@ -202,8 +198,8 @@ describe("Nix integration (U3, U5, U9)", () => {
           path.join(home, ".clawdbot", "agents", "main"),
         );
         expect(cfg.agents?.list?.[0]?.sandbox?.workspaceRoot).toBe(path.join(home, "sandbox-root"));
-        expect(cfg.channels?.whatsapp?.accounts?.personal?.authDir).toBe(
-          path.join(home, ".clawdbot", "credentials", "wa-personal"),
+        expect(cfg.channels?.telegram?.tokenFile).toBe(
+          path.join(home, ".clawdbot", "credentials", "telegram-token"),
         );
       });
     });

@@ -87,22 +87,22 @@ describe("deliverOutboundPayloads", () => {
   it("preserves fenced blocks for markdown chunkers in newline mode", async () => {
     const chunker = vi.fn((text: string) => (text ? [text] : []));
     const sendText = vi.fn().mockImplementation(async ({ text }: { text: string }) => ({
-      channel: "matrix" as const,
+      channel: "mattermost" as const,
       messageId: text,
       roomId: "r1",
     }));
     const sendMedia = vi.fn().mockImplementation(async ({ text }: { text: string }) => ({
-      channel: "matrix" as const,
+      channel: "mattermost" as const,
       messageId: text,
       roomId: "r1",
     }));
     setActivePluginRegistry(
       createTestRegistry([
         {
-          pluginId: "matrix",
+          pluginId: "mattermost",
           source: "test",
           plugin: createOutboundTestPlugin({
-            id: "matrix",
+            id: "mattermost",
             outbound: {
               deliveryMode: "direct",
               chunker,
@@ -117,13 +117,13 @@ describe("deliverOutboundPayloads", () => {
     );
 
     const cfg: MoltbotConfig = {
-      channels: { matrix: { textChunkLimit: 4000, chunkMode: "newline" } },
+      channels: { mattermost: { textChunkLimit: 4000, chunkMode: "newline" } },
     };
     const text = "```js\nconst a = 1;\nconst b = 2;\n```\nAfter";
 
     await deliverOutboundPayloads({
       cfg,
-      channel: "matrix",
+      channel: "mattermost",
       to: "!room",
       payloads: [{ text }],
     });

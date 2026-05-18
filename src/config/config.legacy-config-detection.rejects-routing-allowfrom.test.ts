@@ -23,7 +23,7 @@ describe("legacy config detection", () => {
       expect(res.issues[0]?.path).toBe("routing.groupChat.requireMention");
     }
   });
-  it("migrates routing.allowFrom to channels.whatsapp.allowFrom when whatsapp configured", async () => {
+  it("reports migrated routing.allowFrom configs that still use unsupported whatsapp", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
@@ -31,8 +31,10 @@ describe("legacy config detection", () => {
       channels: { whatsapp: {} },
     });
     expect(res.changes).toContain("Moved routing.allowFrom → channels.whatsapp.allowFrom.");
-    expect(res.config?.channels?.whatsapp?.allowFrom).toEqual(["+15555550123"]);
-    expect(res.config?.routing?.allowFrom).toBeUndefined();
+    expect(res.changes).toContain(
+      "Migration applied, but config still invalid; fix remaining issues manually.",
+    );
+    expect(res.config).toBeNull();
   });
   it("drops routing.allowFrom when whatsapp missing", async () => {
     vi.resetModules();
@@ -44,7 +46,7 @@ describe("legacy config detection", () => {
     expect(res.config?.channels?.whatsapp).toBeUndefined();
     expect(res.config?.routing?.allowFrom).toBeUndefined();
   });
-  it("migrates routing.groupChat.requireMention to channels whatsapp/telegram/imessage groups when whatsapp configured", async () => {
+  it("reports migrated group mention configs that still use unsupported channels", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
@@ -60,12 +62,12 @@ describe("legacy config detection", () => {
     expect(res.changes).toContain(
       'Moved routing.groupChat.requireMention → channels.imessage.groups."*".requireMention.',
     );
-    expect(res.config?.channels?.whatsapp?.groups?.["*"]?.requireMention).toBe(false);
-    expect(res.config?.channels?.telegram?.groups?.["*"]?.requireMention).toBe(false);
-    expect(res.config?.channels?.imessage?.groups?.["*"]?.requireMention).toBe(false);
-    expect(res.config?.routing?.groupChat?.requireMention).toBeUndefined();
+    expect(res.changes).toContain(
+      "Migration applied, but config still invalid; fix remaining issues manually.",
+    );
+    expect(res.config).toBeNull();
   });
-  it("migrates routing.groupChat.requireMention to telegram/imessage when whatsapp missing", async () => {
+  it("reports migrated group mention configs when legacy imessage remains unsupported", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
@@ -80,10 +82,10 @@ describe("legacy config detection", () => {
     expect(res.changes).not.toContain(
       'Moved routing.groupChat.requireMention → channels.whatsapp.groups."*".requireMention.',
     );
-    expect(res.config?.channels?.whatsapp).toBeUndefined();
-    expect(res.config?.channels?.telegram?.groups?.["*"]?.requireMention).toBe(false);
-    expect(res.config?.channels?.imessage?.groups?.["*"]?.requireMention).toBe(false);
-    expect(res.config?.routing?.groupChat?.requireMention).toBeUndefined();
+    expect(res.changes).toContain(
+      "Migration applied, but config still invalid; fix remaining issues manually.",
+    );
+    expect(res.config).toBeNull();
   });
   it("migrates routing.groupChat.mentionPatterns to messages.groupChat.mentionPatterns", async () => {
     vi.resetModules();

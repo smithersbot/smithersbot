@@ -170,7 +170,6 @@ describe("getDmHistoryLimitFromSessionKey", () => {
       "signal",
       "imessage",
       "msteams",
-      "nextcloud-talk",
     ] as const;
 
     for (const provider of providers) {
@@ -189,7 +188,6 @@ describe("getDmHistoryLimitFromSessionKey", () => {
       "signal",
       "imessage",
       "msteams",
-      "nextcloud-talk",
     ] as const;
 
     for (const provider of providers) {

@@ -94,21 +94,6 @@ describe("inbound context contract (providers + extensions)", () => {
       },
     },
     {
-      name: "matrix channel",
-      ctx: {
-        Provider: "matrix",
-        Surface: "matrix",
-        ChatType: "channel",
-        From: "matrix:channel:!room:example.org",
-        To: "room:!room:example.org",
-        Body: "[Matrix] hi",
-        RawBody: "hi",
-        CommandBody: "hi",
-        GroupSubject: "#general",
-        SenderName: "Alice",
-      },
-    },
-    {
       name: "msteams channel",
       ctx: {
         Provider: "msteams",
@@ -134,21 +119,6 @@ describe("inbound context contract (providers + extensions)", () => {
         Body: "[Zalo] hi",
         RawBody: "hi",
         CommandBody: "hi",
-      },
-    },
-    {
-      name: "zalouser group",
-      ctx: {
-        Provider: "zalouser",
-        Surface: "zalouser",
-        ChatType: "group",
-        From: "group:123",
-        To: "zalouser:123",
-        Body: "[Zalo Personal] hi",
-        RawBody: "hi",
-        CommandBody: "hi",
-        GroupSubject: "Zalouser Group",
-        SenderName: "Alice",
       },
     },
   ];

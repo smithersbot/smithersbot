@@ -64,17 +64,4 @@ describe("resolveOutboundSessionRoute", () => {
     expect(route?.sessionKey).toBe("agent:main:bluebubbles:group:abc123");
     expect(route?.from).toBe("group:ABC123");
   });
-
-  it("treats Zalo Personal DM targets as direct sessions", async () => {
-    const cfg = { session: { dmScope: "per-channel-peer" } } as MoltbotConfig;
-    const route = await resolveOutboundSessionRoute({
-      cfg,
-      channel: "zalouser",
-      agentId: "main",
-      target: "123456",
-    });
-
-    expect(route?.sessionKey).toBe("agent:main:zalouser:dm:123456");
-    expect(route?.chatType).toBe("direct");
-  });
 });

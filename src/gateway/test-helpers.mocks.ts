@@ -96,19 +96,9 @@ const createStubPluginRegistry = (): PluginRegistry => ({
       plugin: createStubChannelPlugin({ id: "msteams", label: "Microsoft Teams" }),
     },
     {
-      pluginId: "matrix",
-      source: "test",
-      plugin: createStubChannelPlugin({ id: "matrix", label: "Matrix" }),
-    },
-    {
       pluginId: "zalo",
       source: "test",
       plugin: createStubChannelPlugin({ id: "zalo", label: "Zalo" }),
-    },
-    {
-      pluginId: "zalouser",
-      source: "test",
-      plugin: createStubChannelPlugin({ id: "zalouser", label: "Zalo Personal" }),
     },
     {
       pluginId: "bluebubbles",

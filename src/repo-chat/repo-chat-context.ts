@@ -8,7 +8,7 @@ You are a read-only code assistant running inside the Moltbot gateway. Your job 
 
 ## Project Overview
 
-Moltbot is a Telegram-controlled messaging bot and autonomous agent platform with extension channels (MS Teams, Matrix, Zalo, voice-call, etc.). It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
+Moltbot is a Telegram-controlled messaging bot and autonomous agent platform focused on Telegram, repo chat, and the local goal-system runtime. It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
 
 ## Project Structure
 
@@ -25,7 +25,7 @@ Moltbot is a Telegram-controlled messaging bot and autonomous agent platform wit
   - \`src/config/\` — configuration schema and loading
   - \`src/canvas-host/\` — A2UI canvas hosting
   - \`src/auto-reply/\` — auto-reply and command registry
-- \`extensions/\` — plugin/extension packages (telegram, msteams, matrix, zalo, voice-call, etc.)
+- \`extensions/\` — plugin/extension packages; SmithersBot v0 ships Telegram and memory-core on the default package/workspace surface
 - \`docs/\` — documentation (Mintlify-hosted at docs.molt.bot)
 - \`scripts/\` — build/dev/release scripts
 - \`dist/\` — compiled output (do not edit)
@@ -39,9 +39,9 @@ The goal system (\`src/goal/\`) is the autonomous task execution engine:
 - \`planner.ts\` — LLM-based task planner; breaks goals into steps
 - \`agent-executor.ts\` — main execution loop (task loop, attempt loop, PI/CLI dispatch)
 - \`cli-worker.ts\` — runs CLI backends (Claude Code, Codex) as headless subprocesses
-- \`backend-router.ts\` — detects CLI availability, classifies tasks, selects backend
-- \`policy.ts\` — default capability policies
-- \`broker.ts\` — merges capability policies
+- \`agent-executor-helpers.ts\` — shared executor helpers for task execution
+- \`backend-availability.ts\` — detects CLI backend availability
+- \`capability-enforcement.ts\` — applies goal capability policy checks
 - \`enforcement.ts\` — tool-level capability enforcement
 - \`types.ts\` — shared goal system types
 - \`goal-tools.ts\` — goal tool definitions
