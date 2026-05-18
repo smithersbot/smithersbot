@@ -65,6 +65,71 @@ smithersbot goal "<task>" --plan-only
 
 Goal state is persisted on disk. Set the state directory environment variable when you need to redirect that state for local testing or inspection.
 
+## Fresh isolated setup
+
+Use a fresh isolated machine for real operation: a VirtualBox VM, VPS, Docker container, dedicated machine, or isolated development machine. Do not run SmithersBot directly on your primary personal computer.
+
+Prerequisites:
+
+- Node 22 or newer
+- `pnpm` through Corepack
+- `git`
+- Claude Code CLI and/or Codex CLI installed, on `PATH`, and logged in as the operator
+- A Telegram bot token from BotFather
+- Your Telegram user ID or operator chat ID for the allowlist
+
+Clone, install, and build:
+
+```bash
+git clone https://github.com/smithersbot/smithersbot.git
+cd smithersbot
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Create local configuration with placeholder values replaced on the isolated machine:
+
+```bash
+mkdir -p ~/.moltbot
+cp .env.example ~/.moltbot/.env
+```
+
+Set `TELEGRAM_BOT_TOKEN` in the local env file. Then create `~/.moltbot/moltbot.json` with the Telegram channel enabled and restricted to your operator account:
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": ["YOUR_TELEGRAM_USER_ID_OR_CHAT_ID"],
+      "dmPolicy": "allowlist",
+      "repoChatBackend": "codex"
+    }
+  }
+}
+```
+
+If you want state somewhere other than the default, set `MOLTBOT_STATE_DIR` before starting SmithersBot. State, logs, goal artifacts, repo-chat transcripts, and gateway restart audit files live under the active state directory; goal run artifacts are under `goals/<run_id>/`.
+
+Start the gateway from the repository root:
+
+```bash
+node scripts/run-node.mjs gateway
+```
+
+First Telegram smoke tests:
+
+- `/help`
+- `/commands`
+- `/goal_list`
+- `/chat_backend claude_code` or `/chat_backend codex`
+- `/repo_chat say only: repo chat works`
+- `/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.`
+
+Stop the foreground gateway with `Ctrl-C`. Start it again with `node scripts/run-node.mjs gateway`, then send `/goal_list` or `/goal_resume <runId>` to confirm persisted goal state is still visible.
+
 ## How it works
 
 <p align="center">
