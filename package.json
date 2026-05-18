@@ -70,7 +70,7 @@
   "scripts": {
     "dev": "node scripts/run-node.mjs",
     "postinstall": "node scripts/postinstall.js",
-    "prepack": "pnpm build && pnpm ui:build",
+    "prepack": "pnpm build",
     "build": "tsc -p tsconfig.json && node --import tsx scripts/canvas-a2ui-copy.ts && node --import tsx scripts/copy-hook-metadata.ts && node --import tsx scripts/write-build-info.ts",
     "plugins:sync": "node --import tsx scripts/sync-plugin-versions.ts",
     "release:check": "node --import tsx scripts/release-check.ts",
@@ -97,8 +97,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:live": "CLAWDBOT_LIVE_TEST=1 vitest run --config vitest.live.config.ts",
     "protocol:gen": "node --import tsx scripts/protocol-gen.ts",
-    "check:loc": "node --import tsx scripts/check-ts-max-loc.ts --max 500",
-    "debug:mermaid": "node --import tsx scripts/debug-mermaid-png.ts"
+    "check:loc": "node --import tsx scripts/check-ts-max-loc.ts --max 500"
   },
   "keywords": [
     "telegram",
