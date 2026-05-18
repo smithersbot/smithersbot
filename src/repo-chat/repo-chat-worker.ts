@@ -19,10 +19,12 @@ const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
 const CODEX_STYLE_DIRECTIVE =
   "Answer directly and concisely — the user sees only your final answer";
-const MAX_ERROR_DETAIL_CHARS = 1_000;
+const MAX_ERROR_DETAIL_CHARS = 8_000;
 const REPAIR_TIMEOUT_MS = 60_000;
 const CODEX_NO_SESSION_ID_FOOTER =
   "⚠️ Note: this codex run did not return a session id; the next reply will start a fresh chat.";
+const CLAUDE_STARTUP_HINT =
+  "Claude Code exited during startup, possibly MCP/plugin initialization. Repo chat runs with strict empty MCP config; if this still happens, run claude --debug to inspect startup.";
 
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
@@ -102,6 +104,42 @@ export function buildCodexRepoChatArgs(params: {
 function truncateErrorDetail(detail: string): string {
   if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
   return `${detail.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
+}
+
+function tailErrorDetail(detail: string): string {
+  if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
+  return `...${detail.slice(detail.length - MAX_ERROR_DETAIL_CHARS)}`;
+}
+
+function parseClaudeStdoutEvents(stdout: string): Array<Record<string, unknown>> {
+  const lineEvents = parseJsonLines(stdout);
+  if (lineEvents.length > 0) return lineEvents;
+
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is Record<string, unknown> =>
+        Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
+      );
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return [parsed as Record<string, unknown>];
+    }
+  } catch {}
+  return [];
+}
+
+function isInitOnlyClaudeStdout(stdout: string): boolean {
+  const events = parseClaudeStdoutEvents(stdout);
+  if (events.length === 0) return false;
+  for (const event of events) {
+    const type = typeof event.type === "string" ? event.type : "";
+    if (type === "assistant" || type === "result") return false;
+    if (type !== "system") return false;
+  }
+  return true;
 }
 
 function buildResponseFileInstruction(filePath: string): string {
@@ -396,10 +434,22 @@ export async function runRepoChatWorker(
     }
 
     if (exitCode !== 0) {
-      const details =
-        truncateErrorDetail(stderr.trim() || stdout.trim()) || `signal=${signal ?? "none"}`;
+      const stderrTrimmed = stderr.trim();
+      const stdoutTrimmed = stdout.trim();
+      let detailBody = "";
+      if (stderrTrimmed) {
+        detailBody = truncateErrorDetail(stderrTrimmed);
+      } else if (stdoutTrimmed) {
+        detailBody = tailErrorDetail(stdoutTrimmed);
+      }
+      const meta = `exit=${exitCode ?? "unknown"} signal=${signal ?? "none"} durationMs=${durationMs}`;
+      const detailSegment = detailBody ? `: ${detailBody}` : "";
+      const hintSegment =
+        !stderrTrimmed && params.backend === "claude_code" && isInitOnlyClaudeStdout(stdout)
+          ? ` ${CLAUDE_STARTUP_HINT}`
+          : "";
       throw new Error(
-        `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"}): ${details}`,
+        `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"})${detailSegment} (${meta})${hintSegment}`,
       );
     }
 

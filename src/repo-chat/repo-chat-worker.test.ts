@@ -1020,6 +1020,230 @@ describe("repo-chat-worker", () => {
       ).rejects.toThrow("Repo chat worker failed (claude exit 1): repo chat cli failed hard");
     });
 
+    it("includes exit, signal, and durationMs tokens in the thrown message", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "boom",
+        timedOut: false,
+        exitCode: 7,
+        signal: "SIGTERM",
+        durationMs: 137,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "meta token check",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      expect(message).toContain("exit=7");
+      expect(message).toContain("signal=SIGTERM");
+      expect(message).toContain("durationMs=137");
+      // When signal is null, the token should still be present as 'signal=none'.
+    });
+
+    it("uses 'signal=none' when signal is null", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "no signal",
+        timedOut: false,
+        exitCode: 2,
+        signal: null,
+        durationMs: 5,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "null signal token",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect((caught as Error | undefined)?.message ?? "").toContain("signal=none");
+    });
+
+    it("prefers tail of stdout when stderr is empty and stdout is long", async () => {
+      const head = "EARLIEST_OUTPUT_START " + "h".repeat(50);
+      // Need stdout longer than MAX_ERROR_DETAIL_CHARS (8 KB) so tail truncation kicks in
+      // and the head section is dropped from the surfaced detail.
+      const middle = "x".repeat(15_000);
+      const tailMarker = "y".repeat(50) + " TAIL_END_MARKER";
+      const longStdout = `${head}\n${middle}\n${tailMarker}`;
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: longStdout,
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 42,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "tail of stdout",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      expect(message).toContain("TAIL_END_MARKER");
+      expect(message).not.toContain("EARLIEST_OUTPUT_START");
+      expect(message).toContain("exit=1");
+      expect(message).toContain("durationMs=42");
+    });
+
+    it("appends the MCP startup hint when stderr is empty and stdout is only an init event", async () => {
+      const initEvent = JSON.stringify({
+        type: "system",
+        subtype: "init",
+        tools: ["Read", "Glob", "Grep", "Bash"],
+        model: "claude-opus-4-7",
+        mcp_servers: ["gmail", "calendar", "drive"],
+      });
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: initEvent,
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 8,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "mcp startup hint",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      expect(message).toContain(
+        "Claude Code exited during startup, possibly MCP/plugin initialization. Repo chat runs with strict empty MCP config; if this still happens, run claude --debug to inspect startup.",
+      );
+      expect(message).toContain("exit=1");
+      expect(message).toContain("signal=none");
+      expect(message).toContain("durationMs=8");
+    });
+
+    it("does not append the MCP startup hint when stdout contains an assistant or result event", async () => {
+      const stdout = [
+        JSON.stringify({ type: "system", subtype: "init", tools: [] }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+        }),
+      ].join("\n");
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout,
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 13,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "hint should not appear",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      expect(message).not.toContain(
+        "Claude Code exited during startup, possibly MCP/plugin initialization.",
+      );
+    });
+
+    it("truncates oversized stderr to keep the error message bounded", async () => {
+      const oversizedStderr = "z".repeat(20_000);
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: oversizedStderr,
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 4,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "truncation cap",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      // The detail body itself must be capped at 8 KB plus the ellipsis suffix.
+      expect(message).toContain("z".repeat(100));
+      expect(message).not.toContain("z".repeat(20_000));
+      expect(message).toContain("...");
+      // Whole message stays well under 2x the cap (header + meta + truncated body).
+      expect(message.length).toBeLessThan(9_500);
+      expect(message).toContain("exit=1");
+    });
+
+    it("truncates oversized stdout tail to keep the error message bounded", async () => {
+      const oversizedStdout = "q".repeat(20_000);
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: oversizedStdout,
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 6,
+      });
+
+      let caught: unknown;
+      try {
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "stdout tail truncation cap",
+          workingDir: "/repo",
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      const message = (caught as Error | undefined)?.message ?? "";
+      expect(message).toContain("q".repeat(100));
+      expect(message).not.toContain("q".repeat(20_000));
+      // Tail truncation prefixes the detail body with an ellipsis.
+      expect(message).toContain("...q");
+      expect(message.length).toBeLessThan(9_500);
+    });
+
     it("extracts session id from stdout json line", async () => {
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Answer", "utf-8");
