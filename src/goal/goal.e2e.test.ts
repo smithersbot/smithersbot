@@ -2,29 +2,32 @@ import { describe, expect, it } from "vitest";
 import { createGoalLlmClient } from "./llm-client.js";
 import { generatePlan } from "./planner.js";
 
-describe.skipIf(!process.env.CLAWDBOT_LIVE_TEST)("goal e2e (live LLM)", () => {
-  it("generates a valid plan for a simple goal", async () => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY required for live test");
+describe.skipIf(!(process.env.MOLTBOT_LIVE_TEST ?? process.env.CLAWDBOT_LIVE_TEST))(
+  "goal e2e (live LLM)",
+  () => {
+    it("generates a valid plan for a simple goal", async () => {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) throw new Error("ANTHROPIC_API_KEY required for live test");
 
-    const client = createGoalLlmClient({ apiKey });
-    const result = await generatePlan(
-      client,
-      "Create a hello-world index.html file",
-      process.cwd(),
-    );
+      const client = createGoalLlmClient({ apiKey });
+      const result = await generatePlan(
+        client,
+        "Create a hello-world index.html file",
+        process.cwd(),
+      );
 
-    expect("blocked" in result).toBe(false);
-    if (!("blocked" in result)) {
-      expect(result.steps.length).toBeGreaterThan(0);
-      expect(result.summary).toBeTruthy();
-      expect(result.workingDir).toBeTruthy();
-      // All steps should have valid structure
-      for (const step of result.steps) {
-        expect(step.id).toBeTruthy();
-        expect(step.description).toBeTruthy();
-        expect(step.backend).toBeTruthy();
+      expect("blocked" in result).toBe(false);
+      if (!("blocked" in result)) {
+        expect(result.steps.length).toBeGreaterThan(0);
+        expect(result.summary).toBeTruthy();
+        expect(result.workingDir).toBeTruthy();
+        // All steps should have valid structure
+        for (const step of result.steps) {
+          expect(step.id).toBeTruthy();
+          expect(step.description).toBeTruthy();
+          expect(step.backend).toBeTruthy();
+        }
       }
-    }
-  }, 30_000);
-});
+    }, 30_000);
+  },
+);

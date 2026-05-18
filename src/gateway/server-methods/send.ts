@@ -148,6 +148,10 @@ export const sendHandlers: GatewayRequestHandlers = {
             ? request.sessionKey.trim().toLowerCase()
             : undefined;
         const derivedAgentId = resolveSessionAgentId({ config: cfg });
+        const normalizedTo = to.trim().toLowerCase();
+        const resolvedSessionTarget = normalizedTo.startsWith("channel:")
+          ? { to: resolved.to, kind: "channel" as const, source: "normalized" as const }
+          : undefined;
         // If callers omit sessionKey, derive a target session key from the outbound route.
         const derivedRoute = !providedSessionKey
           ? await resolveOutboundSessionRoute({
@@ -156,6 +160,7 @@ export const sendHandlers: GatewayRequestHandlers = {
               agentId: derivedAgentId,
               accountId,
               target: resolved.to,
+              resolvedTarget: resolvedSessionTarget,
             })
           : null;
         if (derivedRoute) {

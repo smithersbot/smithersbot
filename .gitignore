@@ -6,11 +6,11 @@ docker-compose.extra.yml
 /~/
 dist
 *.bun-build
-pnpm-lock.yaml
 bun.lock
 bun.lockb
 coverage
 .pnpm-store
+vendor/
 .worktrees/
 .DS_Store
 **/.DS_Store

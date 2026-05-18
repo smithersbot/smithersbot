@@ -1,7 +1,7 @@
 {
   "name": "smithersbot",
   "version": "2026.1.29",
-  "description": "SmithersBot — a Telegram-controlled multi-agent goal execution harness. Personal fork of OpenClaw.",
+  "description": "SmithersBot — a Telegram-controlled multi-agent goal execution harness.",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -80,10 +80,10 @@
     "start": "node scripts/run-node.mjs",
     "moltbot": "node scripts/run-node.mjs",
     "gateway:watch": "node scripts/watch-node.mjs gateway --force",
-    "gateway:dev": "CLAWDBOT_SKIP_CHANNELS=1 node scripts/run-node.mjs --dev gateway",
-    "gateway:dev:reset": "CLAWDBOT_SKIP_CHANNELS=1 node scripts/run-node.mjs --dev gateway --reset",
+    "gateway:dev": "MOLTBOT_SKIP_CHANNELS=1 node scripts/run-node.mjs --dev gateway",
+    "gateway:dev:reset": "MOLTBOT_SKIP_CHANNELS=1 node scripts/run-node.mjs --dev gateway --reset",
     "tui": "node scripts/run-node.mjs tui",
-    "tui:dev": "CLAWDBOT_PROFILE=dev node scripts/run-node.mjs tui",
+    "tui:dev": "MOLTBOT_PROFILE=dev node scripts/run-node.mjs tui",
     "moltbot:rpc": "node scripts/run-node.mjs agent --mode rpc --json",
     "lint": "oxlint --type-aware src test",
     "lint:fix": "pnpm format:fix && oxlint --type-aware --fix src test",
@@ -95,7 +95,7 @@
     "test:force": "node --import tsx scripts/test-force.ts",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "test:live": "CLAWDBOT_LIVE_TEST=1 vitest run --config vitest.live.config.ts",
+    "test:live": "MOLTBOT_LIVE_TEST=1 vitest run --config vitest.live.config.ts",
     "protocol:gen": "node --import tsx scripts/protocol-gen.ts",
     "check:loc": "node --import tsx scripts/check-ts-max-loc.ts --max 500"
   },

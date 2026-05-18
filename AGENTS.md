@@ -29,6 +29,12 @@
 - Add brief comments only for non-obvious behavior.
 - Do not edit `node_modules/`, generated output, or dependency patches without explicit approval.
 
+## Deprecated Aliases
+- `CLAWDBOT_*` environment variables are accepted for backward compatibility.
+- New code and docs should use the matching `MOLTBOT_*` names.
+- `clawdbot/plugin-sdk` remains a compatibility import alias.
+- New active extension code should import from `smithersbot/plugin-sdk`.
+
 ## Git And Safety
 - Do not push, publish, rewrite history, delete branches, remove remotes, or run release commands unless explicitly asked.
 - Keep commits small and scoped when commits are requested.

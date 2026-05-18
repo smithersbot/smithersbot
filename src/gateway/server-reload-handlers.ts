@@ -109,11 +109,11 @@ export function createGatewayReloadHandlers(params: {
 
     if (plan.restartChannels.size > 0) {
       if (
-        isTruthyEnvValue(process.env.CLAWDBOT_SKIP_CHANNELS) ||
+        isTruthyEnvValue(process.env.MOLTBOT_SKIP_CHANNELS ?? process.env.CLAWDBOT_SKIP_CHANNELS) ||
         isTruthyEnvValue(process.env.CLAWDBOT_SKIP_PROVIDERS)
       ) {
         params.logChannels.info(
-          "skipping channel reload (CLAWDBOT_SKIP_CHANNELS=1 or CLAWDBOT_SKIP_PROVIDERS=1)",
+          "skipping channel reload (MOLTBOT_SKIP_CHANNELS=1 or CLAWDBOT_SKIP_PROVIDERS=1)",
         );
       } else {
         const restartChannel = async (name: ChannelKind) => {

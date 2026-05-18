@@ -124,9 +124,9 @@ export async function startGatewaySidecars(params: {
   }
 
   // Launch configured channels so gateway replies via the surface the message came from.
-  // Tests can opt out via CLAWDBOT_SKIP_CHANNELS (or legacy CLAWDBOT_SKIP_PROVIDERS).
+  // Tests can opt out via MOLTBOT_SKIP_CHANNELS (or legacy CLAWDBOT_* names).
   const skipChannels =
-    isTruthyEnvValue(process.env.CLAWDBOT_SKIP_CHANNELS) ||
+    isTruthyEnvValue(process.env.MOLTBOT_SKIP_CHANNELS ?? process.env.CLAWDBOT_SKIP_CHANNELS) ||
     isTruthyEnvValue(process.env.CLAWDBOT_SKIP_PROVIDERS);
   if (!skipChannels) {
     try {
@@ -136,7 +136,7 @@ export async function startGatewaySidecars(params: {
     }
   } else {
     params.logChannels.info(
-      "skipping channel start (CLAWDBOT_SKIP_CHANNELS=1 or CLAWDBOT_SKIP_PROVIDERS=1)",
+      "skipping channel start (MOLTBOT_SKIP_CHANNELS=1 or CLAWDBOT_SKIP_PROVIDERS=1)",
     );
   }
 
