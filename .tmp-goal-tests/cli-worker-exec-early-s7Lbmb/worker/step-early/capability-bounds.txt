@@ -1,2 +1,0 @@
-HARD DENIES (enforced):
-- DENIED: .env* — Environment files may contain secrets

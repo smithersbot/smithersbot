@@ -41,5 +41,14 @@ USER.md
 
 # local tooling
 .serena/
+.tmp/
+.tmp-goal-tests/
+.pnpm-store/
 .moltbot-goal-workspace/
 .moltbot-goal-worker-results/
+blocking-test.txt
+fish.txt
+hello.txt
+README-header.png
+assets/dmg-background.png
+assets/dmg-background-small.png
