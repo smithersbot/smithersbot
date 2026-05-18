@@ -28,6 +28,7 @@ export default defineConfig({
     exclude: [
       "dist/**",
       "**/node_modules/**",
+      "extensions/_deferred/**",
       "**/vendor/**",
       "**/*.live.test.ts",
       "**/*.e2e.test.ts",

@@ -6,10 +6,6 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/googlechat/**"
-"channel: matrix":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/matrix/**"
 "channel: mattermost":
   - changed-files:
       - any-glob-to-any-file:
@@ -18,23 +14,11 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/msteams/**"
-"channel: nextcloud-talk":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/nextcloud-talk/**"
-"channel: nostr":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/nostr/**"
 "channel: telegram":
   - changed-files:
       - any-glob-to-any-file:
           - "src/telegram/**"
           - "extensions/telegram/**"
-"channel: tlon":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/tlon/**"
 "channel: voice-call":
   - changed-files:
       - any-glob-to-any-file:
@@ -43,10 +27,6 @@
   - changed-files:
       - any-glob-to-any-file:
           - "extensions/zalo/**"
-"channel: zalouser":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "extensions/zalouser/**"
 "app: web-ui":
   - changed-files:
       - any-glob-to-any-file:
