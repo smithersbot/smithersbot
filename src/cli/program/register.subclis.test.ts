@@ -1,12 +1,12 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { acpAction, registerAcpCli } = vi.hoisted(() => {
+const { gatewayAction, registerGatewayCli } = vi.hoisted(() => {
   const action = vi.fn();
   const register = vi.fn((program: Command) => {
-    program.command("acp").action(action);
+    program.command("gateway").action(action);
   });
-  return { acpAction: action, registerAcpCli: register };
+  return { gatewayAction: action, registerGatewayCli: register };
 });
 
 const { nodesAction, registerNodesCli } = vi.hoisted(() => {
@@ -18,7 +18,7 @@ const { nodesAction, registerNodesCli } = vi.hoisted(() => {
   return { nodesAction: action, registerNodesCli: register };
 });
 
-vi.mock("../acp-cli.js", () => ({ registerAcpCli }));
+vi.mock("../gateway-cli.js", () => ({ registerGatewayCli }));
 vi.mock("../nodes-cli.js", () => ({ registerNodesCli }));
 
 const { registerSubCliByName, registerSubCliCommands } = await import("./register.subclis.js");
@@ -30,8 +30,8 @@ describe("registerSubCliCommands", () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.CLAWDBOT_DISABLE_LAZY_SUBCOMMANDS;
-    registerAcpCli.mockClear();
-    acpAction.mockClear();
+    registerGatewayCli.mockClear();
+    gatewayAction.mockClear();
     registerNodesCli.mockClear();
     nodesAction.mockClear();
   });
@@ -42,16 +42,16 @@ describe("registerSubCliCommands", () => {
   });
 
   it("registers only the primary placeholder and dispatches", async () => {
-    process.argv = ["node", "moltbot", "acp"];
+    process.argv = ["node", "moltbot", "gateway"];
     const program = new Command();
     registerSubCliCommands(program, process.argv);
 
-    expect(program.commands.map((cmd) => cmd.name())).toEqual(["acp"]);
+    expect(program.commands.map((cmd) => cmd.name())).toEqual(["gateway"]);
 
     await program.parseAsync(process.argv);
 
-    expect(registerAcpCli).toHaveBeenCalledTimes(1);
-    expect(acpAction).toHaveBeenCalledTimes(1);
+    expect(registerGatewayCli).toHaveBeenCalledTimes(1);
+    expect(gatewayAction).toHaveBeenCalledTimes(1);
   });
 
   it("registers placeholders for all subcommands when no primary", () => {
@@ -60,9 +60,20 @@ describe("registerSubCliCommands", () => {
     registerSubCliCommands(program, process.argv);
 
     const names = program.commands.map((cmd) => cmd.name());
-    expect(names).toContain("acp");
     expect(names).toContain("gateway");
-    expect(registerAcpCli).not.toHaveBeenCalled();
+    expect(names).not.toEqual(
+      expect.arrayContaining([
+        "acp",
+        "channels",
+        "directory",
+        "docs",
+        "hooks",
+        "plugins",
+        "tui",
+        "webhooks",
+      ]),
+    );
+    expect(registerGatewayCli).not.toHaveBeenCalled();
   });
 
   it("re-parses argv for lazy subcommands", async () => {
@@ -80,18 +91,26 @@ describe("registerSubCliCommands", () => {
   });
 
   it("replaces placeholder when registering a subcommand by name", async () => {
-    process.argv = ["node", "moltbot", "acp", "--help"];
+    process.argv = ["node", "moltbot", "gateway", "--help"];
     const program = new Command();
     program.name("moltbot");
     registerSubCliCommands(program, process.argv);
 
-    await registerSubCliByName(program, "acp");
+    await registerSubCliByName(program, "gateway");
 
     const names = program.commands.map((cmd) => cmd.name());
-    expect(names.filter((name) => name === "acp")).toHaveLength(1);
+    expect(names.filter((name) => name === "gateway")).toHaveLength(1);
 
-    await program.parseAsync(["node", "moltbot", "acp"], { from: "user" });
-    expect(registerAcpCli).toHaveBeenCalledTimes(1);
-    expect(acpAction).toHaveBeenCalledTimes(1);
+    await program.parseAsync(["node", "moltbot", "gateway"], { from: "user" });
+    expect(registerGatewayCli).toHaveBeenCalledTimes(1);
+    expect(gatewayAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not register hidden Stage 2G commands by name", async () => {
+    const program = new Command();
+
+    await expect(registerSubCliByName(program, "acp")).resolves.toBe(false);
+    await expect(registerSubCliByName(program, "tui")).resolves.toBe(false);
+    await expect(registerSubCliByName(program, "channels")).resolves.toBe(false);
   });
 });

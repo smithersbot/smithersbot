@@ -7,9 +7,6 @@ const configureCommandWithSections = vi.fn();
 const setupCommand = vi.fn();
 const onboardCommand = vi.fn();
 const callGateway = vi.fn();
-const runChannelLogin = vi.fn();
-const runChannelLogout = vi.fn();
-const runTui = vi.fn();
 
 const runtime = {
   log: vi.fn(),
@@ -38,8 +35,6 @@ vi.mock("../commands/configure.js", () => ({
 vi.mock("../commands/setup.js", () => ({ setupCommand }));
 vi.mock("../commands/onboard.js", () => ({ onboardCommand }));
 vi.mock("../runtime.js", () => ({ defaultRuntime: runtime }));
-vi.mock("./channel-auth.js", () => ({ runChannelLogin, runChannelLogout }));
-vi.mock("../tui/tui.js", () => ({ runTui }));
 vi.mock("../gateway/call.js", () => ({
   callGateway,
   randomIdempotencyKey: () => "idem-test",
@@ -56,7 +51,6 @@ const { buildProgram } = await import("./program.js");
 describe("cli program (smoke)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    runTui.mockResolvedValue(undefined);
   });
 
   it("runs message with required options", async () => {
@@ -99,27 +93,6 @@ describe("cli program (smoke)", () => {
     const program = buildProgram();
     const names = program.commands.map((command) => command.name());
     expect(names).toContain("memory");
-  });
-
-  it("runs tui without overriding timeout", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["tui"], { from: "user" });
-    expect(runTui).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: undefined }));
-  });
-
-  it("runs tui with explicit timeout override", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["tui", "--timeout-ms", "45000"], {
-      from: "user",
-    });
-    expect(runTui).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 45000 }));
-  });
-
-  it("warns and ignores invalid tui timeout override", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["tui", "--timeout-ms", "nope"], { from: "user" });
-    expect(runtime.error).toHaveBeenCalledWith('warning: invalid --timeout-ms "nope"; ignoring');
-    expect(runTui).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: undefined }));
   });
 
   it("runs config alias as configure", async () => {
@@ -200,24 +173,5 @@ describe("cli program (smoke)", () => {
       );
       onboardCommand.mockClear();
     }
-  });
-
-  it("runs channels login", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["channels", "login", "--account", "work"], {
-      from: "user",
-    });
-    expect(runChannelLogin).toHaveBeenCalledWith(
-      { channel: undefined, account: "work", verbose: false },
-      runtime,
-    );
-  });
-
-  it("runs channels logout", async () => {
-    const program = buildProgram();
-    await program.parseAsync(["channels", "logout", "--account", "work"], {
-      from: "user",
-    });
-    expect(runChannelLogout).toHaveBeenCalledWith({ channel: undefined, account: "work" }, runtime);
   });
 });

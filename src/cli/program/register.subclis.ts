@@ -28,14 +28,15 @@ const loadConfig = async (): Promise<MoltbotConfig> => {
 };
 
 const entries: SubCliEntry[] = [
-  {
-    name: "acp",
-    description: "Agent Control Protocol tools",
-    register: async (program) => {
-      const mod = await import("../acp-cli.js");
-      mod.registerAcpCli(program);
-    },
-  },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "acp",
+  //   description: "Agent Control Protocol tools",
+  //   register: async (program) => {
+  //     const mod = await import("../acp-cli.js");
+  //     mod.registerAcpCli(program);
+  //   },
+  // },
   {
     name: "gateway",
     description: "Gateway control",
@@ -124,14 +125,15 @@ const entries: SubCliEntry[] = [
       mod.registerGstackCli(program);
     },
   },
-  {
-    name: "tui",
-    description: "Terminal UI",
-    register: async (program) => {
-      const mod = await import("../tui-cli.js");
-      mod.registerTuiCli(program);
-    },
-  },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "tui",
+  //   description: "Terminal UI",
+  //   register: async (program) => {
+  //     const mod = await import("../tui-cli.js");
+  //     mod.registerTuiCli(program);
+  //   },
+  // },
   {
     name: "cron",
     description: "Cron scheduler",
@@ -148,30 +150,33 @@ const entries: SubCliEntry[] = [
       mod.registerDnsCli(program);
     },
   },
-  {
-    name: "docs",
-    description: "Docs helpers",
-    register: async (program) => {
-      const mod = await import("../docs-cli.js");
-      mod.registerDocsCli(program);
-    },
-  },
-  {
-    name: "hooks",
-    description: "Hooks tooling",
-    register: async (program) => {
-      const mod = await import("../hooks-cli.js");
-      mod.registerHooksCli(program);
-    },
-  },
-  {
-    name: "webhooks",
-    description: "Webhook helpers",
-    register: async (program) => {
-      const mod = await import("../webhooks-cli.js");
-      mod.registerWebhooksCli(program);
-    },
-  },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "docs",
+  //   description: "Docs helpers",
+  //   register: async (program) => {
+  //     const mod = await import("../docs-cli.js");
+  //     mod.registerDocsCli(program);
+  //   },
+  // },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "hooks",
+  //   description: "Hooks tooling",
+  //   register: async (program) => {
+  //     const mod = await import("../hooks-cli.js");
+  //     mod.registerHooksCli(program);
+  //   },
+  // },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "webhooks",
+  //   description: "Webhook helpers",
+  //   register: async (program) => {
+  //     const mod = await import("../webhooks-cli.js");
+  //     mod.registerWebhooksCli(program);
+  //   },
+  // },
   {
     name: "pairing",
     description: "Pairing helpers",
@@ -185,32 +190,35 @@ const entries: SubCliEntry[] = [
       mod.registerPairingCli(program);
     },
   },
-  {
-    name: "plugins",
-    description: "Plugin management",
-    register: async (program) => {
-      const mod = await import("../plugins-cli.js");
-      mod.registerPluginsCli(program);
-      const { registerPluginCliCommands } = await import("../../plugins/cli.js");
-      registerPluginCliCommands(program, await loadConfig());
-    },
-  },
-  {
-    name: "channels",
-    description: "Channel management",
-    register: async (program) => {
-      const mod = await import("../channels-cli.js");
-      mod.registerChannelsCli(program);
-    },
-  },
-  {
-    name: "directory",
-    description: "Directory commands",
-    register: async (program) => {
-      const mod = await import("../directory-cli.js");
-      mod.registerDirectoryCli(program);
-    },
-  },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "plugins",
+  //   description: "Plugin management",
+  //   register: async (program) => {
+  //     const mod = await import("../plugins-cli.js");
+  //     mod.registerPluginsCli(program);
+  //     const { registerPluginCliCommands } = await import("../../plugins/cli.js");
+  //     registerPluginCliCommands(program, await loadConfig());
+  //   },
+  // },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "channels",
+  //   description: "Channel management",
+  //   register: async (program) => {
+  //     const mod = await import("../channels-cli.js");
+  //     mod.registerChannelsCli(program);
+  //   },
+  // },
+  // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
+  // {
+  //   name: "directory",
+  //   description: "Directory commands",
+  //   register: async (program) => {
+  //     const mod = await import("../directory-cli.js");
+  //     mod.registerDirectoryCli(program);
+  //   },
+  // },
   {
     name: "security",
     description: "Security helpers",
