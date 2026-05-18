@@ -8,10 +8,10 @@
     ".": "./dist/index.js",
     "./plugin-sdk": "./dist/plugin-sdk/index.js",
     "./plugin-sdk/*": "./dist/plugin-sdk/*",
-    "./cli-entry": "./moltbot.mjs"
+    "./cli-entry": "./smithersbot.mjs"
   },
   "bin": {
-    "smithersbot": "./moltbot.mjs"
+    "smithersbot": "./smithersbot.mjs"
   },
   "files": [
     "dist/acp/**",
@@ -48,7 +48,7 @@
     "extensions/memory-core/**",
     "extensions/telegram/**",
     "assets/**",
-    "moltbot.mjs",
+    "smithersbot.mjs",
     "patches/**",
     "README.md",
     "CHANGELOG.md",
