@@ -53,6 +53,13 @@ vi.mock("../gateway/call.js", () => ({
 vi.mock("./deps.js", () => ({ createDefaultDeps: () => ({}) }));
 
 const { buildProgram } = await import("./program.js");
+const { registerSubCliByName } = await import("./program/register.subclis.js");
+
+async function buildProgramWithHiddenSubCli(name: string) {
+  const program = buildProgram();
+  await registerSubCliByName(program, name);
+  return program;
+}
 
 describe("cli program (nodes media)", () => {
   beforeEach(() => {
@@ -86,7 +93,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "camera", "snap", "--node", "ios-node"], { from: "user" });
 
@@ -147,7 +154,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       ["nodes", "camera", "clip", "--node", "ios-node", "--duration", "3000"],
@@ -209,7 +216,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       [
@@ -292,7 +299,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       [
@@ -367,7 +374,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       ["nodes", "camera", "clip", "--node", "ios-node", "--duration", "10s"],
@@ -412,7 +419,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       ["nodes", "canvas", "snapshot", "--node", "ios-node", "--format", "png"],
@@ -448,7 +455,7 @@ describe("cli program (nodes media)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.error.mockClear();
 
     await expect(

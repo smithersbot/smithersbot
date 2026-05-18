@@ -52,6 +52,13 @@ vi.mock("../gateway/call.js", () => ({
 vi.mock("./deps.js", () => ({ createDefaultDeps: () => ({}) }));
 
 const { buildProgram } = await import("./program.js");
+const { registerSubCliByName } = await import("./program/register.subclis.js");
+
+async function buildProgramWithHiddenSubCli(name: string) {
+  const program = buildProgram();
+  await registerSubCliByName(program, name);
+  return program;
+}
 
 describe("cli program (nodes basics)", () => {
   beforeEach(() => {
@@ -61,7 +68,7 @@ describe("cli program (nodes basics)", () => {
 
   it("runs nodes list and calls node.pair.list", async () => {
     callGateway.mockResolvedValue({ pending: [], paired: [] });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "list"], { from: "user" });
     expect(callGateway).toHaveBeenCalledWith(expect.objectContaining({ method: "node.pair.list" }));
@@ -100,7 +107,7 @@ describe("cli program (nodes basics)", () => {
       }
       return { ok: true };
     });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "list", "--connected"], { from: "user" });
 
@@ -133,7 +140,7 @@ describe("cli program (nodes basics)", () => {
       }
       return { ok: true };
     });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "status", "--last-connected", "24h"], {
       from: "user",
@@ -161,7 +168,7 @@ describe("cli program (nodes basics)", () => {
         },
       ],
     });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "status"], { from: "user" });
 
@@ -198,7 +205,7 @@ describe("cli program (nodes basics)", () => {
         },
       ],
     });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "status"], { from: "user" });
 
@@ -246,7 +253,7 @@ describe("cli program (nodes basics)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "describe", "--node", "ios-node"], {
       from: "user",
@@ -272,7 +279,7 @@ describe("cli program (nodes basics)", () => {
       requestId: "r1",
       node: { nodeId: "n1", token: "t1" },
     });
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(["nodes", "approve", "r1"], { from: "user" });
     expect(callGateway).toHaveBeenCalledWith(
@@ -310,7 +317,7 @@ describe("cli program (nodes basics)", () => {
       return { ok: true };
     });
 
-    const program = buildProgram();
+    const program = await buildProgramWithHiddenSubCli("nodes");
     runtime.log.mockClear();
     await program.parseAsync(
       [

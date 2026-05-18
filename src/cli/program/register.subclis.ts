@@ -27,7 +27,7 @@ const loadConfig = async (): Promise<MoltbotConfig> => {
   return mod.loadConfig();
 };
 
-const entries: SubCliEntry[] = [
+const defaultEntries: SubCliEntry[] = [
   // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
   // {
   //   name: "acp",
@@ -43,14 +43,6 @@ const entries: SubCliEntry[] = [
     register: async (program) => {
       const mod = await import("../gateway-cli.js");
       mod.registerGatewayCli(program);
-    },
-  },
-  {
-    name: "daemon",
-    description: "Gateway service (legacy alias)",
-    register: async (program) => {
-      const mod = await import("../daemon-cli.js");
-      mod.registerDaemonCli(program);
     },
   },
   {
@@ -86,30 +78,6 @@ const entries: SubCliEntry[] = [
     },
   },
   {
-    name: "nodes",
-    description: "Node commands",
-    register: async (program) => {
-      const mod = await import("../nodes-cli.js");
-      mod.registerNodesCli(program);
-    },
-  },
-  {
-    name: "devices",
-    description: "Device pairing + token management",
-    register: async (program) => {
-      const mod = await import("../devices-cli.js");
-      mod.registerDevicesCli(program);
-    },
-  },
-  {
-    name: "node",
-    description: "Node control",
-    register: async (program) => {
-      const mod = await import("../node-cli.js");
-      mod.registerNodeCli(program);
-    },
-  },
-  {
     name: "gstack",
     description: "Claude Code with goal permissions",
     register: async (program) => {
@@ -132,14 +100,6 @@ const entries: SubCliEntry[] = [
     register: async (program) => {
       const mod = await import("../cron-cli.js");
       mod.registerCronCli(program);
-    },
-  },
-  {
-    name: "dns",
-    description: "DNS helpers",
-    register: async (program) => {
-      const mod = await import("../dns-cli.js");
-      mod.registerDnsCli(program);
     },
   },
   // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
@@ -169,19 +129,6 @@ const entries: SubCliEntry[] = [
   //     mod.registerWebhooksCli(program);
   //   },
   // },
-  {
-    name: "pairing",
-    description: "Pairing helpers",
-    register: async (program) => {
-      // Initialize plugins before registering pairing CLI.
-      // The pairing CLI calls listPairingChannels() at registration time,
-      // which requires the plugin registry to be populated with channel plugins.
-      const { registerPluginCliCommands } = await import("../../plugins/cli.js");
-      registerPluginCliCommands(program, await loadConfig());
-      const mod = await import("../pairing-cli.js");
-      mod.registerPairingCli(program);
-    },
-  },
   // Stage 2G: hidden from default CLI surface; not part of SmithersBot v0
   // {
   //   name: "plugins",
@@ -237,6 +184,70 @@ const entries: SubCliEntry[] = [
   },
 ];
 
+const hiddenEntries: SubCliEntry[] = [
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "daemon",
+    description: "Gateway service (legacy alias)",
+    register: async (program) => {
+      const mod = await import("../daemon-cli.js");
+      mod.registerDaemonCli(program);
+    },
+  },
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "nodes",
+    description: "Node commands",
+    register: async (program) => {
+      const mod = await import("../nodes-cli.js");
+      mod.registerNodesCli(program);
+    },
+  },
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "devices",
+    description: "Device pairing + token management",
+    register: async (program) => {
+      const mod = await import("../devices-cli.js");
+      mod.registerDevicesCli(program);
+    },
+  },
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "node",
+    description: "Node control",
+    register: async (program) => {
+      const mod = await import("../node-cli.js");
+      mod.registerNodeCli(program);
+    },
+  },
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "dns",
+    description: "DNS helpers",
+    register: async (program) => {
+      const mod = await import("../dns-cli.js");
+      mod.registerDnsCli(program);
+    },
+  },
+  // Stage 2H: hidden from default CLI surface; loadable explicitly for internal/debug use.
+  {
+    name: "pairing",
+    description: "Pairing helpers",
+    register: async (program) => {
+      // Initialize plugins before registering pairing CLI.
+      // The pairing CLI calls listPairingChannels() at registration time,
+      // which requires the plugin registry to be populated with channel plugins.
+      const { registerPluginCliCommands } = await import("../../plugins/cli.js");
+      registerPluginCliCommands(program, await loadConfig());
+      const mod = await import("../pairing-cli.js");
+      mod.registerPairingCli(program);
+    },
+  },
+];
+
+const loadableEntries = [...defaultEntries, ...hiddenEntries];
+
 function removeCommand(program: Command, command: Command) {
   const commands = program.commands as Command[];
   const index = commands.indexOf(command);
@@ -247,7 +258,7 @@ function removeCommand(program: Command, command: Command) {
 
 export async function registerSubCliByName(program: Command, name: string): Promise<boolean> {
   if (name === "sandbox") return false;
-  const entry = entries.find((candidate) => candidate.name === name);
+  const entry = loadableEntries.find((candidate) => candidate.name === name);
   if (!entry) return false;
   const existing = program.commands.find((cmd) => cmd.name() === entry.name);
   if (existing) removeCommand(program, existing);
@@ -280,20 +291,20 @@ function registerLazyCommand(program: Command, entry: SubCliEntry) {
 
 export function registerSubCliCommands(program: Command, argv: string[] = process.argv) {
   if (shouldEagerRegisterSubcommands(argv)) {
-    for (const entry of entries) {
+    for (const entry of defaultEntries) {
       void entry.register(program);
     }
     return;
   }
   const primary = getPrimaryCommand(argv);
   if (primary && shouldRegisterPrimaryOnly(argv)) {
-    const entry = entries.find((candidate) => candidate.name === primary);
+    const entry = defaultEntries.find((candidate) => candidate.name === primary);
     if (entry) {
       registerLazyCommand(program, entry);
       return;
     }
   }
-  for (const candidate of entries) {
+  for (const candidate of defaultEntries) {
     registerLazyCommand(program, candidate);
   }
 }
