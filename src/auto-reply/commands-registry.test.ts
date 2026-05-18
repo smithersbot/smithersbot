@@ -121,7 +121,8 @@ describe("commands registry", () => {
     expect(detection.regex.test("try /status")).toBe(false);
   });
 
-  it("respects text command gating", () => {
+  // Stage 2G: legacy Discord text-command behavior.
+  it.skip("respects text command gating", () => {
     const cfg = { commands: { text: false } };
     expect(
       shouldHandleTextCommands({

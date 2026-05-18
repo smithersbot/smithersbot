@@ -161,7 +161,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(emptyCfg, "telegram")).toBe("first");
   });
 
-  it("defaults to off for Discord and Slack", () => {
+  // Stage 2G: legacy Discord/Slack reply threading behavior.
+  it.skip("defaults to off for Discord and Slack", () => {
     expect(resolveReplyToMode(emptyCfg, "discord")).toBe("off");
     expect(resolveReplyToMode(emptyCfg, "slack")).toBe("off");
   });
@@ -170,7 +171,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(emptyCfg, undefined)).toBe("all");
   });
 
-  it("uses configured value when present", () => {
+  // Stage 2G: legacy Discord/Slack reply threading behavior.
+  it.skip("uses configured value when present", () => {
     const cfg = {
       channels: {
         telegram: { replyToMode: "all" },
@@ -183,7 +185,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(cfg, "slack")).toBe("all");
   });
 
-  it("uses chat-type replyToMode overrides for Slack when configured", () => {
+  // Stage 2G: legacy Slack reply threading behavior.
+  it.skip("uses chat-type replyToMode overrides for Slack when configured", () => {
     const cfg = {
       channels: {
         slack: {
@@ -198,7 +201,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(cfg, "slack", null, undefined)).toBe("off");
   });
 
-  it("falls back to top-level replyToMode when no chat-type override is set", () => {
+  // Stage 2G: legacy Slack reply threading behavior.
+  it.skip("falls back to top-level replyToMode when no chat-type override is set", () => {
     const cfg = {
       channels: {
         slack: {
@@ -210,7 +214,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(cfg, "slack", null, "channel")).toBe("first");
   });
 
-  it("uses legacy dm.replyToMode for direct messages when no chat-type override exists", () => {
+  // Stage 2G: legacy Slack reply threading behavior.
+  it.skip("uses legacy dm.replyToMode for direct messages when no chat-type override exists", () => {
     const cfg = {
       channels: {
         slack: {

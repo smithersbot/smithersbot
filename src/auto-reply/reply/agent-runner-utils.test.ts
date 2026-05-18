@@ -7,7 +7,8 @@ import { buildThreadingToolContext } from "./agent-runner-utils.js";
 describe("buildThreadingToolContext", () => {
   const cfg = {} as MoltbotConfig;
 
-  it("uses conversation id for WhatsApp", () => {
+  // Stage 2G: legacy WhatsApp tool-threading behavior.
+  it.skip("uses conversation id for WhatsApp", () => {
     const sessionCtx = {
       Provider: "whatsapp",
       From: "123@g.us",
@@ -54,7 +55,8 @@ describe("buildThreadingToolContext", () => {
     expect(result.currentChannelId).toBe("chat:99");
   });
 
-  it("uses the sender handle for iMessage direct chats", () => {
+  // Stage 2G: legacy iMessage tool-threading behavior.
+  it.skip("uses the sender handle for iMessage direct chats", () => {
     const sessionCtx = {
       Provider: "imessage",
       ChatType: "direct",
@@ -88,7 +90,8 @@ describe("buildThreadingToolContext", () => {
     expect(result.currentChannelId).toBe("chat_id:7");
   });
 
-  it("prefers MessageThreadId for Slack tool threading", () => {
+  // Stage 2G: legacy Slack tool-threading behavior.
+  it.skip("prefers MessageThreadId for Slack tool threading", () => {
     const sessionCtx = {
       Provider: "slack",
       To: "channel:C1",

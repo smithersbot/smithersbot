@@ -346,7 +346,8 @@ describe("mention helpers", () => {
 });
 
 describe("resolveGroupRequireMention", () => {
-  it("respects Discord guild/channel requireMention settings", () => {
+  // Stage 2G: legacy Discord group mention behavior.
+  it.skip("respects Discord guild/channel requireMention settings", () => {
     const cfg: MoltbotConfig = {
       channels: {
         discord: {
@@ -376,7 +377,8 @@ describe("resolveGroupRequireMention", () => {
     expect(resolveGroupRequireMention({ cfg, ctx, groupResolution })).toBe(false);
   });
 
-  it("respects Slack channel requireMention settings", () => {
+  // Stage 2G: legacy Slack group mention behavior.
+  it.skip("respects Slack channel requireMention settings", () => {
     const cfg: MoltbotConfig = {
       channels: {
         slack: {

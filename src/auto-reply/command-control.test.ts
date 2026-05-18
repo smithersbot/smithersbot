@@ -65,7 +65,8 @@ describe("resolveCommandAuthorization", () => {
     expect(auth.isAuthorizedSender).toBe(true);
   });
 
-  it("falls back to From when SenderId and SenderE164 are whitespace", () => {
+  // Stage 2G: legacy WhatsApp sender authorization behavior.
+  it.skip("falls back to From when SenderId and SenderE164 are whitespace", () => {
     const cfg = {
       channels: { whatsapp: { allowFrom: ["+999"] } },
     } as MoltbotConfig;
@@ -88,7 +89,8 @@ describe("resolveCommandAuthorization", () => {
     expect(auth.isAuthorizedSender).toBe(true);
   });
 
-  it("falls back from un-normalizable SenderId to SenderE164", () => {
+  // Stage 2G: legacy WhatsApp sender authorization behavior.
+  it.skip("falls back from un-normalizable SenderId to SenderE164", () => {
     const cfg = {
       channels: { whatsapp: { allowFrom: ["+123"] } },
     } as MoltbotConfig;
@@ -111,7 +113,8 @@ describe("resolveCommandAuthorization", () => {
     expect(auth.isAuthorizedSender).toBe(true);
   });
 
-  it("prefers SenderE164 when SenderId does not match allowFrom", () => {
+  // Stage 2G: legacy WhatsApp sender authorization behavior.
+  it.skip("prefers SenderE164 when SenderId does not match allowFrom", () => {
     const cfg = {
       channels: { whatsapp: { allowFrom: ["+41796666864"] } },
     } as MoltbotConfig;

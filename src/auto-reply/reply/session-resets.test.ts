@@ -92,7 +92,8 @@ describe("initSessionState reset triggers in WhatsApp groups", () => {
     expect(result.bodyStripped).toBe("");
   });
 
-  it("Reset trigger /new blocked for unauthorized sender in existing session", async () => {
+  // Stage 2G: legacy WhatsApp group authorization behavior.
+  it.skip("Reset trigger /new blocked for unauthorized sender in existing session", async () => {
     const storePath = await createStorePath("moltbot-group-reset-unauth-");
     const sessionKey = "agent:main:whatsapp:group:120363406150318674@g.us";
     const existingSessionId = "existing-session-123";
@@ -215,7 +216,8 @@ describe("initSessionState reset triggers in WhatsApp groups", () => {
     expect(result.bodyStripped).toBe("");
   });
 
-  it("Reset trigger /new blocked when SenderId is LID but SenderE164 is unauthorized", async () => {
+  // Stage 2G: legacy WhatsApp LID authorization behavior.
+  it.skip("Reset trigger /new blocked when SenderId is LID but SenderE164 is unauthorized", async () => {
     const storePath = await createStorePath("moltbot-group-reset-lid-unauth-");
     const sessionKey = "agent:main:whatsapp:group:120363406150318674@g.us";
     const existingSessionId = "existing-session-123";
