@@ -348,7 +348,231 @@ These rows enumerate the package.json/labeler/test edits that must land alongsid
 
 ## 8. Package / Workspace / Test Config
 
-_To be populated in track-b6-evidence-package-workspace._
+Source files audited:
+- `/home/matt/moltbot/package.json` (root, the only top-level npm package)
+- `/home/matt/moltbot/ui/package.json` (workspace member; private:true)
+- `/home/matt/moltbot/pnpm-workspace.yaml`
+- `/home/matt/moltbot/vitest.config.ts` (default + coverage block)
+- `/home/matt/moltbot/vitest.unit.config.ts`
+- `/home/matt/moltbot/vitest.gateway.config.ts`
+- `/home/matt/moltbot/vitest.extensions.config.ts`
+- `/home/matt/moltbot/vitest.e2e.config.ts`
+- `/home/matt/moltbot/vitest.live.config.ts`
+
+Disk verification used `ls /home/matt/moltbot/src/`, `ls /home/matt/moltbot/scripts/`, `ls /home/matt/moltbot/extensions/`, and a recursive `find` for sub-package.json files. The `dist/` directory exists locally as a build artifact; `dist/<subdir>/**` entries are only effective if the underlying `src/<subdir>/` (or, for `dist/control-ui/**`, the `ui/` build target) survives. All package.json/workspace/vitest decisions in this section are advisory for Track E and downstream tracks; this evidence step must not edit these files (per the explicit task constraint).
+
+### 8a. Root `package.json` — `exports`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `exports["."] = "./dist/index.js"` | npm consumers importing `smithersbot` | `package.json:8`; backs `src/index.ts` → `dist/index.js` | none direct | n/a (public package entry) | keep | Build still produces `dist/index.js` |
+| `exports["./plugin-sdk"] = "./dist/plugin-sdk/index.js"` | npm consumers importing `smithersbot/plugin-sdk`; also internal `src/plugin-sdk/index.ts` and the `clawdbot/plugin-sdk` alias in `vitest.config.ts:15` | `package.json:9`; `src/plugin-sdk/` exists | `src/plugin-sdk/*.test.ts` | yes — plugin SDK is part of the supported runtime surface | keep | tsc + build |
+| `exports["./plugin-sdk/*"] = "./dist/plugin-sdk/*"` | same as above (sub-paths) | `package.json:10` | same | yes | keep | tsc + build |
+| `exports["./cli-entry"] = "./moltbot.mjs"` | external scripts that import the CLI entry as a module | `package.json:11`; `moltbot.mjs` present at repo root | none direct | yes — CLI entry is supported in v0 | keep | n/a |
+
+### 8b. Root `package.json` — `bin`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `bin.smithersbot = "./moltbot.mjs"` | post-install bin link | `package.json:14`; `moltbot.mjs` exists at repo root | none direct | yes — public CLI entry | keep | n/a |
+
+### 8c. Root `package.json` — `files[]` (the published-package allowlist)
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `dist/acp/**` | tsc output of `src/acp/` | `package.json:17`; `src/acp/` exists | n/a (no `src/acp/**/*.test.ts`) | defer — ACP is on the unsupported CLI surface for v0; section 9 will mark it | defer | Pairs with Track H CLI hiding decision |
+| `dist/agents/**` | tsc output of `src/agents/` | `package.json:18`; `src/agents/` exists | many `src/agents/**/*.test.ts` | yes (goal workers depend on agents) | keep | n/a |
+| `dist/auto-reply/**` | tsc output of `src/auto-reply/` | `package.json:19`; `src/auto-reply/` exists | many `src/auto-reply/**/*.test.ts` | yes (constraint: do not delete auto-reply wholesale) | keep | Track K triages tests |
+| `dist/browser/**` | tsc output of `src/browser/` | `package.json:20`; `src/browser/` exists | `src/browser/**/*.test.ts` | defer per section 1 (browser has v0 importers) | defer | Pairs with section 1 outcome |
+| `dist/canvas-host/**` | tsc output of `src/canvas-host/` | `package.json:21`; `src/canvas-host/` exists | tests under `src/canvas-host/` | defer per section 3 (canvas-host has v0 importers in gateway/agents) | defer | Pairs with section 3 outcome |
+| `dist/cli/**` | tsc output of `src/cli/` | `package.json:22`; `src/cli/` exists | many `src/cli/**/*.test.ts` | yes (CLI is supported) | keep | n/a |
+| `dist/commands/**` | tsc output of `src/commands/` | `package.json:23`; `src/commands/` exists | many tests | yes | keep | n/a |
+| `dist/config/**` | tsc output of `src/config/` | `package.json:24`; `src/config/` exists | tests | yes | keep | n/a |
+| `dist/compat/**` | tsc output of `src/compat/` | `package.json:25`; `src/compat/` exists | none | yes (compat shim, kept by scope) | keep | n/a |
+| `dist/control-ui/**` | populated by `pnpm ui:build` → `ui/vite.config.ts` `outDir: ../dist/control-ui` (verified) | `package.json:26`; ui workspace builds here | n/a (test handled by ui/) | defer — paired with `ui/` defer in section 2 | defer | Pairs with section 2 outcome |
+| `dist/cron/**` | tsc output of `src/cron/` | `package.json:27`; `src/cron/` exists | tests | yes (cron is a v0 CLI keeper) | keep | n/a |
+| `dist/channels/**` | tsc output of `src/channels/` | `package.json:28`; `src/channels/` exists | tests | yes (do not delete channels wholesale per scope) | keep | n/a |
+| `dist/daemon/**` | tsc output of `src/daemon/` | `package.json:29`; `src/daemon/` exists | `src/daemon/**/*.test.ts` | defer — daemon CLI is on the unsupported list; pair with Track H | defer | Pairs with section 9 outcome |
+| `dist/gateway/**` | tsc output of `src/gateway/` | `package.json:30`; `src/gateway/` exists | many tests | yes (gateway is the runtime) | keep | n/a |
+| `dist/hooks/**` | tsc output of `src/hooks/` | `package.json:31`; `src/hooks/` exists | `src/hooks/**/*.test.ts` | yes (hook infrastructure stays; section 6 only narrows bundled hooks) | keep | n/a |
+| `dist/infra/**` | tsc output of `src/infra/` | `package.json:32`; `src/infra/` exists | tests | yes | keep | n/a |
+| `dist/media/**` | tsc output of `src/media/` | `package.json:33`; `src/media/` exists | tests | yes | keep | n/a |
+| `dist/media-understanding/**` | tsc output of `src/media-understanding/` | `package.json:34`; dir exists | tests | yes | keep | n/a |
+| `dist/link-understanding/**` | tsc output of `src/link-understanding/` | `package.json:35`; dir exists | tests | yes | keep | n/a |
+| `dist/process/**` | tsc output of `src/process/` | `package.json:36`; `src/process/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/plugins/**` | tsc output of `src/plugins/` | `package.json:37`; `src/plugins/` exists | tests | yes (do not delete plugins wholesale per scope) | keep | n/a |
+| `dist/plugin-sdk/**` | tsc output of `src/plugin-sdk/` | `package.json:38`; `src/plugin-sdk/` exists | tests | yes (exports rely on it) | keep | n/a |
+| `dist/security/**` | tsc output of `src/security/` | `package.json:39`; `src/security/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/sessions/**` | tsc output of `src/sessions/` | `package.json:40`; `src/sessions/` exists | tests | yes | keep | n/a |
+| `dist/providers/**` | tsc output of `src/providers/` | `package.json:41`; `src/providers/` exists | tests | yes | keep | n/a |
+| `dist/telegram/**` | tsc output of `src/telegram/` | `package.json:42`; `src/telegram/` exists | many tests | yes (primary v0 surface) | keep | n/a |
+| `dist/tui/**` | tsc output of `src/tui/` | `package.json:43`; `src/tui/` exists | tests | defer — TUI CLI is on the unsupported list for v0; pair with section 9 | defer | Pairs with section 9 outcome |
+| `dist/tts/**` | tsc output of `src/tts/` | `package.json:44`; `src/tts/` exists | tests | yes (used by media/voice paths) | keep | n/a |
+| `dist/wizard/**` | tsc output of `src/wizard/` | `package.json:45`; `src/wizard/` exists | tests | yes (onboarding wizard) | keep | n/a |
+| `dist/*.js` | tsc root-level outputs (entry.js, index.js, runtime.js, version.js, logger.js, polls.js, utils.js) | `package.json:46`; root src/*.ts present | yes (root entrypoints) | keep | n/a |
+| `dist/*.json` | tsc/build-info outputs (e.g. `scripts/write-build-info.ts` artifact) | `package.json:47` | none direct | keep — required for runtime build metadata | keep | n/a |
+| `extensions/**` | shipped extensions (workspace dirs) | `package.json:48`; `extensions/` exists with 17 dirs | many `extensions/**/*.test.ts` | defer — Track F narrows extensions; this glob currently ships all 17 (including those queued for delete/quarantine) | defer | Re-evaluate after Track F; consider tightening to a list of v0 extensions |
+| `assets/**` | shipped repo assets | `package.json:49`; `assets/` exists with `avatar-placeholder.svg`, `chrome-extension/`, `dmg-background.png`, `dmg-background-small.png` | none direct | defer — Track C removes `assets/dmg-background*.png`; remaining glob keeps `avatar-placeholder.svg` and `chrome-extension/` (the chrome-extension subdir is paired with section 1 defer) | defer | Re-evaluate after Track C + section 1 land |
+| `moltbot.mjs` | bin/exports target; CLI entry | `package.json:50`; file exists at repo root | none direct | yes (CLI entry) | keep | n/a |
+| `skills/**` | shipped bundled skills | `package.json:51`; `skills/` exists | `src/cli/skills-cli.test.ts:252` (peekaboo soft-skip); `src/agents/skills.build-workspace-skills-prompt.syncs-merged-skills-into-target-workspace.test.ts` fixture | defer — Track G narrows skills directory; glob currently ships everything | defer | Re-evaluate after Track G |
+| `patches/**` | pnpm/jest patches; `package.json` `pnpm.overrides` and dependency patching | `package.json:52`; `patches/` exists | none direct | yes — required to apply package patches at install time | keep | n/a |
+| `README.md` | public docs | `package.json:53`; exists | n/a | yes | keep | n/a |
+| `README-header.png` | image referenced from README.md | `package.json:54`; file exists at repo root | n/a | no — Track C plan deletes this image and drops the README reference in the same commit | delete-now (paired with Track C) | After Track C deletion, also drop this `files[]` entry (Track E) |
+| `CHANGELOG.md` | public docs | `package.json:55`; exists | n/a | yes | keep | n/a |
+| `LICENSE` | public docs | `package.json:56`; exists | n/a | yes | keep | n/a |
+| `scripts/postinstall.js` | invoked by `scripts.postinstall` | `package.json:57`; file exists; ran on every install | none direct | yes | keep | n/a |
+| `scripts/format-staged.js` | git pre-commit hook | `package.json:58`; file exists; ref'd by `git-hooks/` | none direct | yes (git hook integration) | keep | n/a |
+| `scripts/setup-git-hooks.js` | invoked by `scripts.postinstall` chain to install git hooks | `package.json:59`; file exists | none direct | yes | keep | n/a |
+| `git-hooks/**` | git-hooks/ infra installed by `scripts/setup-git-hooks.js` | `package.json:60`; `git-hooks/` exists | `src/git-hooks.test.ts` | yes | keep | n/a |
+| `dist/terminal/**` | tsc output of `src/terminal/` | `package.json:61`; `src/terminal/` exists | tests | yes | keep | n/a |
+| `dist/routing/**` | tsc output of `src/routing/` | `package.json:62`; `src/routing/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/shared/**` | tsc output of `src/shared/` | `package.json:63`; `src/shared/` exists | tests | yes | keep | n/a |
+| `dist/utils/**` | tsc output of `src/utils/` | `package.json:64`; `src/utils/` exists | tests | yes | keep | n/a |
+| `dist/logging/**` | tsc output of `src/logging/` | `package.json:65`; `src/logging/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/memory/**` | tsc output of `src/memory/` | `package.json:66`; `src/memory/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/markdown/**` | tsc output of `src/markdown/` | `package.json:67`; `src/markdown/` exists | tests | yes (scope keeper) | keep | n/a |
+| `dist/node-host/**` | tsc output of `src/node-host/` | `package.json:68`; `src/node-host/` exists | tests | defer — node-host CLI is on the unsupported list; pair with section 9 | defer | Pairs with section 9 outcome |
+| `dist/pairing/**` | tsc output of `src/pairing/` | `package.json:69`; `src/pairing/` exists | tests | yes (paired-agent flows) | keep | n/a |
+
+### 8d. Root `package.json` — `scripts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `dev` → `node scripts/run-node.mjs` | dev entry | `package.json:72`; `scripts/run-node.mjs` exists | n/a | yes | keep | n/a |
+| `postinstall` → `node scripts/postinstall.js` | npm install lifecycle | `package.json:73`; file exists | none direct | yes | keep | n/a |
+| `prepack` → `pnpm build && pnpm ui:build` | npm pack lifecycle | `package.json:74`; both child scripts exist | n/a | yes (constraint forbids `npm pack`, but `prepack` is still required for any future packaging) | keep | n/a |
+| `build` → `tsc -p tsconfig.json && node --import tsx scripts/canvas-a2ui-copy.ts && node --import tsx scripts/copy-hook-metadata.ts && node --import tsx scripts/write-build-info.ts` | `pnpm build` (verification gate) | `package.json:75`; all referenced scripts exist | n/a | yes — but the `canvas-a2ui-copy.ts` step is paired with section 3 (canvas/vendor decision) | defer (script keeps, but `canvas-a2ui-copy.ts` invocation must be re-checked if section 3 lands a deletion later) | Pairs with section 3 outcome |
+| `plugins:sync` → `node --import tsx scripts/sync-plugin-versions.ts` | manual plugin version maintenance | `package.json:76`; `scripts/sync-plugin-versions.ts` exists | none direct | defer — depends on whether plugins subsystem stays public surface in v0 | defer | n/a |
+| `release:check` → `node --import tsx scripts/release-check.ts` | release-readiness check | `package.json:77`; `scripts/release-check.ts` exists | none direct | yes (used by repo workflow) | keep | n/a |
+| `ui:install` → `node scripts/ui.js install` | invokes `ui/` workspace install | `package.json:78`; `scripts/ui.js` exists; `ui/` workspace member | n/a | defer — paired with `ui/` defer in section 2 | defer | Pairs with section 2 |
+| `ui:dev` → `node scripts/ui.js dev` | dev server for `ui/` | `package.json:79` | n/a | defer | defer | Pairs with section 2 |
+| `ui:build` → `node scripts/ui.js build` | populates `dist/control-ui/**` | `package.json:80`; invoked by `prepack` | n/a | defer | defer | Pairs with section 2 |
+| `start` → `node scripts/run-node.mjs` | runtime entry | `package.json:81` | n/a | yes | keep | n/a |
+| `moltbot` → `node scripts/run-node.mjs` | runtime entry alias | `package.json:82` | n/a | yes | keep | n/a |
+| `gateway:watch` → `node scripts/watch-node.mjs gateway --force` | dev gateway watcher | `package.json:83`; `scripts/watch-node.mjs` exists | n/a | yes | keep | n/a |
+| `gateway:dev` → `CLAWDBOT_SKIP_CHANNELS=1 node scripts/run-node.mjs --dev gateway` | dev gateway | `package.json:84` | n/a | yes; carries the stale `CLAWDBOT_*` env name (paired with Stage 2F naming cleanup, not Track E) | keep with naming concern | Future rename in a separate stage (not Stage 2G scope) |
+| `gateway:dev:reset` → same with `--reset` | dev gateway | `package.json:85` | n/a | yes; same `CLAWDBOT_*` naming concern | keep with naming concern | Same as above |
+| `tui` → `node scripts/run-node.mjs tui` | TUI entry | `package.json:86` | n/a | defer — pair with section 9 TUI hiding | defer | Pairs with section 9 |
+| `tui:dev` → `CLAWDBOT_PROFILE=dev node scripts/run-node.mjs tui` | dev TUI entry | `package.json:87` | n/a | defer | defer | Pairs with section 9 |
+| `moltbot:rpc` → `node scripts/run-node.mjs agent --mode rpc --json` | agent RPC entry | `package.json:88` | n/a | keep — agent is a v0 CLI keeper per Track H plan | keep | n/a |
+| `lint` → `oxlint --type-aware src test` | verification gate | `package.json:89` | n/a | yes | keep | n/a |
+| `lint:fix` → `pnpm format:fix && oxlint --type-aware --fix src test` | dev convenience | `package.json:90` | n/a | yes | keep | n/a |
+| `format` → `oxfmt --check src test` | verification | `package.json:91` | n/a | yes | keep | n/a |
+| `format:fix` → `oxfmt --write src test` | dev convenience | `package.json:92` | n/a | yes | keep | n/a |
+| `test` → `node scripts/test-parallel.mjs` | verification gate | `package.json:93`; `scripts/test-parallel.mjs` exists | n/a | yes | keep | n/a |
+| `test:watch` → `vitest` | dev | `package.json:94` | n/a | yes | keep | n/a |
+| `test:ui` → `pnpm --dir ui test` | runs `ui/` tests | `package.json:95`; `ui/` workspace exists | n/a | defer — pair with section 2 | defer | Pairs with section 2 |
+| `test:force` → `node --import tsx scripts/test-force.ts` | dev convenience | `package.json:96`; `scripts/test-force.ts` exists | n/a | keep (low-cost dev script) | keep | n/a |
+| `test:coverage` → `vitest run --coverage` | coverage gate | `package.json:97` | n/a | yes | keep | n/a |
+| `test:e2e` → `vitest run --config vitest.e2e.config.ts` | e2e gate | `package.json:98`; `vitest.e2e.config.ts` present | n/a | keep (still used by repo workflow) | keep | n/a |
+| `test:live` → `CLAWDBOT_LIVE_TEST=1 vitest run --config vitest.live.config.ts` | live-model e2e | `package.json:99`; `vitest.live.config.ts` present | n/a | keep (carries `CLAWDBOT_*` env name like the gateway scripts) | keep with naming concern | n/a |
+| `test:docker:onboard` → `bash scripts/e2e/onboard-docker.sh` | docker e2e | `package.json:100`; script exists | n/a | delete-now — paired with section 7b (deploy delete-now) | delete-now (paired with Track D) | Track D drops this row in the deploy-cleanup commit |
+| `test:docker:gateway-network` → `bash scripts/e2e/gateway-network-docker.sh` | docker e2e | `package.json:101` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:live-models` → `bash scripts/test-live-models-docker.sh` | docker e2e | `package.json:102` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:live-gateway` → `bash scripts/test-live-gateway-models-docker.sh` | docker e2e | `package.json:103` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:qr` → `bash scripts/e2e/qr-import-docker.sh` | docker e2e | `package.json:104` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:doctor-switch` → `bash scripts/e2e/doctor-install-switch-docker.sh` | docker e2e | `package.json:105` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:plugins` → `bash scripts/e2e/plugins-docker.sh` | docker e2e | `package.json:106` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:cleanup` → `bash scripts/test-cleanup-docker.sh` | docker e2e | `package.json:107` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:docker:all` → composite of all `test:docker:*` | docker e2e | `package.json:108` | n/a | delete-now (paired with section 7b — when its constituents go, this aggregator goes) | delete-now (paired with Track D) | Same |
+| `test:all` → `pnpm lint && pnpm build && pnpm test && pnpm test:e2e && pnpm test:live && pnpm test:docker:all` | super-verification | `package.json:109` | n/a | delete-now — depends on `test:docker:all` which is going away; once docker scripts go, this composite is broken | delete-now (paired with Track D) | Track D drops or rewrites without docker |
+| `test:install:e2e` → `bash scripts/test-install-sh-e2e-docker.sh` | docker e2e | `package.json:110` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:install:smoke` → `bash scripts/test-install-sh-docker.sh` | docker smoke | `package.json:111` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:install:e2e:openai` → docker e2e with env | `package.json:112` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `test:install:e2e:anthropic` → docker e2e with env | `package.json:113` | n/a | delete-now (paired with section 7b) | delete-now (paired with Track D) | Same |
+| `protocol:gen` → `node --import tsx scripts/protocol-gen.ts` | protocol generation | `package.json:114`; `scripts/protocol-gen.ts` exists | n/a | keep (used by maintenance flows) | keep | n/a |
+| `check:loc` → `node --import tsx scripts/check-ts-max-loc.ts --max 500` | code-size gate | `package.json:115`; script exists | n/a | keep | keep | n/a |
+| `debug:mermaid` → `node --import tsx scripts/debug-mermaid-png.ts` | goal/mermaid debug utility | `package.json:116`; `scripts/debug-mermaid-png.ts` exists | n/a | keep (small dev utility; section 3 also marked the script KEEP) | keep | n/a |
+
+### 8e. `ui/package.json` (workspace member, `private:true`)
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `ui/package.json` (entire file) | sub-package consumed only by root `pnpm ui:*` scripts and `pnpm-workspace.yaml` `- ui` | root `package.json:78-80` (ui:install/dev/build); `pnpm-workspace.yaml:3` | `ui/vitest.config.ts` runs its own tests via `pnpm --dir ui test` | defer — section 2 marks `ui/` defer; this package follows | defer | Pairs with section 2 |
+
+### 8f. `pnpm-workspace.yaml` — `packages` globs
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `- .` | root workspace member | `pnpm-workspace.yaml:2`; root `package.json` exists | n/a | yes | keep | n/a |
+| `- ui` | workspace member for control UI | `pnpm-workspace.yaml:3`; `ui/package.json` exists | n/a | defer — paired with section 2 | defer | Pairs with section 2 |
+| `- packages/*` | DEAD — no `packages/` directory exists at repo root (verified by `ls /home/matt/moltbot/` and `ls -d /home/matt/moltbot/packages`: "No such file or directory") | `pnpm-workspace.yaml:4`; matches zero workspace members | n/a | no | delete-now | Track E removes; tsc + pnpm install still succeed (zero matches today, so no behaviour change) |
+| `- extensions/*` | matches all 17 `extensions/<name>/` workspace members | `pnpm-workspace.yaml:5`; `extensions/` has 17 dirs | many extension tests | defer — Track F narrows; this glob currently includes every queued delete/quarantine row from section 4 | defer | After Track F, decide whether to keep the wildcard or list v0 extensions explicitly |
+
+### 8g. `pnpm-workspace.yaml` — `onlyBuiltDependencies`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `@whiskeysockets/baileys` | listed in root `dependencies` | `pnpm-workspace.yaml:8`; `package.json:159` | n/a | yes (WhatsApp lib still listed) | keep | n/a |
+| `@lydell/node-pty` | listed in root `dependencies` | `pnpm-workspace.yaml:9`; `package.json:149` | n/a | yes (TUI/pty paths) | keep | n/a |
+| `@matrix-org/matrix-sdk-crypto-nodejs` | matrix extension transitive dep | `pnpm-workspace.yaml:10`; NOT in root `dependencies`; only `extensions/matrix/` consumes it | n/a | no — section 4 marks `extensions/matrix` quarantine-now | defer (will go dead once matrix quarantines) | After Track F, drop this `onlyBuiltDependencies` entry in the same commit |
+| `authenticate-pam` | server-auth dep, not in root `dependencies` (deep transitive) | `pnpm-workspace.yaml:11` | n/a | defer — unclear which subsystem still pulls it; keep to avoid pnpm install regressions | defer | Re-grep after Track F + Track H |
+| `esbuild` | transitive build tool dep | `pnpm-workspace.yaml:12` | n/a | yes (vite/vitest stack) | keep | n/a |
+| `protobufjs` | transitive dep (likely matrix/baileys/grpc) | `pnpm-workspace.yaml:13` | n/a | defer — re-check after Track F | defer | Re-grep after Track F |
+| `puppeteer` | not in root `dependencies`; probably transitive of mermaid CLI | `pnpm-workspace.yaml:14` | n/a | defer — keep until mermaid pipeline is reassessed | defer | n/a |
+| `sharp` | listed in root `dependencies` | `pnpm-workspace.yaml:15`; `package.json:187` | n/a | yes (image processing) | keep | n/a |
+
+### 8h. `vitest.config.ts` (default) — `test.include` / `test.exclude` / coverage
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `src/**/*.test.ts` | default unit-test glob | `vitest.config.ts:24` | n/a | yes | keep | n/a |
+| include `extensions/**/*.test.ts` | extension tests | `vitest.config.ts:25` | n/a | defer — follows `extensions/` decisions (section 4); keep until Track F | defer | n/a |
+| include `test/format-error.test.ts` | DEAD — `ls /home/matt/moltbot/test/format-error*` returns "No such file or directory" | `vitest.config.ts:26`; no matching file | n/a | no | delete-now | Track E removes; `pnpm vitest run` still succeeds (vitest ignores missing files but it is misleading evidence) |
+| exclude `dist/**` | standard build-output exclude | `vitest.config.ts:30` | n/a | yes | keep | n/a |
+| exclude `**/node_modules/**` | standard | `vitest.config.ts:31` | n/a | yes | keep | n/a |
+| exclude `**/vendor/**` | excludes the `vendor/a2ui/` tree | `vitest.config.ts:32` | n/a | defer — paired with section 3 vendor decision; if vendor/a2ui is quarantined or removed, this exclude can stay (harmless) | keep | n/a |
+| exclude `**/*.live.test.ts` | excludes live tests from default run | `vitest.config.ts:33` | n/a | yes | keep | n/a |
+| exclude `**/*.e2e.test.ts` | excludes e2e from default run | `vitest.config.ts:34` | n/a | yes | keep | n/a |
+| exclude `src/telegram/bot.test.ts` | Stage 2E known-broken legacy Telegram mock (comment cites STAGE2E_REPORT) | `vitest.config.ts:35-39` | n/a | defer — outside Track E scope; tracked separately | defer | n/a |
+| **coverage.exclude** rows referencing actual paths | each must point to a live `src/...` file/dir | `vitest.config.ts:51-98` | n/a | defer | defer | For each exclude entry: `src/entry.ts` exists; `src/index.ts` exists; `src/runtime.ts` exists; `src/cli/**` exists; `src/commands/**` exists; `src/daemon/**` exists; `src/hooks/**` exists; `src/agents/model-scan.ts` exists; `src/agents/pi-embedded-runner.ts` exists; `src/agents/sandbox-paths.ts` exists; `src/agents/sandbox.ts` exists; `src/agents/skills-install.ts` exists; `src/agents/pi-tool-definition-adapter.ts` exists (all verified by `ls src/`); `src/gateway/control-ui.ts` exists; `src/gateway/server-*` family exists; `src/process/tau-rpc.ts` and `src/process/exec.ts` exist; `src/tui/**` exists; `src/wizard/**` exists; `src/browser/**` exists; `src/telegram/*` exists; `src/gateway/server.ts` / `client.ts` / `protocol/**` exist; `src/infra/tailscale.ts` exists. All entries reference live paths; no dead refs here. | keep (no dead refs) |
+
+### 8i. Root `package.json` `vitest` block (lines 240-267)
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| `vitest.coverage.include` = `src/**/*.ts`; `vitest.coverage.exclude` = `src/**/*.test.ts`; `vitest.include` = `src/**/*.test.ts`; `vitest.exclude` = `dist/**`, `**/vendor/**` | DEAD — Vitest reads `vitest.config.ts` by default; this `vitest` block in `package.json` is not auto-loaded and is shadowed by the dedicated config files | `package.json:240-267`; no test command in scripts loads this block (every `test*` script either uses `node scripts/test-parallel.mjs` or `vitest run --config <file>`) | n/a | no | delete-now | Track E removes the entire `vitest` block; verification: `pnpm test` and `pnpm vitest run` still pick up `vitest.config.ts` unchanged |
+
+### 8j. `vitest.unit.config.ts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `src/**/*.test.ts`, `extensions/**/*.test.ts`, `test/format-error.test.ts` (inherited via `baseTest.include`); exclude `src/gateway/**`, `extensions/**` (added by this config) | imports `./vitest.config.ts` | `vitest.unit.config.ts:1-19`; no `package.json` script references `vitest.unit.config.ts` | none direct | defer — file is currently orphaned (no script invokes it), but it's a thin façade over `vitest.config.ts`; keep until Track E confirms no internal tooling reads it | defer | grep for `vitest.unit.config.ts` across repo before any delete |
+
+### 8k. `vitest.gateway.config.ts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `src/gateway/**/*.test.ts`; exclude inherited | imports `./vitest.config.ts` | `vitest.gateway.config.ts:1-14`; no `package.json` script references it | n/a | defer — orphaned by `package.json` scripts; keep until Track E confirms | defer | Same as above |
+
+### 8l. `vitest.extensions.config.ts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `extensions/**/*.test.ts`; exclude inherited | imports `./vitest.config.ts` | `vitest.extensions.config.ts:1-14`; no `package.json` script references it | extension tests | defer — orphaned by `package.json` scripts; keep until Track E + Track F confirm | defer | Re-evaluate after Track F |
+
+### 8m. `vitest.e2e.config.ts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `test/**/*.e2e.test.ts`, `src/**/*.e2e.test.ts`; exclude `dist/**`, `**/vendor/**`, `dist/Moltbot.app/**` | `pnpm test:e2e` (`package.json:98`) | `vitest.e2e.config.ts:1-20` | many `*.e2e.test.ts` files | yes — invoked by an existing script and part of repo verification | keep | n/a |
+| exclude `dist/Moltbot.app/**` (Mac DMG output) | leftover from removed Mac app build | `vitest.e2e.config.ts:17` | n/a — `dist/Moltbot.app/` does not exist | no — Stage 2E cleaned the Mac app | delete-now (low-risk) | Track E may drop this line; harmless if left |
+
+### 8n. `vitest.live.config.ts`
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+|---|---|---|---|---|---|---|
+| include `src/**/*.live.test.ts`; exclude `dist/**`, `**/vendor/**`, `dist/Moltbot.app/**` | `pnpm test:live` (`package.json:99`) | `vitest.live.config.ts:1-16` | live tests | yes — invoked by an existing script | keep | n/a |
+| exclude `dist/Moltbot.app/**` | leftover from removed Mac app build | `vitest.live.config.ts:12` | n/a | no | delete-now (low-risk) | Same as above |
+
+### Section 8 summary
+
+- **delete-now (paired):** `README-header.png` files[] entry (paired with Track C); all 14 `test:docker:*` / `test:install:*` / `test:all` scripts (paired with Track D); `pnpm-workspace.yaml` `- packages/*` glob; `vitest.config.ts` include `test/format-error.test.ts`; the entire `vitest` block in `package.json` (lines 240-267); `dist/Moltbot.app/**` excludes in `vitest.e2e.config.ts` and `vitest.live.config.ts`.
+- **delete-now (standalone):** none — every delete-now row is either paired with a deletion in another track or is a low-risk dead-config row.
+- **defer:** every `dist/<subdir>/**` row whose subsystem is on the defer list (browser, canvas-host, control-ui/ui, daemon, node-host, tui, extensions, skills, assets glob), `pnpm-workspace.yaml - extensions/*`, `onlyBuiltDependencies` rows tied to deferred extensions, three orphaned vitest configs (`vitest.unit.config.ts`, `vitest.gateway.config.ts`, `vitest.extensions.config.ts`), and `canvas-a2ui-copy.ts` invocation inside the `build` script (depends on section 3).
+- **keep:** all remaining `dist/<subdir>/**` rows whose subsystem is a v0 keeper; `exports`, `bin`, `assets/avatar-placeholder.svg`-bearing `assets/**` glob (re-evaluate after Track C); `patches/**`; `scripts/{postinstall,format-staged,setup-git-hooks}.js`; `git-hooks/**`; README/CHANGELOG/LICENSE; all lint/format/non-docker test scripts; `protocol:gen` / `check:loc` / `debug:mermaid`; `vitest.e2e.config.ts` and `vitest.live.config.ts` (their `.Moltbot.app` exclude lines aside).
+
+Constraint upheld: this evidence step made no edits to `package.json`, `pnpm-workspace.yaml`, or any `vitest*.config.ts` file.
 
 ## 9. CLI Subcommands
 
