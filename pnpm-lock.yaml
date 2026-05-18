@@ -359,7 +359,7 @@ importers:
 
   extensions/memory-core:
     devDependencies:
-      moltbot:
+      smithersbot:
         specifier: workspace:*
         version: link:../..
 

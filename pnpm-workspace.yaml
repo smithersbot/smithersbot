@@ -1,17 +1,8 @@
 packages:
   - .
   - ui
-  - extensions/bluebubbles
-  - extensions/copilot-proxy
-  - extensions/google-antigravity-auth
-  - extensions/google-gemini-cli-auth
-  - extensions/googlechat
-  - extensions/mattermost
   - extensions/memory-core
-  - extensions/msteams
   - extensions/telegram
-  - extensions/voice-call
-  - extensions/zalo
 
 onlyBuiltDependencies:
   - '@whiskeysockets/baileys'
