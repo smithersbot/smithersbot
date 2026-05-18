@@ -1,7 +1,3 @@
-"channel: bluebubbles":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "internal/extensions/bluebubbles/**"
 "channel: googlechat":
   - changed-files:
       - any-glob-to-any-file:
@@ -19,10 +15,6 @@
       - any-glob-to-any-file:
           - "src/telegram/**"
           - "extensions/telegram/**"
-"channel: voice-call":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "internal/extensions/voice-call/**"
 "channel: zalo":
   - changed-files:
       - any-glob-to-any-file:
@@ -42,11 +34,6 @@
       - any-glob-to-any-file:
           - "src/gateway/**"
           - "src/daemon/**"
-
-"docs":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "docs.acp.md"
 
 "cli":
   - changed-files:
