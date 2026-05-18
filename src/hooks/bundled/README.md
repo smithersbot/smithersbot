@@ -2,11 +2,15 @@
 
 This directory contains hooks that ship with SmithersBot. These hooks are discovered automatically and can be enabled or disabled through the CLI or configuration.
 
+These bundled internal hooks are deferred from the SmithersBot v0 public story. They are not the goal lessons system used by `/new_goal`; goal lessons live in the goal runtime and are separate from older chat-session memory hooks.
+
 ## Available Hooks
 
-### session-memory
+### session-memory (deferred/internal-only)
 
 Automatically saves session context to memory when you issue `/new`.
+
+This hook is not the same as goal lessons. It belongs to the older chat-session memory surface and is not part of the public SmithersBot v0 goal workflow.
 
 **Events**: `command:new`  
 **What it does**: Creates a dated memory file with an LLM-generated slug based on conversation content.  
@@ -20,9 +24,11 @@ smithersbot hooks enable session-memory
 
 See `src/hooks/bundled/session-memory/HOOK.md`.
 
-### command-logger
+### command-logger (deferred/internal-only)
 
 Logs command events to a centralized audit file.
+
+This hook records legacy command events and is not part of the public SmithersBot v0 operator workflow.
 
 **Events**: `command`  
 **What it does**: Appends JSONL entries to the command log file.
@@ -35,9 +41,11 @@ smithersbot hooks enable command-logger
 
 See `src/hooks/bundled/command-logger/HOOK.md`.
 
-### soul-evil
+### soul-evil (deferred/internal-only)
 
 Swaps injected `SOUL.md` content with `SOUL_EVIL.md` during a purge window or by random chance.
+
+This hook is retained only as deferred internal hook code and is not part of the public SmithersBot v0 package story.
 
 **Events**: `agent:bootstrap`  
 **What it does**: Overrides the injected SOUL content before the system prompt is built.  
@@ -51,9 +59,11 @@ smithersbot hooks enable soul-evil
 
 See `src/hooks/bundled/soul-evil/HOOK.md`.
 
-### boot-md
+### boot-md (deferred/internal-only)
 
 Runs `BOOT.md` whenever the gateway starts after channels start.
+
+This hook may be useful as internal startup behavior, but it is not part of the public SmithersBot v0 goal workflow.
 
 **Events**: `gateway:startup`  
 **What it does**: Executes `BOOT.md` instructions through the agent runner.  

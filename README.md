@@ -227,6 +227,8 @@ Telegram commands:
     
 - `/goal_list` shows a summary of all goals.
     
+- `/goal_stop` stops a running goal.
+    
 - `/repo_chat <question>` asks repo and active-goal context questions.
     
 - `/chat_backend` configures repo chat to use Codex or Claude Code.
@@ -296,6 +298,8 @@ Worker tool calls run through a typed deny check that blocks sensitive path read
 Each working directory has its own `CLAUDE.md` file created if it does not already have one. This gives workers project-specific instructions, conventions, and context.
 
 SmithersBot also has a lessons system. Completed runs can extract lessons. Lessons can be scoped globally or to a project / working directory. Future workers receive relevant lessons in their prompt under a labelled section.
+
+Goal lessons are separate from the older chat-session memory hooks under `src/hooks/bundled/`.
 
 Each working directory can also have its own skills or plugins added. SmithersBot can be used to use, create, or edit skills or plugins.
 
