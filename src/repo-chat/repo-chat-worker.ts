@@ -51,7 +51,11 @@ export function buildClaudeRepoChatArgs(params: {
   if (params.cliSessionId) {
     args.push("--resume", params.cliSessionId);
   }
-  args.push(params.prompt);
+  // `--` is the end-of-options separator. Without it, Claude Code's variadic
+  // `--mcp-config <configs...>` flag greedily consumes the trailing positional
+  // prompt as an additional MCP config file path, causing startup failures like
+  // "MCP config file not found: <cwd>/<first words of the prompt>".
+  args.push("--", params.prompt);
   return args;
 }
 
@@ -321,7 +325,12 @@ function buildResumeArgs(params: {
   if (params.backend === "claude_code") {
     const repairArgs = [...params.args];
     if (params.cliSessionId && !repairArgs.includes("--resume")) {
-      repairArgs.splice(repairArgs.length - 1, 0, "--resume", params.cliSessionId);
+      // Splice `--resume <sess>` BEFORE the `--` end-of-options separator so the
+      // resume flag stays in the options region. If `--` is not present (legacy
+      // args), fall back to inserting before the trailing prompt positional.
+      const sepIndex = repairArgs.lastIndexOf("--");
+      const insertAt = sepIndex >= 0 ? sepIndex : repairArgs.length - 1;
+      repairArgs.splice(insertAt, 0, "--resume", params.cliSessionId);
     }
     return repairArgs;
   }

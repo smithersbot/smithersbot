@@ -38,6 +38,11 @@ export function ensureEmptyMcpConfig(): string {
 }
 
 export function appendStrictMcpArgs(args: string[], mcpConfigPath: string): string[] {
+  if (typeof mcpConfigPath !== "string" || mcpConfigPath.length === 0) {
+    throw new Error(
+      `appendStrictMcpArgs: mcpConfigPath must be a non-empty string (got ${JSON.stringify(mcpConfigPath)})`,
+    );
+  }
   const next = [...args];
   if (!next.includes("--strict-mcp-config")) {
     next.push("--strict-mcp-config");

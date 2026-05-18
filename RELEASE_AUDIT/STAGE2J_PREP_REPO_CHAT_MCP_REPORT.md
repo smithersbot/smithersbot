@@ -172,4 +172,127 @@ None of the goal-worker Claude Code invocations currently pass `--strict-mcp-con
 - No user-level Claude config was edited.
 - No CI workflow was edited.
 - No goal-worker source files were modified (audit only, per task spec).
+
+## 9. Live Smoke-Test Failure (Follow-Up)
+
+The original isolation work in §3–§5 fixed strict MCP inheritance but introduced a second failure on the live Telegram smoke test. This section documents the follow-up fix.
+
+### a. Observed live failure
+
+User-visible Telegram error:
+
+```
+Repo chat failed: Repo chat worker failed (claude exit 1): Error: Invalid MCP configuration:
+MCP config file not found: /home/matt/RESPONSE FILE (CRITICAL - READ THIS CAREFULLY): ...
+```
+
+The path `/home/matt/RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):` is the first line of the repo-chat prompt being interpreted as an MCP config file path. The `/home/matt/` prefix is the cwd resolution claude applies to relative `--mcp-config` paths.
+
+### b. Root cause
+
+Claude Code's CLI option `--mcp-config <configs...>` is **variadic** (per `claude --help`: "Load MCP servers from JSON files or strings (space-separated)"). When the args end with `--mcp-config /path <prompt>` and there is no flag between `<path>` and `<prompt>`, claude's option parser greedily consumes `<prompt>` as a second MCP config path.
+
+Reproduced directly with the real claude CLI:
+
+```
+$ claude -p --output-format json --strict-mcp-config --mcp-config /tmp/smithersbot-empty-mcp.json "hello, say only: done"
+Error: Invalid MCP configuration:
+MCP config file not found: /home/matt/moltbot/hello, say only: done
+```
+
+The previous unit tests already asserted invariant 3 (`args[args.indexOf('--mcp-config')+1]` equals the path), which holds true in the JS array — but those tests could not catch the fact that claude's *parser* re-binds the trailing positional to `--mcp-config`'s variadic value list.
+
+### c. Args before vs after
+
+**BEFORE (broken in live runs without a `--model` or matching `--resume` flag after `--mcp-config`):**
+
+```js
+[
+  "-p", "--output-format", "json", "--verbose",
+  "--allowedTools", "Read,Glob,Grep,Bash",
+  "--append-system-prompt", "<read-only + REPO_CHAT_CONTEXT>",
+  "--strict-mcp-config",
+  "--mcp-config", "/tmp/smithersbot-empty-mcp.json",
+  // optional --model / --resume
+  "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):\n…",   // ← swallowed by variadic --mcp-config
+]
+```
+
+**AFTER (`--` end-of-options separator inserted immediately before the trailing prompt):**
+
+```js
+[
+  "-p", "--output-format", "json", "--verbose",
+  "--allowedTools", "Read,Glob,Grep,Bash",
+  "--append-system-prompt", "<read-only + REPO_CHAT_CONTEXT>",
+  "--strict-mcp-config",
+  "--mcp-config", "/tmp/smithersbot-empty-mcp.json",
+  // optional --model / --resume
+  "--",
+  "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):\n…",
+]
+```
+
+For the Claude repair/resume path, `buildResumeArgs` splices `--resume <sessionId>` **before** the `--` separator so resume stays in the options region:
+
+```js
+[
+  …,
+  "--strict-mcp-config", "--mcp-config", "/tmp/smithersbot-empty-mcp.json",
+  "--resume", "<sessionId>",
+  "--",
+  "<repair prompt>",
+]
+```
+
+### d. Code changes
+
+- `src/goal/claude-code-mcp-isolation.ts` — `appendStrictMcpArgs(args, path)` now throws if `path` is not a non-empty string (defensive guard).
+- `src/repo-chat/repo-chat-worker.ts`:
+  - `buildClaudeRepoChatArgs` now pushes `"--", params.prompt` at the end (was `args.push(params.prompt)`).
+  - `buildResumeArgs` (claude_code branch) splices `--resume <sess>` before the `--` separator (was: before the last element).
+
+### e. New / updated tests
+
+- `src/goal/claude-code-mcp-isolation.test.ts`:
+  - `throws when mcpConfigPath is undefined`
+  - `throws when mcpConfigPath is an empty string`
+  - `places the path immediately after --mcp-config even when a trailing positional prompt is present`
+- `src/repo-chat/repo-chat-worker.test.ts`:
+  - `inserts \`--\` end-of-options separator immediately before the prompt to prevent variadic --mcp-config from swallowing it`
+  - `preserves MCP isolation invariants when the prompt is a multi-KB RESPONSE FILE instruction`
+  - `preserves MCP isolation invariants on Claude repair path with a multi-KB RESPONSE FILE prompt`
+  - Existing `repairs when response file is missing` test extended to also assert `--` separator placement on the repair path.
+
+### f. Verification
+
+| Command | Result |
+| --- | --- |
+| `pnpm exec tsc -p tsconfig.json` | PASS (no errors) |
+| `pnpm build` | PASS |
+| `pnpm lint` | PASS (0 warnings, 0 errors across 2295 files) |
+| `pnpm vitest run src/goal/claude-code-mcp-isolation.test.ts src/repo-chat/` | PASS (3 files, 71 tests) |
+| `pnpm vitest run src/telegram/ src/repo-chat/ src/goal/` | PASS (94 files / 1276 tests, 1 file / 8 tests pre-existing skip) |
+
+Live spawn check (production code path, real claude CLI, with multi-line RESPONSE FILE prompt):
+
+```
+exit: 0
+mcp_servers: []
+final result event present
+```
+
+The previously-failing argv shape now parses cleanly: `--mcp-config` receives the empty config path, the prompt is treated as the positional after `--`, and `mcp_servers` is empty (strict isolation working).
+
+### g. Live smoke-test instructions
+
+1. The gateway must be restarted to pick up the new `dist/`:
+   `systemctl --user restart moltbot-gateway-dev.service`
+   (Worker process is sandboxed from restarting it; the operator must run this.)
+2. From Telegram, send the same large `/repo_chat` prompt that previously failed.
+3. Confirm Claude no longer reports `MCP config file not found: /home/matt/RESPONSE FILE`, and that the assistant responds normally.
+
+### h. Updated readiness
+
+**Yes — repo chat is ready for a live Telegram smoke test.** The variadic-consumption bug that surfaced on the first smoke attempt is fixed, regression-covered, and confirmed via direct claude CLI spawn.
 - No commit, push, or PR was created by this task.

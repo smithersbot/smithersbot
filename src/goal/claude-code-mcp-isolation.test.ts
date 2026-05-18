@@ -106,5 +106,23 @@ describe("claude-code-mcp-isolation", () => {
       expect(input).toEqual(["-p", "--verbose"]);
       expect(result).not.toBe(input);
     });
+
+    it("throws when mcpConfigPath is undefined", () => {
+      expect(() =>
+        appendStrictMcpArgs(["-p", "--verbose"], undefined as unknown as string),
+      ).toThrow(/non-empty string/);
+    });
+
+    it("throws when mcpConfigPath is an empty string", () => {
+      expect(() => appendStrictMcpArgs(["-p", "--verbose"], "")).toThrow(/non-empty string/);
+    });
+
+    it("places the path immediately after --mcp-config even when a trailing positional prompt is present", () => {
+      const result = appendStrictMcpArgs(["-p", "--verbose", "User prompt"], "/tmp/empty.json");
+      const mcpIdx = result.indexOf("--mcp-config");
+      expect(mcpIdx).toBeGreaterThanOrEqual(0);
+      expect(result[mcpIdx + 1]).toBe("/tmp/empty.json");
+      expect(result[mcpIdx + 1]).not.toBe("User prompt");
+    });
   });
 });

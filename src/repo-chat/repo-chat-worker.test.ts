@@ -294,6 +294,60 @@ describe("repo-chat-worker", () => {
       expect(promptArg).toContain("RESPONSE FILE");
       expect(promptArg).toContain(RESPONSE_FILE_PATH);
     });
+
+    it("inserts `--` end-of-options separator immediately before the prompt to prevent variadic --mcp-config from swallowing it", () => {
+      const args = buildClaudeRepoChatArgs({ prompt: "Some user question" });
+      // The prompt is the final positional arg.
+      expect(args.at(-1)).toBe("Some user question");
+      // The penultimate arg is the `--` end-of-options separator.
+      expect(args.at(-2)).toBe("--");
+      // The element after `--mcp-config` is the empty MCP config path — never the prompt.
+      const mcpIdx = args.indexOf("--mcp-config");
+      expect(mcpIdx).toBeGreaterThanOrEqual(0);
+      expect(args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
+      expect(args[mcpIdx + 1]).not.toBe("Some user question");
+    });
+
+    it("preserves MCP isolation invariants when the prompt is a multi-KB RESPONSE FILE instruction", () => {
+      const responseFilePreamble = [
+        "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
+        `You MUST write your complete final response to: ${RESPONSE_FILE_PATH}`,
+        "Use the Bash tool to write the file, for example:",
+        `  cat <<'MOLTBOT_EOF' > ${RESPONSE_FILE_PATH}`,
+        "  Your full response in markdown here.",
+        "  MOLTBOT_EOF",
+      ].join("\n");
+      // Pad to multi-KB to simulate the live failure payload.
+      const userQuestion = "Please explain how the goal system schedules tasks.\n".repeat(200);
+      const prompt = `${responseFilePreamble}\n\n---\n\nUser question:\n${userQuestion}`;
+      expect(prompt.length).toBeGreaterThan(4_000);
+
+      const args = buildClaudeRepoChatArgs({
+        prompt,
+        cliSessionId: "claude-session-xyz",
+        model: "claude-sonnet-4-5",
+      });
+
+      // (1) `--strict-mcp-config` is present.
+      expect(args).toContain("--strict-mcp-config");
+      // (2) `--mcp-config` is present as an exact element.
+      expect(args).toContain("--mcp-config");
+      const mcpIdx = args.indexOf("--mcp-config");
+      // (3) The element immediately after `--mcp-config` is the empty MCP config path.
+      expect(args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
+      expect(typeof args[mcpIdx + 1]).toBe("string");
+      expect(args[mcpIdx + 1]).not.toBe("");
+      // (4) The path exists on disk and parses to {mcpServers:{}}.
+      const raw = fs.readFileSync(EMPTY_MCP_CONFIG_PATH, "utf-8");
+      expect(JSON.parse(raw)).toEqual({ mcpServers: {} });
+      // (5) The prompt is the FINAL positional arg.
+      expect(args.at(-1)).toBe(prompt);
+      // (6) The prompt is never equal to the value of --mcp-config.
+      expect(args[mcpIdx + 1]).not.toBe(prompt);
+      // `--` separator sits between --mcp-config <path> (and any --resume/--model)
+      // and the trailing prompt to defeat claude's variadic <configs...> parsing.
+      expect(args.at(-2)).toBe("--");
+    });
   });
 
   describe("runRepoChatWorker", () => {
@@ -543,8 +597,83 @@ describe("repo-chat-worker", () => {
       const repairResumeIdx = repairCall.args.indexOf("--resume");
       expect(repairResumeIdx).toBeGreaterThan(repairMcpIdx);
       expect(repairCall.args[repairResumeIdx + 1]).toBe("claude-session-repair");
+      // The `--` end-of-options separator must come after --resume and before the prompt
+      // so claude's variadic --mcp-config doesn't swallow the repair prompt either.
+      const repairSepIdx = repairCall.args.indexOf("--");
+      expect(repairSepIdx).toBeGreaterThan(repairResumeIdx);
+      expect(repairSepIdx).toBe(repairCall.args.length - 2);
       expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Recovered response");
+    });
+
+    it("preserves MCP isolation invariants on Claude repair path with a multi-KB RESPONSE FILE prompt", async () => {
+      const userQuestion =
+        "Explain how cli-worker.ts dispatches Claude versus Codex backends.\n".repeat(150);
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: '{"session_id":"claude-session-big"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 50,
+        })
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Repaired big response", "utf-8");
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 60,
+          };
+        });
+
+      await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: userQuestion,
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      const initialCall = runCliProcessMock.mock.calls[0]?.[0] as { args: string[] };
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as { args: string[] };
+
+      // The initial call's prompt starts with RESPONSE FILE preamble and is multi-KB.
+      const initialPrompt = initialCall.args.at(-1) ?? "";
+      expect(initialPrompt).toContain("RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):");
+      expect(initialPrompt.length).toBeGreaterThan(4_000);
+
+      for (const call of [initialCall, repairCall]) {
+        // (1) --strict-mcp-config present.
+        expect(call.args).toContain("--strict-mcp-config");
+        // (2) --mcp-config present as exact element.
+        expect(call.args).toContain("--mcp-config");
+        const mcpIdx = call.args.indexOf("--mcp-config");
+        // (3) Path immediately follows --mcp-config and is non-empty.
+        const mcpValue = call.args[mcpIdx + 1];
+        expect(typeof mcpValue).toBe("string");
+        expect(mcpValue).toBe(EMPTY_MCP_CONFIG_PATH);
+        // (4) Empty MCP config file exists and is exactly {mcpServers:{}}.
+        const raw = fs.readFileSync(EMPTY_MCP_CONFIG_PATH, "utf-8");
+        expect(JSON.parse(raw)).toEqual({ mcpServers: {} });
+        // (5) Prompt is the FINAL positional arg.
+        const prompt = call.args.at(-1) ?? "";
+        expect(prompt.length).toBeGreaterThan(0);
+        // (6) Prompt is NEVER the value of --mcp-config.
+        expect(mcpValue).not.toBe(prompt);
+        // `--` separator sits immediately before the trailing prompt.
+        expect(call.args.at(-2)).toBe("--");
+      }
+
+      // Repair path must include --resume <sessionId> between --mcp-config and --.
+      const resumeIdx = repairCall.args.indexOf("--resume");
+      const repairMcpIdx = repairCall.args.indexOf("--mcp-config");
+      const repairSepIdx = repairCall.args.indexOf("--");
+      expect(repairMcpIdx).toBeLessThan(resumeIdx);
+      expect(resumeIdx).toBeLessThan(repairSepIdx);
+      expect(repairCall.args[resumeIdx + 1]).toBe("claude-session-big");
     });
 
     it("repairs when response file is empty", async () => {
