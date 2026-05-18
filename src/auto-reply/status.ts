@@ -74,14 +74,11 @@ function resolveRuntimeLabel(
 ): string {
   const sessionKey = args.sessionKey?.trim();
   if (args.config && sessionKey) {
-    const runtimeStatus = resolveSandboxRuntimeStatus({
+    const { sandboxed } = resolveSandboxRuntimeStatus({
       cfg: args.config,
       sessionKey,
     });
-    const sandboxMode = runtimeStatus.mode ?? "off";
-    if (sandboxMode === "off") return "direct";
-    const runtime = runtimeStatus.sandboxed ? "docker" : sessionKey ? "direct" : "unknown";
-    return `${runtime}/${sandboxMode}`;
+    return sandboxed ? "docker" : "direct";
   }
 
   const sandboxMode = args.agent?.sandbox?.mode ?? "off";

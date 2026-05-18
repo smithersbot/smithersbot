@@ -77,7 +77,7 @@ import { splitSdkTools } from "../tool-split.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { describeUnknownError, mapThinkingLevel } from "../utils.js";
-import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
+import { resolveSandboxRuntimeStatus } from "../../sandbox.js";
 import { buildTtsSystemPromptHint } from "../../../tts/tts.js";
 import { isTimeoutError } from "../../failover-error.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";

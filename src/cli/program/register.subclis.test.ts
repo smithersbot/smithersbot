@@ -113,4 +113,13 @@ describe("registerSubCliCommands", () => {
     await expect(registerSubCliByName(program, "tui")).resolves.toBe(false);
     await expect(registerSubCliByName(program, "channels")).resolves.toBe(false);
   });
+
+  it("does not register the deleted sandbox CLI", async () => {
+    process.argv = ["node", "moltbot"];
+    const program = new Command();
+    registerSubCliCommands(program, process.argv);
+
+    expect(program.commands.map((cmd) => cmd.name())).not.toContain("sandbox");
+    await expect(registerSubCliByName(program, "sandbox")).resolves.toBe(false);
+  });
 });

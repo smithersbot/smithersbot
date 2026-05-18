@@ -66,12 +66,6 @@
 "docker":
   - changed-files:
       - any-glob-to-any-file:
-          - "Dockerfile.*"
-          - ".dockerignore"
-          - "scripts/sandbox-*.sh"
-          - "src/agents/sandbox*.ts"
-          - "src/commands/sandbox*.ts"
-          - "src/cli/sandbox-cli.ts"
           - "src/config/**/*sandbox*"
 
 "agents":

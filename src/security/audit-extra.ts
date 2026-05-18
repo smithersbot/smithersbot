@@ -13,10 +13,8 @@ import type { AgentToolsConfig } from "../config/types.tools.js";
 import { resolveBrowserConfig } from "../browser/config.js";
 import { isToolAllowedByPolicies } from "../agents/pi-tools.policy.js";
 import { resolveToolProfilePolicy } from "../agents/tool-policy.js";
-import {
-  resolveSandboxConfigForAgent,
-  resolveSandboxToolPolicyForAgent,
-} from "../agents/sandbox.js";
+import { resolveSandboxToolPolicyForAgent } from "../agents/sandbox.js";
+import { resolveSandboxConfigForAgent } from "../agents/sandbox/config.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
 import type { SandboxToolPolicy } from "../agents/sandbox/types.js";
 import { INCLUDE_KEY, MAX_INCLUDE_DEPTH } from "../config/includes.js";

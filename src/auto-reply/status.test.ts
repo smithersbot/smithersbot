@@ -87,7 +87,7 @@ describe("buildStatusMessage", () => {
     expect(normalized).toContain("Queue: collect");
   });
 
-  it("uses per-agent sandbox config when config and session key are provided", () => {
+  it("shows direct runtime after Docker sandbox removal", () => {
     const text = buildStatusMessage({
       config: {
         agents: {
@@ -103,7 +103,7 @@ describe("buildStatusMessage", () => {
       queue: { mode: "collect", depth: 0 },
     });
 
-    expect(normalizeTestText(text)).toContain("Runtime: docker/all");
+    expect(normalizeTestText(text)).toContain("Runtime: direct");
   });
 
   it("shows verbose/elevated labels only when enabled", () => {

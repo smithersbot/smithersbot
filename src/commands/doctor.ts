@@ -47,7 +47,6 @@ import {
   noteMacLaunchctlGatewayEnvOverrides,
 } from "./doctor-platform-notes.js";
 import { createDoctorPrompter, type DoctorOptions } from "./doctor-prompter.js";
-import { maybeRepairSandboxImages, noteSandboxScopeWarnings } from "./doctor-sandbox.js";
 import { noteSecurityWarnings } from "./doctor-security.js";
 import { noteStateIntegrity, noteWorkspaceBackupTip } from "./doctor-state-integrity.js";
 import {
@@ -383,9 +382,6 @@ export async function doctorCommand(
   }
 
   await noteStateIntegrity(cfg, prompter, configResult.path ?? CONFIG_PATH);
-
-  cfg = await maybeRepairSandboxImages(cfg, runtime, prompter);
-  noteSandboxScopeWarnings(cfg);
 
   await maybeMigrateLegacyGatewayService(cfg, resolveMode(cfg), runtime, prompter);
   await maybeScanExtraGatewayServices(options);

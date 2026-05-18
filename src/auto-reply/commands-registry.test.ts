@@ -13,7 +13,6 @@ import {
   parseCommandArgs,
   resolveCommandArgMenu,
   serializeCommandArgs,
-  shouldHandleTextCommands,
 } from "./commands-registry.js";
 import type { ChatCommandDefinition } from "./commands-registry.types.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";

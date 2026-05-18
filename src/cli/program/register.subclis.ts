@@ -110,14 +110,6 @@ const entries: SubCliEntry[] = [
     },
   },
   {
-    name: "sandbox",
-    description: "Sandbox tools",
-    register: async (program) => {
-      const mod = await import("../sandbox-cli.js");
-      mod.registerSandboxCli(program);
-    },
-  },
-  {
     name: "gstack",
     description: "Claude Code with goal permissions",
     register: async (program) => {
@@ -254,6 +246,7 @@ function removeCommand(program: Command, command: Command) {
 }
 
 export async function registerSubCliByName(program: Command, name: string): Promise<boolean> {
+  if (name === "sandbox") return false;
   const entry = entries.find((candidate) => candidate.name === name);
   if (!entry) return false;
   const existing = program.commands.find((cmd) => cmd.name() === entry.name);

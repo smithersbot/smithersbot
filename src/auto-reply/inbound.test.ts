@@ -5,7 +5,6 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MoltbotConfig } from "../config/config.js";
-import type { GroupKeyResolution } from "../config/sessions.js";
 import { createInboundDebouncer } from "./inbound-debounce.js";
 import { applyTemplate, type MsgContext, type TemplateContext } from "./templating.js";
 import { finalizeInboundContext } from "./reply/inbound-context.js";
@@ -16,7 +15,6 @@ import {
 } from "./reply/inbound-dedupe.js";
 import { formatInboundBodyWithSenderMeta } from "./reply/inbound-sender-meta.js";
 import { normalizeInboundTextNewlines } from "./reply/inbound-text.js";
-import { resolveGroupRequireMention } from "./reply/groups.js";
 import {
   buildMentionRegexes,
   matchesMentionPatterns,

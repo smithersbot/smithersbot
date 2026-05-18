@@ -3,7 +3,7 @@ import { resolveAgentModelFallbacksOverride } from "../../agents/agent-scope.js"
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
-import { resolveSandboxConfigForAgent, resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
+import { resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import type { MoltbotConfig } from "../../config/config.js";
 import {
   resolveAgentIdFromSessionKey,
@@ -48,8 +48,7 @@ export async function runMemoryFlushIfNeeded(params: {
       sessionKey: params.sessionKey,
     });
     if (!runtime.sandboxed) return true;
-    const sandboxCfg = resolveSandboxConfigForAgent(params.cfg, runtime.agentId);
-    return sandboxCfg.workspaceAccess === "rw";
+    return !runtime.sandboxed;
   })();
 
   const shouldFlushMemory =
