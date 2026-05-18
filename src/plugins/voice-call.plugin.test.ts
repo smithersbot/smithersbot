@@ -14,11 +14,11 @@ let runtimeStub: {
   stop: ReturnType<typeof vi.fn>;
 };
 
-vi.mock("../../extensions/voice-call/src/runtime.js", () => ({
+vi.mock("../../internal/extensions/voice-call/src/runtime.js", () => ({
   createVoiceCallRuntime: vi.fn(async () => runtimeStub),
 }));
 
-import plugin from "../../extensions/voice-call/index.js";
+import plugin from "../../internal/extensions/voice-call/index.js";
 
 const noopLogger = {
   info: vi.fn(),

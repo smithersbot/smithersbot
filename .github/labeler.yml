@@ -1,19 +1,19 @@
 "channel: bluebubbles":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/bluebubbles/**"
+          - "internal/extensions/bluebubbles/**"
 "channel: googlechat":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/googlechat/**"
+          - "internal/extensions/googlechat/**"
 "channel: mattermost":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/mattermost/**"
+          - "internal/extensions/mattermost/**"
 "channel: msteams":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/msteams/**"
+          - "internal/extensions/msteams/**"
 "channel: telegram":
   - changed-files:
       - any-glob-to-any-file:
@@ -22,11 +22,11 @@
 "channel: voice-call":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/voice-call/**"
+          - "internal/extensions/voice-call/**"
 "channel: zalo":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/zalo/**"
+          - "internal/extensions/zalo/**"
 "app: web-ui":
   - changed-files:
       - any-glob-to-any-file:
@@ -76,15 +76,15 @@
 "extensions: copilot-proxy":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/copilot-proxy/**"
+          - "internal/extensions/copilot-proxy/**"
 "extensions: google-antigravity-auth":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/google-antigravity-auth/**"
+          - "internal/extensions/google-antigravity-auth/**"
 "extensions: google-gemini-cli-auth":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/google-gemini-cli-auth/**"
+          - "internal/extensions/google-gemini-cli-auth/**"
 "extensions: memory-core":
   - changed-files:
       - any-glob-to-any-file:
@@ -92,4 +92,4 @@
 "extensions: qwen-portal-auth":
   - changed-files:
       - any-glob-to-any-file:
-          - "extensions/qwen-portal-auth/**"
+          - "internal/extensions/qwen-portal-auth/**"
