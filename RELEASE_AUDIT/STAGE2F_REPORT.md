@@ -309,3 +309,52 @@ Stage 2F-affected vitest slice
 A networked install and CI step are still gated on Stage 2E's
 `pnpm install` blocker and on resolving the auto-reply legacy-channel
 test debt above.
+
+## Post-execution Fix: `/help` And `/commands`
+
+Manual testing after the Stage 2F restart showed that the public slash
+menu and `/goal_list` worked, but `/help` and `/commands` did not reply.
+Service logs showed the failed taps falling through to the generic
+Telegram message route and then into workspace-template bootstrap:
+`Missing workspace template: AGENTS.md
+(/home/matt/moltbot/docs/reference/templates/AGENTS.md)`.
+
+Root cause: the native `bot.command(...)` path already marks slash
+commands with `CommandSource: "native"`, which lets Telegram commands
+run even when `commands.text=false`. The message-path fallback used
+when Telegram delivers a leading slash command as plain text did not
+set `CommandSource`, so `/help` and `/commands` were recognized as
+control commands but then denied by text-command gating and allowed to
+fall through to repo/goal chat routing.
+
+Fix: `src/telegram/bot-message-context.ts` now marks leading normalized
+Telegram slash commands as `CommandSource: "native"` before dispatching
+through the shared auto-reply command handlers. This preserves the
+Stage 2F public-menu split and does not re-expand the menu or the
+public help surface.
+
+Regression coverage:
+
+- `src/telegram/bot-message-context.dm-threads.test.ts` asserts that a
+  message-path `/help` fallback receives `CommandSource: "native"`.
+- `src/auto-reply/reply/commands.test.ts` asserts that Telegram native
+  `/help` and `/commands` both return SmithersBot public-surface replies
+  when `commands.text=false`.
+
+Verification:
+
+| Command | Result |
+| --- | --- |
+| `pnpm build` | passed before the fix while reproducing/log tracing. |
+| `pnpm vitest run src/telegram/bot-message-context.dm-threads.test.ts src/auto-reply/reply/commands.test.ts` | passed: 2 files, 28 tests. |
+| `pnpm exec tsc -p tsconfig.json` | passed after the fix. |
+| `pnpm build` | passed after the fix. |
+| `pnpm lint` | passed after the fix: 0 warnings, 0 errors across 2336 files. |
+| `pnpm vitest run src/telegram/ src/auto-reply/` | failed with the same 16 auto-reply legacy-channel failures already recorded above; the new `/help` and `/commands` regression tests passed inside this run. |
+| `journalctl --user -u moltbot-gateway-dev.service -n 80 --no-pager \| rg -i "help\|commands\|error\|Missing workspace template"` | confirmed the runtime error signature before the fix. |
+
+Gateway restart was not performed by this worker because the task's
+hard-deny list forbids `systemctl --user restart` during goal
+execution. Operator restart/manual test command:
+`systemctl --user restart moltbot-gateway-dev.service`, then tap
+`/help` and `/commands` in Telegram and confirm both reply.

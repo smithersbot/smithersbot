@@ -80,6 +80,35 @@ function buildParams(commandBody: string, cfg: MoltbotConfig, ctxOverrides?: Par
 }
 
 describe("handleCommands gating", () => {
+  it("replies to Telegram native /help and /commands when text commands are disabled", async () => {
+    const cfg = {
+      commands: { text: false },
+      channels: { telegram: { allowFrom: ["*"] } },
+    } as MoltbotConfig;
+
+    const helpParams = buildParams("/help", cfg, {
+      Provider: "telegram",
+      Surface: "telegram",
+      CommandSource: "native",
+    });
+    const helpResult = await handleCommands(helpParams);
+    expect(helpResult.shouldContinue).toBe(false);
+    expect(helpResult.reply?.text).toContain("ℹ️ Help");
+    expect(helpResult.reply?.text).toContain("/new_goal");
+    expect(helpResult.reply?.text).toContain("/commands");
+
+    const commandsParams = buildParams("/commands", cfg, {
+      Provider: "telegram",
+      Surface: "telegram",
+      CommandSource: "native",
+    });
+    const commandsResult = await handleCommands(commandsParams);
+    expect(commandsResult.shouldContinue).toBe(false);
+    expect(commandsResult.reply?.text).toContain("ℹ️ Commands");
+    expect(commandsResult.reply?.text).toContain("/new_goal - Create a new goal");
+    expect(commandsResult.reply?.text).toContain("/goal_lessons - Show or manage goal lessons.");
+  });
+
   it("blocks /bash when disabled", async () => {
     resetBashChatCommandForTests();
     const cfg = {

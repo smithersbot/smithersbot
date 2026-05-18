@@ -69,6 +69,20 @@ describe("buildTelegramMessageContext dm thread sessions", () => {
     expect(ctx?.ctxPayload?.MessageThreadId).toBeUndefined();
     expect(ctx?.ctxPayload?.SessionKey).toBe("agent:main:main");
   });
+
+  it("marks leading slash command fallbacks as native command source", async () => {
+    const ctx = await buildContext({
+      message_id: 3,
+      chat: { id: 1234, type: "private" },
+      date: 1700000002,
+      text: "/help",
+      from: { id: 42, first_name: "Alice" },
+    });
+
+    expect(ctx).not.toBeNull();
+    expect(ctx?.ctxPayload?.CommandBody).toBe("/help");
+    expect(ctx?.ctxPayload?.CommandSource).toBe("native");
+  });
 });
 
 describe("buildTelegramMessageContext group sessions without forum", () => {

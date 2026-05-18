@@ -550,6 +550,7 @@ export const buildTelegramMessageContext = async ({
   const groupSystemPrompt =
     systemPromptParts.length > 0 ? systemPromptParts.join("\n\n") : undefined;
   const commandBody = normalizeCommandBody(rawBody, { botUsername });
+  const commandSource = commandBody.startsWith("/") ? ("native" as const) : undefined;
   const ctxPayload = finalizeInboundContext({
     Body: combinedBody,
     RawBody: rawBody,
@@ -603,6 +604,7 @@ export const buildTelegramMessageContext = async ({
     Sticker: allMedia[0]?.stickerMetadata,
     ...(locationData ? toLocationContext(locationData) : undefined),
     CommandAuthorized: commandAuthorized,
+    CommandSource: commandSource,
     // For groups: use resolvedThreadId (forum topics only); for DMs: use raw messageThreadId
     MessageThreadId: isGroup ? resolvedThreadId : messageThreadId,
     IsForum: isForum,
