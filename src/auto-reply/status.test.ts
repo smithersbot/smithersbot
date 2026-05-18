@@ -409,21 +409,42 @@ describe("buildStatusMessage", () => {
 });
 
 describe("buildCommandsMessage", () => {
-  it("lists commands with aliases and text-only hints", () => {
+  it("lists the public SmithersBot operator surface", () => {
     const text = buildCommandsMessage({
       commands: { config: false, debug: false },
     } as MoltbotConfig);
     expect(text).toContain("ℹ️ Slash commands");
-    expect(text).toContain("Status");
-    expect(text).toContain("/commands - List all slash commands.");
-    expect(text).toContain("/skill - Run a skill by name.");
-    expect(text).toContain("/think (/thinking, /t) - Set thinking level.");
-    expect(text).toContain("/compact [text] - Compact the session context.");
+    expect(text).toContain("Core workflow");
+    expect(text).toContain("/new_goal - Create a new goal and receive a plan for approval.");
+    expect(text).toContain("/goal_status - Show status for a goal run.");
+    expect(text).toContain("/goal_list - List recent goal runs.");
+    expect(text).toContain("/goal_resume - Resume an interrupted goal run.");
+    expect(text).toContain("/goal_stop - Stop a running goal.");
+    expect(text).toContain("Repo chat");
+    expect(text).toContain("/repo_chat - Ask a read-only question about this repository.");
+    expect(text).toContain("/chat_backend - Set the repo chat backend.");
+    expect(text).toContain("Goal diagnostics & tuning");
+    expect(text).toContain(
+      "/goal_github_push - Dangerous/admin: toggle automatic GitHub push and PR creation.",
+    );
+    expect(text).toContain("Advanced & admin");
+    expect(text).toContain("/nightwatch - Configure scheduled code review.");
+    expect(text).toContain("/gateway_restart - Dangerous/admin: restart the gateway service.");
+    expect(text).toContain("Help");
+    expect(text).toContain("/commands - List the public SmithersBot command surface.");
+    expect(text).not.toContain("/new -");
+    expect(text).not.toContain("/reset");
+    expect(text).not.toContain("/stop - Stop the current run.");
+    expect(text).not.toContain("/skill");
+    expect(text).not.toContain("/think");
+    expect(text).not.toContain("/compact");
+    expect(text).not.toContain("/goal -");
+    expect(text).not.toContain("/rc -");
     expect(text).not.toContain("/config");
     expect(text).not.toContain("/debug");
   });
 
-  it("includes skill commands when provided", () => {
+  it("does not publish skill commands in the SmithersBot command surface", () => {
     const text = buildCommandsMessage(
       {
         commands: { config: false, debug: false },
@@ -436,17 +457,48 @@ describe("buildCommandsMessage", () => {
         },
       ],
     );
-    expect(text).toContain("/demo_skill - Demo skill");
+    expect(text).not.toContain("/demo_skill - Demo skill");
   });
 });
 
 describe("buildHelpMessage", () => {
-  it("hides config/debug when disabled", () => {
+  it("shows SmithersBot public help and hides legacy session commands", () => {
     const text = buildHelpMessage({
       commands: { config: false, debug: false },
     } as MoltbotConfig);
-    expect(text).toContain("Skills");
-    expect(text).toContain("/skill <name> [input]");
+    expect(text).toContain("Core workflow");
+    expect(text).toContain("/new_goal");
+    expect(text).toContain("/goal_status");
+    expect(text).toContain("/goal_list");
+    expect(text).toContain("/goal_resume");
+    expect(text).toContain("/goal_stop");
+    expect(text).toContain("Repo chat");
+    expect(text).toContain("/repo_chat");
+    expect(text).toContain("/chat_backend");
+    expect(text).toContain("Goal diagnostics & tuning");
+    expect(text).toContain("/goal_lessons");
+    expect(text).toContain("/goal_plan_autocheck");
+    expect(text).toContain("/goal_semgrep");
+    expect(text).toContain("/goal_workers");
+    expect(text).toContain("/goal_github_push");
+    expect(text).toContain("/goal_github_push is dangerous/admin");
+    expect(text).toContain("Advanced & admin");
+    expect(text).toContain("/nightwatch");
+    expect(text).toContain("/gateway_restart");
+    expect(text).toContain("/gateway_restart is dangerous/admin");
+    expect(text).toContain("Help");
+    expect(text).toContain("/help");
+    expect(text).toContain("/commands");
+    expect(text).not.toContain("/new  |");
+    expect(text).not.toContain("/reset");
+    expect(text).not.toContain("/stop");
+    expect(text).not.toContain("/skill");
+    expect(text).not.toContain("/think");
+    expect(text).not.toContain("/model");
+    expect(text).not.toContain("/verbose");
+    expect(text).not.toContain("/status");
+    expect(text).not.toContain("/whoami");
+    expect(text).not.toContain("/context");
     expect(text).not.toContain("/config");
     expect(text).not.toContain("/debug");
   });
@@ -462,8 +514,14 @@ describe("buildCommandsMessagePaginated", () => {
       { surface: "telegram", page: 1 },
     );
     expect(result.text).toContain("ℹ️ Commands (1/");
-    expect(result.text).toContain("Session");
-    expect(result.text).toContain("/stop - Stop the current run.");
+    expect(result.text).toContain("Core workflow");
+    expect(result.text).toContain("/new_goal - Create a new goal and receive a plan for approval.");
+    expect(result.text).toContain("/goal_stop - Stop a running goal.");
+    expect(result.text).toContain("Repo chat");
+    expect(result.text).not.toContain("/stop - Stop the current run.");
+    expect(result.text).not.toContain("/new -");
+    expect(result.text).not.toContain("/goal -");
+    expect(result.text).not.toContain("/rc -");
   });
 
   it("includes plugin commands in the paginated list", () => {

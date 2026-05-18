@@ -29,16 +29,11 @@ import {
   resolveModelCostConfig,
 } from "../utils/usage-format.js";
 import { VERSION } from "../version.js";
-import {
-  listChatCommands,
-  listChatCommandsForConfig,
-  type ChatCommandDefinition,
-} from "./commands-registry.js";
 import { listPluginCommands } from "../plugins/commands.js";
 import type { SkillCommandSpec } from "../agents/skills.js";
-import type { CommandCategory } from "./commands-registry.types.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "./thinking.js";
 import type { MediaUnderstandingDecision } from "../media-understanding/types.js";
+import { PUBLIC_TELEGRAM_MENU, PUBLIC_TELEGRAM_MENU_LABEL_ORDER } from "../telegram/public-menu.js";
 
 type AgentConfig = Partial<NonNullable<NonNullable<MoltbotConfig["agents"]>["defaults"]>>;
 
@@ -432,64 +427,36 @@ export function buildStatusMessage(args: StatusArgs): string {
     .join("\n");
 }
 
-const CATEGORY_LABELS: Record<CommandCategory, string> = {
-  session: "Session",
-  options: "Options",
-  status: "Status",
-  management: "Management",
-  media: "Media",
-  tools: "Tools",
-  docks: "Docks",
-};
-
-const CATEGORY_ORDER: CommandCategory[] = [
-  "session",
-  "options",
-  "status",
-  "management",
-  "media",
-  "tools",
-  "docks",
-];
-
-function groupCommandsByCategory(
-  commands: ChatCommandDefinition[],
-): Map<CommandCategory, ChatCommandDefinition[]> {
-  const grouped = new Map<CommandCategory, ChatCommandDefinition[]>();
-  for (const category of CATEGORY_ORDER) {
-    grouped.set(category, []);
-  }
-  for (const command of commands) {
-    const category = command.category ?? "tools";
-    const list = grouped.get(category) ?? [];
-    list.push(command);
-    grouped.set(category, list);
-  }
-  return grouped;
+function buildPublicCommandItems(): CommandsListItem[] {
+  return PUBLIC_TELEGRAM_MENU_LABEL_ORDER.flatMap((label) =>
+    PUBLIC_TELEGRAM_MENU.filter((entry) => entry.label === label).map((entry) => {
+      return {
+        label: entry.label,
+        text: `/${entry.command} - ${entry.publicDescription}`,
+      };
+    }),
+  );
 }
 
-export function buildHelpMessage(cfg?: MoltbotConfig): string {
+export function buildHelpMessage(_cfg?: MoltbotConfig): string {
   const lines = ["ℹ️ Help", ""];
 
-  lines.push("Session");
-  lines.push("  /new  |  /reset  |  /compact [instructions]  |  /stop");
-  lines.push("");
+  for (const label of PUBLIC_TELEGRAM_MENU_LABEL_ORDER) {
+    const commands = PUBLIC_TELEGRAM_MENU.filter((entry) => entry.label === label).map(
+      ({ command }) => `/${command}`,
+    );
+    if (commands.length === 0) continue;
+    lines.push(label);
+    lines.push(`  ${commands.join("  |  ")}`);
+    if (label === "Goal diagnostics & tuning") {
+      lines.push("  /goal_github_push is dangerous/admin: it can push branches and create PRs.");
+    }
+    if (label === "Advanced & admin") {
+      lines.push("  /gateway_restart is dangerous/admin: it restarts the gateway service.");
+    }
+    lines.push("");
+  }
 
-  const optionParts = ["/think <level>", "/model <id>", "/verbose on|off"];
-  if (cfg?.commands?.config === true) optionParts.push("/config");
-  if (cfg?.commands?.debug === true) optionParts.push("/debug");
-  lines.push("Options");
-  lines.push(`  ${optionParts.join("  |  ")}`);
-  lines.push("");
-
-  lines.push("Status");
-  lines.push("  /status  |  /whoami  |  /context");
-  lines.push("");
-
-  lines.push("Skills");
-  lines.push("  /skill <name> [input]");
-
-  lines.push("");
   lines.push("More: /commands for full list");
 
   return lines.join("\n");
@@ -510,46 +477,15 @@ export type CommandsMessageResult = {
   hasPrev: boolean;
 };
 
-function formatCommandEntry(command: ChatCommandDefinition): string {
-  const primary = command.nativeName
-    ? `/${command.nativeName}`
-    : command.textAliases[0]?.trim() || `/${command.key}`;
-  const seen = new Set<string>();
-  const aliases = command.textAliases
-    .map((alias) => alias.trim())
-    .filter(Boolean)
-    .filter((alias) => alias.toLowerCase() !== primary.toLowerCase())
-    .filter((alias) => {
-      const key = alias.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  const aliasLabel = aliases.length ? ` (${aliases.join(", ")})` : "";
-  const scopeLabel = command.scope === "text" ? " [text]" : "";
-  return `${primary}${aliasLabel}${scopeLabel} - ${command.description}`;
-}
-
 type CommandsListItem = {
   label: string;
   text: string;
 };
 
 function buildCommandItems(
-  commands: ChatCommandDefinition[],
   pluginCommands: ReturnType<typeof listPluginCommands>,
 ): CommandsListItem[] {
-  const grouped = groupCommandsByCategory(commands);
-  const items: CommandsListItem[] = [];
-
-  for (const category of CATEGORY_ORDER) {
-    const categoryCommands = grouped.get(category) ?? [];
-    if (categoryCommands.length === 0) continue;
-    const label = CATEGORY_LABELS[category];
-    for (const command of categoryCommands) {
-      items.push({ label, text: formatCommandEntry(command) });
-    }
-  }
+  const items = buildPublicCommandItems();
 
   for (const command of pluginCommands) {
     const pluginLabel = command.pluginId ? ` (${command.pluginId})` : "";
@@ -596,11 +532,10 @@ export function buildCommandsMessagePaginated(
   const surface = options?.surface?.toLowerCase();
   const isTelegram = surface === "telegram";
 
-  const commands = cfg
-    ? listChatCommandsForConfig(cfg, { skillCommands })
-    : listChatCommands({ skillCommands });
+  void cfg;
+  void skillCommands;
   const pluginCommands = listPluginCommands();
-  const items = buildCommandItems(commands, pluginCommands);
+  const items = buildCommandItems(pluginCommands);
 
   if (!isTelegram) {
     const lines = ["ℹ️ Slash commands", ""];
