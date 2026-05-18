@@ -266,13 +266,16 @@ For the Claude repair/resume path, `buildResumeArgs` splices `--resume <sessionI
 
 ### f. Verification
 
+Each command in the spec was re-run after the fix landed:
+
 | Command | Result |
 | --- | --- |
-| `pnpm exec tsc -p tsconfig.json` | PASS (no errors) |
-| `pnpm build` | PASS |
-| `pnpm lint` | PASS (0 warnings, 0 errors across 2295 files) |
-| `pnpm vitest run src/goal/claude-code-mcp-isolation.test.ts src/repo-chat/` | PASS (3 files, 71 tests) |
-| `pnpm vitest run src/telegram/ src/repo-chat/ src/goal/` | PASS (94 files / 1276 tests, 1 file / 8 tests pre-existing skip) |
+| `pnpm exec tsc -p tsconfig.json` | PASS (no diagnostics) |
+| `pnpm build` | PASS (`tsc` + canvas/hooks/build-info scripts succeed) |
+| `pnpm lint` | PASS (`Found 0 warnings and 0 errors.` across 2295 files) |
+| `pnpm vitest run src/repo-chat/` | PASS — 2 files, 58 tests passed |
+| `pnpm vitest run src/goal/claude-code-mcp-isolation.test.ts` | PASS — 1 file, 13 tests passed |
+| `pnpm vitest run src/telegram/ src/repo-chat/ src/goal/` | PASS — 94 files / 1276 tests passed, 1 file / 8 tests skipped (`src/goal/git-checkpoint.test.ts`, pre-existing dirty-tree skip unrelated to repo chat) |
 
 Live spawn check (production code path, real claude CLI, with multi-line RESPONSE FILE prompt):
 
