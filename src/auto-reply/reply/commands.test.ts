@@ -9,10 +9,8 @@ import {
   resetSubagentRegistryForTests,
 } from "../../agents/subagent-registry.js";
 import type { MoltbotConfig } from "../../config/config.js";
-import * as internalHooks from "../../hooks/internal-hooks.js";
 import { clearPluginCommands, registerPluginCommand } from "../../plugins/commands.js";
 import type { MsgContext } from "../templating.js";
-import { resetBashChatCommandForTests } from "./bash-command.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
 
@@ -109,35 +107,6 @@ describe("handleCommands gating", () => {
     expect(commandsResult.reply?.text).toContain("/goal_lessons - Show or manage goal lessons.");
   });
 
-  it("blocks /bash when disabled", async () => {
-    resetBashChatCommandForTests();
-    const cfg = {
-      commands: { bash: false, text: true },
-      whatsapp: { allowFrom: ["*"] },
-    } as MoltbotConfig;
-    const params = buildParams("/bash echo hi", cfg);
-    const result = await handleCommands(params);
-    expect(result.shouldContinue).toBe(false);
-    expect(result.reply?.text).toContain("bash is disabled");
-  });
-
-  it("blocks /bash when elevated is not allowlisted", async () => {
-    resetBashChatCommandForTests();
-    const cfg = {
-      commands: { bash: true, text: true },
-      whatsapp: { allowFrom: ["*"] },
-    } as MoltbotConfig;
-    const params = buildParams("/bash echo hi", cfg);
-    params.elevated = {
-      enabled: true,
-      allowed: false,
-      failures: [{ gate: "allowFrom", key: "tools.elevated.allowFrom.whatsapp" }],
-    };
-    const result = await handleCommands(params);
-    expect(result.shouldContinue).toBe(false);
-    expect(result.reply?.text).toContain("elevated is not available");
-  });
-
   it("blocks /config when disabled", async () => {
     const cfg = {
       commands: { config: false, debug: false, text: true },
@@ -158,32 +127,6 @@ describe("handleCommands gating", () => {
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("/debug is disabled");
-  });
-});
-
-describe("handleCommands bash alias", () => {
-  it("routes !poll through the /bash handler", async () => {
-    resetBashChatCommandForTests();
-    const cfg = {
-      commands: { bash: true, text: true },
-      whatsapp: { allowFrom: ["*"] },
-    } as MoltbotConfig;
-    const params = buildParams("!poll", cfg);
-    const result = await handleCommands(params);
-    expect(result.shouldContinue).toBe(false);
-    expect(result.reply?.text).toContain("No active bash job");
-  });
-
-  it("routes !stop through the /bash handler", async () => {
-    resetBashChatCommandForTests();
-    const cfg = {
-      commands: { bash: true, text: true },
-      whatsapp: { allowFrom: ["*"] },
-    } as MoltbotConfig;
-    const params = buildParams("!stop", cfg);
-    const result = await handleCommands(params);
-    expect(result.shouldContinue).toBe(false);
-    expect(result.reply?.text).toContain("No active bash job");
   });
 });
 
@@ -227,22 +170,6 @@ describe("handleCommands identity", () => {
     expect(result.reply?.text).toContain("User id: 12345");
     expect(result.reply?.text).toContain("Username: @TestUser");
     expect(result.reply?.text).toContain("AllowFrom: 12345");
-  });
-});
-
-describe("handleCommands hooks", () => {
-  it("triggers hooks for /new with arguments", async () => {
-    const cfg = {
-      commands: { text: true },
-      channels: { whatsapp: { allowFrom: ["*"] } },
-    } as MoltbotConfig;
-    const params = buildParams("/new take notes", cfg);
-    const spy = vi.spyOn(internalHooks, "triggerInternalHook").mockResolvedValue();
-
-    await handleCommands(params);
-
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ type: "command", action: "new" }));
-    spy.mockRestore();
   });
 });
 

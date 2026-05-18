@@ -7,23 +7,6 @@ import { buildThreadingToolContext } from "./agent-runner-utils.js";
 describe("buildThreadingToolContext", () => {
   const cfg = {} as MoltbotConfig;
 
-  // Stage 2G: legacy WhatsApp tool-threading behavior.
-  it.skip("uses conversation id for WhatsApp", () => {
-    const sessionCtx = {
-      Provider: "whatsapp",
-      From: "123@g.us",
-      To: "+15550001",
-    } as TemplateContext;
-
-    const result = buildThreadingToolContext({
-      sessionCtx,
-      config: cfg,
-      hasRepliedRef: undefined,
-    });
-
-    expect(result.currentChannelId).toBe("123@g.us");
-  });
-
   it("falls back to To for WhatsApp when From is missing", () => {
     const sessionCtx = {
       Provider: "whatsapp",
@@ -55,24 +38,6 @@ describe("buildThreadingToolContext", () => {
     expect(result.currentChannelId).toBe("chat:99");
   });
 
-  // Stage 2G: legacy iMessage tool-threading behavior.
-  it.skip("uses the sender handle for iMessage direct chats", () => {
-    const sessionCtx = {
-      Provider: "imessage",
-      ChatType: "direct",
-      From: "imessage:+15550001",
-      To: "chat_id:12",
-    } as TemplateContext;
-
-    const result = buildThreadingToolContext({
-      sessionCtx,
-      config: cfg,
-      hasRepliedRef: undefined,
-    });
-
-    expect(result.currentChannelId).toBe("imessage:+15550001");
-  });
-
   it("uses chat_id for iMessage groups", () => {
     const sessionCtx = {
       Provider: "imessage",
@@ -88,23 +53,5 @@ describe("buildThreadingToolContext", () => {
     });
 
     expect(result.currentChannelId).toBe("chat_id:7");
-  });
-
-  // Stage 2G: legacy Slack tool-threading behavior.
-  it.skip("prefers MessageThreadId for Slack tool threading", () => {
-    const sessionCtx = {
-      Provider: "slack",
-      To: "channel:C1",
-      MessageThreadId: "123.456",
-    } as TemplateContext;
-
-    const result = buildThreadingToolContext({
-      sessionCtx,
-      config: { channels: { slack: { replyToMode: "all" } } } as MoltbotConfig,
-      hasRepliedRef: undefined,
-    });
-
-    expect(result.currentChannelId).toBe("C1");
-    expect(result.currentThreadTs).toBe("123.456");
   });
 });

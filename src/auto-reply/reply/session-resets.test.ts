@@ -92,49 +92,6 @@ describe("initSessionState reset triggers in WhatsApp groups", () => {
     expect(result.bodyStripped).toBe("");
   });
 
-  // Stage 2G: legacy WhatsApp group authorization behavior.
-  it.skip("Reset trigger /new blocked for unauthorized sender in existing session", async () => {
-    const storePath = await createStorePath("moltbot-group-reset-unauth-");
-    const sessionKey = "agent:main:whatsapp:group:120363406150318674@g.us";
-    const existingSessionId = "existing-session-123";
-
-    await seedSessionStore({
-      storePath,
-      sessionKey,
-      sessionId: existingSessionId,
-    });
-
-    const cfg = makeCfg({
-      storePath,
-      allowFrom: ["+41796666864"],
-    });
-
-    const groupMessageCtx = {
-      Body: `[Context]\\n[WhatsApp ...] OtherPerson: /new\\n[from: OtherPerson (+1555123456)]`,
-      RawBody: "/new",
-      CommandBody: "/new",
-      From: "120363406150318674@g.us",
-      To: "+41779241027",
-      ChatType: "group",
-      SessionKey: sessionKey,
-      Provider: "whatsapp",
-      Surface: "whatsapp",
-      SenderName: "OtherPerson",
-      SenderE164: "+1555123456",
-      SenderId: "1555123456:0@s.whatsapp.net",
-    };
-
-    const result = await initSessionState({
-      ctx: groupMessageCtx,
-      cfg,
-      commandAuthorized: true,
-    });
-
-    expect(result.triggerBodyNormalized).toBe("/new");
-    expect(result.sessionId).toBe(existingSessionId);
-    expect(result.isNewSession).toBe(false);
-  });
-
   it("Reset trigger works when RawBody is clean but Body has wrapped context", async () => {
     const storePath = await createStorePath("moltbot-group-rawbody-");
     const sessionKey = "agent:main:whatsapp:group:g1";
@@ -214,48 +171,6 @@ describe("initSessionState reset triggers in WhatsApp groups", () => {
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
     expect(result.bodyStripped).toBe("");
-  });
-
-  // Stage 2G: legacy WhatsApp LID authorization behavior.
-  it.skip("Reset trigger /new blocked when SenderId is LID but SenderE164 is unauthorized", async () => {
-    const storePath = await createStorePath("moltbot-group-reset-lid-unauth-");
-    const sessionKey = "agent:main:whatsapp:group:120363406150318674@g.us";
-    const existingSessionId = "existing-session-123";
-    await seedSessionStore({
-      storePath,
-      sessionKey,
-      sessionId: existingSessionId,
-    });
-
-    const cfg = makeCfg({
-      storePath,
-      allowFrom: ["+41796666864"],
-    });
-
-    const groupMessageCtx = {
-      Body: `[WhatsApp 120363406150318674@g.us 2026-01-13T07:45Z] Other: /new\n[from: Other (+1555123456)]`,
-      RawBody: "/new",
-      CommandBody: "/new",
-      From: "120363406150318674@g.us",
-      To: "+41779241027",
-      ChatType: "group",
-      SessionKey: sessionKey,
-      Provider: "whatsapp",
-      Surface: "whatsapp",
-      SenderName: "Other",
-      SenderE164: "+1555123456",
-      SenderId: "123@lid",
-    };
-
-    const result = await initSessionState({
-      ctx: groupMessageCtx,
-      cfg,
-      commandAuthorized: true,
-    });
-
-    expect(result.triggerBodyNormalized).toBe("/new");
-    expect(result.sessionId).toBe(existingSessionId);
-    expect(result.isNewSession).toBe(false);
   });
 });
 

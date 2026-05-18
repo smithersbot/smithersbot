@@ -200,14 +200,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
       category: "management",
     }),
     defineChatCommand({
-      key: "approve",
-      nativeName: "approve",
-      description: "Approve or deny exec requests.",
-      textAlias: "/approve",
-      acceptsArgs: true,
-      category: "management",
-    }),
-    defineChatCommand({
       key: "context",
       nativeName: "context",
       description: "Explain how context is built and used.",
@@ -365,20 +357,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
       argsMenu: "auto",
     }),
     defineChatCommand({
-      key: "stop",
-      nativeName: "stop",
-      description: "Stop the current run.",
-      textAlias: "/stop",
-      category: "session",
-    }),
-    defineChatCommand({
-      key: "restart",
-      nativeName: "restart",
-      description: "Restart Moltbot.",
-      textAlias: "/restart",
-      category: "tools",
-    }),
-    defineChatCommand({
       key: "activation",
       nativeName: "activation",
       description: "Set group activation mode.",
@@ -409,22 +387,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
         },
       ],
       argsMenu: "auto",
-    }),
-    defineChatCommand({
-      key: "reset",
-      nativeName: "reset",
-      description: "Reset the current session.",
-      textAlias: "/reset",
-      acceptsArgs: true,
-      category: "session",
-    }),
-    defineChatCommand({
-      key: "new",
-      nativeName: "new",
-      description: "Start a new session.",
-      textAlias: "/new",
-      acceptsArgs: true,
-      category: "session",
     }),
     defineChatCommand({
       key: "compact",
@@ -583,21 +545,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
       scope: "text",
       category: "tools",
       acceptsArgs: true,
-    }),
-    defineChatCommand({
-      key: "bash",
-      description: "Run host shell commands (host-only).",
-      textAlias: "/bash",
-      scope: "text",
-      category: "tools",
-      args: [
-        {
-          name: "command",
-          description: "Shell command",
-          type: "string",
-          captureRemaining: true,
-        },
-      ],
     }),
     ...listChannelDocks()
       .filter((dock) => dock.capabilities.nativeCommands)

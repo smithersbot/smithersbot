@@ -2,21 +2,13 @@ import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
-import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
-import { scheduleGatewaySigusr1Restart, triggerMoltbotRestart } from "../../infra/restart.js";
 import { parseActivationCommand } from "../group-activation.js";
 import { parseSendPolicyCommand } from "../send-policy.js";
 import { normalizeUsageDisplay, resolveResponseUsageMode } from "../thinking.js";
 import { loadCostUsageSummary, loadSessionCostSummary } from "../../infra/session-cost-usage.js";
 import { formatTokenCount, formatUsd } from "../../utils/usage-format.js";
-import {
-  formatAbortReplyText,
-  isAbortTrigger,
-  setAbortMemory,
-  stopSubagentsForRequester,
-} from "./abort.js";
+import { isAbortTrigger, setAbortMemory } from "./abort.js";
 import type { CommandHandler } from "./commands-types.js";
-import { clearSessionQueues } from "./queue.js";
 
 function resolveSessionEntryForKey(
   store: Record<string, SessionEntry> | undefined,
@@ -212,110 +204,6 @@ export const handleUsageCommand: CommandHandler = async (params, allowTextComman
       text: `⚙️ Usage footer: ${next}.`,
     },
   };
-};
-
-export const handleRestartCommand: CommandHandler = async (params, allowTextCommands) => {
-  if (!allowTextCommands) return null;
-  if (params.command.commandBodyNormalized !== "/restart") return null;
-  if (!params.command.isAuthorizedSender) {
-    logVerbose(
-      `Ignoring /restart from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
-    );
-    return { shouldContinue: false };
-  }
-  if (params.cfg.commands?.restart !== true) {
-    return {
-      shouldContinue: false,
-      reply: {
-        text: "⚠️ /restart is disabled. Set commands.restart=true to enable.",
-      },
-    };
-  }
-  const hasSigusr1Listener = process.listenerCount("SIGUSR1") > 0;
-  if (hasSigusr1Listener) {
-    scheduleGatewaySigusr1Restart({ reason: "/restart" });
-    return {
-      shouldContinue: false,
-      reply: {
-        text: "⚙️ Restarting moltbot in-process (SIGUSR1); back in a few seconds.",
-      },
-    };
-  }
-  const restartMethod = triggerMoltbotRestart();
-  if (!restartMethod.ok) {
-    const detail = restartMethod.detail ? ` Details: ${restartMethod.detail}` : "";
-    return {
-      shouldContinue: false,
-      reply: {
-        text: `⚠️ Restart failed (${restartMethod.method}).${detail}`,
-      },
-    };
-  }
-  return {
-    shouldContinue: false,
-    reply: {
-      text: `⚙️ Restarting moltbot via ${restartMethod.method}; give me a few seconds to come back online.`,
-    },
-  };
-};
-
-export const handleStopCommand: CommandHandler = async (params, allowTextCommands) => {
-  if (!allowTextCommands) return null;
-  if (params.command.commandBodyNormalized !== "/stop") return null;
-  if (!params.command.isAuthorizedSender) {
-    logVerbose(
-      `Ignoring /stop from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
-    );
-    return { shouldContinue: false };
-  }
-  const abortTarget = resolveAbortTarget({
-    ctx: params.ctx,
-    sessionKey: params.sessionKey,
-    sessionEntry: params.sessionEntry,
-    sessionStore: params.sessionStore,
-  });
-  if (abortTarget.sessionId) {
-    abortEmbeddedPiRun(abortTarget.sessionId);
-  }
-  const cleared = clearSessionQueues([abortTarget.key, abortTarget.sessionId]);
-  if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-    logVerbose(
-      `stop: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
-    );
-  }
-  if (abortTarget.entry && params.sessionStore && abortTarget.key) {
-    abortTarget.entry.abortedLastRun = true;
-    abortTarget.entry.updatedAt = Date.now();
-    params.sessionStore[abortTarget.key] = abortTarget.entry;
-    if (params.storePath) {
-      await updateSessionStore(params.storePath, (store) => {
-        store[abortTarget.key] = abortTarget.entry as SessionEntry;
-      });
-    }
-  } else if (params.command.abortKey) {
-    setAbortMemory(params.command.abortKey, true);
-  }
-
-  // Trigger internal hook for stop command
-  const hookEvent = createInternalHookEvent(
-    "command",
-    "stop",
-    abortTarget.key ?? params.sessionKey ?? "",
-    {
-      sessionEntry: abortTarget.entry ?? params.sessionEntry,
-      sessionId: abortTarget.sessionId,
-      commandSource: params.command.surface,
-      senderId: params.command.senderId,
-    },
-  );
-  await triggerInternalHook(hookEvent);
-
-  const { stopped } = stopSubagentsForRequester({
-    cfg: params.cfg,
-    requesterSessionKey: abortTarget.key ?? params.sessionKey,
-  });
-
-  return { shouldContinue: false, reply: { text: formatAbortReplyText(stopped) } };
 };
 
 export const handleAbortTrigger: CommandHandler = async (params, allowTextCommands) => {

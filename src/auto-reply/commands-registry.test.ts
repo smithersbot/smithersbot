@@ -37,7 +37,7 @@ describe("commands registry", () => {
   it("exposes native specs", () => {
     const specs = listNativeCommandSpecs();
     expect(specs.find((spec) => spec.name === "help")).toBeTruthy();
-    expect(specs.find((spec) => spec.name === "stop")).toBeTruthy();
+    expect(specs.find((spec) => spec.name === "stop")).toBeFalsy();
     expect(specs.find((spec) => spec.name === "skill")).toBeTruthy();
     expect(specs.find((spec) => spec.name === "whoami")).toBeTruthy();
     expect(specs.find((spec) => spec.name === "compact")).toBeFalsy();
@@ -119,32 +119,6 @@ describe("commands registry", () => {
       }
     }
     expect(detection.regex.test("try /status")).toBe(false);
-  });
-
-  // Stage 2G: legacy Discord text-command behavior.
-  it.skip("respects text command gating", () => {
-    const cfg = { commands: { text: false } };
-    expect(
-      shouldHandleTextCommands({
-        cfg,
-        surface: "discord",
-        commandSource: "text",
-      }),
-    ).toBe(false);
-    expect(
-      shouldHandleTextCommands({
-        cfg,
-        surface: "whatsapp",
-        commandSource: "text",
-      }),
-    ).toBe(true);
-    expect(
-      shouldHandleTextCommands({
-        cfg,
-        surface: "discord",
-        commandSource: "native",
-      }),
-    ).toBe(true);
   });
 
   it("normalizes telegram-style command mentions for the current bot", () => {

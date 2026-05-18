@@ -161,71 +161,8 @@ describe("resolveReplyToMode", () => {
     expect(resolveReplyToMode(emptyCfg, "telegram")).toBe("first");
   });
 
-  // Stage 2G: legacy Discord/Slack reply threading behavior.
-  it.skip("defaults to off for Discord and Slack", () => {
-    expect(resolveReplyToMode(emptyCfg, "discord")).toBe("off");
-    expect(resolveReplyToMode(emptyCfg, "slack")).toBe("off");
-  });
-
   it("defaults to all when channel is unknown", () => {
     expect(resolveReplyToMode(emptyCfg, undefined)).toBe("all");
-  });
-
-  // Stage 2G: legacy Discord/Slack reply threading behavior.
-  it.skip("uses configured value when present", () => {
-    const cfg = {
-      channels: {
-        telegram: { replyToMode: "all" },
-        discord: { replyToMode: "first" },
-        slack: { replyToMode: "all" },
-      },
-    } as MoltbotConfig;
-    expect(resolveReplyToMode(cfg, "telegram")).toBe("all");
-    expect(resolveReplyToMode(cfg, "discord")).toBe("first");
-    expect(resolveReplyToMode(cfg, "slack")).toBe("all");
-  });
-
-  // Stage 2G: legacy Slack reply threading behavior.
-  it.skip("uses chat-type replyToMode overrides for Slack when configured", () => {
-    const cfg = {
-      channels: {
-        slack: {
-          replyToMode: "off",
-          replyToModeByChatType: { direct: "all", group: "first" },
-        },
-      },
-    } as MoltbotConfig;
-    expect(resolveReplyToMode(cfg, "slack", null, "direct")).toBe("all");
-    expect(resolveReplyToMode(cfg, "slack", null, "group")).toBe("first");
-    expect(resolveReplyToMode(cfg, "slack", null, "channel")).toBe("off");
-    expect(resolveReplyToMode(cfg, "slack", null, undefined)).toBe("off");
-  });
-
-  // Stage 2G: legacy Slack reply threading behavior.
-  it.skip("falls back to top-level replyToMode when no chat-type override is set", () => {
-    const cfg = {
-      channels: {
-        slack: {
-          replyToMode: "first",
-        },
-      },
-    } as MoltbotConfig;
-    expect(resolveReplyToMode(cfg, "slack", null, "direct")).toBe("first");
-    expect(resolveReplyToMode(cfg, "slack", null, "channel")).toBe("first");
-  });
-
-  // Stage 2G: legacy Slack reply threading behavior.
-  it.skip("uses legacy dm.replyToMode for direct messages when no chat-type override exists", () => {
-    const cfg = {
-      channels: {
-        slack: {
-          replyToMode: "off",
-          dm: { replyToMode: "all" },
-        },
-      },
-    } as MoltbotConfig;
-    expect(resolveReplyToMode(cfg, "slack", null, "direct")).toBe("all");
-    expect(resolveReplyToMode(cfg, "slack", null, "channel")).toBe("off");
   });
 });
 
