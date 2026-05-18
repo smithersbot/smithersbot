@@ -42,7 +42,9 @@ vi.mock("@grammyjs/runner", () => ({
   sequentialize: () => vi.fn(),
 }));
 
-const throttlerSpy = vi.fn(() => "throttler");
+const { throttlerSpy } = vi.hoisted(() => ({
+  throttlerSpy: vi.fn(() => "throttler"),
+}));
 vi.mock("@grammyjs/transformer-throttler", () => ({
   apiThrottler: () => throttlerSpy(),
 }));

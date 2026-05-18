@@ -10,8 +10,9 @@ not identify a remaining high-confidence public leak that should be fixed in
 this stage.
 
 The demo asset remains intentionally out of scope and is still a manual
-pre-public task. No commit was made because the required verification sequence
-did not pass.
+pre-public task. A narrow Telegram media test harness issue was fixed during
+verification, but no commit was made because the required verification sequence
+still did not pass.
 
 ## README changes
 
@@ -146,9 +147,9 @@ The runbook was reviewed only; it was not executed.
 | `pnpm exec tsc -p tsconfig.json` | PASS |
 | `pnpm build` | PASS |
 | `pnpm lint` | PASS (`Found 0 warnings and 0 errors.`) |
-| `pnpm vitest run src/telegram/ src/hooks/ src/goal/ src/repo-chat/ src/memory/` | FAIL |
-| `pnpm vitest run src/auto-reply/` | Not run; stopped after failure above |
-| `pnpm vitest run src/cli/` | Not run; stopped after failure above |
+| `pnpm vitest run src/telegram/ src/hooks/ src/goal/ src/repo-chat/ src/memory/` | PASS (`111 passed | 1 skipped` files, `1382 passed | 8 skipped` tests) |
+| `pnpm vitest run src/auto-reply/` | PASS (`56 passed` files, `475 passed` tests) |
+| `pnpm vitest run src/cli/` | FAIL |
 | `pnpm vitest run src/infra/outbound/` | Not run; stopped after failure above |
 | `pnpm test` | Not run; stopped after failure above |
 | `node scripts/run-node.mjs --help` | Not run; stopped after failure above |
@@ -156,15 +157,17 @@ The runbook was reviewed only; it was not executed.
 
 Failure details:
 
-- `src/telegram/bot.media.includes-location-text-ctx-fields-pins.test.ts`
-  failed 2 tests.
-- `includes location text and ctx fields for pins` timed out after 20000ms.
-- `captures venue fields for named places` failed with
-  `ReferenceError: Cannot access '__vite_ssr_import_8__' before initialization`
-  at `createTelegramBot src/telegram/bot.ts:147:30`.
+- The previous Telegram media test failure was fixed by hoisting the test's
+  mocked `apiThrottler` spy; the individual file and the full
+  Telegram/hooks/goal/repo-chat/memory slice passed afterward.
+- `pnpm vitest run src/cli/` failed in
+  `src/cli/gateway-cli.coverage.test.ts`.
+- Failed test:
+  `gateway-cli coverage > registers call/health commands and routes to callGateway`.
+- Error: test timed out after 30000ms at
+  `src/cli/gateway-cli.coverage.test.ts:103`.
 - Vitest summary for the failed command:
-  `1 failed | 110 passed | 1 skipped` test files,
-  `2 failed | 1380 passed | 8 skipped` tests.
+  `1 failed | 32 passed` test files, `1 failed | 194 passed` tests.
 
 ## Remaining pre-public manual tasks
 
@@ -178,6 +181,6 @@ Failure details:
 ## Recommendation
 
 Blocked. The repo is not ready for the manual public-launch history step until
-the failing Telegram inbound media test slice is fixed and the full Stage 2K
-verification sequence passes. No demo work, orphan branch, remote changes, push,
-publish, or release-history runbook execution was performed.
+the CLI gateway coverage timeout is fixed and the full Stage 2K verification
+sequence passes. No demo work, orphan branch, remote changes, push, publish, or
+release-history runbook execution was performed.
