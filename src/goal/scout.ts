@@ -118,11 +118,10 @@ function resolveNodeSpecsDir(scoutDir: string): string {
 // Template rendering
 // ---------------------------------------------------------------------------
 
-/** Resolve the template file path relative to the package root. */
+/** Resolve the template file path relative to the compiled goal module. */
 export function resolveScoutTemplatePath(): string {
-  // Works from both src/goal/ and dist/goal/ (both two levels deep)
   const moduleDir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-  return path.join(moduleDir, "..", "..", "templates", "scout_prompt_template.md");
+  return path.join(moduleDir, "templates", "scout_prompt_template.md");
 }
 
 export function renderScoutTemplate(params: {

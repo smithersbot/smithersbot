@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_HOOKS_PATH = "git-hooks";
+const DEFAULT_HOOKS_PATH = "tools/git-hooks";
 const PRE_COMMIT_HOOK = "pre-commit";
 
 function getRepoRoot() {

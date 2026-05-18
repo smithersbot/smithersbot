@@ -70,7 +70,7 @@ describe("setupGitHooks", () => {
 
   it("configures hooks path when inside a repo", () => {
     const repoRoot = makeTempDir();
-    const hooksDir = path.join(repoRoot, "git-hooks");
+    const hooksDir = path.join(repoRoot, "tools", "git-hooks");
     fs.mkdirSync(hooksDir, { recursive: true });
     const hookPath = path.join(hooksDir, "pre-commit");
     fs.writeFileSync(hookPath, "#!/bin/sh\n", "utf-8");

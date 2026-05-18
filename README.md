@@ -66,7 +66,7 @@ Goal state is persisted on disk. Set the state directory environment variable wh
 ## How it works
 
 <p align="center">
-  <img src="./smithersbot-flowchart.png" alt="SmithersBot operator flow" width="720">
+  <img src="./assets/smithersbot-flowchart.png" alt="SmithersBot operator flow" width="720">
 </p>
 
 <details><summary>Mermaid source</summary>
