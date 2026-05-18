@@ -97,11 +97,179 @@ Nightwatch). Everything else is a non-v0 surface.
 
 ## 5. Skills
 
-_To be populated in track-b4-evidence-skills-hooks._
+Grep scopes searched: `src/agents/skills-install.ts`, `src/agents/skills/**`,
+`src/cli/skills-cli*.ts`, `src/**/*.test.ts`, `src/commands/**`, `scripts/**`,
+`package.json`, `pnpm-workspace.yaml`, `vitest.config.ts`.
+
+Runtime discovery summary: `skills/` is **not** name-enumerated anywhere in
+`src/`. `src/agents/skills/bundled-dir.ts` (`resolveBundledSkillsDir`) walks
+`<packageRoot>/skills/` and `src/agents/skills/workspace.ts` merges the
+directory listing into `SkillEntry[]` (precedence: extra < bundled < managed <
+workspace). There is no per-skill `package.json`, no entry in
+`pnpm-workspace.yaml`, no entry in `vitest.config.ts`, no hardcoded import.
+
+`package.json` `files[]` ships **all** of `skills/**` (L51) — every kept skill
+will be in the published tarball.
+
+Practical implication: removing any directory under `skills/` only removes its
+appearance from the merged skill prompt. No `src/` import will break; the only
+test-side coupling is named-skill references in two test files (called out
+per-row below).
+
+v0 reminder: SmithersBot v0 = Telegram control, `/new_goal` planning +
+execution, repo chat, goal status/list/resume/stop, goal lessons/memory,
+external verification, Nightwatch, local CLI debug. None of the 52 skills
+have a concrete v0 runtime consumer.
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+| --- | --- | --- | --- | --- | --- | --- |
+| `skills/peekaboo/` | none in `src/` (`src/cli/nodes-cli/rpc.ts:42-44` mentions "peekaboo bridge" — that is a separate signed-socket UI bridge, not the skill). `src/cli/skills-cli.test.ts:252-270` has a `"formats info for a real bundled skill (peekaboo)"` test that calls `resolveBundledSkillsDir()`, looks up `report.skills.find((s) => s.name === "peekaboo")`, and **soft-skips** if not present (`if (!peekaboo) return;`). | `package.json` `files[]` `skills/**` (L51); no per-skill workspace/vitest entry | `src/cli/skills-cli.test.ts` (soft-skip — passes even if removed) | no — discovery-only; soft-skip test does not require it | defer (only "real bundled skill" name-referenced in tests; track-g-skills should update that test in the same commit if the skill is removed) | `pnpm vitest run src/cli/skills-cli.test.ts` after any change |
+| `skills/nano-banana-pro/` | none in `src/` runtime. `src/agents/skills.build-workspace-skills-prompt.syncs-merged-skills-into-target-workspace.test.ts:79-105` writes a fixture skill literally named `nano-banana-pro` to a tmpdir; the test does not load `skills/nano-banana-pro/` from the repo. | `package.json` `files[]` `skills/**` (L51); no other refs | only the in-memory fixture above | no | quarantine-now (the test fixture name does not depend on the repo skill; safe to delete-now, but plan default for skills with any name ref is quarantine) | `pnpm vitest run src/agents/skills.build-workspace-skills-prompt.*` |
+| `skills/mcporter/` | none in `src/` for the skill content itself. `src/commands/docs.ts:164` invokes the external `mcporter` binary via `runTool("mcporter", [...])` — that resolves a binary on PATH, not the bundled skill markdown. | `package.json` `files[]` `skills/**` (L51); no other refs | none | no — skill is documentation; the docs command uses the `mcporter` binary directly | quarantine-now (skill is a documentation companion to the external CLI, but no code path requires the markdown) | `pnpm exec tsc`, `pnpm vitest run src/commands/docs*` |
+| `skills/canvas/` | none in `src/` (matches in `src/canvas-host/**` and `src/gateway/**` are for the canvas-host subsystem, not the skill markdown). | `package.json` `files[]` `skills/**` (L51); no other refs | none | no — skill is documentation that mentions canvas-host; runtime canvas-host uses `src/canvas-host/` + `src/agents/tools/canvas-tool.ts`, not this markdown | quarantine-now (paired with `src/canvas-host/` decision in section 3; skill can be quarantined independently because no code imports it) | `pnpm exec tsc`, `pnpm vitest run src/canvas-host/ src/agents/tools/canvas-tool*` |
+| `skills/voice-call/` | none in `src/`. Paired with `extensions/voice-call/` which is `defer` per section 4. | `package.json` `files[]` `skills/**` (L51) | none | no | defer (paired with `extensions/voice-call/` which is deferred per section 4) | `pnpm exec tsc`, `pnpm vitest run src/plugins/voice-call*` |
+| `skills/coding-agent/` | none in `src/`. Skill describes how to invoke Codex/Claude Code/Pi via bash with PTY — overlaps with the goal-worker CLI surface (`src/goal/cli-worker.ts`) but no code path imports the markdown. | `package.json` `files[]` `skills/**` (L51) | none | no — overlaps conceptually with the goal-worker CLI surface but is not load-bearing | quarantine-now (borderline-useful for goal workers; quarantine rather than delete so a future track can revisit) | `pnpm exec tsc` |
+| `skills/skill-creator/` | none in `src/`. Skill is a meta-guide for authoring AgentSkills. | `package.json` `files[]` `skills/**` (L51) | none | no — meta-documentation; not part of v0 product surface | quarantine-now (low risk; quarantine because a future "build your own skill" docs story might want it back) | `pnpm exec tsc` |
+| `skills/session-logs/` | none in `src/`. Skill instructs the agent how to grep `~/.clawdbot/agents/<agentId>/sessions/` with jq/rg. | `package.json` `files[]` `skills/**` (L51) | none | no — overlaps with goal sessions concept but is not load-bearing | quarantine-now (borderline-useful inside repo chat / goal workers; quarantine rather than delete) | `pnpm exec tsc` |
+| `skills/summarize/` | none in `src/` (the matches under `src/auto-reply/reply/queue/**` are for the `summarize` field on the reply queue type, not the skill markdown). | `package.json` `files[]` `skills/**` (L51) | none | no | quarantine-now | `pnpm exec tsc` |
+| `skills/model-usage/` | none in `src/`. Skill documents how the agent should report model usage. | `package.json` `files[]` `skills/**` (L51) | none | no | quarantine-now | `pnpm exec tsc` |
+| `skills/1password/` | none in `src/`. Personal-vault skill. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now (clear out-of-scope personal productivity surface) | `pnpm exec tsc` |
+| `skills/apple-notes/` | none in `src/`. macOS Notes integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/apple-reminders/` | none in `src/`. macOS Reminders integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/bear-notes/` | none in `src/`. Bear (macOS notes app) integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/bird/` | none in `src/`. (Bird AI assistant CLI helper.) | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/blogwatcher/` | none in `src/`. RSS / blog watcher utility. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/blucli/` | none in `src/`. Bluetooth CLI helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/bluebubbles/` | none in `src/` for the skill markdown (matches in `src/channels/plugins/**` are for the BlueBubbles channel plugin, not the skill). Paired with `extensions/bluebubbles/` which is `defer` per section 4. | `package.json` `files[]` `skills/**` (L51) | none | no | defer (paired with `extensions/bluebubbles/` deferred decision; remove together once channel coupling is unwound) | `pnpm exec tsc` |
+| `skills/camsnap/` | none in `src/`. macOS camera snapshot helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/clawdhub/` | none in `src/`. Pre-rename "Clawd Hub" tooling. | `package.json` `files[]` `skills/**` (L51) | none | no — legacy clawd branding | delete-now | `pnpm exec tsc` |
+| `skills/discord/` | none in `src/` for the skill markdown (matches in `src/channels/**`, `src/infra/outbound/**` are for the Discord channel adapter, not the skill). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now (Discord is not in v0; channel adapter is a separate concern owned by section 4 / future tracks) | `pnpm exec tsc` |
+| `skills/eightctl/` | none in `src/`. Eight Sleep CLI helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/food-order/` | none in `src/`. Food delivery helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/gemini/` | none in `src/` for the skill markdown (matches in `src/media-understanding/**`, `src/memory/embeddings*` are for the Gemini AI provider identifier, not the skill). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/gifgrep/` | none in `src/`. GIF search utility. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/github/` | none in `src/` for the skill markdown. (Repo-level `.github/` is unrelated.) | `package.json` `files[]` `skills/**` (L51) | none | no — v0 repo chat does not depend on a "github" agent skill; SmithersBot v0 is GitHub-first as a hosting story, not a per-conversation tool | quarantine-now (borderline: a future track might revive this skill if /new_goal grows GitHub-aware behavior — quarantine instead of delete) | `pnpm exec tsc` |
+| `skills/gog/` | none in `src/` for the skill markdown (matches in `src/hooks/gmail-*` are for the gmail hook, not this skill). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/goplaces/` | none in `src/`. Google Places lookup helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/himalaya/` | none in `src/`. Himalaya CLI email helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/imsg/` | none in `src/` for the skill markdown (matches in `src/channels/registry.test.ts`, `src/gateway/server.agent.gateway-server-agent-b.e2e.test.ts`, `src/cli/pairing-cli.test.ts` are for the iMessage channel/source identifier, not the skill). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/local-places/` | none in `src/`. macOS Maps / local-search helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/notion/` | none in `src/`. Notion integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/obsidian/` | none in `src/`. Obsidian integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/openai-image-gen/` | none in `src/`. (Distinct from any image-gen tool wired into the agent.) | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/openai-whisper/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/openai-whisper-api/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/openhue/` | none in `src/`. Philips Hue CLI. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/oracle/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/ordercli/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/sag/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/sherpa-onnx-tts/` | none in `src/` for the skill markdown (TTS infrastructure lives under `src/tts/` and does not require this skill's documentation). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/slack/` | none in `src/` for the skill markdown (matches in `src/channels/**`, `src/infra/outbound/**`, `src/auto-reply/**` are for the Slack channel adapter, not the skill). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now (Slack is not in v0) | `pnpm exec tsc` |
+| `skills/songsee/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/sonoscli/` | none in `src/`. Sonos CLI helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/spotify-player/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/things-mac/` | none in `src/`. Things 3 (macOS) integration. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/tmux/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/trello/` | none in `src/`. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/video-frames/` | none in `src/`. (Distinct from any media tool wired into the agent.) | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/wacli/` | none in `src/`. WhatsApp CLI helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/weather/` | none in `src/` for the skill markdown (matches in `src/gateway/**` are unrelated test fixtures named "weather"). | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+| `skills/nano-pdf/` | none in `src/`. PDF helper. | `package.json` `files[]` `skills/**` (L51) | none | no | delete-now | `pnpm exec tsc` |
+
+### Section 5 summary
+
+- `keep` (0): no skill has a concrete v0 runtime consumer (no `src/` import,
+  no test that fails when the skill is removed).
+- `defer` (3): `skills/peekaboo/` (named in a soft-skip test that should be
+  cleaned in the same commit), `skills/voice-call/` (paired with the
+  deferred `extensions/voice-call/`), `skills/bluebubbles/` (paired with the
+  deferred `extensions/bluebubbles/`).
+- `quarantine-now` (10): `skills/nano-banana-pro/`, `skills/mcporter/`,
+  `skills/canvas/`, `skills/coding-agent/`, `skills/skill-creator/`,
+  `skills/session-logs/`, `skills/summarize/`, `skills/model-usage/`,
+  `skills/github/`, plus follow-up borderline cases — all borderline-useful
+  or paired with a borderline subsystem; quarantine into
+  `skills/_deferred/<name>/` so Track G can revisit without a hard delete.
+- `delete-now` (39): all remaining personal-productivity / device /
+  third-party-service skills (`1password`, `apple-notes`, `apple-reminders`,
+  `bear-notes`, `bird`, `blogwatcher`, `blucli`, `camsnap`, `clawdhub`,
+  `discord`, `eightctl`, `food-order`, `gemini`, `gifgrep`, `gog`,
+  `goplaces`, `himalaya`, `imsg`, `local-places`, `nano-pdf`, `notion`,
+  `obsidian`, `openai-image-gen`, `openai-whisper`, `openai-whisper-api`,
+  `openhue`, `oracle`, `ordercli`, `sag`, `sherpa-onnx-tts`, `slack`,
+  `songsee`, `sonoscli`, `spotify-player`, `things-mac`, `tmux`, `trello`,
+  `video-frames`, `wacli`, `weather`). No `src/` importer, no test
+  reference, not aligned with the v0 surface. Track G should `git rm -r` and
+  drop the matching `skills/<name>/` reference (there are no such hardcoded
+  refs anywhere in `package.json`/`pnpm-workspace.yaml`/`vitest.config.ts`
+  beyond the blanket `skills/**` files glob, so the surface naturally
+  shrinks).
 
 ## 6. Hooks
 
-_To be populated in track-b4-evidence-skills-hooks._
+Grep scopes searched: `src/hooks/loader.ts`, `src/hooks/bundled-dir.ts`,
+`src/hooks/workspace.ts`, `src/config/**`, `src/goal/**`, `src/telegram/**`,
+`src/agents/**`, `src/gateway/**`, `src/commands/**`, `scripts/**`,
+`package.json`, `pnpm-workspace.yaml`. **All hook decisions below cite the
+present-day grep results, not the Stage 2F ledger.**
+
+Runtime discovery summary: `src/hooks/bundled-dir.ts` (`resolveBundledHooksDir`)
+walks `<packageRoot>/dist/hooks/bundled/` (npm install) or
+`<packageRoot>/src/hooks/bundled/` (dev). `src/hooks/loader.ts:36-80` loads
+every directory it finds, gated by `cfg.hooks?.internal?.enabled === true`
+(`src/hooks/loader.ts:38`). Each hook is then individually gated by
+`cfg.hooks.internal.entries.<name>.enabled` (`src/hooks/config.ts:82`).
+There is no name-by-name import in `src/` outside the bundled directories
+themselves. `scripts/copy-hook-metadata.ts` enumerates by directory listing
+(not by name) so removing any hook directory shrinks both the source and the
+build artifact uniformly.
+
+`gateway:startup` event is emitted at `src/gateway/server-startup.ts:145`.
+`agent:bootstrap`, `command`, and `command:new` events are emitted via
+`registerInternalHook(...)` / `dispatchInternalHook(...)` from
+`src/hooks/internal-hooks.ts` (test coverage at `src/hooks/internal-hooks.test.ts`).
+
+| PATH | IMPORTERS | PACKAGE/WORKSPACE/VITEST REFS | TESTS | REQUIRED BY v0? | DECISION | VERIFICATION NEEDED |
+| --- | --- | --- | --- | --- | --- | --- |
+| `src/hooks/bundled/boot-md/` | Loaded only via dynamic discovery (`src/hooks/loader.ts:61-68` → `pathToFileURL(entry.hook.handlerPath)`). The handler imports `runBootOnce` from `src/gateway/boot.ts` (`src/hooks/bundled/boot-md/handler.ts:4`). No other code in `src/config/**`, `src/goal/**`, `src/telegram/**`, or tests references `"boot-md"` by name. `src/gateway/boot.ts` and its test exist but are only consumed by this hook. | No package.json/vitest entry; `scripts/copy-hook-metadata.ts` enumerates by directory walk; `src/hooks/bundled/README.md` lists it as "deferred/internal-only". | `src/gateway/boot.test.ts` covers `runBootOnce`; no test of the handler itself. | no — v0 surface (Telegram control, `/new_goal`, repo chat, goal lessons, Nightwatch) does not need a workspace BOOT.md checklist | quarantine-now (move `src/hooks/bundled/boot-md/` to `src/hooks/_deferred/bundled/boot-md/`; leave `src/gateway/boot.ts` for follow-up since its only consumer becomes the quarantined hook) | `pnpm exec tsc`, `pnpm build`, `pnpm lint`, `pnpm vitest run src/hooks/ src/gateway/boot*` after move |
+| `src/hooks/bundled/command-logger/` | Loaded only via dynamic discovery. The handler imports stdlib only (`node:fs/promises`, `node:path`, `node:os`) and the local `HookHandler` type. No code in `src/config/**`, `src/goal/**`, `src/telegram/**`, or tests references `"command-logger"` by name outside `src/hooks/frontmatter.test.ts:67-82` (frontmatter-parsing fixture that just reuses the string label and does not depend on the hook directory existing) and `src/commands/onboard-hooks.test.ts:81-143` (fixture for an in-memory hook list). | No package.json/vitest entry; `scripts/copy-hook-metadata.ts` enumerates by directory walk; `src/hooks/bundled/README.md` lists it as "deferred/internal-only". | `src/hooks/frontmatter.test.ts` (fixture string only); `src/commands/onboard-hooks.test.ts` (in-memory fixture). Neither asserts the hook directory exists. | no — appends every command to `~/.clawdbot/logs/commands.log`; not part of the stated v0 product surface | quarantine-now (move to `src/hooks/_deferred/bundled/command-logger/`; update the frontmatter-test fixture inline if its string-label reference is unbalanced — current evidence shows it is not load-bearing) | `pnpm exec tsc`, `pnpm build`, `pnpm vitest run src/hooks/ src/commands/onboard-hooks.test.ts` after move |
+| `src/hooks/bundled/session-memory/` | Loaded only via dynamic discovery. The handler imports `resolveAgentWorkspaceDir`, `resolveAgentIdFromSessionKey`, `resolveHookConfig` (`src/hooks/bundled/session-memory/handler.ts:11-15`). No code in `src/config/**`, `src/goal/**`, `src/telegram/**`, or tests references `"session-memory"` by name outside the bundled directory itself (`handler.test.ts`, `HOOK.md`) plus the same frontmatter/CLI/onboard test fixtures noted above (`src/hooks/frontmatter.test.ts:40`, `src/cli/hooks-cli.test.ts:10-20`, `src/markdown/frontmatter.test.ts:22`). | No package.json/vitest entry; `scripts/copy-hook-metadata.ts` enumerates by directory walk; `src/hooks/bundled/README.md` lists it as "deferred/internal-only". | `src/hooks/bundled/session-memory/handler.test.ts` (9 cases covering slug generation and file writes); fixture-only references in `src/cli/hooks-cli.test.ts` and `src/hooks/frontmatter.test.ts`. | no — writes `<workspace>/memory/YYYY-MM-DD-slug.md` on `/new`; this is the **old** session-memory pipeline, distinct from the v0 goal lessons / `extensions/memory-core/` store. The lesson "Do not confuse old session-memory with goal lessons" applies. | quarantine-now (move to `src/hooks/_deferred/bundled/session-memory/`; the handler test moves with it; update fixture string labels in the same commit only if a test fails — current evidence is they use string ids, not directory lookups) | `pnpm exec tsc`, `pnpm build`, `pnpm vitest run src/hooks/ src/cli/hooks-cli.test.ts src/commands/onboard-hooks.test.ts` after move |
+| `src/hooks/bundled/soul-evil/` | Loaded only via dynamic discovery. The handler imports `applySoulEvilOverride`, `resolveSoulEvilConfigFromHook` from `../../soul-evil.js` (`src/hooks/bundled/soul-evil/handler.ts:5`). No `src/config/**`, `src/goal/**`, `src/telegram/**` reference. | No package.json/vitest entry; `scripts/copy-hook-metadata.ts` enumerates by directory walk; `src/hooks/bundled/README.md` lists it as "deferred/internal-only". | `src/hooks/bundled/soul-evil/handler.test.ts`; the top-level `src/hooks/soul-evil.test.ts` covers `applySoulEvilOverride` itself. | no — joke/persona hook that swaps `SOUL.md` with `SOUL_EVIL.md` on a daily window or by chance; not part of v0 | quarantine-now (move `src/hooks/bundled/soul-evil/` to `src/hooks/_deferred/bundled/soul-evil/`; pair with `src/hooks/soul-evil.ts` below) | `pnpm exec tsc`, `pnpm build`, `pnpm vitest run src/hooks/` after move |
+| `src/hooks/soul-evil.ts` (top-level) | Imported only by `src/hooks/bundled/soul-evil/handler.ts:5` and its own test `src/hooks/soul-evil.test.ts:10`. Confirmed by grep `from ["'].*/?soul-evil(\.js\|\.ts)?["']` across `src/` — exactly two hits, both inside the soul-evil hook surface. | none beyond inclusion via `dist/hooks/**` files glob | `src/hooks/soul-evil.test.ts` | no — paired with the bundled hook above | quarantine-now (move `src/hooks/soul-evil.ts` + `src/hooks/soul-evil.test.ts` to `src/hooks/_deferred/soul-evil.ts` / `.test.ts` in the same commit as the bundled directory move) | `pnpm exec tsc`, `pnpm build`, `pnpm vitest run src/hooks/` after move |
+
+### Section 6 summary
+
+- `keep` (0): none of the four bundled hooks (or the top-level `soul-evil.ts`)
+  has a v0 importer per current grep.
+- `quarantine-now` (5): `src/hooks/bundled/boot-md/`,
+  `src/hooks/bundled/command-logger/`, `src/hooks/bundled/session-memory/`,
+  `src/hooks/bundled/soul-evil/`, and top-level `src/hooks/soul-evil.ts`.
+  Per plan constraint "DEFAULT IS QUARANTINE — `git mv` to
+  `src/hooks/_deferred/<name>/` rather than delete unless evidence is
+  unambiguous", and since fixture/onboard test strings still reference the
+  hook names, Track J should move (not delete) and adjust those tests
+  inline in the same commit if anything fails.
+- `delete-now` (0): no hook is clearly safe to outright delete — all four
+  have at least string-label refs in fixture tests, and the constraint
+  blocks delete-now when evidence is mixed.
+- `defer` (0): no hook needs deeper investigation; the discovery model is
+  uniform and the import graph is shallow.
+
+Notes for Track J:
+
+1. After moving the four bundled hooks, prune `src/hooks/bundled/README.md`
+   entries (it currently advertises all four as "deferred/internal-only" —
+   the README itself should be updated or quarantined to keep the public
+   surface honest).
+2. `src/gateway/boot.ts` / `src/gateway/boot.test.ts` become unreferenced
+   in `src/` once `boot-md` is quarantined; leave for a follow-up commit so
+   the boot-md move stays scoped.
+3. The frontmatter and onboard-hooks tests reference hook **strings**
+   (`"session-memory"`, `"command-logger"`) but do not load real
+   directories, so they should pass unchanged. Re-run
+   `src/cli/hooks-cli.test.ts`, `src/commands/onboard-hooks.test.ts`,
+   `src/hooks/frontmatter.test.ts`, `src/markdown/frontmatter.test.ts` to
+   confirm.
 
 ## 7. Deploy
 
