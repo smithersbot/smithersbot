@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 const callGateway = vi.fn(async () => ({ ok: true }));
 const startGatewayServer = vi.fn(async () => ({
@@ -25,6 +25,8 @@ const defaultRuntime = {
   },
 };
 
+let registerGatewayCli: (program: Command) => void;
+
 async function withEnvOverride<T>(
   overrides: Record<string, string | undefined>,
   fn: () => Promise<T>,
@@ -35,7 +37,6 @@ async function withEnvOverride<T>(
     if (overrides[key] === undefined) delete process.env[key];
     else process.env[key] = overrides[key];
   }
-  vi.resetModules();
   try {
     return await fn();
   } finally {
@@ -43,7 +44,6 @@ async function withEnvOverride<T>(
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
-    vi.resetModules();
   }
 }
 
@@ -100,12 +100,15 @@ vi.mock("../commands/gateway-status.js", () => ({
 }));
 
 describe("gateway-cli coverage", () => {
+  beforeAll(async () => {
+    ({ registerGatewayCli } = await import("./gateway-cli.js"));
+  });
+
   it("registers call/health commands and routes to callGateway", async () => {
     runtimeLogs.length = 0;
     runtimeErrors.length = 0;
     callGateway.mockClear();
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -123,7 +126,6 @@ describe("gateway-cli coverage", () => {
     runtimeErrors.length = 0;
     gatewayStatusCommand.mockClear();
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -150,7 +152,6 @@ describe("gateway-cli coverage", () => {
       },
     ]);
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -182,7 +183,6 @@ describe("gateway-cli coverage", () => {
       },
     ]);
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -205,7 +205,6 @@ describe("gateway-cli coverage", () => {
     runtimeErrors.length = 0;
     discoverGatewayBeacons.mockReset();
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -225,7 +224,6 @@ describe("gateway-cli coverage", () => {
     runtimeErrors.length = 0;
     callGateway.mockClear();
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -241,8 +239,6 @@ describe("gateway-cli coverage", () => {
   it("validates gateway ports and handles force/start errors", async () => {
     runtimeLogs.length = 0;
     runtimeErrors.length = 0;
-
-    const { registerGatewayCli } = await import("./gateway-cli.js");
 
     // Invalid port
     const programInvalidPort = new Command();
@@ -301,7 +297,6 @@ describe("gateway-cli coverage", () => {
       new GatewayLockError("another gateway instance is already listening"),
     );
 
-    const { registerGatewayCli } = await import("./gateway-cli.js");
     const program = new Command();
     program.exitOverride();
     registerGatewayCli(program);
@@ -323,7 +318,6 @@ describe("gateway-cli coverage", () => {
       runtimeErrors.length = 0;
       startGatewayServer.mockClear();
 
-      const { registerGatewayCli } = await import("./gateway-cli.js");
       const program = new Command();
       program.exitOverride();
       registerGatewayCli(program);

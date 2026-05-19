@@ -2,7 +2,7 @@
 
 ## Executive summary
 
-Stage 2K final non-demo launch polish is blocked by verification. The
+Stage 2K final non-demo launch polish is complete. The
 public-facing README now has a CI badge, honest demo status, the intended
 flowchart image path, a fresh isolated setup guide, and a Telegram command list
 aligned with the v0 command surface. Public metadata and root-tree checks did
@@ -10,9 +10,8 @@ not identify a remaining high-confidence public leak that should be fixed in
 this stage.
 
 The demo asset remains intentionally out of scope and is still a manual
-pre-public task. A narrow Telegram media test harness issue was fixed during
-verification, but no commit was made because the required verification sequence
-still did not pass.
+pre-public task. Verification passed after fixing narrow test harness issues in
+the Telegram media and gateway CLI coverage tests.
 
 ## README changes
 
@@ -149,25 +148,20 @@ The runbook was reviewed only; it was not executed.
 | `pnpm lint` | PASS (`Found 0 warnings and 0 errors.`) |
 | `pnpm vitest run src/telegram/ src/hooks/ src/goal/ src/repo-chat/ src/memory/` | PASS (`111 passed | 1 skipped` files, `1382 passed | 8 skipped` tests) |
 | `pnpm vitest run src/auto-reply/` | PASS (`56 passed` files, `475 passed` tests) |
-| `pnpm vitest run src/cli/` | FAIL |
-| `pnpm vitest run src/infra/outbound/` | Not run; stopped after failure above |
-| `pnpm test` | Not run; stopped after failure above |
-| `node scripts/run-node.mjs --help` | Not run; stopped after failure above |
-| `MOLTBOT_STATE_DIR=/tmp/moltbot-2k-verify node scripts/run-node.mjs goal list --json` | Not run; stopped after failure above |
+| `pnpm vitest run src/cli/` | PASS (`33 passed` files, `195 passed` tests) |
+| `pnpm vitest run src/infra/outbound/` | PASS (`11 passed` files, `45 passed` tests) |
+| `pnpm test` | PASS (`1 passed` file, `15 passed` tests) |
+| `node scripts/run-node.mjs --help` | PASS |
+| `MOLTBOT_STATE_DIR=/tmp/moltbot-2k-verify node scripts/run-node.mjs goal list --json` | PASS (`[]`) |
 
-Failure details:
+Verification notes:
 
 - The previous Telegram media test failure was fixed by hoisting the test's
   mocked `apiThrottler` spy; the individual file and the full
   Telegram/hooks/goal/repo-chat/memory slice passed afterward.
-- `pnpm vitest run src/cli/` failed in
-  `src/cli/gateway-cli.coverage.test.ts`.
-- Failed test:
-  `gateway-cli coverage > registers call/health commands and routes to callGateway`.
-- Error: test timed out after 30000ms at
-  `src/cli/gateway-cli.coverage.test.ts:103`.
-- Vitest summary for the failed command:
-  `1 failed | 32 passed` test files, `1 failed | 194 passed` tests.
+- The previous CLI timeout was fixed by importing gateway CLI registration once
+  for the coverage suite instead of resetting and re-importing the CLI module
+  graph inside each test. The full `src/cli/` slice passed afterward.
 
 ## Remaining pre-public manual tasks
 
@@ -180,7 +174,6 @@ Failure details:
 
 ## Recommendation
 
-Blocked. The repo is not ready for the manual public-launch history step until
-the CLI gateway coverage timeout is fixed and the full Stage 2K verification
-sequence passes. No demo work, orphan branch, remote changes, push, publish, or
-release-history runbook execution was performed.
+Ready for demo and the manual public-launch history step. No demo work, orphan
+branch, remote changes, push, publish, or release-history runbook execution was
+performed.
