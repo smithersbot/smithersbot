@@ -4,6 +4,7 @@ import type { GoalLlmClient, PlanStep } from "./types.js";
 const runCliProcessMock = vi.fn();
 const resolveClaudeBinaryMock = vi.fn();
 const buildClaudeCodeEnvMock = vi.fn();
+const detectBackendAvailabilityMock = vi.fn();
 
 vi.mock("./cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
@@ -15,6 +16,11 @@ vi.mock("./scout.js", () => ({
 
 vi.mock("./claude-code-env.js", () => ({
   buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
+}));
+
+vi.mock("./backend-availability.js", () => ({
+  detectBackendAvailability: () => detectBackendAvailabilityMock(),
+  getCodexAskForApprovalPlacement: () => "unsupported",
 }));
 
 import { clampCriticality, generateManualTests } from "./manual-tests.js";
@@ -101,8 +107,14 @@ describe("generateManualTests", () => {
     runCliProcessMock.mockReset();
     resolveClaudeBinaryMock.mockReset();
     buildClaudeCodeEnvMock.mockReset();
+    detectBackendAvailabilityMock.mockReset();
     resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
     buildClaudeCodeEnvMock.mockReturnValue({ CLAUDE_AUTH: "subscription" });
+    detectBackendAvailabilityMock.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ]);
   });
 
   it("parses model suggestions and formats criticality in range", async () => {
@@ -225,17 +237,75 @@ describe("generateManualTests", () => {
     }
   });
 
-  it("throws when the claude binary cannot be resolved and no client is injected", async () => {
+  it("uses Codex-only manual test generation when Claude Code is unavailable", async () => {
     resolveClaudeBinaryMock.mockReturnValueOnce(null);
-
-    await expect(
-      withNonTestEnv(() =>
-        generateManualTests({
-          goal: "Improve authentication reliability",
-          steps: makeDoneSteps(),
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: JSON.stringify({
+        type: "result",
+        result: JSON.stringify({
+          tests: [
+            {
+              description: "Test Telegram approval",
+              criticality: 7,
+              reason: "Requires a real Telegram client",
+              detail: "**Step 1.** Send the command.\n**Step 2.** Confirm the approval prompt.",
+            },
+          ],
         }),
-      ),
-    ).rejects.toThrow("claude binary not found on PATH");
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 31,
+    });
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve Telegram flow",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([
+      {
+        description: "Test Telegram approval",
+        criticality: 7,
+        reason: "Requires a real Telegram client",
+        detail: "**Step 1.** Send the command.\n**Step 2.** Confirm the approval prompt.",
+      },
+    ]);
+    const call = runCliProcessMock.mock.calls[0]?.[0] as { command: string; args: string[] };
+    expect(call.command).toBe("codex");
+    expect(call.args).toContain("exec");
+    expect(call.args).toContain("--json");
+  });
+
+  it("falls back to generated manual tests when no CLI backend is available", async () => {
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests[0]).toMatchObject({
+      description: "Test login validation",
+      reason: "Automated test generation returned fewer suggestions than expected.",
+    });
+    expect(runCliProcessMock).not.toHaveBeenCalled();
   });
 
   it("returns an empty array when the model explicitly returns tests: []", async () => {

@@ -5,7 +5,10 @@ import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
 import { resolveEnabledWorkers } from "./backend-types.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
-import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import {
+  detectBackendAvailability,
+  getCodexAskForApprovalPlacement,
+} from "./backend-availability.js";
 import { RATE_LIMIT_RE } from "./error-patterns.js";
 import {
   PLAN_SYSTEM_PROMPT,
@@ -168,13 +171,25 @@ function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
   ];
 }
 
+const NO_WORKER_BACKEND_ERROR =
+  "No worker backend available. Install Codex or Claude Code and rerun.";
+
 function resolvePlannerBackends(enabledWorkers?: CliWorkerId[]): CliWorkerId[] {
   const resolvedWorkers = resolveEnabledWorkers(enabledWorkers ? { enabledWorkers } : undefined);
-  const hasClaudeCode = resolvedWorkers.includes("claude_code");
-  const hasCodex = resolvedWorkers.includes("codex");
-  if (hasClaudeCode && hasCodex) return ["claude_code", "codex"];
-  if (hasClaudeCode) return ["claude_code"];
-  return ["codex"];
+  const availability = detectBackendAvailability();
+  const isAvailable = (backend: CliWorkerId) =>
+    availability.find((entry) => entry.id === backend)?.available === true;
+  const ordered: CliWorkerId[] = [];
+  if (resolvedWorkers.includes("claude_code") && isAvailable("claude_code")) {
+    ordered.push("claude_code");
+  }
+  if (resolvedWorkers.includes("codex") && isAvailable("codex")) {
+    ordered.push("codex");
+  }
+  if (ordered.length === 0) {
+    throw new Error(NO_WORKER_BACKEND_ERROR);
+  }
+  return ordered;
 }
 
 function formatCodexFallbackDisabledError(params: {
@@ -448,9 +463,6 @@ export async function runCliPlanRevision(
 
   const plannerBackends = resolvePlannerBackends(params.enabledWorkers);
   const claudeBin = plannerBackends.includes("claude_code") ? resolveClaudeBinary() : undefined;
-  if (plannerBackends.includes("claude_code") && !claudeBin) {
-    throw new Error("claude binary not found on PATH");
-  }
   const claudeCommand = claudeBin ?? "claude";
 
   const runDir = resolveRunDir(runId, goalsDir);
@@ -579,9 +591,6 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   const plannerBackends = resolvePlannerBackends(params.enabledWorkers);
   const claudeBin = plannerBackends.includes("claude_code") ? resolveClaudeBinary() : undefined;
-  if (plannerBackends.includes("claude_code") && !claudeBin) {
-    throw new Error("claude binary not found on PATH");
-  }
   const claudeCommand = claudeBin ?? "claude";
 
   const scoutDir = resolveScoutDir(runId, goalsDir);

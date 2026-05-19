@@ -2,6 +2,10 @@ import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { formatExecError } from "./build-gate.js";
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
 import {
+  detectBackendAvailability,
+  getCodexAskForApprovalPlacement,
+} from "./backend-availability.js";
+import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
@@ -18,6 +22,7 @@ export const POST_EXECUTION_REVIEW_ERROR_MAX_CHARS = 400;
 // Rough ~45K-token budget; leaves headroom for the prompt scaffold and the
 // model's reply within ~200K input context.
 export const POST_EXECUTION_REVIEW_DIFF_MAX_CHARS = 180_000;
+const NO_WORKER_BACKEND_REASON = "no worker backend available — install Codex or Claude Code";
 
 export type PostExecutionReviewDecision = {
   approved: boolean;
@@ -335,28 +340,48 @@ async function runSingleReviewPass(params: {
   workingDir: string;
   claudeCodeAuth: ClaudeCodeAuthMode;
   abortSignal: AbortSignal;
-  claudeBinary: string;
+  backend: { id: "claude_code"; command: string } | { id: "codex"; command: "codex" };
 }): Promise<PostExecutionReviewResult> {
   let result: RunCliProcessResult;
+  const codexAskForApproval =
+    params.backend.id === "codex" ? getCodexAskForApprovalPlacement() : "unsupported";
   try {
     result = await runCliProcess({
-      command: params.claudeBinary,
-      args: [
-        "-p",
-        "--output-format",
-        "json",
-        "--max-turns",
-        "1",
-        "--allowedTools",
-        CLAUDE_ALLOWED_TOOLS_READ_ONLY,
-        "--append-system-prompt",
-        CLAUDE_READ_ONLY_PROMPT,
-      ],
+      command: params.backend.command,
+      args:
+        params.backend.id === "claude_code"
+          ? [
+              "-p",
+              "--output-format",
+              "json",
+              "--max-turns",
+              "1",
+              "--allowedTools",
+              CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+              "--append-system-prompt",
+              CLAUDE_READ_ONLY_PROMPT,
+            ]
+          : [
+              ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+              "exec",
+              "--json",
+              ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
+              "--sandbox",
+              "workspace-write",
+              "--cd",
+              params.workingDir,
+              "-c",
+              "net.allowed=true",
+              params.prompt,
+            ],
       cwd: params.workingDir,
       timeoutMs: POST_EXECUTION_REVIEW_TIMEOUT_MS,
-      stdin: params.prompt,
+      ...(params.backend.id === "claude_code" ? { stdin: params.prompt } : {}),
       abortSignal: params.abortSignal,
-      env: buildClaudeCodeEnv(params.claudeCodeAuth),
+      env:
+        params.backend.id === "claude_code"
+          ? buildClaudeCodeEnv(params.claudeCodeAuth)
+          : { ...process.env },
     });
   } catch (error) {
     return {
@@ -394,8 +419,18 @@ export async function runPostExecutionReview(params: {
   abortSignal: AbortSignal;
 }): Promise<PostExecutionReviewResult> {
   const claudeBinary = resolveClaudeBinary();
-  if (!claudeBinary) {
-    return { status: "error", reason: "claude binary not found on PATH" };
+  const availability = detectBackendAvailability();
+  const codexAvailable = availability.find((entry) => entry.id === "codex")?.available === true;
+  const backend:
+    | { id: "claude_code"; command: string }
+    | { id: "codex"; command: "codex" }
+    | undefined = claudeBinary
+    ? { id: "claude_code", command: claudeBinary }
+    : codexAvailable
+      ? { id: "codex", command: "codex" }
+      : undefined;
+  if (!backend) {
+    return { status: "error", reason: NO_WORKER_BACKEND_REASON };
   }
 
   const bounded = buildBoundedDiffOrChunks(params.diff, POST_EXECUTION_REVIEW_DIFF_MAX_CHARS);
@@ -411,7 +446,7 @@ export async function runPostExecutionReview(params: {
       workingDir: params.workingDir,
       claudeCodeAuth: params.claudeCodeAuth,
       abortSignal: params.abortSignal,
-      claudeBinary,
+      backend,
     });
   }
 
@@ -441,7 +476,7 @@ export async function runPostExecutionReview(params: {
       workingDir: params.workingDir,
       claudeCodeAuth: params.claudeCodeAuth,
       abortSignal: params.abortSignal,
-      claudeBinary,
+      backend,
     });
 
     if (chunkResult.status === "error") {

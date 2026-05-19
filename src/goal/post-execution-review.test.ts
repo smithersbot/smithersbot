@@ -16,6 +16,18 @@ vi.mock("./scout.js", async (importOriginal) => {
   };
 });
 
+const mockDetectBackendAvailability = vi.hoisted(() =>
+  vi.fn(() => [
+    { id: "pi", available: true },
+    { id: "codex", available: true },
+    { id: "claude_code", available: true },
+  ]),
+);
+vi.mock("./backend-availability.js", () => ({
+  detectBackendAvailability: () => mockDetectBackendAvailability(),
+  getCodexAskForApprovalPlacement: () => "unsupported",
+}));
+
 import {
   buildBoundedDiffOrChunks,
   buildPostExecutionReviewPrompt,
@@ -233,7 +245,13 @@ describe("runPostExecutionReview", () => {
   beforeEach(() => {
     mockRunCliProcess.mockReset();
     mockResolveClaudeBinary.mockReset();
+    mockDetectBackendAvailability.mockReset();
     mockResolveClaudeBinary.mockReturnValue("/usr/local/bin/claude");
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ]);
   });
 
   it("returns approved unchanged for a small single-pass diff", async () => {
@@ -264,6 +282,69 @@ describe("runPostExecutionReview", () => {
 
     expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: "rejected", issues: ["Add a test"] });
+  });
+
+  it("falls back to Codex-only review when Claude Code is unavailable", async () => {
+    mockResolveClaudeBinary.mockReturnValue(null);
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    mockRunCliProcess.mockResolvedValueOnce(
+      createCliResult({
+        stdout: JSON.stringify({
+          type: "result",
+          result: '{"approved":true,"issues":[]}',
+        }),
+      }),
+    );
+
+    const approved = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(approved).toEqual({ status: "approved", issues: [] });
+
+    mockRunCliProcess.mockResolvedValueOnce(
+      createCliResult({
+        stdout: JSON.stringify({
+          type: "result",
+          result: '{"approved":false,"issues":["Add regression coverage"]}',
+        }),
+      }),
+    );
+
+    const rejected = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(rejected).toEqual({ status: "rejected", issues: ["Add regression coverage"] });
+    const call = mockRunCliProcess.mock.calls[1]?.[0] as { command: string; args: string[] };
+    expect(call.command).toBe("codex");
+    expect(call.args).toContain("exec");
+    expect(call.args).toContain("--json");
+  });
+
+  it("returns a clear setup error when no review backend is available", async () => {
+    mockResolveClaudeBinary.mockReturnValue(null);
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const result = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(result).toEqual({
+      status: "error",
+      reason: "no worker backend available — install Codex or Claude Code",
+    });
   });
 
   it("merges chunked results: 1 reject + 2 approve yields rejected with that one issue and no truncation note", async () => {

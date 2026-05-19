@@ -513,18 +513,22 @@ Test Claude Code:
 claude -p "say only: claude works"
 ```
 
-### `Planning failed: claude binary not found on PATH`
+### `Planning failed: No worker backend available`
 
-Claude Code is not installed or not available to the service.
+SmithersBot needs at least one worker backend available to the gateway service: Codex or Claude Code. If both are installed, planning uses the normal Claude-then-Codex flow. If only one is installed, planning and post-goal review use that one.
 
-If you want Claude Code:
+Install or fix Codex:
+
+```bash
+codex "say only: codex works"
+```
+
+Install or fix Claude Code:
 
 ```bash
 sudo npm install -g @anthropic-ai/claude-code
 claude
 ```
-
-If you want Codex-only, SmithersBot should fall back to Codex.
 
 ### Runtime says Moltbot, Clawdbot, or Clawd
 

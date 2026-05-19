@@ -1,4 +1,8 @@
 import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import {
+  detectBackendAvailability,
+  getCodexAskForApprovalPlacement,
+} from "./backend-availability.js";
 import { collectText, isRecord } from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
 import { extractJson, PlanParseError } from "./planner.js";
@@ -130,20 +134,41 @@ function extractAssistantTextFromCliResult(rawStdout: string): string {
   throw new Error("Manual test CLI response did not include assistant text.");
 }
 
+function buildCodexManualTestsArgs(prompt: string): string[] {
+  const codexAskForApproval = getCodexAskForApprovalPlacement();
+  return [
+    ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+    "exec",
+    "--json",
+    ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
+    "--sandbox",
+    "workspace-write",
+    "--cd",
+    process.cwd(),
+    "-c",
+    "net.allowed=true",
+    prompt,
+  ];
+}
+
 async function generateManualTestsViaCli(userMessage: string): Promise<string> {
   const claudeBin = resolveClaudeBinary();
-  if (!claudeBin) {
-    throw new Error("claude binary not found on PATH");
-  }
-
   const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
+  const codexAvailable =
+    detectBackendAvailability().find((entry) => entry.id === "codex")?.available === true;
+  if (!claudeBin && !codexAvailable) {
+    throw new Error("no worker backend available — install Codex or Claude Code");
+  }
+  const useCodex = !claudeBin && codexAvailable;
   const procResult = await runCliProcess({
-    command: claudeBin,
-    args: ["-p", "--output-format", "json", "--max-turns", "1"],
+    command: useCodex ? "codex" : claudeBin!,
+    args: useCodex
+      ? buildCodexManualTestsArgs(combinedPrompt)
+      : ["-p", "--output-format", "json", "--max-turns", "1"],
     cwd: process.cwd(),
     timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
-    stdin: combinedPrompt,
-    env: buildClaudeCodeEnv("subscription"),
+    ...(useCodex ? {} : { stdin: combinedPrompt }),
+    env: useCodex ? { ...process.env } : buildClaudeCodeEnv("subscription"),
   });
 
   if (procResult.timedOut) {
@@ -348,7 +373,15 @@ export async function generateManualTests(
       if (isTestEnv()) {
         throw new Error("Manual test generation requires an injected client in tests.");
       }
-      modelResponseText = await generateManualTestsViaCli(userMessage);
+      try {
+        modelResponseText = await generateManualTestsViaCli(userMessage);
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("no worker backend available")) {
+          const fallback = buildFallbackTests(doneSteps, Math.max(1, minTests), new Set());
+          return fallback.slice(0, maxTests);
+        }
+        throw error;
+      }
     }
 
     try {

@@ -20,7 +20,13 @@ vi.mock("./scout.js", async (importOriginal) => {
 });
 
 const mockGetCodexAskForApprovalPlacement = vi.fn(() => "unsupported" as const);
+const mockDetectBackendAvailability = vi.fn(() => [
+  { id: "pi", available: true },
+  { id: "codex", available: true },
+  { id: "claude_code", available: true },
+]);
 vi.mock("./backend-availability.js", () => ({
+  detectBackendAvailability: () => mockDetectBackendAvailability(),
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
 }));
 
@@ -92,6 +98,11 @@ describe("runCliPlanning", () => {
   beforeEach(() => {
     goalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-test-"));
     vi.clearAllMocks();
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ]);
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
     priorApiKey = process.env.ANTHROPIC_API_KEY;
     priorAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
@@ -176,6 +187,108 @@ describe("runCliPlanning", () => {
     expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(procCall.cwd).toBe(process.cwd());
+  });
+
+  it("uses Codex-only planning when Claude Code is unavailable", async () => {
+    mockResolveClaudeBinary.mockReturnValue(null);
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Codex-only planning summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "codex-step",
+            description: "Plan with Codex",
+            dependsOn: [],
+            durationMinutes: 10,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 40,
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-codex-only",
+      goalText: "Plan without Claude",
+      goalsDir,
+      includeScoutArtifacts: false,
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.plan.steps[0]?.backend).toBe("codex");
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string; args: string[] };
+    expect(procCall.command).toBe("codex");
+    expect(procCall.args).toContain("exec");
+  });
+
+  it("uses Claude-only planning when Codex is unavailable", async () => {
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: true },
+    ]);
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Claude-only planning summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "claude-step",
+            description: "Plan with Claude",
+            dependsOn: [],
+            durationMinutes: 10,
+            backend: "claude_code",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 40,
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-claude-only",
+      goalText: "Plan without Codex",
+      goalsDir,
+      includeScoutArtifacts: false,
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.plan.steps[0]?.backend).toBe("claude_code");
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    expect(procCall.command).toBe("/usr/bin/claude");
+  });
+
+  it("throws an actionable setup error when no planner backend is available", async () => {
+    mockResolveClaudeBinary.mockReturnValue(null);
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    await expect(
+      runCliPlanning({
+        runId: "run-no-backend",
+        goalText: "Plan without tools",
+        goalsDir,
+        includeScoutArtifacts: false,
+      }),
+    ).rejects.toThrow("No worker backend available. Install Codex or Claude Code and rerun.");
   });
 
   it("writes canonical execution plan with buildGate and step metadata", async () => {
