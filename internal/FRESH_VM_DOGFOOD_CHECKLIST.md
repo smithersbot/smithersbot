@@ -6,43 +6,94 @@ Do not put real tokens, real chat IDs, or personal machine paths in committed fi
 
 1. Create or prepare the fresh `SmithersBot2` VM.
 2. Confirm the VM is isolated from the operator's primary personal machine.
-3. Install Node 22 or newer.
-4. Install `git`.
-5. Enable Corepack so `pnpm` is available:
+3. Install system prerequisites (`git`, `curl`, `ca-certificates`, build tooling).
+4. Install Node 22 or newer, then check `node --version` reports `v22.x.x`.
+5. Enable Corepack and activate the project's pnpm version (10.23.0):
 
    ```bash
-   corepack enable
+   sudo corepack enable
+   corepack prepare pnpm@10.23.0 --activate
+   pnpm --version
    ```
 
-6. Install Claude Code CLI and/or Codex CLI.
-7. Log in to the chosen CLI backend as the operator and confirm it is on `PATH`.
-8. Clone the cleaned SmithersBot branch:
+6. Install at least one worker backend CLI. Either is sufficient on its own:
+
+   - Codex CLI (`sudo npm install -g @openai/codex` then `codex login`), or
+   - Claude Code CLI (`sudo npm install -g @anthropic-ai/claude-code` then `claude`).
+
+   Confirm the installed backend is on `PATH` and signed in.
+
+7. Clone SmithersBot from the public repository:
 
    ```bash
    git clone https://github.com/smithersbot/smithersbot.git
    cd smithersbot
    ```
 
-9. Run the setup script and answer the prompts for the Telegram bot token, allowed user/chat ID, and repo-chat backend:
+   If the repo is still private for the operator, authenticate with `gh auth login` first, then `gh repo clone smithersbot/smithersbot`. Do not reference dogfood-only branches in public docs.
+
+8. Install dependencies and build:
 
    ```bash
-   scripts/setup-smithersbot.sh
+   pnpm install --frozen-lockfile
+   pnpm build
    ```
 
-   The script writes local-only config under `~/.smithersbot`, including `~/.smithersbot/.env` and `~/.smithersbot/smithersbot.json`, with file mode `600`.
+9. Create the Telegram bot via `@BotFather` and copy the bot token. Do not paste the token into chat. Keep it ready for the next step.
 
-10. If a non-default state directory is needed, use `SMITHERSBOT_STATE_DIR`.
-11. Legacy `MOLTBOT_*` and `CLAWDBOT_*` aliases remain accepted for existing installs, but new setup should use `SMITHERSBOT_*`.
-12. Start the gateway from the repository root:
+10. Run the setup script. You will only paste the Telegram bot token; the script auto-discovers your private chat ID:
 
     ```bash
-    node scripts/run-node.mjs gateway
+    bash scripts/setup-smithersbot.sh
     ```
 
-13. In the configured Telegram chat, send `/help`.
-14. Send `/commands`.
-15. Send `/goal_list`.
-16. Set the repo chat backend with one available backend:
+    The script:
+
+    - reads the bot token via hidden input (never echoed),
+    - calls `getMe` to verify the token and shows `@<bot_username>`,
+    - tells you to open the bot and press **Start**,
+    - polls `getUpdates` for up to 60s, filters to `message.chat.type === "private"`, prefers the newest update by `update_id`, ignores group/supergroup/channel/edited/callback updates,
+    - shows the detected `chat.id` (and `from.id` only when it differs) and asks `Use this Telegram private chat ID for allowFrom? [Y/n]`,
+    - on timeout, offers retry or manual entry,
+    - on Telegram `409 Conflict` (webhook active), prints actionable `deleteWebhook` instructions and exits,
+    - prompts for the repo-chat backend (`codex` or `claude_code`) unless `--backend` was passed,
+    - generates a `gateway.auth.token` via `crypto.randomBytes`,
+    - writes `~/.smithersbot/.env` and `~/.smithersbot/smithersbot.json` with mode `600`,
+    - sets `gateway.mode = "local"` and `channels.telegram.allowFrom = ["<chat id>"]`,
+    - prints the next command to run.
+
+11. Install the user-level systemd unit:
+
+    ```bash
+    bash scripts/install-smithersbot-user-service.sh
+    ```
+
+    The script writes `~/.config/systemd/user/smithersbot-gateway.service` with `EnvironmentFile=%h/.smithersbot/.env`, `WorkingDirectory=<repo path>`, and `ExecStart=<node bin> scripts/run-node.mjs gateway`. It does not reference `moltbot-gateway-dev.service`. A `--dry-run` flag prints the resolved unit without writing it.
+
+12. Start and check the service:
+
+    ```bash
+    systemctl --user enable --now smithersbot-gateway.service
+    systemctl --user status smithersbot-gateway.service --no-pager
+    ```
+
+    The unit reads `~/.smithersbot/.env` and the gateway also auto-loads that file in process. You should not need to `source ~/.smithersbot/.env` anywhere.
+
+13. Tail the logs in a second terminal:
+
+    ```bash
+    journalctl --user -u smithersbot-gateway.service -f
+    ```
+
+14. In the configured Telegram chat, send:
+
+    ```text
+    /help
+    /commands
+    /goal_list
+    ```
+
+15. Set the repo-chat backend with the one you installed:
 
     ```text
     /chat_backend codex
@@ -54,24 +105,38 @@ Do not put real tokens, real chat IDs, or personal machine paths in committed fi
     /chat_backend claude_code
     ```
 
-17. Run a repo chat smoke test:
+16. Run a repo chat smoke test:
 
     ```text
     /repo_chat say only: repo chat works
     ```
 
-18. Run a tiny goal smoke test that should not edit files:
+17. Run a tiny read-only goal smoke test:
 
     ```text
     /new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.
     ```
 
-19. After the run starts or completes, verify goal state was written under the active state directory, usually `~/.smithersbot/goals/<run_id>/`.
-20. Stop the gateway with `Ctrl-C`.
-21. Start the gateway again:
+    Approve the plan only if it is harmless and read-only. `/new_goal` must not fail with `claude binary not found on PATH` when only Codex is installed; the planner falls through to Codex when Claude Code is absent and vice versa. Post-execution review and manual-test generation use whichever backend is available.
+
+18. Confirm goal artifacts were written under `~/.smithersbot/goals/<run_id>/`.
+
+19. Restart the gateway to verify persistence:
 
     ```bash
-    node scripts/run-node.mjs gateway
+    systemctl --user restart smithersbot-gateway.service
     ```
 
-22. Confirm persistence after restart by sending `/goal_list` or `/goal_resume <runId>`.
+    Then in Telegram send `/goal_list` (or `/goal_resume <runId>`) and confirm previous state is still visible.
+
+20. Optional: enable lingering so the service starts after reboot without a login session:
+
+    ```bash
+    loginctl enable-linger "$USER"
+    ```
+
+## Notes
+
+- `SMITHERSBOT_*` env vars are canonical for new installs. Legacy `MOLTBOT_*` and `CLAWDBOT_*` aliases are still accepted for existing installs but should not be used on a fresh VM.
+- Worker processes (Codex, Claude Code, repo-chat) never receive Telegram or gateway secrets. The credential-stripping pipeline removes `TELEGRAM_BOT_TOKEN`, `*_GATEWAY_TOKEN`, Slack/Discord tokens, etc., before spawning workers.
+- Public runtime output should say SmithersBot. If you see `Moltbot`, `Clawd`, or `moltbot-gateway-dev.service` in fresh-setup banners, doctor output, log paths, or systemd unit names, file it as a Stage 2N regression.
