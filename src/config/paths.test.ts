@@ -37,25 +37,41 @@ describe("oauth paths", () => {
 });
 
 describe("state + config path candidates", () => {
-  it("prefers MOLTBOT_STATE_DIR over legacy state dir env", () => {
+  it("prefers SMITHERSBOT_STATE_DIR over legacy state dir envs", () => {
     const env = {
-      MOLTBOT_STATE_DIR: "/new/state",
-      CLAWDBOT_STATE_DIR: "/legacy/state",
+      SMITHERSBOT_STATE_DIR: "/smithersbot/state",
+      MOLTBOT_STATE_DIR: "/moltbot/state",
+      CLAWDBOT_STATE_DIR: "/clawdbot/state",
     } as NodeJS.ProcessEnv;
 
-    expect(resolveStateDir(env, () => "/home/test")).toBe(path.resolve("/new/state"));
+    expect(resolveStateDir(env, () => "/home/test")).toBe(path.resolve("/smithersbot/state"));
   });
 
-  it("orders default config candidates as new then legacy", () => {
+  it("orders default config candidates as SmithersBot then Moltbot then Clawdbot", () => {
     const home = "/home/test";
     const candidates = resolveDefaultConfigCandidates({} as NodeJS.ProcessEnv, () => home);
-    expect(candidates[0]).toBe(path.join(home, ".moltbot", "moltbot.json"));
-    expect(candidates[1]).toBe(path.join(home, ".moltbot", "clawdbot.json"));
-    expect(candidates[2]).toBe(path.join(home, ".clawdbot", "moltbot.json"));
-    expect(candidates[3]).toBe(path.join(home, ".clawdbot", "clawdbot.json"));
+    expect(candidates[0]).toBe(path.join(home, ".smithersbot", "smithersbot.json"));
+    expect(candidates[1]).toBe(path.join(home, ".smithersbot", "moltbot.json"));
+    expect(candidates[2]).toBe(path.join(home, ".smithersbot", "clawdbot.json"));
+    expect(candidates[3]).toBe(path.join(home, ".moltbot", "smithersbot.json"));
+    expect(candidates[4]).toBe(path.join(home, ".moltbot", "moltbot.json"));
+    expect(candidates[5]).toBe(path.join(home, ".moltbot", "clawdbot.json"));
+    expect(candidates[6]).toBe(path.join(home, ".clawdbot", "smithersbot.json"));
+    expect(candidates[7]).toBe(path.join(home, ".clawdbot", "moltbot.json"));
+    expect(candidates[8]).toBe(path.join(home, ".clawdbot", "clawdbot.json"));
   });
 
-  it("prefers ~/.moltbot when it exists and legacy dir is missing", async () => {
+  it("defaults to ~/.smithersbot when no existing state dirs are present", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "smithersbot-state-"));
+    try {
+      const resolved = resolveStateDir({} as NodeJS.ProcessEnv, () => root);
+      expect(resolved).toBe(path.join(root, ".smithersbot"));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to existing ~/.moltbot when canonical dir is missing", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-state-"));
     try {
       const newDir = path.join(root, ".moltbot");
@@ -73,8 +89,10 @@ describe("state + config path candidates", () => {
     const previousUserProfile = process.env.USERPROFILE;
     const previousHomeDrive = process.env.HOMEDRIVE;
     const previousHomePath = process.env.HOMEPATH;
+    const previousSmithersbotConfig = process.env.SMITHERSBOT_CONFIG_PATH;
     const previousMoltbotConfig = process.env.MOLTBOT_CONFIG_PATH;
     const previousClawdbotConfig = process.env.CLAWDBOT_CONFIG_PATH;
+    const previousSmithersbotState = process.env.SMITHERSBOT_STATE_DIR;
     const previousMoltbotState = process.env.MOLTBOT_STATE_DIR;
     const previousClawdbotState = process.env.CLAWDBOT_STATE_DIR;
     try {
@@ -90,8 +108,10 @@ describe("state + config path candidates", () => {
         process.env.HOMEDRIVE = parsed.root.replace(/\\$/, "");
         process.env.HOMEPATH = root.slice(parsed.root.length - 1);
       }
+      delete process.env.SMITHERSBOT_CONFIG_PATH;
       delete process.env.MOLTBOT_CONFIG_PATH;
       delete process.env.CLAWDBOT_CONFIG_PATH;
+      delete process.env.SMITHERSBOT_STATE_DIR;
       delete process.env.MOLTBOT_STATE_DIR;
       delete process.env.CLAWDBOT_STATE_DIR;
 
@@ -110,10 +130,14 @@ describe("state + config path candidates", () => {
       else process.env.HOMEDRIVE = previousHomeDrive;
       if (previousHomePath === undefined) delete process.env.HOMEPATH;
       else process.env.HOMEPATH = previousHomePath;
+      if (previousSmithersbotConfig === undefined) delete process.env.SMITHERSBOT_CONFIG_PATH;
+      else process.env.SMITHERSBOT_CONFIG_PATH = previousSmithersbotConfig;
       if (previousMoltbotConfig === undefined) delete process.env.MOLTBOT_CONFIG_PATH;
       else process.env.MOLTBOT_CONFIG_PATH = previousMoltbotConfig;
       if (previousClawdbotConfig === undefined) delete process.env.CLAWDBOT_CONFIG_PATH;
       else process.env.CLAWDBOT_CONFIG_PATH = previousClawdbotConfig;
+      if (previousSmithersbotState === undefined) delete process.env.SMITHERSBOT_STATE_DIR;
+      else process.env.SMITHERSBOT_STATE_DIR = previousSmithersbotState;
       if (previousMoltbotState === undefined) delete process.env.MOLTBOT_STATE_DIR;
       else process.env.MOLTBOT_STATE_DIR = previousMoltbotState;
       if (previousClawdbotState === undefined) delete process.env.CLAWDBOT_STATE_DIR;
@@ -134,7 +158,7 @@ describe("state + config path candidates", () => {
       const overrideDir = path.join(root, "override");
       const env = { MOLTBOT_STATE_DIR: overrideDir } as NodeJS.ProcessEnv;
       const resolved = resolveConfigPath(env, overrideDir, () => root);
-      expect(resolved).toBe(path.join(overrideDir, "moltbot.json"));
+      expect(resolved).toBe(path.join(overrideDir, "smithersbot.json"));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

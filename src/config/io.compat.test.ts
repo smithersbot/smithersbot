@@ -16,9 +16,9 @@ async function withTempHome(run: (home: string) => Promise<void>): Promise<void>
 
 async function writeConfig(
   home: string,
-  dirname: ".moltbot" | ".clawdbot",
+  dirname: ".smithersbot" | ".moltbot" | ".clawdbot",
   port: number,
-  filename: "moltbot.json" | "clawdbot.json" = "moltbot.json",
+  filename: "smithersbot.json" | "moltbot.json" | "clawdbot.json" = "smithersbot.json",
 ) {
   const dir = path.join(home, dirname);
   await fs.mkdir(dir, { recursive: true });
@@ -27,10 +27,11 @@ async function writeConfig(
   return configPath;
 }
 
-describe("config io compat (new + legacy folders)", () => {
-  it("prefers ~/.moltbot/moltbot.json when both configs exist", async () => {
+describe("config io compat (canonical + legacy folders)", () => {
+  it("prefers ~/.smithersbot/smithersbot.json when multiple configs exist", async () => {
     await withTempHome(async (home) => {
-      const newConfigPath = await writeConfig(home, ".moltbot", 19001);
+      const newConfigPath = await writeConfig(home, ".smithersbot", 19001);
+      await writeConfig(home, ".moltbot", 19002, "moltbot.json");
       await writeConfig(home, ".clawdbot", 18789);
 
       const io = createConfigIO({
@@ -42,9 +43,9 @@ describe("config io compat (new + legacy folders)", () => {
     });
   });
 
-  it("falls back to ~/.clawdbot/moltbot.json when only legacy exists", async () => {
+  it("falls back to ~/.moltbot/moltbot.json when only Moltbot config exists", async () => {
     await withTempHome(async (home) => {
-      const legacyConfigPath = await writeConfig(home, ".clawdbot", 20001);
+      const legacyConfigPath = await writeConfig(home, ".moltbot", 20001, "moltbot.json");
 
       const io = createConfigIO({
         env: {} as NodeJS.ProcessEnv,
@@ -53,6 +54,20 @@ describe("config io compat (new + legacy folders)", () => {
 
       expect(io.configPath).toBe(legacyConfigPath);
       expect(io.loadConfig().gateway?.port).toBe(20001);
+    });
+  });
+
+  it("falls back to ~/.clawdbot/moltbot.json when only legacy folder exists", async () => {
+    await withTempHome(async (home) => {
+      const legacyConfigPath = await writeConfig(home, ".clawdbot", 20005, "moltbot.json");
+
+      const io = createConfigIO({
+        env: {} as NodeJS.ProcessEnv,
+        homedir: () => home,
+      });
+
+      expect(io.configPath).toBe(legacyConfigPath);
+      expect(io.loadConfig().gateway?.port).toBe(20005);
     });
   });
 
@@ -70,9 +85,10 @@ describe("config io compat (new + legacy folders)", () => {
     });
   });
 
-  it("prefers moltbot.json over legacy filename in the same dir", async () => {
+  it("prefers smithersbot.json over legacy filenames in the same dir", async () => {
     await withTempHome(async (home) => {
-      const preferred = await writeConfig(home, ".clawdbot", 20003, "moltbot.json");
+      const preferred = await writeConfig(home, ".clawdbot", 20003, "smithersbot.json");
+      await writeConfig(home, ".clawdbot", 20004, "moltbot.json");
       await writeConfig(home, ".clawdbot", 20004, "clawdbot.json");
 
       const io = createConfigIO({
@@ -87,8 +103,8 @@ describe("config io compat (new + legacy folders)", () => {
 
   it("honors explicit legacy config path env override", async () => {
     await withTempHome(async (home) => {
-      const newConfigPath = await writeConfig(home, ".moltbot", 19002);
-      const legacyConfigPath = await writeConfig(home, ".clawdbot", 20002);
+      const newConfigPath = await writeConfig(home, ".smithersbot", 19002);
+      const legacyConfigPath = await writeConfig(home, ".clawdbot", 20002, "moltbot.json");
 
       const io = createConfigIO({
         env: { CLAWDBOT_CONFIG_PATH: legacyConfigPath } as NodeJS.ProcessEnv,
