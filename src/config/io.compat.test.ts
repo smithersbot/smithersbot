@@ -27,6 +27,19 @@ async function writeConfig(
   return configPath;
 }
 
+async function writeRawConfig(
+  home: string,
+  dirname: ".smithersbot" | ".moltbot" | ".clawdbot",
+  raw: string,
+  filename: "smithersbot.json" | "moltbot.json" | "clawdbot.json" = "smithersbot.json",
+) {
+  const dir = path.join(home, dirname);
+  await fs.mkdir(dir, { recursive: true });
+  const configPath = path.join(dir, filename);
+  await fs.writeFile(configPath, raw);
+  return configPath;
+}
+
 describe("config io compat (canonical + legacy folders)", () => {
   it("prefers ~/.smithersbot/smithersbot.json when multiple configs exist", async () => {
     await withTempHome(async (home) => {
@@ -114,6 +127,59 @@ describe("config io compat (canonical + legacy folders)", () => {
       expect(io.configPath).not.toBe(newConfigPath);
       expect(io.configPath).toBe(legacyConfigPath);
       expect(io.loadConfig().gateway?.port).toBe(20002);
+    });
+  });
+
+  it("loads ~/.smithersbot/.env before config env substitution without overwriting env", async () => {
+    await withTempHome(async (home) => {
+      await writeRawConfig(
+        home,
+        ".smithersbot",
+        JSON.stringify({
+          channels: { telegram: { botToken: "${TELEGRAM_BOT_TOKEN}" } },
+        }),
+      );
+      await fs.writeFile(
+        path.join(home, ".smithersbot", ".env"),
+        "TELEGRAM_BOT_TOKEN=from-dotenv\nEXISTING_ENV=from-dotenv\n",
+      );
+      const env = {
+        EXISTING_ENV: "from-process",
+      } as NodeJS.ProcessEnv;
+
+      const io = createConfigIO({
+        env,
+        homedir: () => home,
+      });
+
+      expect(io.loadConfig().channels?.telegram?.botToken).toBe("from-dotenv");
+      expect(env.TELEGRAM_BOT_TOKEN).toBe("from-dotenv");
+      expect(env.EXISTING_ENV).toBe("from-process");
+    });
+  });
+
+  it("loads ~/.moltbot/.env as a deprecated fallback when ~/.smithersbot/.env is absent", async () => {
+    await withTempHome(async (home) => {
+      await writeRawConfig(
+        home,
+        ".moltbot",
+        JSON.stringify({
+          channels: { telegram: { botToken: "${TELEGRAM_BOT_TOKEN}" } },
+        }),
+      );
+      await fs.writeFile(
+        path.join(home, ".moltbot", ".env"),
+        "TELEGRAM_BOT_TOKEN=from-legacy-dotenv\n",
+      );
+      const env = {} as NodeJS.ProcessEnv;
+
+      const io = createConfigIO({
+        env,
+        homedir: () => home,
+      });
+
+      expect(io.loadConfig().channels?.telegram?.botToken).toBe("from-legacy-dotenv");
+      expect(env.TELEGRAM_BOT_TOKEN).toBe("from-legacy-dotenv");
     });
   });
 });

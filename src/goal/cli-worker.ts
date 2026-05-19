@@ -17,7 +17,11 @@ import {
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { classifyProviderError } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
-import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
+import {
+  buildClaudeCodeEnv,
+  buildCredentialStrippedEnv,
+  writeAuthModeArtifact,
+} from "./claude-code-env.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 
@@ -121,7 +125,8 @@ export function buildGoalWorkerEnv(
   backend: GoalBackendId,
   claudeCodeAuth: ClaudeCodeAuthMode,
 ): Record<string, string | undefined> {
-  const base = backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : { ...process.env };
+  const base =
+    backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : buildCredentialStrippedEnv();
   return { ...base, MOLTBOT_GOAL_TEST_SCOPE: "1" };
 }
 

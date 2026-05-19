@@ -243,33 +243,57 @@ describe("cli-worker", () => {
   describe("buildGoalWorkerEnv", () => {
     it("sets scoped test mode for codex workers without mutating process env", () => {
       const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
+      const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
       delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
+      process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
+      process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
       try {
         const env = buildGoalWorkerEnv("codex", "subscription");
         expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
+        expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+        expect(env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
+        expect(process.env.TELEGRAM_BOT_TOKEN).toBe("telegram-secret");
+        expect(process.env.CLAWDBOT_GATEWAY_TOKEN).toBe("gateway-secret");
         expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
       } finally {
         if (prevScope === undefined) delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
         else process.env.MOLTBOT_GOAL_TEST_SCOPE = prevScope;
+        if (prevTelegram === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
+        if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+        else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
       }
     });
 
     it("keeps scoping local to worker env and preserves global auth env", () => {
       const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
       const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+      const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
+      const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
       process.env.ANTHROPIC_API_KEY = "secret";
+      process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
+      process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
       delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
       try {
         const env = buildGoalWorkerEnv("claude_code", "subscription");
         expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
         expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+        expect(env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
         expect(process.env.ANTHROPIC_API_KEY).toBe("secret");
+        expect(process.env.TELEGRAM_BOT_TOKEN).toBe("telegram-secret");
+        expect(process.env.CLAWDBOT_GATEWAY_TOKEN).toBe("gateway-secret");
         expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
       } finally {
         if (prevScope === undefined) delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
         else process.env.MOLTBOT_GOAL_TEST_SCOPE = prevScope;
         if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+        if (prevTelegram === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
+        if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+        else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
       }
     });
   });

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import dotenv from "dotenv";
 import JSON5 from "json5";
 
 import {
@@ -158,6 +159,46 @@ function applyConfigEnv(cfg: MoltbotConfig, env: NodeJS.ProcessEnv): void {
   }
 }
 
+function resolveUserEnvPath(input: string, homedir: () => string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.startsWith("~")) {
+    const expanded = trimmed.replace(/^~(?=$|[\\/])/, homedir());
+    return path.resolve(expanded);
+  }
+  return path.resolve(trimmed);
+}
+
+function resolveStateEnvFileCandidates(env: NodeJS.ProcessEnv, homedir: () => string): string[] {
+  const candidates: string[] = [];
+  const stateDirKeys = ["SMITHERSBOT_STATE_DIR", "MOLTBOT_STATE_DIR", "CLAWDBOT_STATE_DIR"];
+
+  for (const key of stateDirKeys) {
+    const override = env[key]?.trim();
+    if (override) candidates.push(path.join(resolveUserEnvPath(override, homedir), ".env"));
+  }
+
+  candidates.push(path.join(homedir(), ".smithersbot", ".env"));
+  candidates.push(path.join(homedir(), ".moltbot", ".env"));
+  candidates.push(path.join(homedir(), ".clawdbot", ".env"));
+  return [...new Set(candidates)];
+}
+
+function loadStateEnvFile(deps: Required<ConfigIoDeps>): void {
+  for (const envPath of resolveStateEnvFileCandidates(deps.env, deps.homedir)) {
+    if (!deps.fs.existsSync(envPath)) continue;
+    try {
+      const parsed = dotenv.parse(deps.fs.readFileSync(envPath, "utf-8"));
+      for (const [key, value] of Object.entries(parsed)) {
+        if (deps.env[key] === undefined) deps.env[key] = value;
+      }
+    } catch {
+      // Missing or unreadable dotenv files should not block config loading.
+    }
+    return;
+  }
+}
+
 function resolveConfigPathForDeps(deps: Required<ConfigIoDeps>): string {
   if (deps.configPath) return deps.configPath;
   return resolveConfigPath(deps.env, resolveStateDir(deps.env, deps.homedir));
@@ -196,6 +237,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
 
   function loadConfig(): MoltbotConfig {
     try {
+      loadStateEnvFile(deps);
       if (!deps.fs.existsSync(configPath)) {
         if (shouldEnableShellEnvFallback(deps.env) && !shouldDeferShellEnvFallback(deps.env)) {
           loadShellEnvFallback({

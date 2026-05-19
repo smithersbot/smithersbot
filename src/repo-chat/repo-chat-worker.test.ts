@@ -18,9 +18,15 @@ vi.mock("../goal/backend-availability.js", () => ({
     getCodexAskForApprovalPlacementMock(...args),
 }));
 
-vi.mock("../goal/claude-code-env.js", () => ({
-  buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
-}));
+vi.mock("../goal/claude-code-env.js", async () => {
+  const actual = await vi.importActual<typeof import("../goal/claude-code-env.js")>(
+    "../goal/claude-code-env.js",
+  );
+  return {
+    ...actual,
+    buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
+  };
+});
 
 vi.mock("../logging/logger.js", () => ({
   getLogger: () => ({
@@ -366,6 +372,10 @@ describe("repo-chat-worker", () => {
     });
 
     it("reads Codex manual response file for initial sessions", async () => {
+      const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
+      const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
+      process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
+      process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer from file\n", "utf-8");
         fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
@@ -379,17 +389,28 @@ describe("repo-chat-worker", () => {
         };
       });
 
-      const result = await runRepoChatWorker({
-        backend: "codex",
-        prompt: "How does repo chat work?",
-        workingDir: "/repo",
-      });
+      let result!: Awaited<ReturnType<typeof runRepoChatWorker>>;
+      try {
+        result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "How does repo chat work?",
+          workingDir: "/repo",
+        });
+      } finally {
+        if (prevTelegram === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
+        if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
+        else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
+      }
 
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         command: string;
         args: string[];
+        env: Record<string, string>;
       };
       expect(call.command).toBe("codex");
+      expect(call.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+      expect(call.env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
       expect(call.args).toContain("--output-last-message");
       expect(call.args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(call.args).not.toContain(RESPONSE_FILE_PATH);

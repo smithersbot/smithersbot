@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
-import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
@@ -426,7 +426,7 @@ export async function runRepoChatWorker(
   const env =
     params.backend === "claude_code"
       ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
-      : { ...process.env };
+      : buildCredentialStrippedEnv();
 
   try {
     const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({

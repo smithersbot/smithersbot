@@ -36,6 +36,15 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
   "GROQ_API_KEY",
   "DEEPSEEK_API_KEY",
   "REPLICATE_API_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
+  "DISCORD_BOT_TOKEN",
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "SLACK_USER_TOKEN",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "SMITHERSBOT_GATEWAY_PASSWORD",
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_PASSWORD",
 ];
 
 export function shouldStripCredentialKey(key: string): boolean {
@@ -47,6 +56,16 @@ export function shouldStripCredentialKey(key: string): boolean {
   return false;
 }
 
+export function buildCredentialStrippedEnv(
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
+  const env = { ...sourceEnv };
+  for (const key of Object.keys(env)) {
+    if (shouldStripCredentialKey(key)) delete env[key];
+  }
+  return env;
+}
+
 /**
  * Build a process env for a Claude Code subprocess.
  * In "subscription" mode, API key env vars are stripped so claude uses its own subscription auth.
@@ -54,10 +73,7 @@ export function shouldStripCredentialKey(key: string): boolean {
 export function buildClaudeCodeEnv(
   authMode: ClaudeCodeAuthMode,
 ): Record<string, string | undefined> {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (shouldStripCredentialKey(key)) delete env[key];
-  }
+  const env = buildCredentialStrippedEnv(process.env);
   if (authMode === "subscription") {
     for (const key of AUTH_KEYS_TO_STRIP) {
       delete env[key];
