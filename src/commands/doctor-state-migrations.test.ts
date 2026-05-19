@@ -327,7 +327,7 @@ describe("doctor legacy state migrations", () => {
     expect(store["agent:main:main"]?.sessionId).toBe("legacy");
   });
 
-  it("auto-migrates legacy state dir to ~/.moltbot", async () => {
+  it("auto-migrates legacy state dir to ~/.smithersbot", async () => {
     const root = await makeTempRoot();
     const legacyDir = path.join(root, ".clawdbot");
     fs.mkdirSync(legacyDir, { recursive: true });
@@ -338,7 +338,7 @@ describe("doctor legacy state migrations", () => {
       homedir: () => root,
     });
 
-    const targetDir = path.join(root, ".moltbot");
+    const targetDir = path.join(root, ".smithersbot");
     expect(fs.existsSync(path.join(targetDir, "foo.txt"))).toBe(true);
     const legacyStat = fs.lstatSync(legacyDir);
     expect(legacyStat.isSymbolicLink()).toBe(true);
@@ -349,7 +349,7 @@ describe("doctor legacy state migrations", () => {
   it("skips state dir migration when target exists", async () => {
     const root = await makeTempRoot();
     const legacyDir = path.join(root, ".clawdbot");
-    const targetDir = path.join(root, ".moltbot");
+    const targetDir = path.join(root, ".smithersbot");
     fs.mkdirSync(legacyDir, { recursive: true });
     fs.mkdirSync(targetDir, { recursive: true });
 
@@ -368,7 +368,7 @@ describe("doctor legacy state migrations", () => {
     fs.mkdirSync(legacyDir, { recursive: true });
 
     const result = await autoMigrateLegacyStateDir({
-      env: { MOLTBOT_STATE_DIR: "/custom/state" } as NodeJS.ProcessEnv,
+      env: { SMITHERSBOT_STATE_DIR: "/custom/state" } as NodeJS.ProcessEnv,
       homedir: () => root,
     });
 

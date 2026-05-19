@@ -35,19 +35,27 @@ describe("Nix integration (U3, U5, U9)", () => {
   });
 
   describe("U5: CONFIG_PATH and STATE_DIR env var overrides", () => {
-    it("STATE_DIR defaults to ~/.clawdbot when env not set", async () => {
+    it("STATE_DIR defaults to ~/.smithersbot when env not set", async () => {
       await withEnvOverride(
-        { MOLTBOT_STATE_DIR: undefined, CLAWDBOT_STATE_DIR: undefined },
+        {
+          SMITHERSBOT_STATE_DIR: undefined,
+          MOLTBOT_STATE_DIR: undefined,
+          CLAWDBOT_STATE_DIR: undefined,
+        },
         async () => {
           const { STATE_DIR } = await import("./config.js");
-          expect(STATE_DIR).toMatch(/\.clawdbot$/);
+          expect(STATE_DIR).toMatch(/\.smithersbot$/);
         },
       );
     });
 
     it("STATE_DIR respects CLAWDBOT_STATE_DIR override", async () => {
       await withEnvOverride(
-        { MOLTBOT_STATE_DIR: undefined, CLAWDBOT_STATE_DIR: "/custom/state/dir" },
+        {
+          SMITHERSBOT_STATE_DIR: undefined,
+          MOLTBOT_STATE_DIR: undefined,
+          CLAWDBOT_STATE_DIR: "/custom/state/dir",
+        },
         async () => {
           const { STATE_DIR } = await import("./config.js");
           expect(STATE_DIR).toBe(path.resolve("/custom/state/dir"));
@@ -57,7 +65,11 @@ describe("Nix integration (U3, U5, U9)", () => {
 
     it("STATE_DIR prefers MOLTBOT_STATE_DIR over legacy override", async () => {
       await withEnvOverride(
-        { MOLTBOT_STATE_DIR: "/custom/new", CLAWDBOT_STATE_DIR: "/custom/legacy" },
+        {
+          SMITHERSBOT_STATE_DIR: undefined,
+          MOLTBOT_STATE_DIR: "/custom/new",
+          CLAWDBOT_STATE_DIR: "/custom/legacy",
+        },
         async () => {
           const { STATE_DIR } = await import("./config.js");
           expect(STATE_DIR).toBe(path.resolve("/custom/new"));
@@ -65,9 +77,25 @@ describe("Nix integration (U3, U5, U9)", () => {
       );
     });
 
-    it("CONFIG_PATH defaults to ~/.clawdbot/moltbot.json when env not set", async () => {
+    it("STATE_DIR prefers SMITHERSBOT_STATE_DIR over MOLTBOT and CLAWDBOT overrides", async () => {
       await withEnvOverride(
         {
+          SMITHERSBOT_STATE_DIR: "/custom/canonical",
+          MOLTBOT_STATE_DIR: "/custom/moltbot",
+          CLAWDBOT_STATE_DIR: "/custom/clawdbot",
+        },
+        async () => {
+          const { STATE_DIR } = await import("./config.js");
+          expect(STATE_DIR).toBe(path.resolve("/custom/canonical"));
+        },
+      );
+    });
+
+    it("CONFIG_PATH defaults to ~/.smithersbot/smithersbot.json when env not set", async () => {
+      await withEnvOverride(
+        {
+          SMITHERSBOT_CONFIG_PATH: undefined,
+          SMITHERSBOT_STATE_DIR: undefined,
           MOLTBOT_CONFIG_PATH: undefined,
           MOLTBOT_STATE_DIR: undefined,
           CLAWDBOT_CONFIG_PATH: undefined,
@@ -75,7 +103,7 @@ describe("Nix integration (U3, U5, U9)", () => {
         },
         async () => {
           const { CONFIG_PATH } = await import("./config.js");
-          expect(CONFIG_PATH).toMatch(/\.clawdbot[\\/]moltbot\.json$/);
+          expect(CONFIG_PATH).toMatch(/\.smithersbot[\\/]smithersbot\.json$/);
         },
       );
     });
@@ -118,6 +146,8 @@ describe("Nix integration (U3, U5, U9)", () => {
     it("CONFIG_PATH uses STATE_DIR when only state dir is overridden", async () => {
       await withEnvOverride(
         {
+          SMITHERSBOT_CONFIG_PATH: undefined,
+          SMITHERSBOT_STATE_DIR: undefined,
           MOLTBOT_CONFIG_PATH: undefined,
           MOLTBOT_STATE_DIR: undefined,
           CLAWDBOT_CONFIG_PATH: undefined,
@@ -125,7 +155,7 @@ describe("Nix integration (U3, U5, U9)", () => {
         },
         async () => {
           const { CONFIG_PATH } = await import("./config.js");
-          expect(CONFIG_PATH).toBe(path.join(path.resolve("/custom/state"), "moltbot.json"));
+          expect(CONFIG_PATH).toBe(path.join(path.resolve("/custom/state"), "smithersbot.json"));
         },
       );
     });

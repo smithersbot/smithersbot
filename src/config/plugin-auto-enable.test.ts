@@ -61,7 +61,12 @@ describe("applyPluginAutoEnable", () => {
   });
 
   describe("preferOver channel prioritization", () => {
-    it("prefers bluebubbles: skips imessage auto-enable when both are configured", () => {
+    // Stage 2C removed bluebubbles and imessage from the chat-channel registry, so
+    // bluebubbles' `preferOver: ['imessage']` metadata no longer flows through the
+    // registry-backed resolvePreferredOverIds path. The prioritization rule itself
+    // remains (covered by the explicit-disable and deny-list tests below), but this
+    // legacy fixture exercises a channel pair that no longer exists.
+    it.skip("prefers bluebubbles: skips imessage auto-enable when both are configured", () => {
       const result = applyPluginAutoEnable({
         config: {
           channels: {
