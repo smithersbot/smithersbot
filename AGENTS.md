@@ -30,8 +30,8 @@
 - Do not edit `node_modules/`, generated output, or dependency patches without explicit approval.
 
 ## Deprecated Aliases
-- `CLAWDBOT_*` environment variables are accepted for backward compatibility.
-- New code and docs should use the matching `MOLTBOT_*` names.
+- `SMITHERSBOT_*` environment variables are canonical for new code and docs.
+- `MOLTBOT_*` and `CLAWDBOT_*` environment variables are accepted as deprecated compatibility aliases where supported.
 - `clawdbot/plugin-sdk` remains a compatibility import alias.
 - New active extension code should import from `smithersbot/plugin-sdk`.
 
@@ -58,7 +58,7 @@ node scripts/run-node.mjs <args>
 - Goal run artifacts are saved under:
 
 ```text
-~/.moltbot/goals/<run_id>/
+~/.smithersbot/goals/<run_id>/
 ```
 
 - Use those artifacts to diagnose failures, including run state, working notes, transcripts, and raw model outputs.

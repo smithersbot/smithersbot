@@ -45,17 +45,15 @@ The goal system (`src/goal/`) is the autonomous task execution engine:
 
 ## Goal Run Artifacts
 
-Each goal run persists its state to disk. The base directory depends on the active CLI profile:
+Each goal run persists its state to disk under the active SmithersBot state directory:
 
-- Default profile: `~/.clawdbot/goals/<runId>/`
-- Dev profile (`--dev`): `~/.clawdbot-dev/goals/<runId>/`
-- Custom profile (`--profile <name>`): `~/.clawdbot-<name>/goals/<runId>/`
-- If `~/.moltbot` exists and `~/.clawdbot` does not: `~/.moltbot/goals/<runId>/`
+- Canonical default: `~/.smithersbot/goals/<runId>/`
+- Deprecated fallbacks: `~/.moltbot/goals/<runId>/` and `~/.clawdbot/goals/<runId>/` may exist for older installs.
 
 Check all candidate directories when looking for runs:
-- `ls -lt ~/.clawdbot-dev/goals/` (dev profile, most common for local development)
-- `ls -lt ~/.clawdbot/goals/` (default profile)
-- `ls -lt ~/.moltbot/goals/` (new-style default)
+- `ls -lt ~/.smithersbot/goals/` (canonical default)
+- `ls -lt ~/.moltbot/goals/` (deprecated fallback)
+- `ls -lt ~/.clawdbot/goals/` (deprecated fallback)
 
 Each run directory contains:
 - `run.json` — full run state (plan, tasks, results, metadata)
@@ -65,12 +63,12 @@ Each run directory contains:
 
 ## Repo Chat Sessions
 
-Repo chat sessions are stored at: `~/.moltbot/repo-chats/<sessionId>/session.json`
+Repo chat sessions are stored at: `~/.smithersbot/repo-chats/<sessionId>/session.json`
 
 ## Configuration
 
-- State directory resolution: `MOLTBOT_STATE_DIR` or `CLAWDBOT_STATE_DIR` env var, or auto-detected from `~/.clawdbot` / `~/.moltbot` (see `src/config/paths.ts`)
-- Main config: `<stateDir>/moltbot.json` (loaded by `src/config/config.ts`)
+- State directory resolution: `SMITHERSBOT_STATE_DIR`, then deprecated `MOLTBOT_STATE_DIR` / `CLAWDBOT_STATE_DIR`, or auto-detected from `~/.smithersbot`, `~/.moltbot`, and `~/.clawdbot` (see `src/config/paths.ts`)
+- Main config: `<stateDir>/smithersbot.json`; deprecated `moltbot.json` and `clawdbot.json` are fallback names (loaded by `src/config/config.ts`)
 - Credentials: `<stateDir>/credentials/`
 - Agent sessions: `~/.clawdbot/agents/<agentId>/sessions/*.jsonl`
 

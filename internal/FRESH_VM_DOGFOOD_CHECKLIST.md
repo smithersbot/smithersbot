@@ -23,22 +23,16 @@ Do not put real tokens, real chat IDs, or personal machine paths in committed fi
    cd smithersbot
    ```
 
-9. Install dependencies:
+9. Run the setup script and answer the prompts for the Telegram bot token, allowed user/chat ID, and repo-chat backend:
 
    ```bash
-   pnpm install --frozen-lockfile
+   scripts/setup-smithersbot.sh
    ```
 
-10. Build the project:
+   The script writes local-only config under `~/.smithersbot`, including `~/.smithersbot/.env` and `~/.smithersbot/smithersbot.json`, with file mode `600`.
 
-    ```bash
-    pnpm build
-    ```
-
-11. Create local VM configuration only, using placeholder-free local secrets:
-    - Telegram bot token from BotFather.
-    - Telegram allowed user ID or operator chat ID.
-    - Optional `MOLTBOT_STATE_DIR` if the default state directory should not be used.
+10. If a non-default state directory is needed, use `SMITHERSBOT_STATE_DIR`.
+11. Legacy `MOLTBOT_*` and `CLAWDBOT_*` aliases remain accepted for existing installs, but new setup should use `SMITHERSBOT_*`.
 12. Start the gateway from the repository root:
 
     ```bash
@@ -72,7 +66,7 @@ Do not put real tokens, real chat IDs, or personal machine paths in committed fi
     /new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.
     ```
 
-19. After the run starts or completes, verify goal state was written under the active state directory, usually `~/.moltbot/goals/<run_id>/` when `MOLTBOT_STATE_DIR` is set to `~/.moltbot`.
+19. After the run starts or completes, verify goal state was written under the active state directory, usually `~/.smithersbot/goals/<run_id>/`.
 20. Stop the gateway with `Ctrl-C`.
 21. Start the gateway again:
 
