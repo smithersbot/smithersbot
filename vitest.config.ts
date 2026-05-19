@@ -23,6 +23,7 @@ export default defineConfig({
     maxWorkers: isCI ? ciWorkers : localWorkers,
     include: [
       "src/**/*.test.ts",
+      "test/**/*.test.ts",
       "extensions/**/*.test.ts",
     ],
     setupFiles: ["test/setup.ts"],
