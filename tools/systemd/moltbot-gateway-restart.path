@@ -1,8 +1,8 @@
 [Unit]
-Description=Watch for Moltbot dev gateway restart requests
+Description=Watch for SmithersBot gateway restart requests
 
 [Path]
-DirectoryNotEmpty=%h/.moltbot/gateway-restart-triggers
+DirectoryNotEmpty=%h/.smithersbot/gateway-restart-triggers
 MakeDirectory=yes
 Unit=moltbot-gateway-restart.service
 

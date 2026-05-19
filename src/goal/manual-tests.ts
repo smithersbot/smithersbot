@@ -55,7 +55,7 @@ Good example:
       "description": "Test Telegram message splitting",
       "criticality": 6,
       "reason": "Requires sending a real message through Telegram which the bot cannot do during automated testing",
-      "detail": "**Step 1.** Restart the gateway: systemctl --user restart moltbot-gateway-dev.service\\n**Step 2.** Send a /new_goal command with a prompt longer than 4000 characters\\n**Step 3.** Verify the message is buffered and combined correctly\\n**Step 4.** Check that the goal is created with the full prompt text"
+      "detail": "**Step 1.** Restart the gateway: systemctl --user restart smithersbot-gateway.service\\n**Step 2.** Send a /new_goal command with a prompt longer than 4000 characters\\n**Step 3.** Verify the message is buffered and combined correctly\\n**Step 4.** Check that the goal is created with the full prompt text"
     }
   ]
 }

@@ -331,9 +331,13 @@ function formatAutoEnableChange(entry: PluginEnableChange): string {
   const channelId = normalizeChatChannelId(entry.pluginId);
   if (channelId) {
     const label = getChatChannelMeta(channelId).label;
-    reason = reason.replace(new RegExp(`^${channelId}\\b`, "i"), label); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+    reason = `${label} channel`;
+  } else if (/\s+auth configured$/i.test(reason)) {
+    reason = reason.replace(/\s+configured$/i, "");
+  } else {
+    reason = reason.replace(/\s+configured$/i, " channel");
   }
-  return `${reason}, not enabled yet.`;
+  return `Auto-enabled ${reason} from configuration.`;
 }
 
 export function applyPluginAutoEnable(params: {

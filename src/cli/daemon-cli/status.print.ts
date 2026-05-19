@@ -100,7 +100,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean })
     }
     defaultRuntime.error(
       warnText(
-        `Recommendation: run "${formatCliCommand("moltbot doctor")}" (or "${formatCliCommand("moltbot doctor --repair")}").`,
+        `Recommendation: run "${formatCliCommand("smithersbot doctor")}" (or "${formatCliCommand("smithersbot doctor --repair")}").`,
       ),
     );
   }
@@ -292,7 +292,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean })
     for (const svc of legacyServices) {
       defaultRuntime.error(`- ${errorText(svc.label)} (${svc.detail})`);
     }
-    defaultRuntime.error(errorText(`Cleanup: ${formatCliCommand("moltbot doctor")}`));
+    defaultRuntime.error(errorText(`Cleanup: ${formatCliCommand("smithersbot doctor")}`));
     spacer();
   }
 

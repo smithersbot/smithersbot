@@ -21,10 +21,10 @@ Manual verification checklist:
 1. Confirm the path unit is active:
    systemctl --user status moltbot-gateway-restart.path --no-pager
 2. Trigger a manual restart request:
-   mkdir -p ~/.moltbot/gateway-restart-triggers
-   touch ~/.moltbot/gateway-restart-triggers/restart-manual.req
+   mkdir -p ~/.smithersbot/gateway-restart-triggers
+   touch ~/.smithersbot/gateway-restart-triggers/restart-manual.req
 3. Confirm the dev gateway restarted:
-   journalctl --user -u moltbot-gateway-dev.service -n 50 --no-pager
+   journalctl --user -u smithersbot-gateway.service -n 50 --no-pager
 4. Confirm trigger request files were cleaned up:
-   ls -la ~/.moltbot/gateway-restart-triggers
+   ls -la ~/.smithersbot/gateway-restart-triggers
 CHECKLIST

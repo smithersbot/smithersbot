@@ -9,7 +9,7 @@ development setup or for running SmithersBot v0.
 `moltbot-gateway-restart.path` watches this directory:
 
 ```text
-~/.moltbot/gateway-restart-triggers
+~/.smithersbot/gateway-restart-triggers
 ```
 
 When the directory becomes non-empty, systemd starts
@@ -17,7 +17,7 @@ When the directory becomes non-empty, systemd starts
 service and then removes trigger request files matching:
 
 ```text
-~/.moltbot/gateway-restart-triggers/*.req
+~/.smithersbot/gateway-restart-triggers/*.req
 ```
 
 The Telegram `/gateway_restart` command backs onto this trigger-file pattern:
@@ -29,7 +29,7 @@ the restart outside the bot process.
 The bundled service assumes the local gateway runs as:
 
 ```text
-moltbot-gateway-dev.service
+smithersbot-gateway.service
 ```
 
 Operators with a different local service name should edit
@@ -49,8 +49,8 @@ After installation, operators can test the trigger with a placeholder request
 file such as:
 
 ```sh
-mkdir -p ~/.moltbot/gateway-restart-triggers
-touch ~/.moltbot/gateway-restart-triggers/restart-manual.req
+mkdir -p ~/.smithersbot/gateway-restart-triggers
+touch ~/.smithersbot/gateway-restart-triggers/restart-manual.req
 ```
 
 Use the service and journal commands printed by the installer to inspect the

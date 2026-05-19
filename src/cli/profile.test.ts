@@ -80,60 +80,60 @@ describe("applyCliProfileEnv", () => {
 
 describe("formatCliCommand", () => {
   it("returns command unchanged when no profile is set", () => {
-    expect(formatCliCommand("moltbot doctor --fix", {})).toBe("moltbot doctor --fix");
+    expect(formatCliCommand("moltbot doctor --fix", {})).toBe("smithersbot doctor --fix");
   });
 
   it("returns command unchanged when profile is default", () => {
     expect(formatCliCommand("moltbot doctor --fix", { CLAWDBOT_PROFILE: "default" })).toBe(
-      "moltbot doctor --fix",
+      "smithersbot doctor --fix",
     );
   });
 
   it("returns command unchanged when profile is Default (case-insensitive)", () => {
     expect(formatCliCommand("moltbot doctor --fix", { CLAWDBOT_PROFILE: "Default" })).toBe(
-      "moltbot doctor --fix",
+      "smithersbot doctor --fix",
     );
   });
 
   it("returns command unchanged when profile is invalid", () => {
     expect(formatCliCommand("moltbot doctor --fix", { CLAWDBOT_PROFILE: "bad profile" })).toBe(
-      "moltbot doctor --fix",
+      "smithersbot doctor --fix",
     );
   });
 
   it("returns command unchanged when --profile is already present", () => {
     expect(
       formatCliCommand("moltbot --profile work doctor --fix", { CLAWDBOT_PROFILE: "work" }),
-    ).toBe("moltbot --profile work doctor --fix");
+    ).toBe("smithersbot --profile work doctor --fix");
   });
 
   it("returns command unchanged when --dev is already present", () => {
     expect(formatCliCommand("moltbot --dev doctor", { CLAWDBOT_PROFILE: "dev" })).toBe(
-      "moltbot --dev doctor",
+      "smithersbot --dev doctor",
     );
   });
 
   it("inserts --profile flag when profile is set", () => {
     expect(formatCliCommand("moltbot doctor --fix", { CLAWDBOT_PROFILE: "work" })).toBe(
-      "moltbot --profile work doctor --fix",
+      "smithersbot --profile work doctor --fix",
     );
   });
 
   it("trims whitespace from profile", () => {
     expect(formatCliCommand("moltbot doctor --fix", { CLAWDBOT_PROFILE: "  jbclawd  " })).toBe(
-      "moltbot --profile jbclawd doctor --fix",
+      "smithersbot --profile jbclawd doctor --fix",
     );
   });
 
   it("handles command with no args after moltbot", () => {
     expect(formatCliCommand("moltbot", { CLAWDBOT_PROFILE: "test" })).toBe(
-      "moltbot --profile test",
+      "smithersbot --profile test",
     );
   });
 
   it("handles pnpm wrapper", () => {
     expect(formatCliCommand("pnpm moltbot doctor", { CLAWDBOT_PROFILE: "work" })).toBe(
-      "pnpm moltbot --profile work doctor",
+      "pnpm smithersbot --profile work doctor",
     );
   });
 });

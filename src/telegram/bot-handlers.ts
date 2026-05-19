@@ -57,7 +57,7 @@ import {
 } from "./command-fragments.js";
 
 const GOAL_HELP_MESSAGE = [
-  "Moltbot goal mode:",
+  "SmithersBot goal mode:",
   "",
   "• /new_goal <description> — create a plan",
   "• Approve: use buttons on the plan, react ❤️/👍, or /goal_approve <id>",
@@ -630,7 +630,7 @@ export const registerTelegramHandlers = ({
               bot.api.sendMessage(
                 params.chatId,
                 [
-                  "Moltbot: access not configured.",
+                  "SmithersBot: access not configured.",
                   "",
                   `Your Telegram user id: ${telegramUserId}`,
                   "",

@@ -48,19 +48,19 @@ export async function noteSecurityWarnings(cfg: MoltbotConfig) {
       const authFixLines =
         resolvedAuth.mode === "password"
           ? [
-              `  Fix: ${formatCliCommand("moltbot configure")} to set a password`,
-              `  Or switch to token: ${formatCliCommand("moltbot config set gateway.auth.mode token")}`,
+              `  Fix: ${formatCliCommand("smithersbot configure")} to set a password`,
+              `  Or switch to token: ${formatCliCommand("smithersbot config set gateway.auth.mode token")}`,
             ]
           : [
-              `  Fix: ${formatCliCommand("moltbot doctor --fix")} to generate a token`,
+              `  Fix: ${formatCliCommand("smithersbot doctor --fix")} to generate a token`,
               `  Or set token directly: ${formatCliCommand(
-                "moltbot config set gateway.auth.mode token",
+                "smithersbot config set gateway.auth.mode token",
               )}`,
             ];
       warnings.push(
         `- CRITICAL: Gateway bound to ${bindDescriptor} without authentication.`,
         `  Anyone on your network (or internet if port-forwarded) can fully control your agent.`,
-        `  Fix: ${formatCliCommand("moltbot config set gateway.bind loopback")}`,
+        `  Fix: ${formatCliCommand("smithersbot config set gateway.bind loopback")}`,
         ...authFixLines,
       );
     } else {

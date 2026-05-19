@@ -45,7 +45,7 @@ export function formatCliBannerLine(version: string, options: BannerOptions = {}
   const tagline = pickTagline(options);
   const rich = options.richTty ?? isRich();
   const cliName = resolveCliName(options.argv ?? process.argv, options.env);
-  const title = cliName === "moltbot" ? "🦞 Moltbot" : "🦞 Moltbot";
+  const title = cliName === "moltbot" ? "SmithersBot" : "SmithersBot";
   const prefix = "🦞 ";
   const columns = options.columns ?? process.stdout.columns ?? 120;
   const plainFullLine = `${title} ${version} (${commitLabel}) — ${tagline}`;

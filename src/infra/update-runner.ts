@@ -689,8 +689,8 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
 
     const doctorStep = await runStep(
       step(
-        "moltbot doctor",
-        managerScriptArgs(manager, "moltbot", ["doctor", "--non-interactive"]),
+        "smithersbot doctor",
+        managerScriptArgs(manager, "smithersbot", ["doctor", "--non-interactive"]),
         gitRoot,
         { CLAWDBOT_UPDATE_IN_PROGRESS: "1" },
       ),

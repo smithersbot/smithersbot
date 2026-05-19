@@ -13,7 +13,7 @@ describe("applyPluginAutoEnable", () => {
 
     expect(result.config.plugins?.entries?.slack?.enabled).toBe(true);
     expect(result.config.plugins?.allow).toEqual(["telegram", "slack"]);
-    expect(result.changes.join("\n")).toContain("slack configured, not enabled yet.");
+    expect(result.changes.join("\n")).toContain("Auto-enabled slack channel from configuration.");
   });
 
   it("respects explicit disable", () => {
@@ -79,8 +79,12 @@ describe("applyPluginAutoEnable", () => {
 
       expect(result.config.plugins?.entries?.bluebubbles?.enabled).toBe(true);
       expect(result.config.plugins?.entries?.imessage?.enabled).toBeUndefined();
-      expect(result.changes.join("\n")).toContain("bluebubbles configured, not enabled yet.");
-      expect(result.changes.join("\n")).not.toContain("imessage configured, not enabled yet.");
+      expect(result.changes.join("\n")).toContain(
+        "Auto-enabled bluebubbles channel from configuration.",
+      );
+      expect(result.changes.join("\n")).not.toContain(
+        "Auto-enabled imessage channel from configuration.",
+      );
     });
 
     it("keeps imessage enabled if already explicitly enabled (non-destructive)", () => {
@@ -113,7 +117,9 @@ describe("applyPluginAutoEnable", () => {
 
       expect(result.config.plugins?.entries?.bluebubbles?.enabled).toBe(false);
       expect(result.config.plugins?.entries?.imessage?.enabled).toBe(true);
-      expect(result.changes.join("\n")).toContain("imessage configured, not enabled yet.");
+      expect(result.changes.join("\n")).toContain(
+        "Auto-enabled imessage channel from configuration.",
+      );
     });
 
     it("allows imessage auto-enable when bluebubbles is in deny list", () => {
@@ -141,7 +147,9 @@ describe("applyPluginAutoEnable", () => {
       });
 
       expect(result.config.plugins?.entries?.imessage?.enabled).toBe(true);
-      expect(result.changes.join("\n")).toContain("imessage configured, not enabled yet.");
+      expect(result.changes.join("\n")).toContain(
+        "Auto-enabled imessage channel from configuration.",
+      );
     });
   });
 });

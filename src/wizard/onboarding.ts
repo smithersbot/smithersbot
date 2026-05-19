@@ -109,7 +109,7 @@ export async function runOnboardingWizard(
       );
     }
     await prompter.outro(
-      `Config invalid. Run \`${formatCliCommand("moltbot doctor")}\` to repair it, then re-run onboarding.`,
+      `Config invalid. Run \`${formatCliCommand("smithersbot doctor")}\` to repair it, then re-run onboarding.`,
     );
     runtime.exit(1);
     return;
