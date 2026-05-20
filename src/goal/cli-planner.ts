@@ -37,6 +37,7 @@ import { redactSecretValues } from "../security/secret-paths.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 7_200_000;
 const LOG_EXCERPT_CHARS = 2048;
+const TRANSIENT_OVERLOAD_RETRY_DELAYS_MS = [5_000, 10_000] as const;
 
 // Canonical planning artifacts live under <run>/scout/ so execution + resume can
 // rely on stable paths. Shared scout constants define scout_report/node_specs/etc.
@@ -93,6 +94,8 @@ export type CliPlanningParams = {
   enabledWorkers?: CliWorkerId[];
   /** Preserve legacy --no-scout semantics by skipping scout artifact generation. */
   includeScoutArtifacts?: boolean;
+  /** Optional cancellation signal for planner process and transient-overload backoff. */
+  abortSignal?: AbortSignal;
 };
 
 export type CliPlanningSuccess = {
@@ -134,6 +137,8 @@ export type CliPlanRevisionParams = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Restrict revision workers to codex, claude_code, or both (default: both). */
   enabledWorkers?: CliWorkerId[];
+  /** Optional cancellation signal for revision process and transient-overload backoff. */
+  abortSignal?: AbortSignal;
 };
 
 export type CliPlanRevisionResult = {
@@ -194,12 +199,60 @@ function formatCodexFallbackDisabledError(params: {
   resetHint?: string;
 }): string {
   const { context, degradedReason, resetHint } = params;
+  if (degradedReason === "anthropic_overloaded") {
+    return (
+      `${context} failed: Anthropic Claude Code is temporarily overloaded, ` +
+      "and codex fallback is disabled by goal.enabledWorkers."
+    );
+  }
   const reasonLabel = degradedReason === "anthropic_usage_limit" ? "usage limit" : "rate limit";
   const resetSuffix = resetHint ? ` (${resetHint})` : "";
   return (
     `${context} failed: Anthropic ${reasonLabel} reached${resetSuffix}, ` +
     "and codex fallback is disabled by goal.enabledWorkers."
   );
+}
+
+function shouldRetryTransientPlannerOverload(params: {
+  degradedReason: PlannerDegradedReason;
+  retryCount: number;
+}): boolean {
+  return (
+    params.degradedReason === "anthropic_overloaded" &&
+    params.retryCount < TRANSIENT_OVERLOAD_RETRY_DELAYS_MS.length
+  );
+}
+
+async function waitForTransientPlannerRetry(params: {
+  delayMs: number;
+  abortSignal?: AbortSignal;
+  context: "Planning" | "Plan revision";
+}): Promise<void> {
+  const { delayMs, abortSignal, context } = params;
+  if (abortSignal?.aborted) {
+    throw new Error(`${context} aborted during transient-overload retry backoff.`);
+  }
+  await new Promise<void>((resolve, reject) => {
+    let timer: NodeJS.Timeout;
+    const cleanup = () => {
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", onAbort);
+      }
+    };
+    const onResolve = () => {
+      cleanup();
+      resolve();
+    };
+    const onAbort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error(`${context} aborted during transient-overload retry backoff.`));
+    };
+    timer = setTimeout(onResolve, delayMs);
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function rewritePlanForDegradedPlanner(plan: Plan, enabledWorkers?: CliWorkerId[]): Plan {
@@ -522,6 +575,7 @@ export async function runCliPlanRevision(
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
   let attemptIndex = 0;
+  let claudeOverloadRetryCount = 0;
   let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
 
   while (attemptIndex < plannerBackends.length) {
@@ -541,6 +595,7 @@ export async function runCliPlanRevision(
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
       stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
+      abortSignal: params.abortSignal,
       env:
         backend === "claude_code"
           ? revisionEnv
@@ -566,6 +621,21 @@ export async function runCliPlanRevision(
         if (degradedReason) {
           plannerDegradedReason = degradedReason;
           plannerDegradedResetHint = extractResetHint(errMsg);
+          if (
+            shouldRetryTransientPlannerOverload({
+              degradedReason,
+              retryCount: claudeOverloadRetryCount,
+            })
+          ) {
+            const delayMs = TRANSIENT_OVERLOAD_RETRY_DELAYS_MS[claudeOverloadRetryCount] ?? 0;
+            claudeOverloadRetryCount += 1;
+            await waitForTransientPlannerRetry({
+              delayMs,
+              abortSignal: params.abortSignal,
+              context: "Plan revision",
+            });
+            continue;
+          }
           if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
             attemptIndex += 1;
             continue;
@@ -583,6 +653,10 @@ export async function runCliPlanRevision(
       throw new Error(`Plan revision failed: ${errMsg}`);
     }
 
+    if (backend === "claude_code") {
+      plannerDegradedReason = undefined;
+      plannerDegradedResetHint = undefined;
+    }
     plannerBackendUsed = backend;
     break;
   }
@@ -665,6 +739,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
   let attemptIndex = 0;
+  let claudeOverloadRetryCount = 0;
+  let processAttemptNumber = 0;
   let finalAttemptNumber = 0;
   let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
   const defaultPlannerBackend: PlannerBackendId = plannerBackends[0] ?? "claude_code";
@@ -672,7 +748,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   while (attemptIndex < plannerBackends.length) {
     const backend = plannerBackends[attemptIndex];
     if (!backend) break;
-    const attemptNumber = attemptIndex + 1;
+    processAttemptNumber += 1;
+    const attemptNumber = processAttemptNumber;
     finalAttemptNumber = attemptNumber;
     const prompt = backend === "codex" ? codexPrompt : claudePrompt;
     const command = backend === "claude_code" ? claudeCommand : "codex";
@@ -689,6 +766,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),
       stderrPath: path.join(scoutDir, PLANNER_STDERR_FILE),
+      abortSignal: params.abortSignal,
       env:
         backend === "claude_code"
           ? planningEnv
@@ -734,6 +812,21 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         if (degradedReason) {
           plannerDegradedReason = degradedReason;
           plannerDegradedResetHint = extractResetHint(errMsg);
+          if (
+            shouldRetryTransientPlannerOverload({
+              degradedReason,
+              retryCount: claudeOverloadRetryCount,
+            })
+          ) {
+            const delayMs = TRANSIENT_OVERLOAD_RETRY_DELAYS_MS[claudeOverloadRetryCount] ?? 0;
+            claudeOverloadRetryCount += 1;
+            await waitForTransientPlannerRetry({
+              delayMs,
+              abortSignal: params.abortSignal,
+              context: "Planning",
+            });
+            continue;
+          }
           if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
             attemptIndex += 1;
             continue;
@@ -751,6 +844,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       throw new Error(`Planning execution failed: ${errMsg}`);
     }
 
+    if (backend === "claude_code") {
+      plannerDegradedReason = undefined;
+      plannerDegradedResetHint = undefined;
+    }
     plannerBackendUsed = backend;
     break;
   }
