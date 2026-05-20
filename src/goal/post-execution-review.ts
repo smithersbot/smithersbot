@@ -1,4 +1,5 @@
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { formatExecError } from "./build-gate.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
@@ -396,18 +397,23 @@ async function runSingleReviewPass(params: {
       reason: `review timed out after ${(POST_EXECUTION_REVIEW_TIMEOUT_MS / 1000).toFixed(0)}s`,
     };
   }
-  if ((result.exitCode && result.exitCode !== 0) || result.signal) {
-    return { status: "error", reason: describeCliFailure(result) };
+  const redactedResult: RunCliProcessResult = {
+    ...result,
+    stdout: redactSecretValues(result.stdout),
+    stderr: redactSecretValues(result.stderr),
+  };
+
+  if ((redactedResult.exitCode && redactedResult.exitCode !== 0) || redactedResult.signal) {
+    return { status: "error", reason: describeCliFailure(redactedResult) };
   }
 
-  const decision = parsePostExecutionReviewDecision(result.stdout);
+  const decision = parsePostExecutionReviewDecision(redactedResult.stdout);
   if (!decision) {
     return { status: "error", reason: "review response was not valid JSON decision output" };
   }
 
-  return decision.approved
-    ? { status: "approved", issues: decision.issues }
-    : { status: "rejected", issues: decision.issues };
+  const issues = decision.issues.map((issue) => redactSecretValues(issue));
+  return decision.approved ? { status: "approved", issues } : { status: "rejected", issues };
 }
 
 export async function runPostExecutionReview(params: {

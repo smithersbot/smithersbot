@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   detectBackendAvailability,
@@ -115,6 +116,15 @@ function ensureManualTestsArtifactDir(runDir: string): ManualTestsArtifactPaths 
     stdoutPath: path.join(dir, MANUAL_TESTS_STDOUT_FILE),
     stderrPath: path.join(dir, MANUAL_TESTS_STDERR_FILE),
   };
+}
+
+function redactArtifactFile(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    fs.writeFileSync(filePath, redactSecretValues(fs.readFileSync(filePath, "utf8")), "utf8");
+  } catch {
+    // Best-effort: artifact persistence must not make manual-test generation fail.
+  }
 }
 
 function isTestEnv(): boolean {
@@ -295,25 +305,37 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
     env: useCodex ? buildCredentialStrippedEnv() : buildClaudeCodeEnv("subscription"),
     ...(artifacts ? { stdoutPath: artifacts.stdoutPath, stderrPath: artifacts.stderrPath } : {}),
   });
+  if (artifacts) {
+    redactArtifactFile(artifacts.stdoutPath);
+    redactArtifactFile(artifacts.stderrPath);
+  }
+  const redactedProcResult = {
+    ...procResult,
+    stdout: redactSecretValues(procResult.stdout),
+    stderr: redactSecretValues(procResult.stderr),
+  };
 
-  if (procResult.timedOut) {
+  if (redactedProcResult.timedOut) {
     throw new Error(
       `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.${artifactHint}`,
     );
   }
 
-  if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+  if (
+    (redactedProcResult.exitCode && redactedProcResult.exitCode !== 0) ||
+    redactedProcResult.signal
+  ) {
     const detail =
-      procResult.stderr.trim() ||
-      procResult.stdout.trim() ||
-      (procResult.signal
-        ? `Manual test generation process terminated by ${procResult.signal}.`
+      redactedProcResult.stderr.trim() ||
+      redactedProcResult.stdout.trim() ||
+      (redactedProcResult.signal
+        ? `Manual test generation process terminated by ${redactedProcResult.signal}.`
         : "Manual test generation process failed.");
     throw new Error(`Manual test generation failed: ${detail}${artifactHint}`);
   }
 
   try {
-    return extractAssistantTextFromCliResult(procResult.stdout);
+    return redactSecretValues(extractAssistantTextFromCliResult(redactedProcResult.stdout));
   } catch (error) {
     const baseMessage = error instanceof Error ? error.message : String(error);
     throw new Error(`${baseMessage}${artifactHint}`);
@@ -498,12 +520,14 @@ export async function generateManualTests(
         userMessage,
         maxTokens: 900,
       });
-      modelResponseText = response.text;
+      modelResponseText = redactSecretValues(response.text);
     } else {
       if (isTestEnv()) {
         throw new Error("Manual test generation requires an injected client in tests.");
       }
-      modelResponseText = await generateManualTestsViaCli(userMessage, params.runDir);
+      modelResponseText = redactSecretValues(
+        await generateManualTestsViaCli(userMessage, params.runDir),
+      );
     }
 
     try {

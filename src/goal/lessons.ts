@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
@@ -77,7 +78,7 @@ function atomicWriteJson(filePath: string, data: unknown): void {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
   const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  fs.writeFileSync(tmp, redactSecretValues(`${JSON.stringify(data, null, 2)}\n`), "utf8");
   fs.renameSync(tmp, filePath);
   fs.chmodSync(filePath, 0o600);
 }
@@ -155,6 +156,8 @@ function acquireLessonsWriteLock(stateDir: string = resolveStateDir()): () => vo
 export function addLesson(lesson: Omit<Lesson, "id" | "createdAt">): Lesson {
   const next: Lesson = {
     ...lesson,
+    pattern: redactSecretValues(lesson.pattern),
+    lesson: redactSecretValues(lesson.lesson),
     scope: lesson.scope ?? "project",
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
@@ -364,11 +367,11 @@ async function runClaudeLessonExtraction(params: {
   }
   if ((result.exitCode && result.exitCode !== 0) || result.signal) {
     throw new Error(
-      `lesson extraction via claude failed: ${formatCliFailure(result.stdout, result.stderr, result.signal)}`,
+      `lesson extraction via claude failed: ${formatCliFailure(redactSecretValues(result.stdout), redactSecretValues(result.stderr), result.signal)}`,
     );
   }
 
-  const parsed = parseCandidatesFromCliOutput(result.stdout);
+  const parsed = parseCandidatesFromCliOutput(redactSecretValues(result.stdout));
   if (!parsed.parsed) {
     throw new Error("lesson extraction via claude returned unparseable output");
   }
@@ -392,11 +395,11 @@ async function runCodexLessonExtraction(params: {
   }
   if ((result.exitCode && result.exitCode !== 0) || result.signal) {
     throw new Error(
-      `lesson extraction via codex failed: ${formatCliFailure(result.stdout, result.stderr, result.signal)}`,
+      `lesson extraction via codex failed: ${formatCliFailure(redactSecretValues(result.stdout), redactSecretValues(result.stderr), result.signal)}`,
     );
   }
 
-  const parsed = parseCandidatesFromCliOutput(result.stdout);
+  const parsed = parseCandidatesFromCliOutput(redactSecretValues(result.stdout));
   if (!parsed.parsed) {
     throw new Error("lesson extraction via codex returned unparseable output");
   }

@@ -820,6 +820,63 @@ describe("generateManualTests diagnostics artifacts", () => {
     expect(call.env).toEqual({ CODEX_AUTH: "stripped" });
   });
 
+  it("redacts known secret values in stdout/stderr artifacts and returned tests", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+    try {
+      resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
+      const expectedStdoutPath = path.join(tmpRunDir, "manual-tests", "stdout.txt");
+      const expectedStderrPath = path.join(tmpRunDir, "manual-tests", "stderr.txt");
+      const assistantText = JSON.stringify({
+        tests: [
+          {
+            description: "Check redaction",
+            criticality: 7,
+            reason: "Ensure FAKE_TELEGRAM_SECRET_123 is hidden",
+            detail: "**Step 1.** Confirm FAKE_TELEGRAM_SECRET_123 is absent",
+          },
+        ],
+      });
+      const claudeStdout = makeCliResultOutput(assistantText);
+
+      runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const stdoutPath = params.stdoutPath as string | undefined;
+        const stderrPath = params.stderrPath as string | undefined;
+        if (stdoutPath) fs.writeFileSync(stdoutPath, claudeStdout, "utf8");
+        if (stderrPath) fs.writeFileSync(stderrPath, "stderr FAKE_TELEGRAM_SECRET_123", "utf8");
+        return {
+          stdout: claudeStdout,
+          stderr: "stderr FAKE_TELEGRAM_SECRET_123",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 12,
+        };
+      });
+
+      const tests = await withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Improve reliability",
+          steps: makeDoneSteps(),
+          runDir: tmpRunDir,
+        }),
+      );
+
+      expect(tests[0]?.reason).toContain("[REDACTED]");
+      expect(tests[0]?.reason).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      expect(tests[0]?.detail).toContain("[REDACTED]");
+      expect(tests[0]?.detail).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      for (const artifactPath of [expectedStdoutPath, expectedStderrPath]) {
+        const persisted = fs.readFileSync(artifactPath, "utf8");
+        expect(persisted).toContain("[REDACTED]");
+        expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      }
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
+  });
+
   it("references artifact paths when the CLI produced no assistant text", async () => {
     resolveClaudeBinaryMock.mockReturnValue(null);
     detectBackendAvailabilityMock.mockReturnValue([

@@ -610,6 +610,54 @@ describe("extractRunLessons", () => {
     expect(stored[0]).toEqual(recorded[0]);
   });
 
+  it("redacts known secret values from extracted lessons before storing them", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+    try {
+      const runId = "extract-run-redact";
+      const workingDir = "/repo/project-redact";
+      saveExtractionRun({
+        runId,
+        workingDir,
+        stepResults: {
+          "step-alpha": {
+            stepId: "step-alpha",
+            success: false,
+            output: "worker output",
+            error: "worker error",
+            durationMs: 50,
+          },
+        },
+      });
+
+      mockRunCliProcess.mockResolvedValueOnce(
+        makeCliResult({
+          stdout: JSON.stringify({
+            lessons: [
+              {
+                pattern: "secret-redaction",
+                lesson: "Never persist FAKE_TELEGRAM_SECRET_123 in lessons.",
+                stepId: "step-alpha",
+              },
+            ],
+          }),
+        }),
+      );
+
+      const recorded = await extractRunLessons(runId, workingDir, []);
+
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]?.lesson).toContain("[REDACTED]");
+      expect(recorded[0]?.lesson).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      const persisted = fs.readFileSync(path.join(tmpDir, "goal-lessons.json"), "utf8");
+      expect(persisted).toContain("[REDACTED]");
+      expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
+  });
+
   it("includes hardened worker-only extraction instructions and scope schema in prompts", async () => {
     const runId = "extract-run-prompt-contract";
     const workingDir = "/repo/project-prompts";

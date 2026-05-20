@@ -315,6 +315,34 @@ describe("runPostExecutionReview", () => {
     expect(result).toEqual({ status: "rejected", issues: ["Add a test"] });
   });
 
+  it("redacts known secret values from review issues", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+    try {
+      mockRunCliProcess.mockResolvedValue(
+        createCliResult({
+          stdout: createDecisionStdout({
+            approved: false,
+            issues: ["Remove FAKE_TELEGRAM_SECRET_123 from logs"],
+          }),
+        }),
+      );
+
+      const result = await runPostExecutionReview({
+        ...baseParams(),
+        diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+      });
+
+      expect(result.status).toBe("rejected");
+      if (result.status !== "rejected") throw new Error("expected rejected");
+      expect(result.issues[0]).toContain("[REDACTED]");
+      expect(result.issues[0]).not.toContain("FAKE_TELEGRAM_SECRET_123");
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
+  });
+
   it("falls back to Codex-only review when Claude Code is unavailable", async () => {
     mockResolveClaudeBinary.mockReturnValue(null);
     mockDetectBackendAvailability.mockReturnValue([
