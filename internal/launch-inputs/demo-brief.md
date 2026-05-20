@@ -35,3 +35,18 @@ Use assets from:
 ```text
 launch-inputs/assets/
 launch-inputs/screenshots/
+
+## Intro video
+
+Use `launch-inputs/assets/smithersbot-intro.mp4` as the finished demo intro.
+
+It is 16 seconds long and already synced to the jingle.
+
+Do not recreate it.
+
+Use it as:
+- the opening of the full demo video
+- the preview asset in the landing page demo section
+- optional thumbnail/video placeholder if needed
+
+The landing page should visually connect to this intro: same formal centered composition, same cream background, same portrait identity, same chapter/exhibit rhythm.
