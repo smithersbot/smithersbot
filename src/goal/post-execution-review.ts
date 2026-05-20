@@ -1,6 +1,6 @@
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import { formatExecError } from "./build-gate.js";
-import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
@@ -381,7 +381,7 @@ async function runSingleReviewPass(params: {
       env:
         params.backend.id === "claude_code"
           ? buildClaudeCodeEnv(params.claudeCodeAuth)
-          : { ...process.env },
+          : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
   } catch (error) {
     return {

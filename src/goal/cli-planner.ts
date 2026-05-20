@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
-import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
+import {
+  buildClaudeCodeEnv,
+  buildCredentialStrippedEnv,
+  writeAuthModeArtifact,
+} from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { requireEffectiveEnabledWorkers } from "./effective-workers.js";
@@ -508,7 +512,10 @@ export async function runCliPlanRevision(
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
       stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
-      env: backend === "claude_code" ? revisionEnv : { ...process.env },
+      env:
+        backend === "claude_code"
+          ? revisionEnv
+          : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
 
     if (procResult.timedOut) {
@@ -651,7 +658,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),
       stderrPath: path.join(scoutDir, PLANNER_STDERR_FILE),
-      env: backend === "claude_code" ? planningEnv : { ...process.env },
+      env:
+        backend === "claude_code"
+          ? planningEnv
+          : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
 
     writePlannerRawOutput(scoutDir, procResult.stdout);

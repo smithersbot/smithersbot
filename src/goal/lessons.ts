@@ -4,7 +4,7 @@ import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
-import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
@@ -384,6 +384,7 @@ async function runCodexLessonExtraction(params: {
     args: buildCodexExtractionArgs(params),
     cwd: params.workingDir,
     timeoutMs: LESSON_EXTRACTION_TIMEOUT_MS,
+    env: buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
   });
 
   if (result.timedOut) {

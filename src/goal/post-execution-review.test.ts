@@ -28,6 +28,37 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => "unsupported",
 }));
 
+const FORBIDDEN_AGENT_ENV_KEYS = [
+  "TELEGRAM_BOT_TOKEN",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "MOLTBOT_GATEWAY_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+] as const;
+
+function withForbiddenAgentEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    process.env[key] = `secret-${key}`;
+  }
+  return fn().finally(() => {
+    for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+      const prior = previous.get(key);
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  });
+}
+
+function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>): void {
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    expect(env[key]).toBeUndefined();
+  }
+}
+
 import {
   buildBoundedDiffOrChunks,
   buildPostExecutionReviewPrompt,
@@ -326,6 +357,37 @@ describe("runPostExecutionReview", () => {
     expect(call.command).toBe("codex");
     expect(call.args).toContain("exec");
     expect(call.args).toContain("--json");
+  });
+
+  it("strips credential env vars from Codex post-execution review subprocesses", async () => {
+    mockResolveClaudeBinary.mockReturnValue(null);
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    mockRunCliProcess.mockResolvedValueOnce(
+      createCliResult({
+        stdout: JSON.stringify({
+          type: "result",
+          result: '{"approved":true,"issues":[]}',
+        }),
+      }),
+    );
+
+    await withForbiddenAgentEnv(() =>
+      runPostExecutionReview({
+        ...baseParams(),
+        diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+      }),
+    );
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      env: Record<string, string | undefined>;
+    };
+    expect(call.command).toBe("codex");
+    expectForbiddenAgentEnvAbsent(call.env);
   });
 
   it("returns a clear setup error when no review backend is available", async () => {

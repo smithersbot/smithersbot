@@ -69,6 +69,37 @@ vi.mock("./scout.js", async (importOriginal) => {
   };
 });
 
+const FORBIDDEN_AGENT_ENV_KEYS = [
+  "TELEGRAM_BOT_TOKEN",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "MOLTBOT_GATEWAY_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+] as const;
+
+function withForbiddenAgentEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    process.env[key] = `secret-${key}`;
+  }
+  return fn().finally(() => {
+    for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+      const prior = previous.get(key);
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  });
+}
+
+function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>): void {
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    expect(env[key]).toBeUndefined();
+  }
+}
+
 describe("lessons store", () => {
   let tmpDir: string;
   let prevMoltbotStateDir: string | undefined;
@@ -650,6 +681,35 @@ describe("extractRunLessons", () => {
     expect(call.stdin).toContain(
       'Classify scope for each lesson: "global" for principles that apply to any project, "project" for lessons specific to this working directory.',
     );
+  });
+
+  it("strips credential env vars from Codex lesson extraction subprocesses", async () => {
+    const runId = "extract-run-codex-env-strip";
+    const workingDir = "/repo/project-codex-env";
+    mockResolveClaudeBinary.mockReturnValue(null);
+    saveExtractionRun({
+      runId,
+      workingDir,
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "pnpm build failed",
+          error: "Parser emitted malformed JSON",
+          durationMs: 22,
+        },
+      },
+    });
+    mockRunCliProcess.mockResolvedValueOnce(makeCliResult({ stdout: '{"lessons":[]}' }));
+
+    await withForbiddenAgentEnv(() => extractRunLessons(runId, workingDir, []));
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      env: Record<string, string | undefined>;
+    };
+    expect(call.command).toBe("codex");
+    expectForbiddenAgentEnvAbsent(call.env);
   });
 
   it("repairs malformed JSONL lines when parsing extracted lessons", async () => {

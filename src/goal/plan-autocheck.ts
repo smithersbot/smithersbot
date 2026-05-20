@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
-import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
@@ -574,7 +574,7 @@ async function runReviewerAttempt(params: {
     env:
       params.backend === "claude_code"
         ? buildClaudeCodeEnv(params.claudeCodeAuth)
-        : { ...process.env },
+        : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
   });
 
   if (procResult.timedOut) {

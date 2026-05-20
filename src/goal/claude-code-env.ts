@@ -43,6 +43,8 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
   "SLACK_USER_TOKEN",
   "SMITHERSBOT_GATEWAY_TOKEN",
   "SMITHERSBOT_GATEWAY_PASSWORD",
+  "MOLTBOT_GATEWAY_TOKEN",
+  "MOLTBOT_GATEWAY_PASSWORD",
   "CLAWDBOT_GATEWAY_TOKEN",
   "CLAWDBOT_GATEWAY_PASSWORD",
 ];
@@ -58,10 +60,16 @@ export function shouldStripCredentialKey(key: string): boolean {
 
 export function buildCredentialStrippedEnv(
   sourceEnv: NodeJS.ProcessEnv = process.env,
+  options: { stripAuthKeys?: boolean } = {},
 ): Record<string, string | undefined> {
   const env = { ...sourceEnv };
   for (const key of Object.keys(env)) {
-    if (shouldStripCredentialKey(key)) delete env[key];
+    if (
+      shouldStripCredentialKey(key) ||
+      (options.stripAuthKeys === true && AUTH_KEYS_TO_STRIP.includes(key))
+    ) {
+      delete env[key];
+    }
   }
   return env;
 }

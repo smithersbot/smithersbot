@@ -29,6 +29,37 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
 }));
 
+const FORBIDDEN_AGENT_ENV_KEYS = [
+  "TELEGRAM_BOT_TOKEN",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "MOLTBOT_GATEWAY_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+] as const;
+
+function withForbiddenAgentEnv<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    process.env[key] = `secret-${key}`;
+  }
+  return fn().finally(() => {
+    for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+      const prior = previous.get(key);
+      if (prior === undefined) delete process.env[key];
+      else process.env[key] = prior;
+    }
+  });
+}
+
+function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>): void {
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    expect(env[key]).toBeUndefined();
+  }
+}
+
 function makePlan(summary: string, suffix = "1", backend: "codex" | "claude_code" = "codex"): Plan {
   return {
     goal: "Ship feature",
@@ -793,6 +824,28 @@ describe("runPlanAutocheck", () => {
 
     expect(result.approved).toBe(true);
     expect(result.autocheckRounds).toBe(1);
+  });
+
+  it("strips credential env vars from Codex reviewer subprocesses", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}' }));
+
+    await withForbiddenAgentEnv(() =>
+      runPlanAutocheck({
+        plan: makePlan("Codex env strip", "1", "codex"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-codex-env-strip"),
+        commitRevision: vi.fn(),
+      }),
+    );
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      env: Record<string, string | undefined>;
+    };
+    expect(call.command).toBe("codex");
+    expectForbiddenAgentEnvAbsent(call.env);
   });
 
   it("repairs malformed direct decision JSON with trailing brace", async () => {

@@ -36,6 +36,42 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
 }));
 
+const FORBIDDEN_AGENT_ENV_KEYS = [
+  "TELEGRAM_BOT_TOKEN",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "CLAWDBOT_GATEWAY_TOKEN",
+  "MOLTBOT_GATEWAY_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+] as const;
+
+function seedForbiddenAgentEnv(): Partial<
+  Record<(typeof FORBIDDEN_AGENT_ENV_KEYS)[number], string>
+> {
+  const previous: Partial<Record<(typeof FORBIDDEN_AGENT_ENV_KEYS)[number], string>> = {};
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    previous[key] = process.env[key];
+    process.env[key] = `secret-${key}`;
+  }
+  return previous;
+}
+
+function restoreForbiddenAgentEnv(
+  previous: Partial<Record<(typeof FORBIDDEN_AGENT_ENV_KEYS)[number], string>>,
+): void {
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    if (previous[key] === undefined) delete process.env[key];
+    else process.env[key] = previous[key];
+  }
+}
+
+function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>): void {
+  for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
+    expect(env[key]).toBeUndefined();
+  }
+}
+
 describe("resolveEffectiveEnabledWorkers", () => {
   it("uses Codex only when Codex is the only available backend", () => {
     expect(
@@ -299,6 +335,7 @@ describe("runCliPlanning", () => {
   });
 
   it("uses Codex-only planning when Claude Code is unavailable", async () => {
+    const previousEnv = seedForbiddenAgentEnv();
     mockResolveClaudeBinary.mockReturnValue(null);
     mockDetectBackendAvailability.mockReturnValue([
       { id: "pi", available: true },
@@ -333,21 +370,31 @@ describe("runCliPlanning", () => {
       };
     });
 
-    const result = await runCliPlanning({
-      runId: "run-codex-only",
-      goalText:
-        "Inspect the repository state and report whether the working tree is clean. Do not edit files.",
-      goalsDir,
-      includeScoutArtifacts: false,
-    });
+    let result: Awaited<ReturnType<typeof runCliPlanning>>;
+    try {
+      result = await runCliPlanning({
+        runId: "run-codex-only",
+        goalText:
+          "Inspect the repository state and report whether the working tree is clean. Do not edit files.",
+        goalsDir,
+        includeScoutArtifacts: false,
+      });
+    } finally {
+      restoreForbiddenAgentEnv(previousEnv);
+    }
 
     expect(result.status).toBe("success");
     if (result.status !== "success") throw new Error("expected success");
     expect(result.plan.steps[0]?.backend).toBe("codex");
     expect(result.plan.steps[0]?.backend).not.toBe("claude_code");
-    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string; args: string[] };
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
     expect(procCall.command).toBe("codex");
     expect(procCall.args).toContain("exec");
+    expectForbiddenAgentEnvAbsent(procCall.env);
   });
 
   it("uses Claude-only planning when Codex is unavailable", async () => {
@@ -1099,6 +1146,64 @@ describe("runCliPlanning", () => {
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
     expect(procCall.cwd).toBe(process.cwd());
+  });
+
+  it("strips credential env vars from Codex plan revision", async () => {
+    const previousEnv = seedForbiddenAgentEnv();
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Codex revised summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "refine-codex",
+            description: "Adjust the Codex-only plan",
+            dependsOn: [],
+            durationMinutes: 20,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    try {
+      await runCliPlanRevision({
+        runId: "run-codex-revision-env",
+        goalText: "Refine Codex plan",
+        currentPlan: {
+          goal: "Refine Codex plan",
+          summary: "Original summary",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "step-1",
+              description: "Initial step",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 45,
+              backend: "codex",
+            },
+          ],
+        },
+        editInstructions: "Tighten validation logic",
+        goalsDir,
+        enabledWorkers: ["codex"],
+      });
+    } finally {
+      restoreForbiddenAgentEnv(previousEnv);
+    }
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      env: Record<string, string | undefined>;
+    };
+    expect(procCall.command).toBe("codex");
+    expectForbiddenAgentEnvAbsent(procCall.env);
   });
 
   it("serializes buildGate, successCriteria, and constraints in revision prompts", async () => {
