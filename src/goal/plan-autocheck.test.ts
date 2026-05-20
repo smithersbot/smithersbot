@@ -518,6 +518,61 @@ describe("runPlanAutocheck", () => {
     expect(call.cwd).toBe(workingDir);
   });
 
+  it("redacts known secret values in reviewer artifacts and edit instructions", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+    try {
+      const runDir = runPath(tmpDir, "run-redact");
+      const commitRevision = vi.fn();
+      mockRunCliPlanRevision.mockResolvedValueOnce({ plan: makePlan("Redacted revision") });
+      mockRunCliProcess.mockImplementationOnce(async ({ stdoutPath, stderrPath }) => {
+        fs.writeFileSync(String(stdoutPath), "stdout FAKE_TELEGRAM_SECRET_123", "utf8");
+        fs.writeFileSync(String(stderrPath), "stderr FAKE_TELEGRAM_SECRET_123", "utf8");
+        return cliResult({
+          stdout:
+            '{"session_id":"redact-session"}\n{"approved":false,"editInstructions":"Fix FAKE_TELEGRAM_SECRET_123 handling"}\n',
+          stderr: "stderr FAKE_TELEGRAM_SECRET_123",
+        });
+      });
+      mockRunCliProcess.mockResolvedValueOnce(
+        cliResult({ stdout: '{"session_id":"redact-session"}\n{"approved":true}\n' }),
+      );
+
+      await runPlanAutocheck({
+        plan: makePlan("Redact check"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir,
+        maxRounds: 1,
+        commitRevision,
+      });
+
+      const roundDir = path.join(runDir, "autocheck", "round-1");
+      for (const artifactPath of [
+        path.join(roundDir, "fresh.stdout.txt"),
+        path.join(roundDir, "fresh.stderr.txt"),
+        path.join(roundDir, "response.txt"),
+        path.join(roundDir, "response_text.txt"),
+      ]) {
+        const persisted = fs.readFileSync(artifactPath, "utf8");
+        expect(persisted).toContain("[REDACTED]");
+        expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      }
+      const revisionCall = mockRunCliPlanRevision.mock.calls[0]?.[0] as {
+        editInstructions: string;
+      };
+      expect(revisionCall.editInstructions).toContain("[REDACTED]");
+      expect(revisionCall.editInstructions).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      const commitCall = commitRevision.mock.calls[0]?.[0] as { editInstructions: string };
+      expect(commitCall.editInstructions).toContain("[REDACTED]");
+      expect(commitCall.editInstructions).not.toContain("FAKE_TELEGRAM_SECRET_123");
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
+  });
+
   it("includes plan and step shortSummary fields in the autocheck snapshot prompt", async () => {
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({

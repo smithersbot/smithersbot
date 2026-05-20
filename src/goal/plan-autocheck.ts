@@ -18,6 +18,7 @@ import { renderMermaid } from "./mermaid-render.js";
 import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
 const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
@@ -519,7 +520,7 @@ function buildAutocheckPrompt(params: {
 
 function writeTextArtifact(filePath: string, value: string): void {
   try {
-    fs.writeFileSync(filePath, value, "utf8");
+    fs.writeFileSync(filePath, redactSecretValues(value), "utf8");
   } catch {
     // Best-effort diagnostics.
   }
@@ -527,10 +528,24 @@ function writeTextArtifact(filePath: string, value: string): void {
 
 function writeJsonArtifact(filePath: string, value: unknown): void {
   try {
-    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.writeFileSync(filePath, redactSecretValues(`${JSON.stringify(value, null, 2)}\n`), "utf8");
   } catch {
     // Best-effort diagnostics.
   }
+}
+
+function redactTextArtifactIfExists(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    fs.writeFileSync(filePath, redactSecretValues(fs.readFileSync(filePath, "utf8")), "utf8");
+  } catch {
+    // Best-effort diagnostics.
+  }
+}
+
+function redactDecision(decision: AutocheckDecision): AutocheckDecision {
+  if (decision.approved) return decision;
+  return { approved: false, editInstructions: redactSecretValues(decision.editInstructions) };
 }
 
 async function runReviewerAttempt(params: {
@@ -576,6 +591,8 @@ async function runReviewerAttempt(params: {
         ? buildClaudeCodeEnv(params.claudeCodeAuth)
         : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
   });
+  redactTextArtifactIfExists(params.stdoutPath);
+  redactTextArtifactIfExists(params.stderrPath);
 
   if (procResult.timedOut) {
     throw new ReviewerCliError(
@@ -614,12 +631,12 @@ async function runReviewerAttempt(params: {
     } satisfies AutocheckDecision);
 
   return {
-    stdout: procResult.stdout,
-    stderr: procResult.stderr,
+    stdout: redactSecretValues(procResult.stdout),
+    stderr: redactSecretValues(procResult.stderr),
     durationMs: procResult.durationMs,
-    responseText: parsed.text,
+    responseText: redactSecretValues(parsed.text),
     sessionId,
-    decision,
+    decision: redactDecision(decision),
   };
 }
 

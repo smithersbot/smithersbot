@@ -397,6 +397,92 @@ describe("runCliPlanning", () => {
     expectForbiddenAgentEnvAbsent(procCall.env);
   });
 
+  it("redacts known secret values in planner stdout, raw output, and copied scout artifacts", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+    try {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "not found" },
+      ]);
+      mockResolveClaudeBinary.mockReturnValue(null);
+
+      mockRunCliProcess.mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const stdoutPath = String(params.stdoutPath);
+        const canonicalScoutDir = path.dirname(stdoutPath);
+        const codexScoutDir = path.join(os.tmpdir(), "moltbot-goal-planner", "run-redact", "scout");
+        fs.writeFileSync(stdoutPath, "planner stdout FAKE_TELEGRAM_SECRET_123", "utf8");
+        fs.writeFileSync(
+          String(params.stderrPath),
+          "planner stderr FAKE_TELEGRAM_SECRET_123",
+          "utf8",
+        );
+        writeScoutArtifacts(codexScoutDir, "run-redact");
+        fs.appendFileSync(
+          path.join(codexScoutDir, "plan_draft.md"),
+          "\ndraft FAKE_TELEGRAM_SECRET_123",
+          "utf8",
+        );
+        fs.appendFileSync(
+          path.join(codexScoutDir, "node_specs", "analyze-repo.md"),
+          "\nnode FAKE_TELEGRAM_SECRET_123",
+          "utf8",
+        );
+        fs.writeFileSync(
+          path.join(codexScoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify({
+            summary: "Redaction plan",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "analyze-repo",
+                description: "Inspect repository files",
+                dependsOn: [],
+                durationMinutes: 10,
+                backend: "codex",
+              },
+            ],
+          }),
+          "utf8",
+        );
+        expect(canonicalScoutDir).toBe(path.join(goalsDir, "run-redact", "scout"));
+        return {
+          stdout:
+            '{"summary":"Redaction plan","workingDir":"/tmp/test-wd","steps":[{"id":"analyze-repo","description":"Inspect repository files","dependsOn":[],"durationMinutes":10,"backend":"codex"}]} FAKE_TELEGRAM_SECRET_123',
+          stderr: "planner stderr FAKE_TELEGRAM_SECRET_123",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 123,
+        };
+      });
+
+      const result = await runCliPlanning({
+        runId: "run-redact",
+        goalText: "Create a tiny test artifact",
+        goalsDir,
+      });
+
+      expect(result.status).toBe("success");
+      const scoutDir = path.join(goalsDir, "run-redact", "scout");
+      for (const artifactPath of [
+        path.join(scoutDir, "planning_stdout.txt"),
+        path.join(scoutDir, "planning_stderr.txt"),
+        path.join(scoutDir, "planning_raw_output.txt"),
+        path.join(scoutDir, "plan_draft.md"),
+        path.join(scoutDir, "node_specs", "analyze-repo.md"),
+      ]) {
+        const persisted = fs.readFileSync(artifactPath, "utf8");
+        expect(persisted).toContain("[REDACTED]");
+        expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      }
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
+  });
+
   it("uses Claude-only planning when Codex is unavailable", async () => {
     mockDetectBackendAvailability.mockReturnValue([
       { id: "pi", available: true },

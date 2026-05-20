@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { canRunGit, isGitRepo } from "./git-checkpoint.js";
 import { resolveRunDir } from "./run-store.js";
 import type { RalphDetail } from "./types.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 
 export type AttemptOutcome =
   | "complete"
@@ -44,7 +45,7 @@ export function writeAttemptBundle(dir: string, bundle: AttemptBundle): void {
   try {
     fs.mkdirSync(dir, { recursive: true });
     const attemptPath = resolveAttemptPath(dir, bundle.attemptNumber);
-    fs.writeFileSync(attemptPath, JSON.stringify(bundle, null, 2), "utf8");
+    fs.writeFileSync(attemptPath, redactSecretValues(JSON.stringify(bundle, null, 2)), "utf8");
   } catch {
     // Best-effort; don't mask task execution errors.
   }

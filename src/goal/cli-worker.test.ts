@@ -621,6 +621,77 @@ describe("cli-worker", () => {
       expect(runCliProcessMock.mock.calls[0]?.[0]?.abortSignal?.aborted).toBe(false);
     });
 
+    it("redacts known secret values in worker logs and result artifacts", async () => {
+      const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+      process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_SECRET_123";
+      try {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-redact-"));
+        const runId = "run-redact";
+        const stepId = "step-redact";
+        const step = makeStep({ id: stepId });
+        const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+        const workerDir = path.join(dir, "worker", stepId);
+        resolveWorkerDirMock.mockReturnValue(workerDir);
+        writeAttemptBundleMock.mockImplementation(() => {});
+
+        const workspaceResultPath = path.join(
+          dir,
+          ".moltbot-goal-worker-results",
+          runId,
+          stepId,
+          "attempt-1",
+          "worker_result.json",
+        );
+
+        runCliProcessMock.mockImplementationOnce(async ({ stdoutPath, stderrPath }) => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(
+            workspaceResultPath,
+            JSON.stringify({
+              status: "complete",
+              summary: "Used FAKE_TELEGRAM_SECRET_123 during execution",
+            }),
+            "utf8",
+          );
+          fs.writeFileSync(String(stdoutPath), "stdout FAKE_TELEGRAM_SECRET_123", "utf8");
+          fs.writeFileSync(String(stderrPath), "stderr FAKE_TELEGRAM_SECRET_123", "utf8");
+          return {
+            stdout: "stdout FAKE_TELEGRAM_SECRET_123",
+            stderr: "stderr FAKE_TELEGRAM_SECRET_123",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 25,
+          };
+        });
+
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step,
+          plan,
+          goal: "Verify worker artifact redaction",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        for (const artifactPath of [
+          workspaceResultPath,
+          path.join(workerDir, "worker_result.json"),
+          path.join(workerDir, "attempt-1.stdout.txt"),
+          path.join(workerDir, "attempt-1.stderr.txt"),
+        ]) {
+          const persisted = fs.readFileSync(artifactPath, "utf8");
+          expect(persisted).toContain("[REDACTED]");
+          expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+        }
+      } finally {
+        if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+      }
+    });
+
     it("writes the assembled codex prompt artifact for each attempt", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-codex-prompt-"));
       const runId = "run-codex-prompt";

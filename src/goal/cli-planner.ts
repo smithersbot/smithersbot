@@ -33,6 +33,7 @@ import {
 } from "./scout.js";
 import type { Plan, PlannerBackendId, PlannerDegradedReason } from "./types.js";
 import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 7_200_000;
 const LOG_EXCERPT_CHARS = 2048;
@@ -234,7 +235,11 @@ function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string 
       const sourcePath = path.join(sourceDir, fileName);
       if (!fs.existsSync(sourcePath)) continue;
       fs.mkdirSync(path.dirname(path.join(targetDir, fileName)), { recursive: true });
-      fs.copyFileSync(sourcePath, path.join(targetDir, fileName));
+      fs.writeFileSync(
+        path.join(targetDir, fileName),
+        redactSecretValues(fs.readFileSync(sourcePath, "utf8")),
+        "utf8",
+      );
     }
 
     const sourceNodeSpecsDir = path.join(sourceDir, SCOUT_NODE_SPECS_DIR);
@@ -245,7 +250,15 @@ function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string 
       if (sourceNodeSpecFiles.length > 0) {
         const targetNodeSpecsDir = path.join(targetDir, SCOUT_NODE_SPECS_DIR);
         fs.rmSync(targetNodeSpecsDir, { recursive: true, force: true });
-        fs.cpSync(sourceNodeSpecsDir, targetNodeSpecsDir, { recursive: true });
+        fs.mkdirSync(targetNodeSpecsDir, { recursive: true });
+        for (const entry of sourceNodeSpecFiles) {
+          const sourcePath = path.join(sourceNodeSpecsDir, entry.name);
+          fs.writeFileSync(
+            path.join(targetNodeSpecsDir, entry.name),
+            redactSecretValues(fs.readFileSync(sourcePath, "utf8")),
+            "utf8",
+          );
+        }
       }
     }
   } catch (err) {
@@ -298,7 +311,20 @@ function buildPlanningPrompt(params: {
 
 function writePlannerRawOutput(scoutDir: string, rawOutput: string): void {
   try {
-    fs.writeFileSync(path.join(scoutDir, PLANNER_RAW_OUTPUT_FILE), rawOutput, "utf8");
+    fs.writeFileSync(
+      path.join(scoutDir, PLANNER_RAW_OUTPUT_FILE),
+      redactSecretValues(rawOutput),
+      "utf8",
+    );
+  } catch {
+    // Best-effort diagnostics.
+  }
+}
+
+function redactTextArtifactIfExists(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    fs.writeFileSync(filePath, redactSecretValues(fs.readFileSync(filePath, "utf8")), "utf8");
   } catch {
     // Best-effort diagnostics.
   }
@@ -517,6 +543,8 @@ export async function runCliPlanRevision(
           ? revisionEnv
           : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
+    redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDOUT_FILE));
+    redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDERR_FILE));
 
     if (procResult.timedOut) {
       throw new Error(`Plan revision timed out after ${(timeout / 60_000).toFixed(0)} minutes.`);
@@ -563,7 +591,7 @@ export async function runCliPlanRevision(
   try {
     fs.writeFileSync(
       path.join(revisionDir, PLAN_REVISION_RAW_OUTPUT_FILE),
-      procResult.stdout,
+      redactSecretValues(procResult.stdout),
       "utf8",
     );
   } catch {
@@ -663,6 +691,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
           ? planningEnv
           : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
+    redactTextArtifactIfExists(path.join(scoutDir, PLANNER_STDOUT_FILE));
+    redactTextArtifactIfExists(path.join(scoutDir, PLANNER_STDERR_FILE));
 
     writePlannerRawOutput(scoutDir, procResult.stdout);
 

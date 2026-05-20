@@ -24,6 +24,7 @@ import {
 } from "./claude-code-env.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 
 // --- Constants ---
 
@@ -102,17 +103,30 @@ function persistCanonicalWorkerResult(params: {
   sourcePath: string;
   canonicalResultPath: string;
 }): void {
-  if (params.sourcePath === params.canonicalResultPath) return;
   try {
+    const raw = fs.readFileSync(params.sourcePath, "utf8");
+    const redacted = redactSecretValues(raw);
+    fs.writeFileSync(params.sourcePath, redacted, "utf8");
+    if (params.sourcePath === params.canonicalResultPath) return;
     fs.mkdirSync(path.dirname(params.canonicalResultPath), { recursive: true });
-    fs.copyFileSync(params.sourcePath, params.canonicalResultPath);
+    fs.writeFileSync(params.canonicalResultPath, redacted, "utf8");
   } catch {
     // Best-effort artifact copy; execution result is already validated.
   }
 }
 
 function writeTextArtifact(filePath: string, value: string): void {
-  fs.writeFileSync(filePath, value, "utf8");
+  fs.writeFileSync(filePath, redactSecretValues(value), "utf8");
+}
+
+function redactTextArtifactIfExists(filePath: string): void {
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, "utf8");
+    fs.writeFileSync(filePath, redactSecretValues(raw), "utf8");
+  } catch {
+    // Best-effort artifact redaction; don't mask task execution errors.
+  }
 }
 
 /**
@@ -379,6 +393,8 @@ export async function executeTaskWithCliWorker(
       removeAbortForwarding?.();
     },
   );
+  redactTextArtifactIfExists(stdoutPath);
+  redactTextArtifactIfExists(stderrPath);
 
   const resultRead: ReturnType<typeof readWorkerResultFile> =
     earlyResult && earlyResultSourcePath
@@ -427,6 +443,7 @@ export async function executeTaskWithCliWorker(
     });
     if (repaired) {
       output = repaired;
+      redactTextArtifactIfExists(repairTargetPath);
       persistCanonicalWorkerResult({
         sourcePath: repairTargetPath,
         canonicalResultPath,

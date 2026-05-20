@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { loadConfig } from "../config/config.js";
 
 export const SECRET_PATH_DENY_REASON =
   "is a local secret/config file. Workers cannot read SmithersBot config; ask the user to relay any required value.";
@@ -69,6 +70,7 @@ export interface IsSecretPathOptions {
 export interface RedactSecretValuesOptions {
   secretValues?: readonly (string | null | undefined)[];
   replacement?: string;
+  includeConfigSecrets?: boolean;
 }
 
 const HOME_SECRET_DIRS = [
@@ -119,6 +121,10 @@ const PREFIX_SECRET_PATTERNS = [
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){0,2}\b/g,
 ] as const;
+
+const SENSITIVE_CONFIG_KEY_RE = /(?:token|password|secret|apiKey|botToken|signingSecret)$/i;
+const SENSITIVE_ENV_KEY_RE =
+  /(?:TOKEN|PASSWORD|SECRET|API_KEY|BOT_TOKEN|SIGNING_SECRET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)$/;
 
 function normalizePath(filePath: string): string {
   return path.resolve(filePath).replace(/\\/g, "/");
@@ -246,6 +252,46 @@ function normalizeSecretValues(values: readonly (string | null | undefined)[]): 
   return [...normalized].sort((a, b) => b.length - a.length);
 }
 
+function collectConfigSecretValues(value: unknown, values: string[] = [], key = ""): string[] {
+  if (typeof value === "string") {
+    if (SENSITIVE_CONFIG_KEY_RE.test(key)) {
+      values.push(value);
+    }
+    return values;
+  }
+  if (!value || typeof value !== "object") {
+    return values;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectConfigSecretValues(item, values, key);
+    }
+    return values;
+  }
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    collectConfigSecretValues(childValue, values, childKey);
+  }
+  return values;
+}
+
+function loadConfigSecretValues(): string[] {
+  try {
+    return collectConfigSecretValues(loadConfig());
+  } catch {
+    return [];
+  }
+}
+
+function loadEnvSecretValues(): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && SENSITIVE_ENV_KEY_RE.test(key)) {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
 export function isSecretPath(filePath: string, options: IsSecretPathOptions = {}): boolean {
   const resolvedOptions: Required<IsSecretPathOptions> = {
     cwd: options.cwd ?? process.cwd(),
@@ -261,7 +307,14 @@ export function redactSecretValues(text: string, options: RedactSecretValuesOpti
   const replacement = options.replacement ?? DEFAULT_SECRET_REPLACEMENT;
   let redacted = text;
 
-  for (const secretValue of normalizeSecretValues(options.secretValues ?? [])) {
+  const configuredSecretValues =
+    options.includeConfigSecrets === false
+      ? []
+      : [...loadConfigSecretValues(), ...loadEnvSecretValues()];
+  for (const secretValue of normalizeSecretValues([
+    ...configuredSecretValues,
+    ...(options.secretValues ?? []),
+  ])) {
     redacted = redacted.replace(new RegExp(escapeRegExp(secretValue), "g"), replacement);
   }
 
