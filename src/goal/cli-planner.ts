@@ -8,8 +8,8 @@ import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { requireEffectiveEnabledWorkers } from "./effective-workers.js";
 import { RATE_LIMIT_RE } from "./error-patterns.js";
 import {
-  PLAN_SYSTEM_PROMPT,
   PlanParseError,
+  buildPlanSystemPrompt,
   parsePlanResultFromText,
   type PlanResult,
 } from "./planner.js";
@@ -45,7 +45,8 @@ const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash,Write";
 const ANTHROPIC_USAGE_LIMIT_RE =
   /(?:you(?:'|’)?ve|you have)\s+hit\s+your\s+(?:chatgpt\s+)?(?:usage\s+)?limit|usage\s+limit|resets?\s+\d/i;
 
-const PLAN_AND_SCOUT_APPENDIX = `## Canonical Execution Plan Output
+function buildPlanAndScoutAppendix(enabledWorkers: CliWorkerId[]): string {
+  return `## Canonical Execution Plan Output
 
 After writing all scout output files, create this file:
 - {{OUTPUT_DIR}}/${EXECUTION_PLAN_FILE}
@@ -54,18 +55,25 @@ Then print the exact same JSON object as your final stdout response.
 
 The JSON must satisfy the planning schema below exactly.
 
-${PLAN_SYSTEM_PROMPT}
+${buildPlanSystemPrompt(enabledWorkers)}
 
 Additional requirements:
 - Keep dependency structure aligned with ${SCOUT_REPORT_FILE}.
 - Every step id must map to an existing scout node id, except bootstrap step id "create-conventions".
 - If clarification is required, create ${SCOUT_NEEDS_CLARIFICATION_FILE} and return:
   { "blocked": true, "question": "The specific question you need answered" }`;
+}
 
-const PLAN_ONLY_PROMPT = `${PLAN_SYSTEM_PROMPT}
+function buildPlanOnlyPrompt(params: {
+  goalText: string;
+  cwd: string;
+  enabledWorkers: CliWorkerId[];
+}): string {
+  return `${buildPlanSystemPrompt(params.enabledWorkers)}
 
-Goal: {{GOAL_TEXT}}
-Current workspace path: {{CURRENT_WORKSPACE_PATH}}`;
+Goal: ${params.goalText}
+Current workspace path: ${params.cwd}`;
+}
 
 export type CliPlanningParams = {
   runId: string;
@@ -251,13 +259,15 @@ function buildPlanningPrompt(params: {
   cwd: string;
   scoutDir: string;
   includeScoutArtifacts: boolean;
+  enabledWorkers: CliWorkerId[];
 }): string {
-  const { runId, goalText, cwd, scoutDir, includeScoutArtifacts } = params;
+  const { runId, goalText, cwd, scoutDir, includeScoutArtifacts, enabledWorkers } = params;
   if (!includeScoutArtifacts) {
-    return PLAN_ONLY_PROMPT.replace("{{GOAL_TEXT}}", goalText).replace(
-      "{{CURRENT_WORKSPACE_PATH}}",
+    return buildPlanOnlyPrompt({
+      goalText,
       cwd,
-    );
+      enabledWorkers,
+    });
   }
 
   const templatePath = resolveScoutTemplatePath();
@@ -278,7 +288,7 @@ function buildPlanningPrompt(params: {
     "",
     scoutBrief,
     "",
-    PLAN_AND_SCOUT_APPENDIX.replaceAll("{{OUTPUT_DIR}}", scoutDir),
+    buildPlanAndScoutAppendix(enabledWorkers).replaceAll("{{OUTPUT_DIR}}", scoutDir),
   ].join("\n");
 }
 
@@ -357,8 +367,9 @@ function buildPlanRevisionPrompt(params: {
   cwd: string;
   editInstructions: string;
   priorFeedback?: string[];
+  enabledWorkers: CliWorkerId[];
 }): string {
-  const { goalText, currentPlan, cwd, editInstructions, priorFeedback } = params;
+  const { goalText, currentPlan, cwd, editInstructions, priorFeedback, enabledWorkers } = params;
   const currentPlanJson = JSON.stringify(
     {
       workingDir: currentPlan.workingDir,
@@ -392,7 +403,7 @@ function buildPlanRevisionPrompt(params: {
       : [];
 
   return [
-    PLAN_SYSTEM_PROMPT,
+    buildPlanSystemPrompt(enabledWorkers),
     "",
     `Goal: ${goalText}`,
     `Current workspace path: ${cwd}`,
@@ -462,6 +473,7 @@ export async function runCliPlanRevision(
     cwd: plannerCwd,
     editInstructions,
     priorFeedback,
+    enabledWorkers: plannerBackends,
   });
   try {
     fs.writeFileSync(
@@ -593,6 +605,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     cwd: plannerCwd,
     scoutDir,
     includeScoutArtifacts,
+    enabledWorkers: plannerBackends,
   });
   const codexPrompt =
     codexScoutDir == null
@@ -603,6 +616,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
           cwd: plannerCwd,
           scoutDir: codexScoutDir,
           includeScoutArtifacts,
+          enabledWorkers: plannerBackends,
         });
   fs.writeFileSync(path.join(scoutDir, PLANNING_BRIEF_FILE), claudePrompt, "utf8");
 

@@ -305,30 +305,38 @@ describe("runCliPlanning", () => {
       { id: "codex", available: true },
       { id: "claude_code", available: false, reason: "claude not found on PATH" },
     ]);
-    mockRunCliProcess.mockResolvedValue({
-      stdout: JSON.stringify({
-        summary: "Codex-only planning summary",
-        workingDir: "/tmp/test-wd",
-        steps: [
-          {
-            id: "codex-step",
-            description: "Plan with Codex",
-            dependsOn: [],
-            durationMinutes: 10,
-            backend: "codex",
-          },
-        ],
-      }),
-      stderr: "",
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      durationMs: 40,
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const args = params.args as string[];
+      const prompt = args.at(-1);
+      expect(typeof prompt).toBe("string");
+      expect(prompt).not.toContain("claude_code");
+      return {
+        stdout: JSON.stringify({
+          summary: "Codex-only planning summary",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "inspect-repo-state",
+              description:
+                "Inspect the repository state and report whether the working tree is clean. Do not edit files.",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 40,
+      };
     });
 
     const result = await runCliPlanning({
       runId: "run-codex-only",
-      goalText: "Plan without Claude",
+      goalText:
+        "Inspect the repository state and report whether the working tree is clean. Do not edit files.",
       goalsDir,
       includeScoutArtifacts: false,
     });
@@ -336,6 +344,7 @@ describe("runCliPlanning", () => {
     expect(result.status).toBe("success");
     if (result.status !== "success") throw new Error("expected success");
     expect(result.plan.steps[0]?.backend).toBe("codex");
+    expect(result.plan.steps[0]?.backend).not.toBe("claude_code");
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { command: string; args: string[] };
     expect(procCall.command).toBe("codex");
     expect(procCall.args).toContain("exec");
@@ -347,30 +356,33 @@ describe("runCliPlanning", () => {
       { id: "codex", available: false, reason: "codex not found on PATH" },
       { id: "claude_code", available: true },
     ]);
-    mockRunCliProcess.mockResolvedValue({
-      stdout: JSON.stringify({
-        summary: "Claude-only planning summary",
-        workingDir: "/tmp/test-wd",
-        steps: [
-          {
-            id: "claude-step",
-            description: "Plan with Claude",
-            dependsOn: [],
-            durationMinutes: 10,
-            backend: "claude_code",
-          },
-        ],
-      }),
-      stderr: "",
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      durationMs: 40,
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      expect(String(params.stdin).toLowerCase()).not.toContain("codex");
+      return {
+        stdout: JSON.stringify({
+          summary: "Claude-only planning summary",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "claude-step",
+              description: "Plan with the available worker",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 40,
+      };
     });
 
     const result = await runCliPlanning({
       runId: "run-claude-only",
-      goalText: "Plan without Codex",
+      goalText: "Plan with the installed worker",
       goalsDir,
       includeScoutArtifacts: false,
     });

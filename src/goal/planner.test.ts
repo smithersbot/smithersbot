@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  buildPlanSystemPrompt,
   buildPlannerUserMessage,
   extractJson,
   generatePlan,
@@ -22,6 +23,32 @@ function mockClient(response: string): GoalLlmClient {
 const TEST_CWD = "/tmp/moltbot-planner-cwd";
 
 describe("planner", () => {
+  describe("buildPlanSystemPrompt", () => {
+    it("omits claude_code instructions for Codex-only planning", () => {
+      const prompt = buildPlanSystemPrompt(["codex"]);
+      expect(prompt).toContain('Use "codex" for every non-Pi step');
+      expect(prompt).not.toContain("claude_code");
+    });
+
+    it("omits codex instructions for Claude-only planning", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code"]);
+      expect(prompt).toContain('Use "claude_code" for every non-Pi step');
+      expect(prompt.toLowerCase()).not.toContain("codex");
+    });
+
+    it("keeps dual-backend guidance when both workers are available", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain('Use "codex" for coding tasks');
+      expect(prompt).toContain('Use "claude_code" for testing tasks');
+    });
+
+    it("throws the canonical setup error when no worker backend is available", () => {
+      expect(() => buildPlanSystemPrompt([])).toThrow(
+        "No worker backend available. Install Codex or Claude Code and rerun.",
+      );
+    });
+  });
+
   describe("generatePlan", () => {
     it("generates a valid task-based plan from LLM response", async () => {
       const client = mockClient(

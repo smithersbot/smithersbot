@@ -10,8 +10,73 @@ import { resolveRunDir } from "./run-store.js";
 import { normalizeLabel } from "./mermaid-render.js";
 import { collapseWhitespace, parseShortSummary } from "./plan-text.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
+import type { CliWorkerId } from "../config/types.goal.js";
 
-export const PLAN_SYSTEM_PROMPT = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
+type PromptWorkerId = Extract<CliWorkerId, "codex" | "claude_code">;
+
+const DEFAULT_PROMPT_WORKERS: PromptWorkerId[] = ["claude_code", "codex"];
+
+function normalizePromptWorkers(workers?: CliWorkerId[]): PromptWorkerId[] {
+  const filtered = (workers ?? DEFAULT_PROMPT_WORKERS).filter(
+    (worker): worker is PromptWorkerId => worker === "codex" || worker === "claude_code",
+  );
+  return [...new Set(filtered)];
+}
+
+function formatBackendUnion(workers: PromptWorkerId[]): string {
+  return [...workers, "pi"].map((worker) => `"${worker}"`).join(" | ");
+}
+
+function primaryPromptBackend(workers: PromptWorkerId[]): PromptWorkerId {
+  return workers.includes("codex") ? "codex" : "claude_code";
+}
+
+function buildBackendSelectionRules(workers: PromptWorkerId[]): string {
+  const backendUnion = formatBackendUnion(workers);
+  if (workers.includes("codex") && workers.includes("claude_code")) {
+    return [
+      "BACKEND SELECTION RULES (strict):",
+      `- Every step MUST include a backend: ${backendUnion}.`,
+      '- Use "codex" for coding tasks (creating/modifying code or files).',
+      '- Use "claude_code" for testing tasks and every other type of task.',
+      '- If a step both creates/modifies code AND runs tests, use "codex".',
+      '- Only use "pi" if the user explicitly requests it.',
+      "- If only one backend is available at runtime, the executor will automatically use the available backend regardless of what you specify. Plan for the ideal backend; the system handles fallback.",
+    ].join("\n");
+  }
+
+  const onlyBackend = workers[0];
+  if (onlyBackend === "codex") {
+    return [
+      "BACKEND SELECTION RULES (strict):",
+      `- Every step MUST include a backend: ${backendUnion}.`,
+      '- Use "codex" for every non-Pi step, including coding, testing, inspection, documentation, and reporting tasks.',
+      '- Only use "pi" if the user explicitly requests it.',
+    ].join("\n");
+  }
+
+  return [
+    "BACKEND SELECTION RULES (strict):",
+    `- Every step MUST include a backend: ${backendUnion}.`,
+    '- Use "claude_code" for every non-Pi step, including coding, testing, inspection, documentation, and reporting tasks.',
+    '- Only use "pi" if the user explicitly requests it.',
+  ].join("\n");
+}
+
+export function buildPlanSystemPrompt(workers?: CliWorkerId[]): string {
+  const promptWorkers = normalizePromptWorkers(workers);
+  if (promptWorkers.length === 0) {
+    throw new Error("No worker backend available. Install Codex or Claude Code and rerun.");
+  }
+
+  const backendUnion = formatBackendUnion(promptWorkers);
+  const exampleBackend = primaryPromptBackend(promptWorkers);
+  const agentFileFormat =
+    promptWorkers.length === 1 && promptWorkers[0] === "claude_code"
+      ? "agent-compatible format"
+      : "Codex-compatible format";
+
+  return `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
 Each step describes a task that an autonomous coding agent will carry out. The agent has full access to the filesystem, shell commands (bash), and can read/write/edit files. Within a single turn the agent can chain as many tool calls as it needs — read dozens of files, edit many, run builds and tests — so each step can encompass substantial work. You do NOT need to specify tools — just describe what to do.
 
@@ -31,13 +96,7 @@ GRANULARITY RULES (strict):
 - DO NOT create a standalone "run tests", "verify", or "review" step at the end. A system-level code review runs automatically after all steps complete. Each step must verify its own work before completing.
 - When in doubt, merge steps. Fewer, meatier steps are always better than many tiny ones.
 
-BACKEND SELECTION RULES (strict):
-- Every step MUST include a backend: "codex" | "claude_code" | "pi".
-- Use "codex" for coding tasks (creating/modifying code or files).
-- Use "claude_code" for testing tasks and every other type of task.
-- If a step both creates/modifies code AND runs tests, use "codex".
-- Only use "pi" if the user explicitly requests it.
-- If only one backend is available at runtime, the executor will automatically use the available backend regardless of what you specify. Plan for the ideal backend; the system handles fallback.
+${buildBackendSelectionRules(promptWorkers)}
 
 STRUCTURED PLANNING REQUIREMENTS (strict):
 - Every step MUST include successCriteria: a specific, verifiable done-when condition.
@@ -58,7 +117,7 @@ CONVENTION FILE RULES (strict):
   - Keep under 100 lines.
   - Use pointers to deeper docs (for example, "When modifying X, read: docs/ARCHITECTURE.md") instead of large inline dumps.
   - Include project-specific stack, conventions, structure, and gotchas; avoid generic coding advice.
-- AGENTS.md must mirror the same project-specific conventions in Codex-compatible format.
+- AGENTS.md must mirror the same project-specific conventions in ${agentFileFormat}.
 - "create-conventions" must be first in step order with dependsOn: [], and no other step should list it in dependsOn.
 
 Step schema:
@@ -69,7 +128,7 @@ Step schema:
 - successCriteria (required): specific, verifiable done-when condition
 - constraints (required): array of explicit do-not-do constraints (can be [] if none)
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
-- backend (required): "codex" | "claude_code" | "pi" — execution backend
+- backend (required): ${backendUnion} — execution backend
 - risk (optional): "low" | "medium" | "high" — Flag steps as "high" risk if they touch critical paths, have uncertain requirements, or could break existing behavior. The executor allocates extra retries to high-risk steps. Default: "low".
 
 Top-level summary fields:
@@ -98,7 +157,7 @@ Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your 
       "successCriteria": "Verifiable done-when condition",
       "constraints": ["Explicit do-not-do constraint"],
       "durationMinutes": 12,
-      "backend": "codex"
+      "backend": "${exampleBackend}"
     }
   ]
 }
@@ -125,6 +184,9 @@ workingDir is the directory where the goal's work should happen.
 
 If you cannot create a plan because you need more information, respond with:
 { "blocked": true, "question": "The specific question you need answered" }`;
+}
+
+export const PLAN_SYSTEM_PROMPT = buildPlanSystemPrompt();
 
 export type PlanResult = Plan | { blocked: true; question: string };
 
@@ -186,11 +248,12 @@ export async function generatePlan(
   goal: string,
   cwd: string,
   scoutData?: ScoutResult,
+  enabledWorkers?: CliWorkerId[],
 ): Promise<PlanResult> {
   let response;
   try {
     response = await client.complete({
-      systemPrompt: PLAN_SYSTEM_PROMPT,
+      systemPrompt: buildPlanSystemPrompt(enabledWorkers),
       userMessage: buildPlannerUserMessage(goal, cwd, scoutData),
       maxTokens: 8192,
     });
@@ -497,6 +560,7 @@ export async function generatePlanRevision(
   cwd: string,
   currentPlan: Plan,
   editInstructions: string,
+  enabledWorkers?: CliWorkerId[],
 ): Promise<PlanResult> {
   const currentPlanJson = JSON.stringify(
     {
@@ -522,7 +586,7 @@ export async function generatePlanRevision(
   let response;
   try {
     response = await client.complete({
-      systemPrompt: PLAN_SYSTEM_PROMPT,
+      systemPrompt: buildPlanSystemPrompt(enabledWorkers),
       userMessage: `Goal: ${goal}\nCurrent workspace path: ${cwd}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
       maxTokens: 8192,
     });
