@@ -1,0 +1,171 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/matt/moltbot[39m
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mallows concurrent planning requests in the same chat
+[22m[39m[typing] goal start chatId=42
+[typing] goal stop chatId=42
+[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mallows concurrent planning requests in the same chat
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2msets a new_goal anchor after a buffered command flush
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal stop chatId=42
+[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for ga callback preface and run-not-found errors
+[22m[39m[typing] callback:approve start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for ga callback preface and run-not-found errors
+[22m[39m[typing] callback:approve stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for gResume callback preface and run-not-found errors
+[22m[39m[typing] callback:resume start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for gResume callback preface and run-not-found errors
+[22m[39m[typing] callback:resume stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_approve preface and run-not-found errors
+[22m[39m[typing] goal_approve start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_approve preface and run-not-found errors
+[22m[39m[typing] goal_approve stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_resume preface and run-not-found errors
+[22m[39m[typing] goal_resume start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_resume preface and run-not-found errors
+[22m[39m[typing] goal_resume stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer usage, run-not-found, and lock responses
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer usage, run-not-found, and lock responses
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback usage, run-not-found, and lock responses
+[22m[39m[typing] goal_feedback start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback usage, run-not-found, and lock responses
+[22m[39m[typing] goal_feedback stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background string results
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background string results
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background plan results
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background plan results
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback background string results
+[22m[39m[typing] goal_feedback start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback background string results
+[22m[39m[typing] goal_feedback stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_edit background preface and result
+[22m[39m[typing] goal_edit start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_edit background preface and result
+[22m[39m[typing] goal_edit stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mcalls sendChatAction before and during fn execution
+[22m[39m[typing] test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mcalls sendChatAction before and during fn execution
+[22m[39m[typing] test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mpasses message_thread_id when threadId is provided
+[22m[39m[typing] start chatId=42 threadId=7
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mpasses message_thread_id when threadId is provided
+[22m[39m[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mclears interval even if fn throws
+[22m[39m[typing] start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mclears interval even if fn throws
+[22m[39m[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] sendChatAction error chatId=42: API error
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends start preface before background work starts
+[22m[39m[typing] start-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends start preface before background work starts
+[22m[39m[typing] start-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends resume preface before background work starts
+[22m[39m[typing] resume-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends resume preface before background work starts
+[22m[39m[typing] resume-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2mthreads reply parameters into the preface acknowledgement
+[22m[39m[typing] reply-param-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2mthreads reply parameters into the preface acknowledgement
+[22m[39m[typing] reply-param-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2msends typing action immediately on start
+[22m[39m[typing] test start chatId=42
+[typing] test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mstops cleanly via stop() — no more calls after stop
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mprevents per-chat overlap (stops previous loop)
+[22m[39m[typing] first start chatId=42
+[typing] first stop chatId=42
+[typing] second start chatId=42
+[typing] second stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mkeeps independent loops for different threadIds
+[22m[39m[typing] start chatId=42 threadId=1
+[typing] start chatId=42 threadId=2
+[typing] stop chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+[typing] sendChatAction error chatId=42: API error
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mstop() is idempotent
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2muses raw API when threadId is provided
+[22m[39m[typing] start chatId=42 threadId=7
+[typing] stop chatId=42
+
+ [32m✓[39m src/telegram/goal-commands.test.ts [2m([22m[2m196 tests[22m[2m)[22m[33m 4056[2mms[22m[39m
+       [33m[2m✓[22m[39m captures log and error output [33m 3053[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m196 passed[39m[22m[90m (196)[39m
+[2m   Start at [22m 00:40:08
+[2m   Duration [22m 5.44s[2m (transform 3.21s, setup 221ms, import 873ms, tests 4.06s, environment 0ms)[22m
+

@@ -1,0 +1,6 @@
+
+> smithersbot@2026.1.29 lint /home/matt/moltbot
+> oxlint --type-aware src test
+
+Found 0 warnings and 0 errors.
+Finished in 25.5s on 2297 files with 104 rules using 4 threads.
