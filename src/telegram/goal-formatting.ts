@@ -5,11 +5,11 @@ import type { Bot } from "grammy";
 
 import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { formatAge } from "../infra/channel-summary.js";
-import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import type { GoalStatusChangeEvent, ManualTestsStatus } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
-import { clampCriticality } from "../goal/manual-tests.js";
+import { clampCriticality, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
 import type { ManualTestSuggestion, Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -116,14 +116,36 @@ export function appendGoalIdFooter(summary: string, runId: string): string {
 }
 
 const MANUAL_TEST_GENERATION_FAILED_NOTICE = "Note: Manual test generation failed.";
+const MANUAL_TESTS_SKIPPED_NO_BACKEND_NOTICE =
+  "Manual test generation skipped: no available LLM backend configured.";
 
-export function appendManualTestGenerationFailureNotice(
+const ARTIFACT_HINT_PATTERN = /\((?:stdout|stderr):[^)]+\)/;
+
+export function resolveManualTestsStatus(
+  status: ManualTestsStatus | undefined,
+  manualTestsError: string | undefined,
+): ManualTestsStatus {
+  if (status) return status;
+  if (!manualTestsError?.trim()) return "generated";
+  return isNoBackendManualTestsError(manualTestsError) ? "skipped_no_backend" : "failed";
+}
+
+export function appendManualTestsStatusNotice(
   summary: string,
+  status: ManualTestsStatus,
   manualTestsError?: string,
 ): string {
-  if (!manualTestsError?.trim()) return summary;
+  if (status === "generated") return summary;
+  if (status === "skipped_no_backend") {
+    if (summary.includes(MANUAL_TESTS_SKIPPED_NO_BACKEND_NOTICE)) return summary;
+    return `${summary.trimEnd()}\n${MANUAL_TESTS_SKIPPED_NO_BACKEND_NOTICE}`;
+  }
   if (summary.includes(MANUAL_TEST_GENERATION_FAILED_NOTICE)) return summary;
-  return `${summary.trimEnd()}\n${MANUAL_TEST_GENERATION_FAILED_NOTICE}`;
+  const artifactHint = manualTestsError?.match(ARTIFACT_HINT_PATTERN)?.[0];
+  const notice = artifactHint
+    ? `${MANUAL_TEST_GENERATION_FAILED_NOTICE} ${artifactHint}`
+    : MANUAL_TEST_GENERATION_FAILED_NOTICE;
+  return `${summary.trimEnd()}\n${notice}`;
 }
 
 export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
@@ -143,8 +165,9 @@ export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
     channel: "telegram",
     manualTests: run.manualTests,
   }).text;
+  const status = resolveManualTestsStatus(undefined, run.manualTestsError);
   return appendGoalIdFooter(
-    appendManualTestGenerationFailureNotice(summary, run.manualTestsError),
+    appendManualTestsStatusNotice(summary, status, run.manualTestsError),
     run.runId,
   );
 }
@@ -531,8 +554,10 @@ export function buildOnStatusChange(params: {
     } else if (event.type === "all_done") {
       try {
         persistManualTests(runId, event.manualTests, event.manualTestsError);
-        const baseCaption = appendManualTestGenerationFailureNotice(
+        const status = resolveManualTestsStatus(event.manualTestsStatus, event.manualTestsError);
+        const baseCaption = appendManualTestsStatusNotice(
           event.summary,
+          status,
           event.manualTestsError,
         );
         const caption = event.prUrl

@@ -293,7 +293,7 @@ describe("generateManualTests", () => {
     expect(call.args).toContain("--json");
   });
 
-  it("falls back to generated manual tests when no CLI backend is available", async () => {
+  it("propagates a no-backend error so callers can render the skipped notice", async () => {
     resolveClaudeBinaryMock.mockReturnValueOnce(null);
     detectBackendAvailabilityMock.mockReturnValueOnce([
       { id: "pi", available: true },
@@ -301,17 +301,14 @@ describe("generateManualTests", () => {
       { id: "claude_code", available: false, reason: "claude not found on PATH" },
     ]);
 
-    const manualTests = await withNonTestEnv(() =>
-      generateManualTests({
-        goal: "Improve authentication reliability",
-        steps: makeDoneSteps(),
-      }),
-    );
-
-    expect(manualTests[0]).toMatchObject({
-      description: "Test login validation",
-      reason: "Automated test generation returned fewer suggestions than expected.",
-    });
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Improve authentication reliability",
+          steps: makeDoneSteps(),
+        }),
+      ),
+    ).rejects.toThrow(/no worker backend available/);
     expect(runCliProcessMock).not.toHaveBeenCalled();
   });
 

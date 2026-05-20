@@ -50,7 +50,7 @@ import {
 import { isRepoPrivate } from "./git-privacy.js";
 import { orderStepsCriticalPathFirst, computeCriticalPathScores } from "./plan-order.js";
 import { extractRunLessons, getLessonsForContext } from "./lessons.js";
-import { generateManualTests } from "./manual-tests.js";
+import { generateManualTests, isNoBackendManualTestsError } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import {
   isApiErrorEnvelopeReason,
@@ -111,6 +111,8 @@ function rewriteStepBackendsForDegradedPlanner(
   }
 }
 
+export type ManualTestsStatus = "generated" | "skipped_no_backend" | "failed";
+
 export type GoalStatusChangeEvent =
   | { type: "step_blocked"; stepId: string; question: string; steps: PlanStep[] }
   | { type: "fully_blocked"; steps: PlanStep[] }
@@ -122,6 +124,7 @@ export type GoalStatusChangeEvent =
       prUrl?: string;
       manualTests?: ManualTestSuggestion[];
       manualTestsError?: string;
+      manualTestsStatus?: ManualTestsStatus;
     };
 
 export type ExecuteGoalParams = {
@@ -1040,6 +1043,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     let manualTests: ManualTestSuggestion[] | undefined;
     let manualTestsError: string | undefined;
+    let manualTestsStatus: ManualTestsStatus = "generated";
     try {
       manualTests = await generateManualTests({
         goal: session.goal,
@@ -1051,6 +1055,14 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       // Fail-open: completion should still emit even when manual test generation fails.
       manualTests = undefined;
       manualTestsError = err instanceof Error ? err.message : String(err);
+      manualTestsStatus = isNoBackendManualTestsError(err) ? "skipped_no_backend" : "failed";
+      if (manualTestsStatus === "skipped_no_backend") {
+        onProgress?.(
+          "  [manual-tests] Skipped: no available LLM backend configured. Install Codex or Claude Code.",
+        );
+      } else {
+        onProgress?.(`  [manual-tests] Generation failed: ${manualTestsError}`);
+      }
     }
     const baseSummary = buildGoalSummary({
       goal: session.goal,
@@ -1072,6 +1084,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         ...(prUrl ? { prUrl } : {}),
         ...(manualTests !== undefined ? { manualTests } : {}),
         ...(manualTestsError ? { manualTestsError } : {}),
+        manualTestsStatus,
       });
     }
     return { status: "done", summary };

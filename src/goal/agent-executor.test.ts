@@ -336,7 +336,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     expect(outcome.status).toBe("done");
     const allDoneEvent = statusEvents.find(
-      (event): event is { type: "all_done"; manualTests?: unknown[]; manualTestsError?: string } =>
+      (
+        event,
+      ): event is {
+        type: "all_done";
+        manualTests?: unknown[];
+        manualTestsError?: string;
+        manualTestsStatus?: "generated" | "skipped_no_backend" | "failed";
+      } =>
         typeof event === "object" &&
         event !== null &&
         (event as { type?: string }).type === "all_done",
@@ -344,6 +351,111 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(allDoneEvent).toBeDefined();
     expect(allDoneEvent?.manualTests).toBeUndefined();
     expect(allDoneEvent?.manualTestsError).toContain("authentication_error");
+    expect(allDoneEvent?.manualTestsStatus).toBe("failed");
+  });
+
+  it('emits manualTestsStatus "generated" when manual-test generation succeeds', async () => {
+    const step = makeStep({ backend: "codex", description: "Implement login validation" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const manualTestsClient: GoalLlmClient = {
+      complete: vi.fn().mockResolvedValue({
+        text: JSON.stringify({
+          tests: [
+            {
+              description: "Verify login banner",
+              criticality: 6,
+              detail: "Step 1. Submit invalid credentials.\nStep 2. Confirm inline error.",
+            },
+          ],
+        }),
+      }),
+    };
+    const statusEvents: unknown[] = [];
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-manual-tests-generated",
+      workingDir: "/tmp/moltbot-goal-test",
+      manualTestsClient,
+      onStatusChange: (event) => {
+        statusEvents.push(event);
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    const allDoneEvent = statusEvents.find(
+      (
+        event,
+      ): event is {
+        type: "all_done";
+        manualTests?: unknown[];
+        manualTestsError?: string;
+        manualTestsStatus?: "generated" | "skipped_no_backend" | "failed";
+      } =>
+        typeof event === "object" &&
+        event !== null &&
+        (event as { type?: string }).type === "all_done",
+    );
+    expect(allDoneEvent?.manualTestsStatus).toBe("generated");
+    expect(allDoneEvent?.manualTestsError).toBeUndefined();
+    expect(allDoneEvent?.manualTests).toBeDefined();
+  });
+
+  it('emits manualTestsStatus "skipped_no_backend" when manual-tests reports no available backend', async () => {
+    const step = makeStep({ backend: "codex", description: "Implement login validation" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const manualTestsClient: GoalLlmClient = {
+      complete: vi
+        .fn()
+        .mockRejectedValue(new Error("no worker backend available — install Codex or Claude Code")),
+    };
+    const statusEvents: unknown[] = [];
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-manual-tests-no-backend",
+      workingDir: "/tmp/moltbot-goal-test",
+      manualTestsClient,
+      onStatusChange: (event) => {
+        statusEvents.push(event);
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    const allDoneEvent = statusEvents.find(
+      (
+        event,
+      ): event is {
+        type: "all_done";
+        manualTests?: unknown[];
+        manualTestsError?: string;
+        manualTestsStatus?: "generated" | "skipped_no_backend" | "failed";
+      } =>
+        typeof event === "object" &&
+        event !== null &&
+        (event as { type?: string }).type === "all_done",
+    );
+    expect(allDoneEvent?.manualTestsStatus).toBe("skipped_no_backend");
+    expect(allDoneEvent?.manualTestsError).toContain("no worker backend available");
+    expect(allDoneEvent?.manualTests).toBeUndefined();
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {

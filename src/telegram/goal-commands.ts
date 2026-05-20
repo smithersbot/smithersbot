@@ -37,7 +37,7 @@ import {
   mergeRevisedPlanWithDoneSteps,
 } from "../goal/feedback.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
-import { generateManualTests } from "../goal/manual-tests.js";
+import { generateManualTests, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
@@ -1114,6 +1114,7 @@ export async function handleGoalFeedback(
       (step) => step.status === "pending" || step.status === "blocked",
     );
     if (pendingSteps.length === 0) {
+      let manualTestsStatus: import("../goal/agent-executor.js").ManualTestsStatus = "generated";
       try {
         run.manualTests = await generateManualTests({
           goal: run.goal,
@@ -1124,6 +1125,7 @@ export async function handleGoalFeedback(
       } catch (err) {
         delete run.manualTests;
         run.manualTestsError = err instanceof Error ? err.message : String(err);
+        manualTestsStatus = isNoBackendManualTestsError(err) ? "skipped_no_backend" : "failed";
       }
       run.state = "done";
       run.updatedAt = new Date().toISOString();
@@ -1137,6 +1139,7 @@ export async function handleGoalFeedback(
           summary,
           ...(run.manualTests !== undefined ? { manualTests: run.manualTests } : {}),
           ...(run.manualTestsError ? { manualTestsError: run.manualTestsError } : {}),
+          manualTestsStatus,
         });
         return undefined;
       }

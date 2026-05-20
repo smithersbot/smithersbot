@@ -56,6 +56,10 @@ vi.mock("./attempt-bundle.js", () => ({
 
 vi.mock("./manual-tests.js", () => ({
   generateManualTests: () => Promise.reject(new Error("mock: no client in integration tests")),
+  isNoBackendManualTestsError: (err: unknown) => {
+    const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+    return message.includes("no worker backend available");
+  },
 }));
 
 // Pretend semgrep is not installed so the goal-level final gate's SAST step is a no-op.

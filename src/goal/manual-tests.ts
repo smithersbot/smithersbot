@@ -73,6 +73,20 @@ const MANUAL_TESTS_TIMEOUT_MS = 300_000;
 const MANUAL_TESTS_PARSE_MAX_ATTEMPTS = 2;
 const MANUAL_TESTS_PARSE_RETRY_DELAY_MS = 2_000;
 
+/**
+ * Sentinel error message used when manual-test generation is skipped because
+ * no LLM backend is installed. Callers branch on this to distinguish
+ * "skipped_no_backend" from a genuine "failed" status in the goal-completion
+ * notice.
+ */
+export const NO_BACKEND_MANUAL_TESTS_ERROR =
+  "no worker backend available — install Codex or Claude Code";
+
+export function isNoBackendManualTestsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes("no worker backend available");
+}
+
 export type GenerateManualTestsParams = {
   goal: string;
   steps: PlanStep[];
@@ -253,7 +267,7 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
   const codexAvailable =
     detectBackendAvailability().find((entry) => entry.id === "codex")?.available === true;
   if (!claudeBin && !codexAvailable) {
-    throw new Error("no worker backend available — install Codex or Claude Code");
+    throw new Error(NO_BACKEND_MANUAL_TESTS_ERROR);
   }
   const useCodex = !claudeBin && codexAvailable;
 
@@ -489,15 +503,7 @@ export async function generateManualTests(
       if (isTestEnv()) {
         throw new Error("Manual test generation requires an injected client in tests.");
       }
-      try {
-        modelResponseText = await generateManualTestsViaCli(userMessage, params.runDir);
-      } catch (error) {
-        if (error instanceof Error && error.message.includes("no worker backend available")) {
-          const fallback = buildFallbackTests(doneSteps, Math.max(1, minTests), new Set());
-          return fallback.slice(0, maxTests);
-        }
-        throw error;
-      }
+      modelResponseText = await generateManualTestsViaCli(userMessage, params.runDir);
     }
 
     try {

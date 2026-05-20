@@ -1203,6 +1203,122 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.telegramDoneMessage?.messageId).toBe(23);
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
       expect(options.caption).toContain("Note: Manual test generation failed.");
+      expect(options.caption).not.toContain("Manual test generation skipped");
+    });
+
+    it("renders the skipped notice when manualTestsStatus is skipped_no_backend", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Done plan",
+            steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 51 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 52 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+        summary: "✅ Done: Test goal",
+        manualTestsError: "no worker backend available — install Codex or Claude Code",
+        manualTestsStatus: "skipped_no_backend",
+      });
+
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain(
+        "Manual test generation skipped: no available LLM backend configured.",
+      );
+      expect(options.caption).not.toContain("Note: Manual test generation failed.");
+    });
+
+    it("renders the failed notice with artifact path hint when present", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Done plan",
+            steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 61 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 62 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+        summary: "✅ Done: Test goal",
+        manualTestsError:
+          "Manual test generation failed: boom (stdout: /tmp/run/manual-tests/stdout.txt, stderr: /tmp/run/manual-tests/stderr.txt)",
+        manualTestsStatus: "failed",
+      });
+
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("Note: Manual test generation failed.");
+      expect(options.caption).toContain(
+        "(stdout: /tmp/run/manual-tests/stdout.txt, stderr: /tmp/run/manual-tests/stderr.txt)",
+      );
+    });
+
+    it("emits no notice when manualTestsStatus is generated and manualTests are present", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Done plan",
+            steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+          },
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 71 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 72 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [{ id: "1", description: "Step one", dependsOn: [], status: "done" }],
+        summary: "✅ Done: Test goal",
+        manualTests: [
+          { description: "Run smoke test", criticality: 8, detail: "Confirm main flow succeeds." },
+        ],
+        manualTestsStatus: "generated",
+      });
+
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).not.toContain("Manual test generation skipped");
+      expect(options.caption).not.toContain("Note: Manual test generation failed.");
     });
 
     it("sends step_blocked updates with bold caption and add-details+stop keyboard", async () => {
