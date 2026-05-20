@@ -63,7 +63,7 @@ import {
   appendRetryContext,
   buildRalphHistorySummary,
 } from "./run-journal.js";
-import { loadRun } from "./run-store.js";
+import { loadRun, resolveRunDir } from "./run-store.js";
 import type {
   GitCheckpointConfig,
   GoalLlmClient,
@@ -1044,6 +1044,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         goal: session.goal,
         steps: orderedSteps,
         client: params.manualTestsClient,
+        runDir: resolveRunDir(runId),
       });
     } catch (err) {
       // Fail-open: completion should still emit even when manual test generation fails.

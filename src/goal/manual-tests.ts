@@ -1,4 +1,6 @@
-import { buildClaudeCodeEnv } from "./claude-code-env.js";
+import fs from "node:fs";
+import path from "node:path";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
@@ -77,7 +79,29 @@ export type GenerateManualTestsParams = {
   client?: GoalLlmClient;
   minTests?: number;
   maxTests?: number;
+  /** Goal run directory. When provided, CLI stdout/stderr are persisted under <runDir>/manual-tests/. */
+  runDir?: string;
 };
+
+const MANUAL_TESTS_ARTIFACT_DIR = "manual-tests";
+const MANUAL_TESTS_STDOUT_FILE = "stdout.txt";
+const MANUAL_TESTS_STDERR_FILE = "stderr.txt";
+
+type ManualTestsArtifactPaths = {
+  dir: string;
+  stdoutPath: string;
+  stderrPath: string;
+};
+
+function ensureManualTestsArtifactDir(runDir: string): ManualTestsArtifactPaths {
+  const dir = path.join(runDir, MANUAL_TESTS_ARTIFACT_DIR);
+  fs.mkdirSync(dir, { recursive: true });
+  return {
+    dir,
+    stdoutPath: path.join(dir, MANUAL_TESTS_STDOUT_FILE),
+    stderrPath: path.join(dir, MANUAL_TESTS_STDERR_FILE),
+  };
+}
 
 function isTestEnv(): boolean {
   return (
@@ -223,7 +247,7 @@ function buildCodexManualTestsArgs(prompt: string): string[] {
   ];
 }
 
-async function generateManualTestsViaCli(userMessage: string): Promise<string> {
+async function generateManualTestsViaCli(userMessage: string, runDir?: string): Promise<string> {
   const claudeBin = resolveClaudeBinary();
   const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
   const codexAvailable =
@@ -232,6 +256,20 @@ async function generateManualTestsViaCli(userMessage: string): Promise<string> {
     throw new Error("no worker backend available — install Codex or Claude Code");
   }
   const useCodex = !claudeBin && codexAvailable;
+
+  let artifacts: ManualTestsArtifactPaths | undefined;
+  if (runDir) {
+    try {
+      artifacts = ensureManualTestsArtifactDir(runDir);
+    } catch {
+      // Best-effort: continue without persisted artifacts if mkdir fails.
+      artifacts = undefined;
+    }
+  }
+  const artifactHint = artifacts
+    ? ` (stdout: ${artifacts.stdoutPath}, stderr: ${artifacts.stderrPath})`
+    : "";
+
   const procResult = await runCliProcess({
     command: useCodex ? "codex" : claudeBin!,
     args: useCodex
@@ -240,12 +278,13 @@ async function generateManualTestsViaCli(userMessage: string): Promise<string> {
     cwd: process.cwd(),
     timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
     ...(useCodex ? {} : { stdin: combinedPrompt }),
-    env: useCodex ? { ...process.env } : buildClaudeCodeEnv("subscription"),
+    env: useCodex ? buildCredentialStrippedEnv() : buildClaudeCodeEnv("subscription"),
+    ...(artifacts ? { stdoutPath: artifacts.stdoutPath, stderrPath: artifacts.stderrPath } : {}),
   });
 
   if (procResult.timedOut) {
     throw new Error(
-      `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.`,
+      `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.${artifactHint}`,
     );
   }
 
@@ -256,10 +295,15 @@ async function generateManualTestsViaCli(userMessage: string): Promise<string> {
       (procResult.signal
         ? `Manual test generation process terminated by ${procResult.signal}.`
         : "Manual test generation process failed.");
-    throw new Error(`Manual test generation failed: ${detail}`);
+    throw new Error(`Manual test generation failed: ${detail}${artifactHint}`);
   }
 
-  return extractAssistantTextFromCliResult(procResult.stdout);
+  try {
+    return extractAssistantTextFromCliResult(procResult.stdout);
+  } catch (error) {
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    throw new Error(`${baseMessage}${artifactHint}`);
+  }
 }
 
 export function clampCriticality(raw: unknown): number {
@@ -446,7 +490,7 @@ export async function generateManualTests(
         throw new Error("Manual test generation requires an injected client in tests.");
       }
       try {
-        modelResponseText = await generateManualTestsViaCli(userMessage);
+        modelResponseText = await generateManualTestsViaCli(userMessage, params.runDir);
       } catch (error) {
         if (error instanceof Error && error.message.includes("no worker backend available")) {
           const fallback = buildFallbackTests(doneSteps, Math.max(1, minTests), new Set());

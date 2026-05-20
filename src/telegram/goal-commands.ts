@@ -39,7 +39,13 @@ import {
   isGoalOpLocked,
   type GoalOpLockResult,
 } from "../goal/goal-lock.js";
-import { loadRun, resolveGoalsDir, resolveRunId, saveRun } from "../goal/run-store.js";
+import {
+  loadRun,
+  resolveGoalsDir,
+  resolveRunDir,
+  resolveRunId,
+  saveRun,
+} from "../goal/run-store.js";
 import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
@@ -1048,6 +1054,7 @@ export async function handleGoalFeedback(
         run.manualTests = await generateManualTests({
           goal: run.goal,
           steps: mergedPlan.steps,
+          runDir: resolveRunDir(run.runId),
         });
         delete run.manualTestsError;
       } catch (err) {

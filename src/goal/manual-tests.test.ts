@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalLlmClient, PlanStep } from "./types.js";
 
 const runCliProcessMock = vi.fn();
 const resolveClaudeBinaryMock = vi.fn();
 const buildClaudeCodeEnvMock = vi.fn();
+const buildCredentialStrippedEnvMock = vi.fn();
 const detectBackendAvailabilityMock = vi.fn();
 
 vi.mock("./cli-process.js", () => ({
@@ -16,6 +20,7 @@ vi.mock("./scout.js", () => ({
 
 vi.mock("./claude-code-env.js", () => ({
   buildClaudeCodeEnv: (...args: unknown[]) => buildClaudeCodeEnvMock(...args),
+  buildCredentialStrippedEnv: (...args: unknown[]) => buildCredentialStrippedEnvMock(...args),
 }));
 
 vi.mock("./backend-availability.js", () => ({
@@ -107,9 +112,11 @@ describe("generateManualTests", () => {
     runCliProcessMock.mockReset();
     resolveClaudeBinaryMock.mockReset();
     buildClaudeCodeEnvMock.mockReset();
+    buildCredentialStrippedEnvMock.mockReset();
     detectBackendAvailabilityMock.mockReset();
     resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
     buildClaudeCodeEnvMock.mockReturnValue({ CLAUDE_AUTH: "subscription" });
+    buildCredentialStrippedEnvMock.mockReturnValue({ CODEX_AUTH: "stripped" });
     detectBackendAvailabilityMock.mockReturnValue([
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -661,5 +668,202 @@ describe("generateManualTests", () => {
         }),
       ),
     ).rejects.toThrow("Manual test generation failed: permission denied");
+  });
+});
+
+describe("generateManualTests diagnostics artifacts", () => {
+  let tmpRunDir: string;
+  const createdRoots: string[] = [];
+
+  beforeEach(() => {
+    runCliProcessMock.mockReset();
+    resolveClaudeBinaryMock.mockReset();
+    buildClaudeCodeEnvMock.mockReset();
+    buildCredentialStrippedEnvMock.mockReset();
+    detectBackendAvailabilityMock.mockReset();
+    buildClaudeCodeEnvMock.mockReturnValue({ CLAUDE_AUTH: "subscription" });
+    buildCredentialStrippedEnvMock.mockReturnValue({ CODEX_AUTH: "stripped" });
+    detectBackendAvailabilityMock.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ]);
+    tmpRunDir = fs.mkdtempSync(path.join(os.tmpdir(), "manual-tests-artifacts-"));
+    createdRoots.push(tmpRunDir);
+  });
+
+  afterEach(() => {
+    while (createdRoots.length > 0) {
+      const root = createdRoots.pop();
+      if (root && fs.existsSync(root)) {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("writes stdout/stderr artifact files when runDir is provided (Claude success path)", async () => {
+    resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
+    const expectedStdoutPath = path.join(tmpRunDir, "manual-tests", "stdout.txt");
+    const expectedStderrPath = path.join(tmpRunDir, "manual-tests", "stderr.txt");
+    const claudeStdout = makeCliResultOutput(JSON.stringify({ tests: [] }));
+
+    runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+      const stdoutPath = params.stdoutPath as string | undefined;
+      const stderrPath = params.stderrPath as string | undefined;
+      expect(stdoutPath).toBe(expectedStdoutPath);
+      expect(stderrPath).toBe(expectedStderrPath);
+      if (stdoutPath) fs.writeFileSync(stdoutPath, claudeStdout, "utf8");
+      if (stderrPath) fs.writeFileSync(stderrPath, "", "utf8");
+      return {
+        stdout: claudeStdout,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 12,
+      };
+    });
+
+    await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve reliability",
+        steps: makeDoneSteps(),
+        runDir: tmpRunDir,
+      }),
+    );
+
+    expect(fs.existsSync(expectedStdoutPath)).toBe(true);
+    expect(fs.existsSync(expectedStderrPath)).toBe(true);
+    expect(fs.readFileSync(expectedStdoutPath, "utf8")).toBe(claudeStdout);
+  });
+
+  it("writes artifact files and references them in the error on non-zero exit", async () => {
+    resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
+    const expectedStdoutPath = path.join(tmpRunDir, "manual-tests", "stdout.txt");
+    const expectedStderrPath = path.join(tmpRunDir, "manual-tests", "stderr.txt");
+
+    runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+      const stdoutPath = params.stdoutPath as string | undefined;
+      const stderrPath = params.stderrPath as string | undefined;
+      if (stdoutPath) fs.writeFileSync(stdoutPath, "", "utf8");
+      if (stderrPath) fs.writeFileSync(stderrPath, "boom: backend exploded", "utf8");
+      return {
+        stdout: "",
+        stderr: "boom: backend exploded",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 7,
+      };
+    });
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Improve reliability",
+          steps: makeDoneSteps(),
+          runDir: tmpRunDir,
+        }),
+      ),
+    ).rejects.toThrow(
+      new RegExp(
+        `Manual test generation failed: boom: backend exploded.*${expectedStdoutPath.replace(/[.\\/]/g, "\\$&")}.*${expectedStderrPath.replace(/[.\\/]/g, "\\$&")}`,
+      ),
+    );
+    expect(fs.existsSync(expectedStdoutPath)).toBe(true);
+    expect(fs.existsSync(expectedStderrPath)).toBe(true);
+  });
+
+  it("uses the credential-stripped env for the Codex branch", async () => {
+    resolveClaudeBinaryMock.mockReturnValue(null);
+    detectBackendAvailabilityMock.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const codexJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_env" }),
+      JSON.stringify({
+        type: "result",
+        result: JSON.stringify({ tests: [] }),
+      }),
+    ].join("\n");
+
+    runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+      const stdoutPath = params.stdoutPath as string | undefined;
+      const stderrPath = params.stderrPath as string | undefined;
+      if (stdoutPath) fs.writeFileSync(stdoutPath, codexJsonl, "utf8");
+      if (stderrPath) fs.writeFileSync(stderrPath, "", "utf8");
+      return {
+        stdout: codexJsonl,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 9,
+      };
+    });
+
+    await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Test env stripping",
+        steps: makeDoneSteps(),
+        runDir: tmpRunDir,
+      }),
+    );
+
+    expect(buildCredentialStrippedEnvMock).toHaveBeenCalledTimes(1);
+    expect(buildClaudeCodeEnvMock).not.toHaveBeenCalled();
+    const call = runCliProcessMock.mock.calls[0]?.[0] as {
+      command: string;
+      env: Record<string, string>;
+    };
+    expect(call.command).toBe("codex");
+    expect(call.env).toEqual({ CODEX_AUTH: "stripped" });
+  });
+
+  it("references artifact paths when the CLI produced no assistant text", async () => {
+    resolveClaudeBinaryMock.mockReturnValue(null);
+    detectBackendAvailabilityMock.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const expectedStdoutPath = path.join(tmpRunDir, "manual-tests", "stdout.txt");
+    const useless = [
+      JSON.stringify({ type: "thread.started", thread_id: "t" }),
+      JSON.stringify({ type: "turn.started" }),
+    ].join("\n");
+
+    runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+      const stdoutPath = params.stdoutPath as string | undefined;
+      const stderrPath = params.stderrPath as string | undefined;
+      if (stdoutPath) fs.writeFileSync(stdoutPath, useless, "utf8");
+      if (stderrPath) fs.writeFileSync(stderrPath, "", "utf8");
+      return {
+        stdout: useless,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 4,
+      };
+    });
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({
+          goal: "No-op probe",
+          steps: makeDoneSteps(),
+          runDir: tmpRunDir,
+        }),
+      ),
+    ).rejects.toThrow(
+      new RegExp(
+        `Manual test CLI response did not include assistant text\\..*${expectedStdoutPath.replace(/[.\\/]/g, "\\$&")}`,
+      ),
+    );
   });
 });

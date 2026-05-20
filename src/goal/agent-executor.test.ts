@@ -108,6 +108,7 @@ vi.mock("./run-store.js", () => ({
   resolveWorkingFile: () => "/tmp/moltbot-goal-test/step.md",
   loadRun: (runId: string) => mockRunStore.get(runId),
   saveRun: (run: any) => mockRunStore.set(run.runId, run),
+  resolveRunDir: (runId: string) => `/tmp/moltbot-goal-test/runs/${runId}`,
 }));
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
