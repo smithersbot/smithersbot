@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { resolveCliBackendConfig } from "../agents/cli-backends.js";
 import { parseModelRef } from "../agents/model-selection.js";
 import { loadConfig } from "../config/config.js";
 import { isTruthyEnvValue } from "../infra/env.js";
@@ -21,7 +22,7 @@ const CLI_RESUME = isTruthyEnvValue(process.env.CLAWDBOT_LIVE_CLI_BACKEND_RESUME
 const describeLive = LIVE && CLI_LIVE ? describe : describe.skip;
 
 const DEFAULT_MODEL = "claude-cli/claude-sonnet-4-5";
-const DEFAULT_CLAUDE_ARGS = ["-p", "--output-format", "json", "--dangerously-skip-permissions"];
+const DEFAULT_CLAUDE_ARGS = ["-p", "--output-format", "json"];
 const DEFAULT_CODEX_ARGS = [
   "exec",
   "--json",
@@ -32,6 +33,39 @@ const DEFAULT_CODEX_ARGS = [
   "--skip-git-repo-check",
 ];
 const DEFAULT_CLEAR_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_OLD"];
+
+describe("gateway CLI backend defaults", () => {
+  it("does not enable dangerous Claude permissions by default", () => {
+    const resolved = resolveCliBackendConfig("claude-cli");
+
+    expect(resolved?.config.args).toEqual(DEFAULT_CLAUDE_ARGS);
+    expect(resolved?.config.resumeArgs).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--resume",
+      "{sessionId}",
+    ]);
+    expect(resolved?.config.args).not.toContain("--dangerously-skip-permissions");
+    expect(resolved?.config.resumeArgs).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("allows explicit Claude dangerous-permissions override", () => {
+    const resolved = resolveCliBackendConfig("claude-cli", {
+      agents: {
+        defaults: {
+          cliBackends: {
+            "claude-cli": {
+              args: ["-p", "--output-format", "json", "--dangerously-skip-permissions"],
+            },
+          },
+        },
+      },
+    });
+
+    expect(resolved?.config.args).toContain("--dangerously-skip-permissions");
+  });
+});
 
 function randomImageProbeCode(len = 6): string {
   // Chosen to avoid common OCR confusions in our 5x7 bitmap font.

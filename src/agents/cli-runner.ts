@@ -2,6 +2,7 @@ import type { ImageContent } from "@mariozechner/pi-ai";
 import { resolveHeartbeatPrompt } from "../auto-reply/heartbeat.js";
 import type { ThinkLevel } from "../auto-reply/thinking.js";
 import type { MoltbotConfig } from "../config/config.js";
+import { buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { shouldLogVerbose } from "../globals.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -205,7 +206,8 @@ export async function runCliAgent(params: {
       }
 
       const env = (() => {
-        const next = { ...process.env, ...backend.env };
+        const next = { ...buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }) };
+        Object.assign(next, backend.env);
         for (const key of backend.clearEnv ?? []) {
           delete next[key];
         }
