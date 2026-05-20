@@ -331,7 +331,7 @@ const DEFAULT_BACKEND_DISPLAY = BACKEND_DISPLAY_NAMES.claude_code!;
 
 /** Resolve which backend a step would use based on planner hints/default. */
 function resolveStepWorker(step: PlanStep): string {
-  const backend = step.backend ?? "claude_code";
+  const backend = step.executedBackend ?? step.backend ?? "claude_code";
   return BACKEND_DISPLAY_NAMES[backend] ?? DEFAULT_BACKEND_DISPLAY;
 }
 

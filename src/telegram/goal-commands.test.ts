@@ -126,10 +126,16 @@ vi.mock("../goal/claude-code-env.js", async (importOriginal) => {
 });
 
 const mockGetCodexAskForApprovalPlacement = vi.fn(() => "before_exec");
+const mockDetectBackendAvailability = vi.fn(() => [
+  { id: "pi", available: true },
+  { id: "codex", available: true },
+  { id: "claude_code", available: true },
+]);
 vi.mock("../goal/backend-availability.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/backend-availability.js")>();
   return {
     ...actual,
+    detectBackendAvailability: (...args: unknown[]) => mockDetectBackendAvailability(...args),
     getCodexAskForApprovalPlacement: (...args: unknown[]) =>
       mockGetCodexAskForApprovalPlacement(...args),
   };
@@ -226,6 +232,11 @@ describe("goal-commands telegram adapter", () => {
     mockResolveClaudeBinary.mockReturnValue("claude");
     mockBuildClaudeCodeEnv.mockReturnValue({ CLAUDE_CODE_ENTRYPOINT: "mock" });
     mockGetCodexAskForApprovalPlacement.mockReturnValue("before_exec");
+    mockDetectBackendAvailability.mockReturnValue([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ]);
     mockResolveChannelConfigWrites.mockReturnValue(true);
     mockLoadConfig.mockReturnValue({});
     mockWriteConfigFile.mockResolvedValue(undefined);
@@ -1443,6 +1454,51 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("<b>Workers:</b> Claude Code");
       expect(options.caption).toContain("<b>Plan:</b> Ship secure checkout");
       expect(options.caption).not.toContain("Long plan summary");
+    });
+
+    it("uses executed backend in plan captions when planner backend is stale", async () => {
+      const plan = {
+        goal: "Test goal",
+        shortSummary: "Inspect repository state",
+        workingDir: "/tmp/ws",
+        summary: "Inspect repository state",
+        steps: [
+          {
+            id: "1",
+            description: "Check git status",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+            backend: "claude_code",
+            executedBackend: "codex",
+          },
+        ],
+      } as const;
+
+      saveRunFixture(makeRun({ plan }));
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 88 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 89 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: {
+          text: "ignored when PNG send succeeds",
+          runId: "test-run-id-1234",
+          revision: 1,
+          plan,
+          stepResults: new Map(),
+        },
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      expect(options.caption).toContain("<b>Workers:</b> Codex");
+      expect(options.caption).not.toContain("<b>Workers:</b> Claude Code");
     });
 
     it("includes planner fallback notice with reset hint in plan caption", async () => {
@@ -3844,6 +3900,64 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain("codex, claude_code");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockDetectBackendAvailability).toHaveBeenCalledOnce();
+    });
+
+    it("shows configured, available, and effective workers when only Codex is installed", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ]);
+      const harness = makeCommandHarness();
+      await harness.register();
+
+      await harness.handlers.goal_workers?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Configured goal workers: <code>codex, claude_code</code>.");
+      expect(sentText).toContain("Available goal workers: <code>codex</code>.");
+      expect(sentText).toContain("Effective goal workers: <code>codex</code>.");
+      expect(sentText).not.toContain("Enabled goal workers:");
+      expect(mockDetectBackendAvailability).toHaveBeenCalledOnce();
+    });
+
+    it("shows configured, available, and effective workers when only Claude Code is installed", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: true },
+      ]);
+      const harness = makeCommandHarness();
+      await harness.register();
+
+      await harness.handlers.goal_workers?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Configured goal workers: <code>codex, claude_code</code>.");
+      expect(sentText).toContain("Available goal workers: <code>claude_code</code>.");
+      expect(sentText).toContain("Effective goal workers: <code>claude_code</code>.");
+      expect(mockDetectBackendAvailability).toHaveBeenCalledOnce();
+    });
+
+    it("shows a setup error when no configured worker backend is installed", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ]);
+      const harness = makeCommandHarness();
+      await harness.register();
+
+      await harness.handlers.goal_workers?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain(
+        "No worker backend available. Install Codex or Claude Code and rerun.",
+      );
+      expect(sentText).toContain("Configured goal workers: <code>codex, claude_code</code>.");
+      expect(sentText).toContain("Usage: /goal_workers");
+      expect(mockDetectBackendAvailability).toHaveBeenCalledOnce();
     });
 
     it("persists codex-only workers", async () => {

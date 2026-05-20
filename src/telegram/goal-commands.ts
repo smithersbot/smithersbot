@@ -20,8 +20,13 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { detectBackendAvailability } from "../goal/backend-availability.js";
 import { resolveEnabledWorkers } from "../goal/backend-types.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
+import {
+  NO_WORKER_BACKEND_ERROR,
+  resolveEffectiveEnabledWorkers,
+} from "../goal/effective-workers.js";
 import { AUTH_RE } from "../goal/error-patterns.js";
 import { formatGoalError } from "../goal/errors.js";
 import {
@@ -47,6 +52,7 @@ import {
   saveRun,
 } from "../goal/run-store.js";
 import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
+import type { CliWorkerId } from "../config/types.goal.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildGoalDoneInlineKeyboard,
@@ -200,6 +206,36 @@ export type GoalPlanResult = {
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
 const GOAL_SEMGREP_USAGE = "Usage: /goal_semgrep <off|step|goal>";
 const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
+const GOAL_WORKER_DISPLAY_ORDER: CliWorkerId[] = ["codex", "claude_code"];
+
+function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function formatGoalWorkersStatus(params: {
+  configuredWorkers: CliWorkerId[];
+  availableWorkers: CliWorkerId[];
+  effectiveWorkers: CliWorkerId[];
+}): string {
+  if (params.availableWorkers.length === 0) {
+    return `${NO_WORKER_BACKEND_ERROR}\nConfigured goal workers: \`${formatGoalWorkers(
+      params.configuredWorkers,
+    )}\`.\n${GOAL_WORKERS_USAGE}`;
+  }
+
+  if (arraysEqual(params.configuredWorkers, params.availableWorkers)) {
+    return `Enabled goal workers: \`${formatGoalWorkers(
+      params.configuredWorkers,
+    )}\`.\n${GOAL_WORKERS_USAGE}`;
+  }
+
+  return [
+    `Configured goal workers: \`${formatGoalWorkers(params.configuredWorkers)}\`.`,
+    `Available goal workers: \`${formatGoalWorkers(params.availableWorkers)}\`.`,
+    `Effective goal workers: \`${formatGoalWorkers(params.effectiveWorkers)}\`.`,
+    GOAL_WORKERS_USAGE,
+  ].join("\n");
+}
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
@@ -2218,10 +2254,22 @@ export function registerTelegramGoalCommands({
     const currentWorkers = resolveEnabledWorkers(cfg.goal);
     const currentWorkersText = formatGoalWorkers(currentWorkers);
     if (!rawWorkers) {
+      const availability = detectBackendAvailability();
+      const availableWorkers = GOAL_WORKER_DISPLAY_ORDER.filter(
+        (worker) => availability.find((entry) => entry.id === worker)?.available === true,
+      );
+      const effectiveWorkers = resolveEffectiveEnabledWorkers({
+        config: cfg.goal,
+        availability,
+      });
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Enabled goal workers: \`${currentWorkersText}\`.\n${GOAL_WORKERS_USAGE}`,
+        formatGoalWorkersStatus({
+          configuredWorkers: currentWorkers,
+          availableWorkers,
+          effectiveWorkers,
+        }),
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
