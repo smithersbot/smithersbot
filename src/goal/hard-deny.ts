@@ -1,8 +1,16 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { HardDeny } from "./capability-types.js";
+import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
 
 export type HardDenyList = HardDeny[];
+
+const SECRET_PATH_HARD_DENIES: HardDeny[] = SECRET_PATH_PATTERNS.map((pattern) => ({
+  pattern,
+  reason: SECRET_PATH_DENY_REASON,
+  type: "path",
+}));
 
 export const HARD_DENIES: HardDeny[] = [
   // --- Path denies (glob-matched against file paths) ---
@@ -22,6 +30,7 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "*id_ecdsa*", reason: "SSH keys are sensitive", type: "path" },
   { pattern: "*id_rsa*", reason: "SSH keys are sensitive", type: "path" },
   { pattern: "moltbot.json", reason: "Config files may contain secrets", type: "path" },
+  ...SECRET_PATH_HARD_DENIES,
 
   // --- Command denies (token-aware matching) ---
   { pattern: "sudo", reason: "Elevated privileges not permitted", type: "command" },
@@ -69,7 +78,13 @@ function normalizePath(filePath: string): string {
 }
 
 function resolvePathForDeny(filePath: string): string {
-  const resolvedPath = path.resolve(filePath);
+  const expandedPath =
+    filePath === "~"
+      ? os.homedir()
+      : filePath.startsWith("~/") || filePath.startsWith("~\\")
+        ? path.join(os.homedir(), filePath.slice(2))
+        : filePath;
+  const resolvedPath = path.resolve(expandedPath);
   const normalizedResolvedPath = normalizePath(resolvedPath);
 
   try {
@@ -81,6 +96,32 @@ function resolvePathForDeny(filePath: string): string {
     }
     return normalizedResolvedPath;
   }
+}
+
+function resolvePathCandidatesForDeny(filePath: string): string[] {
+  const expandedPath =
+    filePath === "~"
+      ? os.homedir()
+      : filePath.startsWith("~/") || filePath.startsWith("~\\")
+        ? path.join(os.homedir(), filePath.slice(2))
+        : filePath;
+  const resolvedPath = path.resolve(expandedPath);
+  const candidates = new Set<string>([normalizePath(resolvedPath), resolvePathForDeny(filePath)]);
+  const parsed = path.parse(resolvedPath);
+  const parts = path.relative(parsed.root, resolvedPath).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    current = path.join(current, parts[index]!);
+    try {
+      const realAncestor = fs.realpathSync(current);
+      candidates.add(normalizePath(path.join(realAncestor, ...parts.slice(index + 1))));
+    } catch {
+      // Missing leaf or unreadable ancestors still get the lexical candidate above.
+    }
+  }
+
+  return [...candidates];
 }
 
 /** Simple glob matching for path patterns. */
@@ -118,30 +159,47 @@ function matchPathGlob(pattern: string, filePath: string): boolean {
   return new RegExp(regex, "i").test(normalizedPath); // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
 }
 
+function matchesPathDenyPattern(pattern: string, candidate: string): boolean {
+  if (!pattern.includes("/")) {
+    return matchPathGlob(pattern, path.basename(candidate));
+  }
+
+  const normalizedPattern = normalizePath(
+    pattern === "~"
+      ? os.homedir()
+      : pattern.startsWith("~/") || pattern.startsWith("~\\")
+        ? path.join(os.homedir(), pattern.slice(2))
+        : pattern,
+  );
+  const glob =
+    normalizedPattern.startsWith("/") || normalizedPattern.startsWith("**/")
+      ? normalizedPattern
+      : `**/${normalizedPattern}`;
+
+  return matchPathGlob(glob, candidate);
+}
+
 export function checkPathDeny(
   filePath: string,
   hardDenies: HardDenyList = HARD_DENIES,
 ): HardDeny | null {
-  const resolved = resolvePathForDeny(filePath);
-  const base = path.basename(resolved);
+  const candidates = resolvePathCandidatesForDeny(filePath);
+
+  for (const deny of hardDenies) {
+    if (deny.type !== "path" || deny.reason !== SECRET_PATH_DENY_REASON) continue;
+    const pattern = deny.pattern.trim();
+    if (!pattern.startsWith("~/")) continue;
+    if (candidates.some((candidate) => matchesPathDenyPattern(pattern, candidate))) return deny;
+  }
 
   for (const deny of hardDenies) {
     if (deny.type !== "path") continue;
     const pattern = deny.pattern.trim();
     if (!pattern) continue;
 
-    if (!pattern.includes("/")) {
-      if (matchPathGlob(pattern, base)) return deny;
-      continue;
+    for (const candidate of candidates) {
+      if (matchesPathDenyPattern(pattern, candidate)) return deny;
     }
-
-    const normalizedPattern = normalizePath(pattern);
-    const glob =
-      normalizedPattern.startsWith("/") || normalizedPattern.startsWith("**/")
-        ? normalizedPattern
-        : `**/${normalizedPattern}`;
-
-    if (matchPathGlob(glob, resolved)) return deny;
   }
 
   return null;

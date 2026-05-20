@@ -2,9 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkCommandDeny, checkPathDeny } from "./hard-deny.js";
+import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
+import { HARD_DENIES, checkCommandDeny, checkPathDeny } from "./hard-deny.js";
 
 describe("checkPathDeny", () => {
+  it("includes every shared secret path pattern in HARD_DENIES", () => {
+    for (const pattern of SECRET_PATH_PATTERNS) {
+      expect(HARD_DENIES).toContainEqual({
+        pattern,
+        reason: SECRET_PATH_DENY_REASON,
+        type: "path",
+      });
+    }
+  });
+
   it("blocks symlink paths that resolve to denied targets", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hard-deny-"));
     const deniedTargetPath = path.join(tempDir, ".env.secret");
@@ -41,6 +52,46 @@ describe("checkPathDeny", () => {
 
     for (const testCase of cases) {
       expect(checkPathDeny(testCase.filePath)?.pattern).toBe(testCase.pattern);
+    }
+  });
+
+  it("blocks canonical and legacy SmithersBot config paths with the shared reason", () => {
+    const cases = [
+      "~/.smithersbot/.env",
+      "~/.smithersbot/smithersbot.json",
+      "~/.moltbot/moltbot.json",
+      "~/.clawdbot/.env",
+      "~/.clawdbot/credentials/oauth.json",
+      "~/.clawdbot-dev/.env",
+    ];
+
+    for (const filePath of cases) {
+      expect(checkPathDeny(filePath)?.reason).toBe(SECRET_PATH_DENY_REASON);
+    }
+  });
+
+  it("blocks SmithersBot session artifacts with the shared reason", () => {
+    expect(checkPathDeny("~/.smithersbot/sessions/abc.json")?.reason).toBe(SECRET_PATH_DENY_REASON);
+  });
+
+  it("blocks parent symlink paths that resolve under denied directories", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hard-deny-parent-"));
+    const deniedTargetDir = path.join(tempDir, ".ssh");
+    const symlinkPath = path.join(tempDir, "jail");
+
+    try {
+      fs.mkdirSync(deniedTargetDir);
+      fs.symlinkSync(deniedTargetDir, symlinkPath, "dir");
+
+      expect(checkPathDeny(path.join(symlinkPath, "config"))?.pattern).toBe(".ssh/**");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows normal repo files", () => {
+    for (const filePath of ["README.md", "SETUP.md", "AGENTS.md", "package.json"]) {
+      expect(checkPathDeny(filePath)).toBeNull();
     }
   });
 });
