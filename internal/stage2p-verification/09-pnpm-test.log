@@ -1,0 +1,14 @@
+
+> smithersbot@2026.1.29 test /home/matt/moltbot
+> node scripts/test-parallel.mjs
+
+
+ RUN  v4.0.18 /home/matt/moltbot
+
+ ✓ src/telegram/bot-handlers.goal-routing.test.ts (15 tests) 122ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed (15)
+   Start at  16:33:27
+   Duration  19.65s (transform 13.98s, setup 259ms, import 18.81s, tests 122ms, environment 0ms)
+

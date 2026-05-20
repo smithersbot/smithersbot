@@ -1,0 +1,12 @@
+
+ RUN  v4.0.18 /home/matt/moltbot
+
+ ✓ src/repo-chat/repo-chat-store.test.ts (6 tests) 74ms
+ ✓ src/repo-chat/repo-chat-worker.test.ts (63 tests) 394ms
+ ✓ src/telegram/repo-chat-commands.test.ts (5 tests) 107ms
+
+ Test Files  3 passed (3)
+      Tests  74 passed (74)
+   Start at  16:21:09
+   Duration  6.23s (transform 8.93s, setup 705ms, import 15.29s, tests 575ms, environment 2ms)
+

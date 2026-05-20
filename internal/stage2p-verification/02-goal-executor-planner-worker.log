@@ -1,0 +1,13 @@
+
+ RUN  v4.0.18 /home/matt/moltbot
+
+ ✓ src/goal/cli-worker.test.ts (54 tests) 349ms
+ ✓ src/goal/agent-executor.test.ts (43 tests) 6312ms
+     ✓ completes a task via CLI runner and marks run done  6096ms
+ ✓ src/goal/cli-planner.test.ts (40 tests) 714ms
+
+ Test Files  3 passed (3)
+      Tests  137 passed (137)
+   Start at  16:20:56
+   Duration  7.85s (transform 11.68s, setup 923ms, import 13.54s, tests 7.37s, environment 1ms)
+

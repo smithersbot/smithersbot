@@ -1,0 +1,890 @@
+
+ RUN  v4.0.18 /home/matt/moltbot
+
+ ❯ src/security/fix.test.ts (3 tests | 1 failed) 433ms
+     × tightens groupPolicy + filesystem perms 240ms
+     ✓ returns ok=false for invalid config but still tightens perms 39ms
+     ✓ tightens perms for credentials + agent auth/sessions + include files 148ms
+ ✓ src/config/config.legacy-config-detection.rejects-routing-allowfrom.test.ts (30 tests) 18388ms
+     ✓ rejects routing.allowFrom  5520ms
+     ✓ rejects routing.groupChat.requireMention  405ms
+     ✓ reports migrated routing.allowFrom configs that still use unsupported whatsapp  435ms
+     ✓ drops routing.allowFrom when whatsapp missing  532ms
+     ✓ reports migrated group mention configs that still use unsupported channels  481ms
+     ✓ reports migrated group mention configs when legacy imessage remains unsupported  570ms
+     ✓ migrates routing.groupChat.mentionPatterns to messages.groupChat.mentionPatterns  654ms
+     ✓ migrates routing agentToAgent/queue/transcribeAudio to tools/messages/media  456ms
+     ✓ migrates agent config into agents.defaults and tools  466ms
+     ✓ migrates tools.bash to tools.exec  522ms
+     ✓ accepts per-agent tools.elevated overrides  525ms
+     ✓ rejects telegram.requireMention  522ms
+     ✓ rejects gateway.token  482ms
+     ✓ migrates gateway.token to gateway.auth.token  505ms
+     ✓ rejects telegram.dmPolicy="open" without allowFrom "*"  449ms
+     ✓ accepts telegram.dmPolicy="open" with allowFrom "*"  391ms
+     ✓ defaults telegram.dmPolicy to pairing when telegram section exists  526ms
+     ✓ defaults telegram.groupPolicy to allowlist when telegram section exists  424ms
+     ✓ rejects whatsapp.dmPolicy="open" without allowFrom "*"  323ms
+     ✓ accepts whatsapp.dmPolicy="open" with allowFrom "*"  315ms
+     ✓ defaults whatsapp.dmPolicy to pairing when whatsapp section exists  335ms
+     ✓ defaults whatsapp.groupPolicy to allowlist when whatsapp section exists  522ms
+     ✓ rejects signal.dmPolicy="open" without allowFrom "*"  368ms
+     ✓ accepts signal.dmPolicy="open" with allowFrom "*"  440ms
+     ✓ defaults signal.dmPolicy to pairing when signal section exists  467ms
+     ✓ defaults signal.groupPolicy to allowlist when signal section exists  377ms
+     ✓ accepts historyLimit overrides per provider and account  448ms
+     ✓ rejects imessage.dmPolicy="open" without allowFrom "*"  342ms
+stdout | src/agents/clawdbot-gateway-tool.test.ts > gateway tool > schedules SIGUSR1 restart
+gateway tool: restart requested (delayMs=0, reason=none)
+
+ ❯ src/agents/clawdbot-gateway-tool.test.ts (4 tests | 1 failed) 124ms
+     × schedules SIGUSR1 restart 96ms
+     ✓ passes config.apply through gateway call 12ms
+     ✓ passes config.patch through gateway call 5ms
+     ✓ passes update.run through gateway call 3ms
+ ✓ src/config/config.legacy-config-detection.accepts-imessage-dmpolicy.test.ts (23 tests) 14058ms
+     ✓ accepts imessage.dmPolicy="open" with allowFrom "*"  3761ms
+     ✓ defaults imessage.dmPolicy to pairing when imessage section exists  461ms
+     ✓ defaults imessage.groupPolicy to allowlist when imessage section exists  533ms
+     ✓ defaults discord.groupPolicy to allowlist when discord section exists  505ms
+     ✓ defaults slack.groupPolicy to allowlist when slack section exists  449ms
+     ✓ defaults msteams.groupPolicy to allowlist when msteams section exists  441ms
+     ✓ rejects unsafe executable config values  471ms
+     ✓ accepts tools audio transcription without cli  574ms
+     ✓ accepts path-like executable values with spaces  446ms
+     ✓ rejects discord.dm.policy="open" without allowFrom "*"  438ms
+     ✓ rejects slack.dm.policy="open" without allowFrom "*"  320ms
+     ✓ rejects legacy agent.model string  400ms
+     ✓ migrates telegram.requireMention to channels.telegram.groups.*.requireMention  580ms
+     ✓ migrates messages.tts.enabled to messages.tts.auto  728ms
+     ✓ migrates legacy model config to agent.models + model lists  362ms
+     ✓ flags legacy config in snapshot  365ms
+     ✓ does not auto-migrate claude-cli auth profile mode on load  473ms
+     ✓ flags legacy provider sections in snapshot  484ms
+     ✓ flags routing.allowFrom in snapshot  360ms
+     ✓ rejects bindings[].match.provider on load  525ms
+     ✓ rejects bindings[].match.accountID on load  449ms
+     ✓ rejects session.sendPolicy.rules[].match.provider on load  449ms
+     ✓ rejects messages.queue.byProvider on load  473ms
+ ✓ src/config/config.identity-defaults.test.ts (9 tests) 8167ms
+     ✓ does not derive mentionPatterns when identity is set  3245ms
+     ✓ defaults ackReactionScope without setting ackReaction  649ms
+     ✓ keeps ackReaction unset when identity is missing  777ms
+     ✓ does not override explicit values  651ms
+     ✓ supports provider textChunkLimit config  640ms
+     ✓ accepts blank model provider apiKey values  583ms
+     ✓ respects empty responsePrefix to disable identity defaults  550ms
+     ✓ does not synthesize agent list/session when absent  625ms
+     ✓ does not derive responsePrefix from identity emoji  440ms
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > rotates for auto-pinned profiles
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > does not rotate for user-pinned profiles
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > honors user-pinned profiles even when in cooldown
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > ignores user-locked profile when provider mismatches
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/config/config.nix-integration-u3-u5-u9.test.ts (20 tests) 12322ms
+       ✓ isNixMode is false when CLAWDBOT_NIX_MODE is not set  3611ms
+       ✓ isNixMode is false when CLAWDBOT_NIX_MODE is empty  684ms
+       ✓ isNixMode is false when CLAWDBOT_NIX_MODE is not '1'  399ms
+       ✓ isNixMode is true when CLAWDBOT_NIX_MODE=1  454ms
+       ✓ STATE_DIR defaults to ~/.smithersbot when env not set  324ms
+       ✓ STATE_DIR respects CLAWDBOT_STATE_DIR override  372ms
+       ✓ STATE_DIR prefers MOLTBOT_STATE_DIR over legacy override  422ms
+       ✓ STATE_DIR prefers SMITHERSBOT_STATE_DIR over MOLTBOT and CLAWDBOT overrides  438ms
+       ✓ CONFIG_PATH defaults to ~/.smithersbot/smithersbot.json when env not set  350ms
+       ✓ CONFIG_PATH respects CLAWDBOT_CONFIG_PATH override  450ms
+       ✓ CONFIG_PATH prefers MOLTBOT_CONFIG_PATH over legacy override  450ms
+       ✓ CONFIG_PATH expands ~ in CLAWDBOT_CONFIG_PATH override  713ms
+       ✓ CONFIG_PATH uses STATE_DIR when only state dir is overridden  308ms
+       ✓ expands ~ in common path-ish config fields  503ms
+       ✓ uses default when env and config are unset  415ms
+       ✓ prefers CLAWDBOT_GATEWAY_PORT over config  404ms
+       ✓ falls back to config when env is invalid  414ms
+       ✓ accepts config with only botToken  796ms
+       ✓ accepts config with only tokenFile  410ms
+       ✓ accepts config with both botToken and tokenFile  374ms
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > skips profiles in cooldown during initial selection
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > persists the first user message before assistant output
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when all profiles are in cooldown and fallbacks are configured
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when all profiles are in cooldown and fallbacks are configured
+[diagnostic] lane task error: lane=main durationMs=0 error="FailoverError: No available auth profile for openai (all in cooldown or unavailable)."
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when all profiles are in cooldown and fallbacks are configured
+[diagnostic] lane task error: lane=session:agent:test:cooldown-failover durationMs=0 error="FailoverError: No available auth profile for openai (all in cooldown or unavailable)."
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when auth is unavailable and fallbacks are configured
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when auth is unavailable and fallbacks are configured
+[diagnostic] lane task error: lane=main durationMs=42 error="FailoverError: No API key found for provider "openai". Auth store: /tmp/moltbot-agent-9V9trp/auth-profiles.json (agentDir: /tmp/moltbot-agent-9V9trp). Configure auth for this agent (smithersbot --profile dev agents add <id>) or copy auth-profiles.json from the main agentDir."
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > fails over when auth is unavailable and fallbacks are configured
+[diagnostic] lane task error: lane=session:agent:test:auth-unavailable durationMs=68 error="FailoverError: No API key found for provider "openai". Auth store: /tmp/moltbot-agent-9V9trp/auth-profiles.json (agentDir: /tmp/moltbot-agent-9V9trp). Configure auth for this agent (smithersbot --profile dev agents add <id>) or copy auth-profiles.json from the main agentDir."
+
+stderr | src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts > runEmbeddedPiAgent auth profile rotation > skips profiles in cooldown when rotating after failure
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/agents/pi-embedded-runner.run-embedded-pi-agent.auth-profile-rotation.test.ts (8 tests) 31952ms
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > persists the user message when prompt fails before assistant output
+[agent/embedded] low context window: openai/mock-error ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > appends new user + assistant after existing transcript entries
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > persists multi-turn user/assistant ordering across runs
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/config/config.pruning-defaults.test.ts (4 tests) 5070ms
+     ✓ does not enable contextPruning by default  2956ms
+     ✓ enables cache-ttl pruning + 1h heartbeat for Anthropic OAuth  708ms
+     ✓ enables cache-ttl pruning + 1h cache TTL for Anthropic API keys  644ms
+     ✓ does not override explicit contextPruning mode  756ms
+ ✓ src/config/config.plugin-validation.test.ts (7 tests) 7536ms
+     ✓ rejects missing plugin load paths  3065ms
+     ✓ rejects missing plugin ids in entries  624ms
+     ✓ rejects missing plugin ids in allow/deny/slots  545ms
+     ✓ surfaces plugin config diagnostics  705ms
+     ✓ accepts known plugin ids  525ms
+     ✓ accepts plugin heartbeat targets  1002ms
+     ✓ rejects unknown heartbeat targets  1059ms
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > persists multi-turn user/assistant ordering across runs
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/goal/agent-executor.test.ts (43 tests) 3474ms
+     ✓ completes a task via CLI runner and marks run done  3350ms
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > repairs orphaned user messages and continues
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/goal/lessons.test.ts (17 tests) 8212ms
+     ✓ serializes concurrent addLesson writes so both lessons persist  7370ms
+stderr | src/agents/pi-embedded-runner.test.ts > runEmbeddedPiAgent > repairs orphaned single-user sessions and continues
+[agent/embedded] low context window: openai/mock-1 ctx=16000 (warn<32000) source=model
+
+ ✓ src/agents/subagent-registry.persistence.test.ts (4 tests) 5037ms
+     ✓ persists runs to disk and resumes after restart  3467ms
+     ✓ skips cleanup when cleanupHandled was persisted  548ms
+     ✓ retries cleanup announce after a failed announce  995ms
+ ✓ src/agents/pi-embedded-runner.test.ts (7 tests) 21453ms
+     ✓ persists the first user message before assistant output  2159ms
+     ✓ appends new user + assistant after existing transcript entries  3137ms
+     ✓ persists multi-turn user/assistant ordering across runs  5199ms
+     ✓ repairs orphaned user messages and continues  1339ms
+     ✓ repairs orphaned single-user sessions and continues  1599ms
+ ✓ src/goal/goal-workflow-integration.test.ts (34 tests) 3540ms
+       ✓ executes a single-task plan to completion and transitions to done  3102ms
+ ✓ src/agents/models-config.skips-writing-models-json-no-env-token.test.ts (4 tests) 4505ms
+     ✓ skips writing models.json when no env token or profile exists  2747ms
+     ✓ writes models.json for configured providers  610ms
+     ✓ adds minimax provider when MINIMAX_API_KEY is set  687ms
+     ✓ adds synthetic provider when SYNTHETIC_API_KEY is set  447ms
+ ✓ src/config/config.env-vars.test.ts (3 tests) 4800ms
+     ✓ applies env vars from env block when missing  3426ms
+     ✓ does not override existing env vars  698ms
+     ✓ applies env vars from env.vars when missing  673ms
+ ✓ src/config/config.compaction-settings.test.ts (2 tests) 3945ms
+     ✓ preserves memory flush config values  3288ms
+     ✓ defaults compaction mode to safeguard  652ms
+ ✓ src/config/config.broadcast.test.ts (3 tests) 4132ms
+     ✓ accepts a broadcast peer map with strategy  3142ms
+     ✓ rejects invalid broadcast strategy  486ms
+     ✓ rejects non-array broadcast entries  498ms
+stderr | src/agents/bash-tools.exec.pty-fallback.test.ts > exec falls back when PTY spawn fails
+[exec] PTY spawn failed (Error: spawn EBADF); retrying without PTY for "printf ok".
+
+ ✓ src/agents/bash-tools.exec.pty-fallback.test.ts (1 test) 4261ms
+   ✓ exec falls back when PTY spawn fails  4250ms
+ ✓ src/config/config.talk-api-key-fallback.test.ts (2 tests) 3503ms
+     ✓ injects talk.apiKey from profile when config is missing  2957ms
+     ✓ prefers ELEVENLABS_API_KEY env over profile  542ms
+ ✓ src/agents/bash-tools.exec.path.test.ts (2 tests) 3839ms
+     ✓ merges login-shell PATH for host=gateway  3798ms
+ ✓ src/config/config.preservation-on-validation-failure.test.ts (2 tests) 4083ms
+     ✓ rejects unknown fields  3396ms
+     ✓ flags legacy config entries without auto-migrating  681ms
+ ✓ src/config/config.sandbox-docker.test.ts (2 tests) 3668ms
+     ✓ accepts binds array in sandbox.docker config  3063ms
+     ✓ rejects non-string values in binds array  601ms
+ ✓ src/agents/subagent-announce.format.test.ts (8 tests) 3502ms
+     ✓ sends instructional message to main agent with status and findings  3215ms
+ ✓ src/agents/models-config.auto-injects-github-copilot-provider-token-is.test.ts (2 tests) 3226ms
+     ✓ auto-injects github-copilot provider when token is present  2666ms
+     ✓ prefers COPILOT_GITHUB_TOKEN over GH_TOKEN and GITHUB_TOKEN  551ms
+ ✓ src/agents/models-config.falls-back-default-baseurl-token-exchange-fails.test.ts (2 tests) 3664ms
+     ✓ falls back to default baseUrl when token exchange fails  3035ms
+     ✓ uses agentDir override auth profiles for copilot injection  624ms
+ ✓ src/config/config.msteams.test.ts (2 tests) 3375ms
+     ✓ accepts replyStyle at global/team/channel levels  2902ms
+     ✓ rejects invalid replyStyle  455ms
+ ✓ src/config/config.gateway-remote-transport.test.ts (2 tests) 3923ms
+     ✓ accepts direct transport  3238ms
+     ✓ rejects unknown transport  669ms
+ ✓ src/agents/models-config.uses-first-github-copilot-profile-env-tokens.test.ts (2 tests) 3593ms
+     ✓ uses the first github-copilot profile when env tokens are missing  2946ms
+     ✓ does not override explicit github-copilot provider config  634ms
+ ✓ src/config/config.multi-agent-agentdir-validation.test.ts (2 tests) 3233ms
+     ✓ rejects shared agents.list agentDir  2612ms
+     ✓ throws on shared agentDir during loadConfig()  605ms
+ ✓ src/config/config.backup-rotation.test.ts (1 test) 3212ms
+     ✓ keeps a 5-deep backup ring for config writes  3198ms
+ ✓ src/config/config.talk-voicealiases.test.ts (2 tests) 3488ms
+     ✓ accepts a string map of voice aliases  2825ms
+     ✓ rejects non-string voice alias values  649ms
+ ✓ src/agents/models-config.normalizes-gemini-3-ids-preview-google-providers.test.ts (1 test) 3055ms
+     ✓ normalizes gemini 3 ids to preview for google providers  3049ms
+ ✓ src/config/config.agent-concurrency-defaults.test.ts (4 tests) 2697ms
+     ✓ injects defaults on load  2686ms
+ ✓ src/agents/model-auth.test.ts (9 tests) 1862ms
+     ✓ migrates legacy oauth.json into auth-profiles.json  1572ms
+ ✓ src/agents/models-config.fills-missing-provider-apikey-from-env-var.test.ts (2 tests) 3004ms
+     ✓ fills missing provider.apiKey from env var name when models exist  2467ms
+     ✓ merges providers by default  531ms
+ ✓ src/agents/openai-responses.reasoning-replay.test.ts (2 tests) 2710ms
+     ✓ replays reasoning for tool-call-only turns (OpenAI requires it)  1514ms
+     ✓ still replays reasoning when paired with an assistant message  1187ms
+stderr | src/agents/tool-images.test.ts > tool image sanitizing > shrinks oversized images to <=5MB
+[agents/tool-images] Image exceeds limits; resizing
+
+stdout | src/agents/tool-images.test.ts > tool image sanitizing > shrinks oversized images to <=5MB
+[agents/tool-images] Image resized
+
+stderr | src/agents/tool-images.test.ts > tool image sanitizing > sanitizes image arrays and reports drops
+[agents/tool-images] Image exceeds limits; resizing
+
+stdout | src/agents/tool-images.test.ts > tool image sanitizing > sanitizes image arrays and reports drops
+[agents/tool-images] Image resized
+
+stderr | src/agents/tool-images.test.ts > tool image sanitizing > shrinks images that exceed max dimension even if size is small
+[agents/tool-images] Image exceeds limits; resizing
+
+stdout | src/agents/tool-images.test.ts > tool image sanitizing > shrinks images that exceed max dimension even if size is small
+[agents/tool-images] Image resized
+
+ ✓ src/agents/tool-images.test.ts (4 tests) 1478ms
+     ✓ shrinks oversized images to <=5MB  1106ms
+ ✓ src/agents/tools/web-tools.fetch.test.ts (6 tests) 752ms
+     ✓ falls back to firecrawl when readability returns no content  722ms
+ ✓ src/agents/bash-tools.test.ts (17 tests) 1754ms
+     ✓ uses default timeout when timeout is omitted  1074ms
+ ✓ src/agents/tools/web-tools.readability.test.ts (2 tests) 349ms
+     ✓ extracts readable text  325ms
+ ✓ src/agents/bash-tools.exec.background-abort.test.ts (4 tests) 997ms
+ ✓ src/goal/plan-autocheck.test.ts (21 tests) 798ms
+stdout | src/agents/bash-tools.exec.approval-id.test.ts > exec approvals > honors ask=off for elevated gateway exec without prompting
+[exec] elevated command echo ok
+
+stdout | src/agents/bash-tools.exec.approval-id.test.ts > exec approvals > requires approval for elevated ask when allowlist misses
+[exec] elevated command echo ok
+
+ ✓ src/agents/bash-tools.exec.approval-id.test.ts (4 tests) 773ms
+     ✓ reuses approval id as the node runId  596ms
+ ✓ src/agents/tools/image-tool.test.ts (14 tests) 739ms
+     ✓ rewrites inbound absolute paths into sandbox media/inbound  355ms
+ ✓ src/goal/cli-planner.test.ts (40 tests) 538ms
+ ✓ src/goal/backend-availability.test.ts (3 tests) 554ms
+     ✓ retries a signal-terminated probe and succeeds on the second attempt  527ms
+ ✓ src/agents/tools/web-fetch.ssrf.test.ts (5 tests) 560ms
+     ✓ blocks localhost hostnames before fetch/firecrawl  536ms
+stdout | src/agents/cli-credentials.test.ts > cli credentials > updates the Claude Code keychain item in place
+[agents/auth-profiles] wrote refreshed credentials to claude cli keychain
+
+stdout | src/agents/cli-credentials.test.ts > cli credentials > falls back to the file store when the keychain update fails
+[agents/auth-profiles] wrote refreshed credentials to claude cli file
+
+ ✓ src/agents/bedrock-discovery.test.ts (5 tests) 507ms
+     ✓ filters to active streaming text models and maps modalities  481ms
+stdout | src/agents/cli-credentials.test.ts > cli credentials > caches Claude Code CLI credentials within the TTL window
+[agents/auth-profiles] read anthropic credentials from claude cli keychain
+
+stdout | src/agents/cli-credentials.test.ts > cli credentials > refreshes Claude Code CLI credentials after the TTL window
+[agents/auth-profiles] read anthropic credentials from claude cli keychain
+[agents/auth-profiles] read anthropic credentials from claude cli keychain
+
+stdout | src/agents/cli-credentials.test.ts > cli credentials > reads Codex credentials from keychain when available
+[agents/auth-profiles] read codex credentials from keychain
+
+ ✓ src/agents/cli-credentials.test.ts (6 tests) 397ms
+ ✓ src/config/sessions.test.ts (26 tests) 285ms
+ ✓ src/agents/skills.build-workspace-skills-prompt.prefers-workspace-skills-managed-skills.test.ts (3 tests) 121ms
+ ✓ src/agents/pi-embedded-runner.sanitize-session-history.test.ts (8 tests) 383ms
+ ✓ src/agents/session-tool-result-guard.tool-result-persist-hook.test.ts (2 tests) 588ms
+     ✓ composes transforms in priority order and allows stripping toolResult.details  565ms
+ ✓ src/repo-chat/repo-chat-worker.test.ts (63 tests) 402ms
+ ✓ src/agents/bash-tools.process.send-keys.test.ts (2 tests) 358ms
+ ✓ src/config/io.compat.test.ts (8 tests) 497ms
+ ❯ src/goal/cli-process.test.ts (2 tests | 2 failed) 312ms
+     × strips known credential keys when env is omitted 156ms
+     × passes explicit env through unchanged 148ms
+ ✓ src/agents/tools/sessions-announce-target.test.ts (2 tests) 305ms
+ ✓ src/goal/cli-worker.test.ts (54 tests) 303ms
+ ❯ src/security/audit.test.ts (35 tests | 10 failed) 430ms
+     ✓ includes an attack surface summary (info) 13ms
+     ✓ flags non-loopback bind without auth as critical 2ms
+     ✓ warns when loopback control UI lacks trusted proxies 2ms
+     ✓ flags loopback control UI without auth as critical 2ms
+     ✓ flags logging.redactSensitive=off 2ms
+     ✓ treats Windows ACL-only perms as secure 143ms
+     ✓ flags Windows ACLs when Users can read the state dir 54ms
+     ✓ warns when small models are paired with web/browser tools 4ms
+     ✓ treats small models as safe when sandbox is on and web tools are disabled 2ms
+     ✓ flags tools.elevated allowFrom wildcard as critical 2ms
+     ✓ warns when remote CDP uses HTTP 2ms
+     ✓ warns when control UI allows insecure auth 1ms
+     ✓ warns when control UI device auth is disabled 1ms
+     ✓ warns when multiple DM senders share the main session 41ms
+     ✓ flags Telegram group commands without a sender allowlist 11ms
+     × adds a warning when deep probe fails 26ms
+     × adds a warning when deep probe throws 2ms
+     ✓ warns on legacy model configuration 1ms
+     ✓ warns on weak model tiers 1ms
+     ✓ does not warn on Venice-style opus-45 model names 1ms
+     ✓ warns when hooks token looks short 2ms
+     ✓ warns when hooks token reuses the gateway env token 3ms
+     ✓ warns when state/config look like a synced folder 1ms
+     ✓ flags group/world-readable config include files 46ms
+     ✓ flags extensions without plugins.allow 17ms
+     ✓ flags unallowlisted extensions as critical when native skill commands are exposed 21ms
+     ✓ flags open groupPolicy when tools.elevated is enabled 1ms
+       × uses local auth when gateway.mode is local 1ms
+       × prefers env token over local config token 2ms
+       × uses local auth when gateway.mode is undefined (default) 2ms
+       × uses remote auth when gateway.mode is remote with URL 5ms
+       × ignores env token when gateway.mode is remote 3ms
+       × uses remote password when env is unset 2ms
+       × prefers env password over remote password 2ms
+       × falls back to local auth when gateway.mode is remote but URL is missing 2ms
+ ✓ src/security/secret-paths.test.ts (62 tests) 261ms
+ ✓ src/agents/skills/refresh.test.ts (1 test) 192ms
+stdout | src/agents/auth-profiles/oauth.fallback-to-main-agent.test.ts > resolveApiKeyForProfile fallback to main agent > falls back to main agent credentials when secondary agent token is expired and refresh fails
+[agents/auth-profiles] inherited fresh OAuth credentials from main agent
+
+ ✓ src/agents/auth-profiles/oauth.fallback-to-main-agent.test.ts (2 tests) 154ms
+ ✓ src/config/config-cache.test.ts (8 tests) 306ms
+ ✓ src/agents/apply-patch.test.ts (3 tests) 70ms
+stdout | src/agents/claude-cli-runner.test.ts > runClaudeCliAgent > starts a new session with --session-id when none is provided
+[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=2
+
+stdout | src/agents/claude-cli-runner.test.ts > runClaudeCliAgent > uses --resume when a claude session id is provided
+[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=2
+
+stdout | src/agents/claude-cli-runner.test.ts > runClaudeCliAgent > serializes concurrent claude-cli runs
+[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=5
+
+stdout | src/agents/claude-cli-runner.test.ts > runClaudeCliAgent > serializes concurrent claude-cli runs
+[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=6
+
+ ✓ src/agents/claude-cli-runner.test.ts (3 tests) 215ms
+ ✓ src/config/schema.test.ts (4 tests) 258ms
+stderr | src/agents/pi-tools-agent-config.test.ts > Agent-specific tool filtering > should apply provider-specific tool profile overrides
+[tools] tools.profile (coding) allowlist contains unknown entries (group:memory). These entries won't match any tool unless the plugin is enabled.
+
+ ✓ src/agents/pi-tools-agent-config.test.ts (15 tests) 249ms
+ ✓ src/agents/pi-tools.workspace-paths.test.ts (6 tests) 603ms
+ ✓ src/goal/hard-deny.test.ts (32 tests) 279ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-normalizes-allowlisted-agent-ids.test.ts (4 tests) 238ms
+ ✓ src/agents/identity-avatar.test.ts (4 tests) 71ms
+ ✓ src/agents/pi-tools.create-clawdbot-coding-tools.adds-claude-style-aliases-schemas-without-dropping-d.test.ts (5 tests) 292ms
+ ✓ src/agents/skills.buildworkspaceskillstatus.test.ts (4 tests) 116ms
+ ✓ src/config/paths.test.ts (8 tests) 86ms
+ ✓ src/config/normalize-paths.test.ts (1 test) 179ms
+ ✓ src/agents/skills.buildworkspaceskillcommands.test.ts (3 tests) 145ms
+ ✓ src/goal/manual-tests.test.ts (22 tests) 254ms
+ ✓ src/agents/pi-tools.safe-bins.test.ts (1 test) 148ms
+stdout | src/agents/cli-runner.test.ts > runCliAgent resume cleanup > kills stale resume processes for codex sessions
+[agent/claude-cli] cli exec: provider=codex-cli model=gpt-5.2-codex promptChars=2
+
+ ✓ src/agents/cli-runner.test.ts (4 tests) 157ms
+ ✓ src/goal/run-store.test.ts (30 tests) 115ms
+stdout | src/agents/skills.build-workspace-skills-prompt.syncs-merged-skills-into-target-workspace.test.ts > buildWorkspaceSkillsPrompt > applies skill filters, including empty lists
+[skills] Applying skill filter: alpha
+[skills] After filter: alpha
+[skills] Applying skill filter: (none)
+[skills] After filter: 
+
+ ✓ src/agents/skills.build-workspace-skills-prompt.syncs-merged-skills-into-target-workspace.test.ts (3 tests) 189ms
+ ✓ src/config/config.telegram-custom-commands.test.ts (2 tests) 21ms
+ ✓ src/agents/pi-tools.create-clawdbot-coding-tools.adds-claude-style-aliases-schemas-without-dropping.test.ts (21 tests) 123ms
+ ✓ src/agents/skills.build-workspace-skills-prompt.returns-empty-prompt-skills-dirs-are-missing.test.ts (4 tests) 87ms
+ ✓ src/agents/pi-tools.create-clawdbot-coding-tools.adds-claude-style-aliases-schemas-without-dropping-f.test.ts (4 tests) 115ms
+ ✓ src/goal/mermaid-render.test.ts (66 tests) 142ms
+ ✓ src/agents/bash-tools.exec.pty.test.ts (1 test) 160ms
+ ✓ src/agents/model-fallback.test.ts (19 tests) 147ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.waits-multiple-compaction-retries-before-resolving.test.ts (5 tests) 97ms
+ ✓ src/goal/capability-enforcement.test.ts (16 tests) 88ms
+ ✓ src/config/sessions.cache.test.ts (8 tests) 116ms
+ ✓ src/agents/shell-utils.test.ts (4 tests) 15ms
+ ✓ src/goal/post-execution-review.test.ts (24 tests) 139ms
+ ✓ src/agents/chutes-oauth.test.ts (2 tests) 92ms
+ ✓ src/config/includes.test.ts (25 tests) 59ms
+ ✓ src/agents/clawdbot-tools.camera.test.ts (3 tests) 52ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-resolves-main-announce-target-from.test.ts (2 tests) 53ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.suppresses-message-end-block-replies-message-tool.test.ts (3 tests) 120ms
+ ✓ src/agents/auth-profiles.markauthprofilefailure.test.ts (3 tests) 54ms
+ ✓ src/agents/skills.loadworkspaceskillentries.test.ts (3 tests) 255ms
+ ✓ src/agents/skills.applyskillenvoverrides.test.ts (2 tests) 108ms
+ ✓ src/config/config.identity-avatar.test.ts (3 tests) 88ms
+ ✓ src/agents/skills.buildworkspaceskillsnapshot.test.ts (2 tests) 62ms
+ ✓ src/agents/auth-profiles.chutes.test.ts (1 test) 121ms
+ ✓ src/agents/system-prompt-params.test.ts (5 tests) 149ms
+stdout | src/agents/cli-runner.env.test.ts > runCliAgent env > strips credential env from spawned CLI backends and preserves explicit backend env
+[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=2
+
+ ✓ src/agents/cli-runner.env.test.ts (1 test) 260ms
+ ✓ src/agents/bootstrap-files.test.ts (2 tests) 79ms
+ ✓ src/agents/workspace.test.ts (3 tests) 99ms
+ ✓ src/goal/format-output.test.ts (30 tests) 143ms
+ ✓ src/goal/git-checkpoint.autosave.test.ts (3 tests) 78ms
+ ✓ src/goal/planner.test.ts (40 tests) 84ms
+ ✓ src/goal/compact-output.test.ts (18 tests) 72ms
+ ✓ src/goal/goal-schemas.test.ts (6 tests) 64ms
+ ✓ src/agents/auth-profiles/session-override.test.ts (1 test) 197ms
+stderr | src/agents/pi-embedded-runner.google-sanitize-thinking.test.ts > sanitizeSessionHistory (google thinking) > sanitizes tool call ids for Google APIs
+[agent/embedded] google turn ordering fixup: prepended user bootstrap (sessionId=session:google)
+
+ ✓ src/agents/pi-embedded-runner.google-sanitize-thinking.test.ts (11 tests) 65ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.includes-canvas-action-metadata-tool-summaries.test.ts (3 tests) 85ms
+ ✓ src/agents/clawdbot-tools.sessions.test.ts (8 tests) 137ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.calls-onblockreplyflush-before-tool-execution-start-preserve.test.ts (2 tests) 74ms
+ ✓ src/goal/claude-code-mcp-isolation.test.ts (13 tests) 54ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.subscribeembeddedpisession.test.ts (11 tests) 70ms
+ ✓ src/agents/skills.build-workspace-skills-prompt.applies-bundled-allowlist-without-affecting-workspace-skills.test.ts (1 test) 65ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.does-not-call-onblockreplyflush-callback-is-not.test.ts (1 test) 41ms
+ ✓ src/agents/tools/browser-tool.test.ts (12 tests) 55ms
+ ✓ src/repo-chat/repo-chat-store.test.ts (6 tests) 60ms
+ ✓ src/agents/pi-extensions/context-pruning.test.ts (11 tests) 60ms
+ ✓ src/config/slack-http-config.test.ts (4 tests) 54ms
+ ✓ src/agents/tools/telegram-actions.test.ts (25 tests) 75ms
+ ✓ src/agents/tool-display.test.ts (3 tests) 36ms
+ ✓ src/agents/system-prompt.test.ts (27 tests) 46ms
+ ✓ src/agents/pi-embedded-runner/run/payloads.test.ts (12 tests) 52ms
+ ✓ src/agents/tools/cron-tool.test.ts (15 tests) 60ms
+ ✓ src/security/external-content.test.ts (26 tests) 80ms
+ ✓ src/agents/pi-embedded-runner/run.overflow-compaction.test.ts (4 tests) 53ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.splits-long-single-line-fenced-blocks-reopen.test.ts (3 tests) 68ms
+ ✓ src/agents/clawdbot-tools.session-status.test.ts (7 tests) 75ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-prefers-per-agent-subagent-model.test.ts (3 tests) 50ms
+ ✓ src/goal/goal-tools.test.ts (30 tests) 76ms
+ ✓ src/agents/pi-embedded-utils.test.ts (35 tests) 48ms
+ ✓ src/goal/claude-code-env.test.ts (11 tests) 50ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.emits-reasoning-as-separate-message-enabled.test.ts (5 tests) 49ms
+ ✓ src/config/env-substitution.test.ts (31 tests) 40ms
+ ✓ src/goal/scout.test.ts (18 tests) 100ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-applies-model-child-session.test.ts (4 tests) 119ms
+ ✓ src/agents/tools/web-tools.enabled-defaults.test.ts (15 tests) 47ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.does-not-emit-duplicate-block-replies-text.test.ts (5 tests) 37ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-allows-cross-agent-spawning-configured.test.ts (2 tests) 54ms
+ ✓ src/agents/clawdbot-tools.subagents.sessions-spawn-announces-agent-wait-lifecycle-events.test.ts (1 test) 52ms
+ ✓ src/agents/pi-embedded-subscribe.code-span-awareness.test.ts (3 tests) 25ms
+stderr | src/agents/pi-tool-definition-adapter.test.ts > pi tool definition adapter > wraps tool errors into a tool result
+[tools] boom failed: nope
+
+stderr | src/agents/pi-tool-definition-adapter.test.ts > pi tool definition adapter > normalizes exec tool aliases in error results
+[tools] exec failed: nope
+
+ ✓ src/agents/pi-tool-definition-adapter.test.ts (2 tests) 77ms
+ ✓ src/config/sessions/transcript.test.ts (6 tests) 64ms
+ ✓ src/goal/git-privacy.test.ts (7 tests) 75ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.streams-soft-chunks-paragraph-preference.test.ts (2 tests) 42ms
+ ✓ src/agents/auth-health.test.ts (1 test) 31ms
+ ✓ src/config/slack-token-validation.test.ts (2 tests) 26ms
+ ✓ src/agents/pi-embedded-helpers.isautherrormessage.test.ts (3 tests) 17ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.filters-final-suppresses-output-without-start-tag.test.ts (3 tests) 47ms
+ ✓ src/agents/pi-embedded-helpers.formatrawassistanterrorforui.test.ts (3 tests) 16ms
+ ✓ src/config/plugin-auto-enable.test.ts (9 tests | 1 skipped) 34ms
+ ✓ src/agents/memory-search.test.ts (11 tests) 36ms
+ ✓ src/agents/pi-embedded-helpers.ismessagingtoolduplicate.test.ts (8 tests) 17ms
+ ✓ src/goal/git-checkpoint.push.test.ts (4 tests) 54ms
+ ✓ src/config/ui-seam-color.test.ts (3 tests) 36ms
+ ✓ src/config/config.telegram-chat-settings.test.ts (4 tests) 39ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.keeps-indented-fenced-blocks-intact.test.ts (2 tests) 21ms
+ ✓ src/agents/pi-embedded-helpers.stripthoughtsignatures.test.ts (6 tests) 23ms
+ ✓ src/agents/pi-embedded-runner.guard.test.ts (1 test) 17ms
+ ✓ src/goal/goal-lock.test.ts (14 tests) 82ms
+ ✓ src/agents/pi-embedded-helpers.islikelycontextoverflowerror.test.ts (2 tests) 13ms
+ ✓ src/agents/opencode-zen-models.test.ts (11 tests) 47ms
+ ✓ src/goal/json-repair.test.ts (16 tests) 60ms
+ ✓ src/agents/model-selection.test.ts (10 tests) 33ms
+ ✓ src/agents/bash-process-registry.test.ts (5 tests) 17ms
+ ✓ src/goal/mermaid-png.test.ts (7 tests) 74ms
+ ✓ src/config/config.tools-alsoAllow.test.ts (3 tests) 33ms
+ ✓ src/goal/git-checkpoint.unit.test.ts (3 tests) 27ms
+ ✓ src/config/whatsapp-accounts.whatsapp-auth.test.ts (4 tests) 50ms
+ ✓ src/agents/pi-embedded-runner/run/attempt.test.ts (3 tests) 13ms
+ ✓ src/agents/sandbox/tool-policy.test.ts (3 tests) 19ms
+ ✓ src/config/channel-capabilities.test.ts (6 tests) 40ms
+ ✓ src/agents/pi-embedded-runner/run/images.test.ts (24 tests) 44ms
+ ✓ src/agents/pi-embedded-helpers.buildbootstrapcontextfiles.test.ts (4 tests) 15ms
+ ✓ src/agents/pi-tools.create-clawdbot-coding-tools.adds-claude-style-aliases-schemas-without-dropping-b.test.ts (6 tests) 43ms
+ ✓ src/goal/execution-status.test.ts (14 tests) 60ms
+ ✓ src/agents/pi-embedded-helpers.image-dimension-error.test.ts (1 test) 16ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.does-not-append-text-end-content-is.test.ts (3 tests) 35ms
+ ✓ src/agents/agent-paths.test.ts (2 tests) 64ms
+ ✓ src/agents/pi-extensions/compaction-safeguard.test.ts (17 tests) 58ms
+ ✓ src/agents/pi-embedded-helpers.sanitize-session-messages-images.removes-empty-assistant-text-blocks-but-preserves.test.ts (6 tests) 21ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.emits-block-replies-text-end-does-not.test.ts (2 tests) 52ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.does-not-duplicate-text-end-repeats-full.test.ts (2 tests) 48ms
+ ✓ src/agents/pi-embedded-subscribe.tools.test.ts (2 tests) 22ms
+ ✓ src/goal/cli-output-parsing.test.ts (10 tests) 23ms
+ ✓ src/agents/pi-settings.test.ts (4 tests) 36ms
+ ✓ src/agents/auth-profiles.resolve-auth-profile-order.uses-stored-profiles-no-config-exists.test.ts (7 tests) 18ms
+ ✓ src/agents/pi-embedded-helpers.resolvebootstrapmaxchars.test.ts (3 tests) 10ms
+ ✓ src/agents/tools/common.test.ts (11 tests) 23ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.keeps-assistanttexts-final-answer-block-replies-are.test.ts (2 tests) 36ms
+ ✓ src/agents/skills.resolveskillspromptforrun.test.ts (2 tests) 52ms
+ ✓ src/goal/build-gate.test.ts (12 tests) 26ms
+ ✓ src/agents/clawdbot-tools.agents.test.ts (4 tests) 35ms
+ ✓ src/config/config.web-search-provider.test.ts (1 test) 21ms
+ ✓ src/agents/agent-scope.test.ts (8 tests) 80ms
+ ✓ src/agents/pi-embedded-helpers.validate-turns.test.ts (17 tests) 71ms
+ ✓ src/agents/pi-embedded-helpers.messaging-duplicate.test.ts (13 tests) 19ms
+ ✓ src/agents/auth-profiles.ensureauthprofilestore.test.ts (2 tests) 28ms
+ ✓ src/agents/channel-tools.test.ts (1 test) 18ms
+ ✓ src/agents/pi-embedded-subscribe.subscribe-embedded-pi-session.reopens-fenced-blocks-splitting-inside-them.test.ts (2 tests) 28ms
+ ✓ src/agents/pi-embedded-helpers.downgradeopenai-reasoning.test.ts (4 tests) 51ms
+ ✓ src/goal/cpm.test.ts (6 tests) 55ms
+ ✓ src/goal/test-parallel-scope.test.ts (2 tests) 19ms
+ ✓ src/agents/session-tool-result-guard.test.ts (6 tests) 20ms
+ ✓ src/agents/pi-embedded-helpers.sanitizeuserfacingtext.test.ts (7 tests) 25ms
+ ✓ src/agents/identity-file.test.ts (2 tests) 10ms
+ ✓ src/goal/conventions.test.ts (3 tests) 23ms
+ ✓ src/agents/pi-embedded-helpers.sanitizetoolcallid.test.ts (8 tests) 27ms
+ ✓ src/agents/failover-error.test.ts (6 tests) 26ms
+ ✓ src/goal/cli-runner.test.ts (3 tests) 38ms
+ ✓ src/config/sessions/metadata.test.ts (1 test) 17ms
+ ✓ src/agents/tools/web-search.test.ts (12 tests) 20ms
+ ✓ src/agents/pi-embedded-runner.get-dm-history-limit-from-session-key.falls-back-provider-default-per-dm-not.test.ts (5 tests) 24ms
+ ✓ src/agents/tools/sessions-list-tool.gating.test.ts (1 test) 17ms
+ ✓ src/agents/context-window-guard.test.ts (8 tests) 24ms
+ ✓ src/agents/auth-profiles.resolve-auth-profile-order.does-not-prioritize-lastgood-round-robin-ordering.test.ts (10 tests) 23ms
+ ✓ src/agents/model-catalog.test.ts (2 tests) 21ms
+ ✓ src/agents/pi-embedded-helpers.isfailovererrormessage.test.ts (1 test) 11ms
+ ✓ src/agents/model-scan.test.ts (2 tests) 31ms
+ ✓ src/agents/pi-embedded-runner.get-dm-history-limit-from-session-key.returns-undefined-sessionkey-is-undefined.test.ts (13 tests) 22ms
+ ✓ src/config/config.skills-entries-config.test.ts (2 tests) 25ms
+ ✓ src/agents/models-config.providers.ollama.test.ts (1 test) 15ms
+ ✓ src/agents/pty-keys.test.ts (3 tests) 20ms
+ ✓ src/goal/blocked.test.ts (4 tests) 18ms
+ ✓ src/config/runtime-overrides.test.ts (4 tests) 12ms
+ ✓ src/agents/cache-trace.test.ts (4 tests) 21ms
+ ✓ src/agents/identity.test.ts (2 tests) 15ms
+ ✓ src/agents/auth-profiles.resolve-auth-profile-order.normalizes-z-ai-aliases-auth-order.test.ts (4 tests) 22ms
+ ✓ src/agents/pi-embedded-subscribe.reply-tags.test.ts (2 tests) 37ms
+ ✓ src/agents/pi-embedded-runner/model.test.ts (6 tests) 38ms
+ ✓ src/agents/tool-call-id.test.ts (7 tests) 46ms
+ ✓ src/agents/pi-embedded-helpers.sanitize-session-messages-images.keeps-tool-call-tool-result-ids-unchanged.test.ts (3 tests) 16ms
+ ✓ src/agents/tools/gateway.test.ts (2 tests) 29ms
+ ✓ src/config/commands.test.ts (2 tests) 17ms
+ ✓ src/agents/compaction.test.ts (7 tests) 19ms
+ ✓ src/agents/pi-embedded-runner.applygoogleturnorderingfix.test.ts (2 tests) 29ms
+ ✓ src/goal/feedback.test.ts (6 tests) 41ms
+ ✓ src/agents/session-slug.test.ts (3 tests) 31ms
+ ✓ src/agents/pi-embedded-runner/google.test.ts (1 test) 14ms
+ ✓ src/agents/tool-policy.test.ts (3 tests) 20ms
+ ✓ src/agents/skills/frontmatter.test.ts (2 tests) 9ms
+ ✓ src/agents/tools/message-tool.test.ts (4 tests) 47ms
+ ✓ src/agents/auth-profiles.resolve-auth-profile-order.orders-by-lastused-no-explicit-order-exists.test.ts (2 tests) 25ms
+ ✓ src/agents/pi-embedded-helpers.normalizetextforcomparison.test.ts (5 tests) 32ms
+ ✓ src/agents/pi-embedded-helpers.formatassistanterrortext.test.ts (6 tests) 31ms
+ ✓ src/agents/tool-policy.plugin-only-allowlist.test.ts (5 tests) 20ms
+ ✓ src/agents/tools/memory-tool.does-not-crash-on-errors.test.ts (2 tests) 16ms
+ ✓ src/security/audit-fs.test.ts (2 tests) 15ms
+ ✓ src/agents/pi-embedded-runner.limithistoryturns.test.ts (9 tests) 33ms
+ ✓ src/goal/attempt-bundle.test.ts (2 tests) 27ms
+ ✓ src/agents/usage.test.ts (4 tests) 25ms
+ ✓ src/agents/pi-embedded-runner-extraparams.test.ts (3 tests) 22ms
+ ✓ src/agents/pi-tools.policy.test.ts (4 tests) 18ms
+ ✓ src/agents/pi-embedded-helpers.classifyfailoverreason.test.ts (2 tests) 18ms
+ ✓ src/agents/pi-embedded-helpers.iscloudcodeassistformaterror.test.ts (2 tests) 14ms
+ ✓ src/agents/session-transcript-repair.test.ts (4 tests) 26ms
+ ✓ src/agents/bootstrap-hooks.test.ts (1 test) 26ms
+ ✓ src/agents/pi-embedded-helpers.sanitizesessionmessagesimages-thought-signature-stripping.test.ts (1 test) 11ms
+ ✓ src/agents/tools/sessions-helpers.test.ts (3 tests) 26ms
+ ✓ src/agents/pi-embedded-helpers.iscontextoverflowerror.test.ts (4 tests) 12ms
+ ✓ src/agents/pty-dsr.test.ts (2 tests) 14ms
+ ✓ src/agents/pi-embedded-helpers.iscompactionfailureerror.test.ts (2 tests) 11ms
+ ✓ src/config/model-alias-defaults.test.ts (4 tests) 20ms
+ ✓ src/agents/model-compat.test.ts (3 tests) 18ms
+ ✓ src/agents/pi-embedded-runner.resolvesessionagentids.test.ts (5 tests) 20ms
+ ✓ src/agents/pi-embedded-helpers.isbillingerrormessage.test.ts (2 tests) 11ms
+ ✓ src/agents/pi-embedded-helpers.image-size-error.test.ts (2 tests) 8ms
+ ✓ src/agents/tools/sessions-send-tool.gating.test.ts (1 test) 16ms
+ ✓ src/config/config-paths.test.ts (2 tests) 12ms
+ ✓ src/agents/pi-embedded-block-chunker.test.ts (1 test) 17ms
+ ✓ src/agents/cli-backends.test.ts (2 tests) 17ms
+ ✓ src/agents/pi-embedded-helpers.sanitizegoogleturnordering.test.ts (2 tests) 11ms
+ ✓ src/agents/auth-profiles.auth-profile-cooldowns.test.ts (1 test) 18ms
+ ↓ src/goal/git-checkpoint.test.ts (8 tests | 8 skipped)
+ ✓ src/agents/pi-embedded-runner.buildembeddedsandboxinfo.test.ts (3 tests) 21ms
+ ✓ src/agents/pi-embedded-runner.splitsdktools.test.ts (2 tests) 16ms
+ ✓ src/agents/pi-embedded-runner.createsystempromptoverride.test.ts (2 tests) 9ms
+
+⎯⎯⎯⎯⎯⎯ Failed Tests 14 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/agents/clawdbot-gateway-tool.test.ts > gateway tool > schedules SIGUSR1 restart
+AssertionError: expected 'Run: smithersbot --profile isolated d…' to be 'Run: moltbot --profile isolated docto…' // Object.is equality
+
+Expected: "Run: moltbot --profile isolated doctor --non-interactive"
+Received: "Run: smithersbot --profile isolated doctor --non-interactive"
+
+ ❯ src/agents/clawdbot-gateway-tool.test.ts:52:42
+     50|       };
+     51|       expect(parsed.payload?.kind).toBe("restart");
+     52|       expect(parsed.payload?.doctorHint).toBe(
+       |                                          ^
+     53|         "Run: moltbot --profile isolated doctor --non-interactive",
+     54|       );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/14]⎯
+
+ FAIL  src/goal/cli-process.test.ts > runCliProcess default env > strips known credential keys when env is omitted
+SyntaxError: Unexpected end of JSON input
+ ❯ src/goal/cli-process.test.ts:52:27
+     50|     expect(result.exitCode).toBe(0);
+     51|     expect(result.timedOut).toBe(false);
+     52|     const childEnv = JSON.parse(result.stdout) as Record<string, strin…
+       |                           ^
+     53|     expect(childEnv).not.toHaveProperty("TELEGRAM_BOT_TOKEN");
+     54|     expect(childEnv).not.toHaveProperty("SMITHERSBOT_GATEWAY_TOKEN");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/14]⎯
+
+ FAIL  src/goal/cli-process.test.ts > runCliProcess default env > passes explicit env through unchanged
+SyntaxError: Unexpected end of JSON input
+ ❯ src/goal/cli-process.test.ts:75:27
+     73| 
+     74|     expect(result.exitCode).toBe(0);
+     75|     const childEnv = JSON.parse(result.stdout) as Record<string, strin…
+       |                           ^
+     76|     // Explicit env is honored verbatim — callers that opt in keep the…
+     77|     expect(childEnv.TELEGRAM_BOT_TOKEN).toBe("EXPLICIT_OPT_IN_TOKEN");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > adds a warning when deep probe fails
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:432:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > adds a warning when deep probe throws
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:461:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > uses local auth when gateway.mode is local
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:782:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > prefers env token over local config token
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:817:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > uses local auth when gateway.mode is undefined (default)
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:850:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > uses remote auth when gateway.mode is remote with URL
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:888:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > ignores env token when gateway.mode is remote
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:927:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > uses remote password when env is unset
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:964:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > prefers env password over remote password
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:1002:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/14]⎯
+
+ FAIL  src/security/audit.test.ts > security audit > maybeProbeGateway auth selection > falls back to local auth when gateway.mode is remote but URL is missing
+SystemError: A system error occurred: uv_interface_addresses returned Unknown system error 1 (Unknown system error 1)
+ ❯ listTailnetAddresses src/infra/tailnet.ts:31:21
+     29|   const ipv6: string[] = [];
+     30| 
+     31|   const ifaces = os.networkInterfaces();
+       |                     ^
+     32|   for (const entries of Object.values(ifaces)) {
+     33|     if (!entries) continue;
+ ❯ pickPrimaryTailnetIPv4 src/infra/tailnet.ts:47:10
+ ❯ buildGatewayConnectionDetails src/gateway/call.ts:64:23
+ ❯ maybeProbeGateway src/security/audit.ts:805:22
+ ❯ runSecurityAudit src/security/audit.ts:914:15
+ ❯ src/security/audit.test.ts:1039:13
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/14]⎯
+
+ FAIL  src/security/fix.test.ts > security fix > tightens groupPolicy + filesystem perms
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/security/fix.test.ts:56:20
+     54| 
+     55|     const res = await fixSecurityFootguns({ env });
+     56|     expect(res.ok).toBe(true);
+       |                    ^
+     57|     expect(res.configWritten).toBe(true);
+     58|     expect(res.changes).toEqual(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/14]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 1 unhandled error during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: [vitest-pool]: Worker forks emitted error.
+ ❯ EventEmitter.<anonymous> node_modules/.pnpm/vitest@4.0.18_@opentelemetry+api@1.9.0_@types+node@25.0.10_@vitest+browser-playwright@4_0c1f77127184ae5993f3bd4053eca6b2/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:8043:22
+ ❯ EventEmitter.emit node:events:519:28
+ ❯ ChildProcess.emitUnexpectedExit node_modules/.pnpm/vitest@4.0.18_@opentelemetry+api@1.9.0_@types+node@25.0.10_@vitest+browser-playwright@4_0c1f77127184ae5993f3bd4053eca6b2/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:7610:22
+ ❯ ChildProcess.emit node:events:519:28
+ ❯ Process.ChildProcess._handle.onexit node:internal/child_process:293:12
+
+Caused by: Error: Worker exited unexpectedly
+ ❯ ChildProcess.emitUnexpectedExit node_modules/.pnpm/vitest@4.0.18_@opentelemetry+api@1.9.0_@types+node@25.0.10_@vitest+browser-playwright@4_0c1f77127184ae5993f3bd4053eca6b2/node_modules/vitest/dist/chunks/cli-api.B7PN_QUv.js:7609:33
+ ❯ ChildProcess.emit node:events:519:28
+ ❯ Process.ChildProcess._handle.onexit node:internal/child_process:293:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  4 failed | 281 passed | 1 skipped (287)
+      Tests  14 failed | 2142 passed | 9 skipped (2171)
+     Errors  1 error
+   Start at  16:21:21
+   Duration  267.13s (transform 61.09s, setup 20.15s, import 656.62s, tests 249.31s, environment 117ms)
+
+[vitest-pool]: Timeout terminating forks worker for test files /home/matt/moltbot/src/agents/session-write-lock.test.ts.
