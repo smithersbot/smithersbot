@@ -14,10 +14,13 @@ import {
   buildGoalSummary,
   buildSuccessorMap,
   clampBackendForEnabledWorkers,
+  pickFallbackBackend,
   pickNextTask,
   recordTaskResult,
   resolveBackendForStep,
   shouldRetry,
+  type FallbackBackendReason,
+  type PickFallbackBackendResult,
 } from "./agent-executor-helpers.js";
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
@@ -91,6 +94,40 @@ const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
 
 const PI_RETRYABLE: PlanStep["blockedReason"][] = ["timeout", "network", "rate_limit"];
 const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
+
+type RateLimitBlockedReason = "rate_limit" | "usage_limit";
+type NoFallbackReason = FallbackBackendReason | "fallback_already_attempted";
+
+function formatNoFallbackBlockedMessage(
+  backend: CliWorkerId,
+  blockedReason: RateLimitBlockedReason,
+  reason: NoFallbackReason | undefined,
+  detail: string | undefined,
+  maxAttemptsReached: boolean,
+  originalQuestion: string,
+): string {
+  const limitLabel = blockedReason === "usage_limit" ? "usage limit" : "rate limit";
+  const fallbackReason = (() => {
+    if (maxAttemptsReached) return "the retry attempt budget is exhausted";
+    switch (reason) {
+      case "backend_override":
+        return `the run is constrained to backend '${detail ?? backend}'`;
+      case "single_backend_constraint":
+        return "the run is constrained to a single enabled worker";
+      case "fallback_not_enabled":
+        return `fallback backend '${detail ?? "the alternate worker"}' is not enabled`;
+      case "fallback_unavailable":
+        return detail ?? "the fallback backend is not available on PATH";
+      case "fallback_already_attempted":
+        return "the fallback backend already hit a usage or rate limit";
+      case "not_usage_or_rate_limit":
+      case undefined:
+        return "no eligible fallback backend is available";
+    }
+  })();
+
+  return `${backend} hit a ${limitLabel}. No fallback backend was used because ${fallbackReason}. ${originalQuestion}`;
+}
 
 function isAnthropicPlannerDegraded(
   reason: string | undefined,
@@ -357,7 +394,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const taskStartMs = Date.now();
     const taskTimeoutMs = resolveTaskTimeoutMs(task.durationMinutes, timeoutMs);
 
-    const backend = clampBackendForEnabledWorkers(
+    let backend = clampBackendForEnabledWorkers(
       resolveBackendForStep(task, backendOverride, defaultBackend),
       resolvedEnabledWorkers,
     );
@@ -376,7 +413,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     if (task.executedBackend !== backend) task.executedBackend = backend;
 
-    const runner = backend === "pi" ? piRunner : cliRunners[backend];
+    let runner = backend === "pi" ? piRunner : cliRunners[backend];
     if (!runner) {
       const msg = `Backend '${backend}' is not supported.`;
       task.status = "blocked";
@@ -408,6 +445,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const retryDelayMs = retryConfig?.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     const workerDir = resolveWorkerDir(runId, task.id);
     let latestResult: TaskRunnerResult | null = null;
+    let fallbackAttempted = false;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const attemptBundles = loadAttemptBundles(workerDir);
@@ -438,11 +476,75 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         onProgress?.(`\n--- Task ${task.id} [${backend}]: ${task.description} ---`);
       }
 
-      const result = await runner.execute(context);
+      const result: TaskRunnerResult = await runner.execute(context);
       latestResult = result;
       applyTaskResult(task, result, onProgress);
 
       const latestBundles = loadAttemptBundles(workerDir);
+      const isUsageOrRateLimit =
+        result.status === "blocked" &&
+        (result.blockedReason === "rate_limit" || result.blockedReason === "usage_limit");
+
+      if (isUsageOrRateLimit && backend !== "pi") {
+        const limitReason = result.blockedReason as RateLimitBlockedReason;
+        const fallback:
+          | PickFallbackBackendResult
+          | { backend: null; reason: NoFallbackReason; detail?: string } = fallbackAttempted
+          ? { backend: null, reason: "fallback_already_attempted" as const }
+          : pickFallbackBackend(
+              backend,
+              result,
+              resolvedEnabledWorkers,
+              availability,
+              backendOverride,
+            );
+
+        if (fallback.backend && attempt < maxAttempts) {
+          const latestAttempt = latestBundles.at(-1);
+          if (latestAttempt) {
+            appendRetryContext(
+              runId,
+              task.id,
+              formatAttemptBundleSummary(latestAttempt),
+              latestAttempt.attemptNumber,
+            );
+          }
+          fallbackAttempted = true;
+          const previousBackend = backend;
+          const fallbackBackend = fallback.backend;
+          runner = cliRunners[fallbackBackend];
+          if (!runner) {
+            const msg = `Backend '${fallbackBackend}' is not supported.`;
+            task.status = "blocked";
+            task.blockedReason = "error";
+            task.blockedQuestion = msg;
+            break;
+          }
+          backend = fallbackBackend;
+          task.executedBackend = backend;
+          task.turnsUsed = 0;
+          task.status = "pending";
+          task.blockedReason = undefined;
+          task.blockedQuestion = undefined;
+          task.failedDetail = undefined;
+          onProgress?.(
+            `  [retry] ${previousBackend} hit ${limitReason}; retrying task with ${backend}`,
+          );
+          await new Promise((r) => setTimeout(r, retryDelayMs));
+          continue;
+        }
+
+        const originalQuestion = task.blockedQuestion ?? result.question ?? "Task blocked.";
+        task.blockedQuestion = formatNoFallbackBlockedMessage(
+          backend,
+          limitReason,
+          fallback.reason,
+          fallback.detail,
+          attempt >= maxAttempts,
+          originalQuestion,
+        );
+        break;
+      }
 
       if (shouldRetry(result, backend, workerDir, PI_RETRYABLE) && attempt < maxAttempts) {
         const latestAttempt = latestBundles.at(-1);
