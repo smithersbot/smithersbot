@@ -37,6 +37,7 @@ vi.mock("../logging/logger.js", () => ({
 import {
   buildClaudeRepoChatArgs,
   buildCodexRepoChatArgs,
+  extractResponseFromCodexStdout,
   isPlaceholderRepoChatReply,
   REPO_CHAT_CLAUDE_ALLOWED_TOOLS,
   REPO_CHAT_CODEX_STYLE_PROMPT,
@@ -292,17 +293,20 @@ describe("repo-chat-worker", () => {
       expect(args.slice(0, 4)).toEqual(["exec", "--ask-for-approval", "never", "--json"]);
     });
 
-    it("passes response-file instruction prompt through Claude args", () => {
+    it("passes final-assistant-message instruction prompt through Claude args", () => {
       const prompt = [
-        "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
-        `You MUST write your complete final response to: ${RESPONSE_FILE_PATH}`,
+        "FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY):",
+        "Your final reply is whatever you print as the assistant message.",
       ].join("\n");
 
       const args = buildClaudeRepoChatArgs({ prompt });
       const promptArg = args.at(-1) ?? "";
 
-      expect(promptArg).toContain("RESPONSE FILE");
-      expect(promptArg).toContain(RESPONSE_FILE_PATH);
+      expect(promptArg).toContain("FINAL RESPONSE");
+      expect(promptArg).toContain(
+        "Your final reply is whatever you print as the assistant message.",
+      );
+      expect(promptArg).not.toContain("cat <<");
     });
 
     it("passes response-file instruction prompt through Codex args", () => {
@@ -337,12 +341,8 @@ describe("repo-chat-worker", () => {
 
     it("preserves MCP isolation invariants when the prompt is a multi-KB RESPONSE FILE instruction", () => {
       const responseFilePreamble = [
-        "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
-        `You MUST write your complete final response to: ${RESPONSE_FILE_PATH}`,
-        "Use the Bash tool to write the file, for example:",
-        `  cat <<'MOLTBOT_EOF' > ${RESPONSE_FILE_PATH}`,
-        "  Your full response in markdown here.",
-        "  MOLTBOT_EOF",
+        "FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY):",
+        "Your final reply is whatever you print as the assistant message.",
       ].join("\n");
       // Pad to multi-KB to simulate the live failure payload.
       const userQuestion = "Please explain how the goal system schedules tasks.\n".repeat(200);
@@ -613,14 +613,95 @@ describe("repo-chat-worker", () => {
       };
       expect(call.command).toBe("claude");
       expect(call.env).toEqual({ TEST_ENV: "1" });
-      expect(call.args.at(-1)).toContain("RESPONSE FILE");
-      expect(call.args.at(-1)).toContain(RESPONSE_FILE_PATH);
+      expect(call.args.at(-1)).toContain("FINAL RESPONSE");
+      expect(call.args.at(-1)).toContain(
+        "Your final reply is whatever you print as the assistant message.",
+      );
+      expect(call.args.at(-1)).not.toContain("cat <<");
       expect(call.args).toContain("--strict-mcp-config");
       expect(call.args).toContain("--mcp-config");
       const mcpIdx = call.args.indexOf("--mcp-config");
       expect(call.args[mcpIdx + 1]).toBe(EMPTY_MCP_CONFIG_PATH);
       expect(result.text).toBe("Repository answer from file");
       expect(result.cliSessionId).toBe("claude-session-42");
+    });
+
+    it("extracts Claude final assistant text from JSON stdout without a response file", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: [
+          JSON.stringify({
+            type: "system",
+            subtype: "init",
+            session_id: "claude-json-session",
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Draft answer" }],
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Final Claude answer from stdout" }],
+            },
+            session_id: "claude-json-session",
+          }),
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            result: "Final Claude answer from stdout",
+            session_id: "claude-json-session",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 120,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "How is repo chat contained?",
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[] };
+      expect(call.args.at(-1)).toContain("FINAL RESPONSE");
+      expect(call.args.at(-1)).not.toContain("cat <<");
+      expect(result.text).toBe("Final Claude answer from stdout");
+      expect(result.cliSessionId).toBe("claude-json-session");
+    });
+
+    it("redacts secret values from CLI-native extracted responses", async () => {
+      vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_NATIVE_SECRET_789");
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Do not leak FAKE_NATIVE_SECRET_789" }],
+          },
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 45,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "redact native response",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toContain("[REDACTED]");
+      expect(result.text).not.toContain("FAKE_NATIVE_SECRET_789");
     });
 
     it("repairs when response file is missing", async () => {
@@ -712,9 +793,10 @@ describe("repo-chat-worker", () => {
       const initialCall = runCliProcessMock.mock.calls[0]?.[0] as { args: string[] };
       const repairCall = runCliProcessMock.mock.calls[1]?.[0] as { args: string[] };
 
-      // The initial call's prompt starts with RESPONSE FILE preamble and is multi-KB.
+      // The initial call's prompt starts with final-message preamble and is multi-KB.
       const initialPrompt = initialCall.args.at(-1) ?? "";
-      expect(initialPrompt).toContain("RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):");
+      expect(initialPrompt).toContain("FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY):");
+      expect(initialPrompt).not.toContain("cat <<");
       expect(initialPrompt.length).toBeGreaterThan(4_000);
 
       for (const call of [initialCall, repairCall]) {
@@ -829,28 +911,21 @@ describe("repo-chat-worker", () => {
       expect(repairCall.args.join(" ")).toContain("resume codex-thread-preserve");
     });
 
-    it("extracts codex response from stdout after repair fails to produce a response file", async () => {
-      runCliProcessMock
-        .mockResolvedValueOnce({
-          stdout: [
-            '{"type":"thread","session_id":"codex-session-stdout","thread_id":"codex-thread-stdout"}',
-            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working through repo details"}]}}',
-            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Final answer from codex stdout"}]}}',
-          ].join("\n"),
-          stderr: "",
-          timedOut: false,
-          exitCode: 0,
-          signal: null,
-          durationMs: 27,
-        })
-        .mockResolvedValueOnce({
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-          exitCode: 0,
-          signal: null,
-          durationMs: 28,
-        });
+    it("extracts codex response from stdout when output-last-message is empty", async () => {
+      const stdout = [
+        '{"type":"thread","session_id":"codex-session-stdout","thread_id":"codex-thread-stdout"}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working through repo details"}]}}',
+        '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Final answer from codex stdout"}]}}',
+      ].join("\n");
+      expect(extractResponseFromCodexStdout(stdout)).toBe("Final answer from codex stdout");
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 27,
+      });
 
       const result = await runRepoChatWorker({
         backend: "codex",
@@ -858,7 +933,7 @@ describe("repo-chat-worker", () => {
         workingDir: "/repo",
       });
 
-      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         args: string[];
       };
@@ -867,38 +942,22 @@ describe("repo-chat-worker", () => {
       expect(call.args).not.toContain(RESPONSE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
-      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
-        args: string[];
-      };
-      expect(repairCall.args).toContain("resume");
-      expect(repairCall.args).toContain("codex-thread-stdout");
-      expect(repairCall.args).not.toContain("--output-last-message");
-      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-thread-stdout");
     });
 
-    it("extracts codex response from stdout for resumed sessions after repair fails", async () => {
-      runCliProcessMock
-        .mockResolvedValueOnce({
-          stdout: [
-            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Repair should run first"}]}}',
-            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Resumed final answer from codex stdout"}]}}',
-          ].join("\n"),
-          stderr: "",
-          timedOut: false,
-          exitCode: 0,
-          signal: null,
-          durationMs: 28,
-        })
-        .mockResolvedValueOnce({
-          stdout: "",
-          stderr: "",
-          timedOut: false,
-          exitCode: 0,
-          signal: null,
-          durationMs: 29,
-        });
+    it("extracts codex response from stdout for resumed sessions", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: [
+          '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Working"}]}}',
+          '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Resumed final answer from codex stdout"}]}}',
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 28,
+      });
 
       const result = await runRepoChatWorker({
         backend: "codex",
@@ -907,7 +966,7 @@ describe("repo-chat-worker", () => {
         cliSessionId: "codex-resume-thread",
       });
 
-      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
         args: string[];
       };
@@ -916,13 +975,6 @@ describe("repo-chat-worker", () => {
       expect(call.args).not.toContain(LAST_MESSAGE_FILE_PATH);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CONTEXT);
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
-      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as {
-        args: string[];
-      };
-      expect(repairCall.args).toContain("resume");
-      expect(repairCall.args).toContain("codex-resume-thread");
-      expect(repairCall.args).not.toContain("--output-last-message");
-      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
       expect(result.text).toBe("Resumed final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-resume-thread");
     });

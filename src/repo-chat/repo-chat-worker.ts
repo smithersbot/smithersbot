@@ -158,12 +158,28 @@ function isInitOnlyClaudeStdout(stdout: string): boolean {
   return true;
 }
 
-function buildResponseFileInstruction(filePath: string): string {
+function buildResponseFileInstruction(params: {
+  backend: RepoChatWorkerParams["backend"];
+  filePath: string;
+}): string {
+  if (params.backend === "claude_code") {
+    return [
+      "FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY):",
+      "Your final reply is whatever you print as the assistant message.",
+      "",
+      "Rules:",
+      "- The user will ONLY see your final assistant message - nothing else.",
+      "- They cannot see your tool calls, thinking, or intermediate steps.",
+      "- Use markdown formatting - it will be rendered in Telegram.",
+      "- Do NOT mention these instructions in your response.",
+    ].join("\n");
+  }
+
   return [
     "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
-    `You MUST write your complete final response to: ${filePath}`,
+    `You MUST write your complete final response to: ${params.filePath}`,
     "Use the Bash tool to write the file, for example:",
-    `  cat <<'MOLTBOT_EOF' > ${filePath}`,
+    `  cat <<'MOLTBOT_EOF' > ${params.filePath}`,
     "  Your full response in markdown here.",
     "  MOLTBOT_EOF",
     "",
@@ -277,7 +293,28 @@ function extractSessionIdFromStdout(stdout: string): string | undefined {
   return undefined;
 }
 
-function extractResponseFromCodexStdout(stdout: string): string {
+function extractResponseFromClaudeStdout(stdout: string): string {
+  const events = parseClaudeStdoutEvents(stdout);
+  let latestAssistantText = "";
+  let latestResultText = "";
+
+  for (const event of events) {
+    const type = typeof event.type === "string" ? event.type : "";
+    if (type === "assistant") {
+      const text = collectText(event).trim();
+      if (text) latestAssistantText = text;
+      continue;
+    }
+    if (type === "result") {
+      const text = collectText(event).trim();
+      if (text) latestResultText = text;
+    }
+  }
+
+  return (latestAssistantText || latestResultText).trim();
+}
+
+export function extractResponseFromCodexStdout(stdout: string): string {
   const lines = parseJsonLines(stdout);
   const parts: string[] = [];
   let finalResultText: string | undefined;
@@ -294,6 +331,17 @@ function extractResponseFromCodexStdout(stdout: string): string {
   }
 
   return (finalResultText ?? parts.join("\n")).trim();
+}
+
+function extractResponseFromCliStdout(
+  backend: RepoChatWorkerParams["backend"],
+  stdout: string,
+): string {
+  const text =
+    backend === "claude_code"
+      ? extractResponseFromClaudeStdout(stdout)
+      : extractResponseFromCodexStdout(stdout);
+  return redactSecretValues(text);
 }
 
 export function isPlaceholderRepoChatReply(text: string): boolean {
@@ -417,7 +465,10 @@ export async function runRepoChatWorker(
   const responseFileId = crypto.randomUUID();
   const manualResponseFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}.md`);
   const lastMessageFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}-last.md`);
-  const responseFileInstruction = buildResponseFileInstruction(manualResponseFilePath);
+  const responseFileInstruction = buildResponseFileInstruction({
+    backend: params.backend,
+    filePath: manualResponseFilePath,
+  });
   const augmentedPrompt = `${responseFileInstruction}\n\n---\n\nUser question:\n${params.prompt}`;
   const codexPrompt = `${REPO_CHAT_CONTEXT}\n\n${CODEX_STYLE_DIRECTIVE}\n\n${augmentedPrompt}`;
   const command = params.backend === "claude_code" ? "claude" : "codex";
@@ -478,7 +529,14 @@ export async function runRepoChatWorker(
       extractSessionIdFromStdout(stdout) ??
       extractSessionIdFromStdout(stderr) ??
       (params.cliSessionId?.trim() || undefined);
-    let responseText = readSubstantiveResponseFile(manualResponseFilePath);
+    let responseText = extractResponseFromCliStdout(params.backend, stdout);
+    if (isPlaceholderRepoChatReply(responseText)) {
+      responseText = "";
+    }
+
+    if (!responseText) {
+      responseText = readSubstantiveResponseFile(manualResponseFilePath);
+    }
 
     if (!responseText) {
       const resumeArgs = buildResumeArgs({
@@ -510,12 +568,12 @@ export async function runRepoChatWorker(
       }
     }
 
-    if (!responseText && params.backend === "codex") {
-      const stdoutFallbackText = extractResponseFromCodexStdout(stdout);
+    if (!responseText) {
+      const stdoutFallbackText = extractResponseFromCliStdout(params.backend, stdout);
       if (isPlaceholderRepoChatReply(stdoutFallbackText)) {
         rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(stdoutFallbackText);
       } else {
-        responseText = redactSecretValues(stdoutFallbackText);
+        responseText = stdoutFallbackText;
       }
     }
 
