@@ -184,6 +184,9 @@ describe("createEnforcedBashOperations", () => {
       "ANTHROPIC_API_KEY",
       "CLAWDBOT_GATEWAY_TOKEN",
       "CLAWDBOT_GATEWAY_PASSWORD",
+      "SMITHERSBOT_GATEWAY_TOKEN",
+      "SMITHERSBOT_GATEWAY_PASSWORD",
+      "MOLTBOT_GATEWAY_TOKEN",
       "DISCORD_BOT_TOKEN",
       "TELEGRAM_BOT_TOKEN",
       "SLACK_BOT_TOKEN",
@@ -205,6 +208,9 @@ describe("createEnforcedBashOperations", () => {
     process.env.ANTHROPIC_API_KEY = "anthropic-key";
     process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-token";
     process.env.CLAWDBOT_GATEWAY_PASSWORD = "gateway-password";
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "smithersbot-gateway-token";
+    process.env.SMITHERSBOT_GATEWAY_PASSWORD = "smithersbot-gateway-password";
+    process.env.MOLTBOT_GATEWAY_TOKEN = "moltbot-gateway-token";
     process.env.DISCORD_BOT_TOKEN = "discord-token";
     process.env.TELEGRAM_BOT_TOKEN = "telegram-token";
     process.env.SLACK_BOT_TOKEN = "slack-token";
@@ -239,6 +245,9 @@ describe("createEnforcedBashOperations", () => {
       expect(spawnEnv.ANTHROPIC_API_KEY).toBeUndefined();
       expect(spawnEnv.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
       expect(spawnEnv.CLAWDBOT_GATEWAY_PASSWORD).toBeUndefined();
+      expect(spawnEnv.SMITHERSBOT_GATEWAY_TOKEN).toBeUndefined();
+      expect(spawnEnv.SMITHERSBOT_GATEWAY_PASSWORD).toBeUndefined();
+      expect(spawnEnv.MOLTBOT_GATEWAY_TOKEN).toBeUndefined();
       expect(spawnEnv.DISCORD_BOT_TOKEN).toBeUndefined();
       expect(spawnEnv.TELEGRAM_BOT_TOKEN).toBeUndefined();
       expect(spawnEnv.SLACK_BOT_TOKEN).toBeUndefined();
@@ -284,6 +293,26 @@ describe("createEnforcedBashOperations", () => {
     expect(result.exitCode).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("denies bash commands that read SmithersBot config files", async () => {
+    const denied: string[] = [];
+    const mock = mockBashOps();
+    const ops = createEnforcedBashOperations(
+      HARD_DENIES,
+      (detail) => denied.push(detail.reason),
+      mock,
+    );
+    const output: string[] = [];
+
+    const result = await ops.exec("cat ~/.smithersbot/smithersbot.json", WORKING_DIR, {
+      onData: (data) => output.push(data.toString()),
+    });
+
+    expect(result.exitCode).toBe(126);
+    expect(mock.calls).toHaveLength(0);
+    expect(denied[0]).toContain("local secret/config file");
+    expect(output.join("")).toContain("Denied:");
+  });
 });
 
 describe("createEnforcedCodingTools", () => {
@@ -295,6 +324,22 @@ describe("createEnforcedCodingTools", () => {
     const result = await readTool!.execute("1", { path: ".env" });
     const text = result.content?.[0]?.text ?? "";
     expect(text).toContain("Denied:");
+  });
+
+  it("denies Read on canonical SmithersBot secret paths", async () => {
+    const tools = createEnforcedCodingTools(WORKING_DIR, HARD_DENIES);
+    const readTool = tools.find((t) => t.name === "Read");
+    expect(readTool).toBeTruthy();
+
+    const envResult = await readTool!.execute("1", { path: "~/.smithersbot/.env" });
+    const envText = envResult.content?.[0]?.text ?? "";
+    expect(envText).toContain("local secret/config file");
+
+    const configResult = await readTool!.execute("2", {
+      path: "~/.smithersbot/smithersbot.json",
+    });
+    const configText = configResult.content?.[0]?.text ?? "";
+    expect(configText).toContain("local secret/config file");
   });
 
   it("denies path access when realpath resolves to a denied target", async () => {

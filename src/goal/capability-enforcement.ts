@@ -1,6 +1,7 @@
 // Tool wrapping for hard-deny enforcement.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
 import { createCodingTools } from "@mariozechner/pi-coding-agent";
@@ -20,6 +21,9 @@ const PI_BASH_SECRET_KEYS = new Set([
   ...AUTH_KEYS_TO_STRIP,
   "CLAWDBOT_GATEWAY_TOKEN",
   "CLAWDBOT_GATEWAY_PASSWORD",
+  "SMITHERSBOT_GATEWAY_TOKEN",
+  "SMITHERSBOT_GATEWAY_PASSWORD",
+  "MOLTBOT_GATEWAY_TOKEN",
   "DISCORD_BOT_TOKEN",
   "TELEGRAM_BOT_TOKEN",
   "SLACK_BOT_TOKEN",
@@ -52,6 +56,13 @@ export function createEnforcedBashOperations(
       if (deny) {
         onDenied?.({ type: "exec", command, reason: deny.reason });
         options.onData(Buffer.from(`${formatDeniedMessage(deny.reason)}\n`));
+        return { exitCode: 126 };
+      }
+
+      const pathDeny = checkCommandPathDeny(command, cwd, hardDenies);
+      if (pathDeny) {
+        onDenied?.({ type: "exec", command, reason: pathDeny.reason });
+        options.onData(Buffer.from(`${formatDeniedMessage(pathDeny.reason)}\n`));
         return { exitCode: 126 };
       }
 
@@ -108,7 +119,7 @@ function wrapFsTool(
     const filePath = typeof params.path === "string" ? params.path : "";
 
     if (filePath) {
-      const resolved = path.resolve(workingDir, filePath);
+      const resolved = resolveToolPath(workingDir, filePath);
       const pathsToCheck = getDenyCheckPaths(resolved);
 
       for (const candidatePath of pathsToCheck) {
@@ -125,25 +136,108 @@ function wrapFsTool(
   };
 }
 
+function resolveToolPath(workingDir: string, filePath: string): string {
+  if (filePath === "~" || filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return filePath;
+  }
+  return path.resolve(workingDir, filePath);
+}
+
+function expandHome(filePath: string): string {
+  if (filePath === "~") return os.homedir();
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+  return filePath;
+}
+
 function getDenyCheckPaths(resolvedPath: string): string[] {
-  const pathsToCheck = [resolvedPath];
+  const expandedPath = expandHome(resolvedPath);
+  const absolutePath = path.resolve(expandedPath);
+  const pathsToCheck = new Set<string>([resolvedPath, absolutePath]);
 
   try {
     // Check the canonical filesystem path so symlink targets cannot bypass denies.
-    const realPath = fs.realpathSync(resolvedPath);
-    if (realPath !== resolvedPath) {
-      pathsToCheck.push(realPath);
-    }
+    pathsToCheck.add(fs.realpathSync(absolutePath));
   } catch (error) {
     // Missing files are expected for new writes; fall back to lexical path checks.
     const errno = error as NodeJS.ErrnoException;
-    if (errno.code === "ENOENT") {
-      return pathsToCheck;
-    }
-    return pathsToCheck;
+    if (errno.code !== "ENOENT") return [...pathsToCheck];
   }
 
-  return pathsToCheck;
+  const parsed = path.parse(absolutePath);
+  const parts = path.relative(parsed.root, absolutePath).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    current = path.join(current, parts[index]!);
+    try {
+      const realAncestor = fs.realpathSync(current);
+      pathsToCheck.add(path.join(realAncestor, ...parts.slice(index + 1)));
+    } catch {
+      // Missing leaf or unreadable ancestors still get the lexical candidate above.
+    }
+  }
+
+  return [...pathsToCheck];
+}
+
+function extractCommandPathTokens(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  let escape = false;
+
+  const pushCurrent = () => {
+    if (current) tokens.push(current);
+    current = "";
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escape = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s|[;&|<>]/.test(char)) {
+      pushCurrent();
+      continue;
+    }
+    current += char;
+  }
+
+  pushCurrent();
+  return tokens.filter((token) => token.includes("/") || token === "~" || token.startsWith("~"));
+}
+
+function checkCommandPathDeny(
+  command: string,
+  cwd: string,
+  hardDenies: HardDeny[],
+): HardDeny | null {
+  for (const token of extractCommandPathTokens(command)) {
+    const resolved = resolveToolPath(cwd, token);
+    for (const candidatePath of getDenyCheckPaths(resolved)) {
+      const deny = checkPathDeny(candidatePath, hardDenies);
+      if (deny) return deny;
+    }
+  }
+
+  return null;
 }
 
 function buildFilteredBashEnv(): Record<string, string | undefined> {
