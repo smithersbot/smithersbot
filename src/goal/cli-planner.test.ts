@@ -1043,6 +1043,222 @@ describe("runCliPlanning", () => {
     expect(onlyCall.command).toBe("/usr/bin/claude");
   });
 
+  it("treats Anthropic 529 overloaded as transient overload, not a rate limit", async () => {
+    vi.useFakeTimers();
+    try {
+      mockRunCliProcess.mockResolvedValue({
+        stdout: "",
+        stderr: "API Error: 529 Overloaded",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 31,
+      });
+
+      const planning = runCliPlanning({
+        runId: "run-claude-529-overloaded",
+        goalText: "Create claude-only plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code"],
+      }).catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      const caught = await planning;
+      expect(caught).toBeInstanceOf(Error);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toContain(
+        "Anthropic Claude Code is temporarily overloaded (529/provider 5xx)",
+      );
+      expect(message).not.toContain("rate limit reached");
+      expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
+      expect(
+        mockRunCliProcess.mock.calls.every(
+          (call) => (call[0] as { command: string }).command === "/usr/bin/claude",
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats Anthropic server-side issue text as transient overload, not a rate limit", async () => {
+    vi.useFakeTimers();
+    try {
+      mockRunCliProcess
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "Anthropic API server-side issue. Please retry.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 31,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "Anthropic API server-side issue. Please retry.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 31,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "Anthropic API server-side issue. Please retry.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 31,
+        })
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            summary: "Fallback after overload",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "fallback-step",
+                description: "Plan after transient overload",
+                dependsOn: [],
+                durationMinutes: 10,
+                backend: "codex",
+              },
+            ],
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 53,
+        });
+
+      const planning = runCliPlanning({
+        runId: "run-server-side-overload",
+        goalText: "Create fallback plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code", "codex"],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await planning;
+
+      expect(result.status).toBe("success");
+      expect(result.plannerBackendUsed).toBe("codex");
+      expect(result.plannerDegradedReason).toBe("anthropic_overloaded");
+      expect(result.plannerDegradedReason).not.toBe("anthropic_rate_limit");
+      expect(mockRunCliProcess).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still classifies true Anthropic usage-limit text as a usage limit", async () => {
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "Planning execution failed: You've hit your usage limit · resets 6pm",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 31,
+    });
+
+    await expect(
+      runCliPlanning({
+        runId: "run-claude-usage-limit",
+        goalText: "Create claude-only plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code"],
+      }),
+    ).rejects.toThrow("Anthropic usage limit reached");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("still classifies true Anthropic 429/rate-limit text as a rate limit", async () => {
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "API Error: 429 rate limit exceeded",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 31,
+    });
+
+    await expect(
+      runCliPlanning({
+        runId: "run-claude-429-rate-limit",
+        goalText: "Create claude-only plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code"],
+      }),
+    ).rejects.toThrow("Anthropic rate limit reached");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries transient overload on the same Claude backend before failing over", async () => {
+    vi.useFakeTimers();
+    try {
+      mockRunCliProcess
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "API Error: 529 Overloaded",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 31,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "API Error: 529 Overloaded",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 32,
+        })
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            summary: "Recovered after overload",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "claude-step",
+                description: "Plan after transient retry",
+                dependsOn: [],
+                durationMinutes: 10,
+                backend: "claude_code",
+              },
+            ],
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 40,
+        });
+
+      const planning = runCliPlanning({
+        runId: "run-claude-overload-retry-success",
+        goalText: "Create claude plan",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["claude_code", "codex"],
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await planning;
+
+      expect(result.status).toBe("success");
+      expect(result.plannerDegradedReason).toBeUndefined();
+      expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
+      expect(
+        mockRunCliProcess.mock.calls.every(
+          (call) => (call[0] as { command: string }).command === "/usr/bin/claude",
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back to codex on Anthropic limits and rewrites all claude_code steps", async () => {
     mockRunCliProcess
       .mockResolvedValueOnce({

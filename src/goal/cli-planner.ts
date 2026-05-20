@@ -201,7 +201,7 @@ function formatCodexFallbackDisabledError(params: {
   const { context, degradedReason, resetHint } = params;
   if (degradedReason === "anthropic_overloaded") {
     return (
-      `${context} failed: Anthropic Claude Code is temporarily overloaded, ` +
+      `${context} failed: Anthropic Claude Code is temporarily overloaded (529/provider 5xx), ` +
       "and codex fallback is disabled by goal.enabledWorkers."
     );
   }

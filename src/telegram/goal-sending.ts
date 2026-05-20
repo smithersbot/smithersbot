@@ -347,12 +347,10 @@ function formatPlannerFallbackLine(run: SerializedRun): string | undefined {
   const reason = run.plannerDegradedReason;
   if (!reason) return undefined;
 
-  const reasonLabel =
-    reason === "anthropic_usage_limit"
-      ? "usage limit"
-      : reason === "anthropic_rate_limit"
-        ? "rate limit"
-        : "availability issue";
+  if (reason === "anthropic_overloaded") {
+    return "Anthropic Claude Code temporarily overloaded (529/provider 5xx) -> Codex";
+  }
+  const reasonLabel = reason === "anthropic_usage_limit" ? "usage limit" : "rate limit";
   const resetSuffix = run.plannerDegradedResetHint ? ` (${run.plannerDegradedResetHint})` : "";
   return `Anthropic ${reasonLabel}${resetSuffix} -> Codex`;
 }
