@@ -1,6 +1,7 @@
 import type { CliWorkerId } from "../config/types.goal.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
-import type { GoalBackendId } from "./backend-types.js";
+import { isBackendAvailable } from "./backend-availability.js";
+import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
 import type { CriticalPathScores } from "./plan-order.js";
 import type { GoalSession, ManualTestSuggestion, PlanStep, TaskExecutionResult } from "./types.js";
@@ -85,6 +86,62 @@ export function shouldRetry(
   return (
     latest.outcome === "timeout" || latest.outcome === "crash" || latest.outcome === "rate_limit"
   );
+}
+
+export type FallbackBackendReason =
+  | "not_usage_or_rate_limit"
+  | "backend_override"
+  | "single_backend_constraint"
+  | "fallback_not_enabled"
+  | "fallback_unavailable";
+
+export type PickFallbackBackendResult = {
+  backend: CliWorkerId | null;
+  reason?: FallbackBackendReason;
+  detail?: string;
+};
+
+type FallbackEligibleResult = Omit<
+  Pick<TaskRunnerResult, "status" | "blockedReason">,
+  "blockedReason"
+> & {
+  blockedReason?: TaskRunnerResult["blockedReason"] | "usage_limit";
+};
+
+export function pickFallbackBackend(
+  currentBackend: CliWorkerId,
+  result: FallbackEligibleResult,
+  resolvedEnabledWorkers: CliWorkerId[],
+  availability: BackendAvailability[],
+  backendOverride?: GoalBackendId,
+): PickFallbackBackendResult {
+  if (result.blockedReason !== "rate_limit" && result.blockedReason !== "usage_limit") {
+    return { backend: null, reason: "not_usage_or_rate_limit" };
+  }
+
+  if (backendOverride) {
+    return { backend: null, reason: "backend_override", detail: backendOverride };
+  }
+
+  if (resolvedEnabledWorkers.length <= 1) {
+    return { backend: null, reason: "single_backend_constraint" };
+  }
+
+  const fallbackBackend: CliWorkerId = currentBackend === "codex" ? "claude_code" : "codex";
+  if (!resolvedEnabledWorkers.includes(fallbackBackend)) {
+    return { backend: null, reason: "fallback_not_enabled", detail: fallbackBackend };
+  }
+
+  const available = isBackendAvailable(fallbackBackend, availability);
+  if (!available.available) {
+    return {
+      backend: null,
+      reason: "fallback_unavailable",
+      detail: available.reason ?? `${fallbackBackend} is not available on PATH`,
+    };
+  }
+
+  return { backend: fallbackBackend };
 }
 
 export function recordTaskResult(
