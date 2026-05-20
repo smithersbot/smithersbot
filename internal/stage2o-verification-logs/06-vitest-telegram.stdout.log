@@ -1,0 +1,1056 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/matt/moltbot[39m
+
+ [31m❯[39m src/telegram/bot.media.includes-location-text-ctx-fields-pins.test.ts [2m([22m[2m2 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 20036[2mms[22m[39m
+[31m     [31m×[31m includes location text and ctx fields for pins[39m[33m 20016[2mms[22m[39m
+[31m     [31m×[31m captures venue fields for named places[39m[32m 12[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes DMs by telegram accountId binding
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends replies without native reply threading
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2minstalls grammY throttler
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes DMs by telegram accountId binding
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes DMs by telegram accountId binding
+[22m[39m[typing] chat stop chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends replies without native reply threading
+[22m[39m[typing] chat start chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends replies without native reply threading
+[22m[39m[typing] chat stop chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2muses wrapped fetch when global fetch is available
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-group requireMention override
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-group requireMention override
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-group requireMention override
+[22m[39m[typing] chat stop chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=first for threaded replies
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=first for threaded replies
+[22m[39m[typing] chat start chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=first for threaded replies
+[22m[39m[typing] chat stop chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-topic requireMention override
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-topic requireMention override
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=99
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows per-topic requireMention override
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mpasses timeoutSeconds even without a custom fetch
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mprefixes final replies with responsePrefix
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mprefixes final replies with responsePrefix
+[22m[39m[typing] chat start chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mprefixes final replies with responsePrefix
+[22m[39m[typing] chat stop chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors groups default when no explicit group override exists
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors groups default when no explicit group override exists
+[22m[39m[typing] chat start chatId=456
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors groups default when no explicit group override exists
+[22m[39m[typing] chat stop chatId=456
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mprefers per-account timeoutSeconds overrides
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=all for threaded replies
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=all for threaded replies
+[22m[39m[typing] chat start chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors replyToMode=all for threaded replies
+[22m[39m[typing] chat stop chatId=5
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdoes not block group messages when bot username is unknown
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdoes not block group messages when bot username is unknown
+[22m[39m[typing] chat start chatId=789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdoes not block group messages when bot username is unknown
+[22m[39m[typing] chat stop chatId=789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msequentializes updates by chat and thread
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mblocks group messages when telegram.groups is set without a wildcard
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends GIF replies as animations
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes callback_query payloads as messages and answers callbacks
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes callback_query payloads as messages and answers callbacks
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes callback_query payloads as messages and answers callbacks
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends GIF replies as animations
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2msends GIF replies as animations
+[22m[39m[typing] chat stop chatId=1234
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 28182[2mms[22m[39m
+     [33m[2m✓[22m[39m routes DMs by telegram accountId binding [33m 21389[2mms[22m[39m
+     [33m[2m✓[22m[39m allows per-group requireMention override [33m 1737[2mms[22m[39m
+     [33m[2m✓[22m[39m allows per-topic requireMention override [33m 1231[2mms[22m[39m
+     [33m[2m✓[22m[39m honors groups default when no explicit group override exists [33m 1013[2mms[22m[39m
+     [33m[2m✓[22m[39m does not block group messages when bot username is unknown [33m 1309[2mms[22m[39m
+     [33m[2m✓[22m[39m sends GIF replies as animations [33m 1498[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mskips group messages without mention when requireMention is enabled
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mwraps inbound message with Telegram envelope
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mwraps inbound message with Telegram envelope
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mwraps inbound message with Telegram envelope
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors routed group activation from session store
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors routed group activation from session store
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mhonors routed group activation from session store
+[22m[39m[typing] chat stop chatId=123
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 29956[2mms[22m[39m
+     [33m[2m✓[22m[39m sends replies without native reply threading [33m 21444[2mms[22m[39m
+     [33m[2m✓[22m[39m honors replyToMode=first for threaded replies [33m 1969[2mms[22m[39m
+     [33m[2m✓[22m[39m prefixes final replies with responsePrefix [33m 1451[2mms[22m[39m
+     [33m[2m✓[22m[39m honors replyToMode=all for threaded replies [33m 1439[2mms[22m[39m
+     [33m[2m✓[22m[39m blocks group messages when telegram.groups is set without a wildcard [33m 1313[2mms[22m[39m
+     [33m[2m✓[22m[39m skips group messages without mention when requireMention is enabled [33m 1162[2mms[22m[39m
+     [33m[2m✓[22m[39m honors routed group activation from session store [33m 1167[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches usernames case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches usernames case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches usernames case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mrequests pairing by default for unknown DM senders
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdoes not resend pairing code when a request is already pending
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages regardless of groupPolicy
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages regardless of groupPolicy
+[22m[39m[typing] chat start chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages regardless of groupPolicy
+[22m[39m[typing] chat stop chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mtriggers typing cue via onReplyStart
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mtriggers typing cue via onReplyStart
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mtriggers typing cue via onReplyStart
+[22m[39m[typing] chat stop chatId=42
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 32416[2mms[22m[39m
+     [33m[2m✓[22m[39m installs grammY throttler [33m 20745[2mms[22m[39m
+     [33m[2m✓[22m[39m uses wrapped fetch when global fetch is available [33m 1611[2mms[22m[39m
+     [33m[2m✓[22m[39m passes timeoutSeconds even without a custom fetch [33m 1539[2mms[22m[39m
+     [33m[2m✓[22m[39m prefers per-account timeoutSeconds overrides [33m 1279[2mms[22m[39m
+     [33m[2m✓[22m[39m sequentializes updates by chat and thread [33m 1300[2mms[22m[39m
+     [33m[2m✓[22m[39m routes callback_query payloads as messages and answers callbacks [33m 1091[2mms[22m[39m
+     [33m[2m✓[22m[39m wraps inbound message with Telegram envelope [33m 1208[2mms[22m[39m
+     [33m[2m✓[22m[39m requests pairing by default for unknown DM senders [33m 1026[2mms[22m[39m
+     [33m[2m✓[22m[39m does not resend pairing code when a request is already pending [33m 1379[2mms[22m[39m
+     [33m[2m✓[22m[39m triggers typing cue via onReplyStart [33m 1235[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with tg/Telegram-prefixed allowFrom entries
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with tg/Telegram-prefixed allowFrom entries
+[22m[39m[typing] chat start chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with tg/Telegram-prefixed allowFrom entries
+[22m[39m[typing] chat stop chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with telegram:-prefixed allowFrom entries
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with telegram:-prefixed allowFrom entries
+[22m[39m[typing] chat start chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows direct messages with telegram:-prefixed allowFrom entries
+[22m[39m[typing] chat stop chatId=123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages with wildcard in allowFrom when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages with wildcard in allowFrom when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages with wildcard in allowFrom when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mblocks group messages with no sender ID when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches telegram:-prefixed allowFrom entries in group allowlist
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches telegram:-prefixed allowFrom entries in group allowlist
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches telegram:-prefixed allowFrom entries in group allowlist
+[22m[39m[typing] chat stop chatId=-100123456789
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 16951[2mms[22m[39m
+     [33m[2m✓[22m[39m matches usernames case-insensitively when groupPolicy is 'allowlist' [33m 9267[2mms[22m[39m
+     [33m[2m✓[22m[39m allows direct messages regardless of groupPolicy [33m 1685[2mms[22m[39m
+     [33m[2m✓[22m[39m allows direct messages with tg/Telegram-prefixed allowFrom entries [33m 1348[2mms[22m[39m
+     [33m[2m✓[22m[39m allows direct messages with telegram:-prefixed allowFrom entries [33m 1210[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages with wildcard in allowFrom when groupPolicy is 'allowlist' [33m 1488[2mms[22m[39m
+     [33m[2m✓[22m[39m blocks group messages with no sender ID when groupPolicy is 'allowlist' [33m 1038[2mms[22m[39m
+     [33m[2m✓[22m[39m matches telegram:-prefixed allowFrom entries in group allowlist [33m 907[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match (without @botUsername)
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match (without @botUsername)
+[22m[39m[typing] chat start chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match (without @botUsername)
+[22m[39m[typing] chat stop chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mblocks all group messages when groupPolicy is 'disabled'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match even if another user is mentioned
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match even if another user is mentioned
+[22m[39m[typing] chat start chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2maccepts group messages when mentionPatterns match even if another user is mentioned
+[22m[39m[typing] chat stop chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mkeeps group envelope headers stable (sender identity is separate)
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mblocks group messages from senders not in allowFrom when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mkeeps group envelope headers stable (sender identity is separate)
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mkeeps group envelope headers stable (sender identity is separate)
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches tg:-prefixed allowFrom entries case-insensitively in group allowlist
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches tg:-prefixed allowFrom entries case-insensitively in group allowlist
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mmatches tg:-prefixed allowFrom entries case-insensitively in group allowlist
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mreacts to mention-gated group messages when ackReaction is enabled
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mreacts to mention-gated group messages when ackReaction is enabled
+[22m[39m[typing] chat start chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mreacts to mention-gated group messages when ackReaction is enabled
+[22m[39m[typing] chat stop chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by ID) when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by ID) when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by ID) when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mclears native commands when disabled
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mblocks group messages when groupPolicy allowlist has no groupAllowFrom
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by username) when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by username) when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from senders in allowFrom (by username) when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from telegram:-prefixed allowFrom entries when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from telegram:-prefixed allowFrom entries when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from telegram:-prefixed allowFrom entries when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mskips group messages when requireMention is enabled and no mention matches
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows control commands with TG-prefixed groupAllowFrom entries
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows control commands with TG-prefixed groupAllowFrom entries
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows control commands with TG-prefixed groupAllowFrom entries
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages when requireMention is enabled but mentions cannot be detected
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from tg:-prefixed allowFrom entries case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages when requireMention is enabled but mentions cannot be detected
+[22m[39m[typing] chat start chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages when requireMention is enabled but mentions cannot be detected
+[22m[39m[typing] chat stop chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from tg:-prefixed allowFrom entries case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows group messages from tg:-prefixed allowFrom entries case-insensitively when groupPolicy is 'allowlist'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2misolates forum topic sessions and carries thread metadata
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2misolates forum topic sessions and carries thread metadata
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=99
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2misolates forum topic sessions and carries thread metadata
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mapplies topic skill filters and system prompts
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mapplies topic skill filters and system prompts
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=99
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mapplies topic skill filters and system prompts
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mincludes reply-to context when a Telegram reply is received
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows all group messages when groupPolicy is 'open'
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows all group messages when groupPolicy is 'open'
+[22m[39m[typing] chat start chatId=-100123456789
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows all group messages when groupPolicy is 'open'
+[22m[39m[typing] chat stop chatId=-100123456789
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 17470[2mms[22m[39m
+     [33m[2m✓[22m[39m blocks all group messages when groupPolicy is 'disabled' [33m 9551[2mms[22m[39m
+     [33m[2m✓[22m[39m blocks group messages from senders not in allowFrom when groupPolicy is 'allowlist' [33m 1631[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages from senders in allowFrom (by ID) when groupPolicy is 'allowlist' [33m 1345[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages from senders in allowFrom (by username) when groupPolicy is 'allowlist' [33m 1370[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages from telegram:-prefixed allowFrom entries when groupPolicy is 'allowlist' [33m 1232[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages from tg:-prefixed allowFrom entries case-insensitively when groupPolicy is 'allowlist' [33m 1183[2mms[22m[39m
+     [33m[2m✓[22m[39m allows all group messages when groupPolicy is 'open' [33m 1154[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mincludes reply-to context when a Telegram reply is received
+[22m[39m[typing] chat start chatId=7
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mincludes reply-to context when a Telegram reply is received
+[22m[39m[typing] chat stop chatId=7
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 19484[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts group messages when mentionPatterns match (without @botUsername) [33m 9823[2mms[22m[39m
+     [33m[2m✓[22m[39m accepts group messages when mentionPatterns match even if another user is mentioned [33m 1738[2mms[22m[39m
+     [33m[2m✓[22m[39m keeps group envelope headers stable (sender identity is separate) [33m 1455[2mms[22m[39m
+     [33m[2m✓[22m[39m reacts to mention-gated group messages when ackReaction is enabled [33m 1141[2mms[22m[39m
+     [33m[2m✓[22m[39m clears native commands when disabled [33m 1346[2mms[22m[39m
+     [33m[2m✓[22m[39m skips group messages when requireMention is enabled and no mention matches [33m 1495[2mms[22m[39m
+     [33m[2m✓[22m[39m allows group messages when requireMention is enabled but mentions cannot be detected [33m 1132[2mms[22m[39m
+     [33m[2m✓[22m[39m includes reply-to context when a Telegram reply is received [33m 1350[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mfalls back to General topic thread id for typing in forums
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mfalls back to General topic thread id for typing in forums
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=1
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mfalls back to General topic thread id for typing in forums
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mpasses message_thread_id to topic replies
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mpasses message_thread_id to topic replies
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=99
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mpasses message_thread_id to topic replies
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes General topic replies using thread id 1
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes General topic replies using thread id 1
+[22m[39m[typing] chat start chatId=-1001234567890 threadId=1
+[typing] chat sendChatAction error chatId=-1001234567890: Cannot read properties of undefined (reading 'sendChatAction')
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mroutes General topic replies using thread id 1
+[22m[39m[typing] chat stop chatId=-1001234567890
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 16413[2mms[22m[39m
+     [33m[2m✓[22m[39m matches tg:-prefixed allowFrom entries case-insensitively in group allowlist [33m 9217[2mms[22m[39m
+     [33m[2m✓[22m[39m blocks group messages when groupPolicy allowlist has no groupAllowFrom [33m 1680[2mms[22m[39m
+     [33m[2m✓[22m[39m allows control commands with TG-prefixed groupAllowFrom entries [33m 1403[2mms[22m[39m
+     [33m[2m✓[22m[39m isolates forum topic sessions and carries thread metadata [33m 1212[2mms[22m[39m
+     [33m[2m✓[22m[39m falls back to General topic thread id for typing in forums [33m 1544[2mms[22m[39m
+     [33m[2m✓[22m[39m routes General topic replies using thread id 1 [33m 1351[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mthreads native command replies inside topics
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mskips tool summaries for native slash commands
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate message updates by update_id
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate message updates by update_id
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate message updates by update_id
+[22m[39m[typing] chat stop chatId=123
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 14732[2mms[22m[39m
+     [33m[2m✓[22m[39m applies topic skill filters and system prompts [33m 8922[2mms[22m[39m
+     [33m[2m✓[22m[39m passes message_thread_id to topic replies [33m 1619[2mms[22m[39m
+     [33m[2m✓[22m[39m threads native command replies inside topics [33m 1327[2mms[22m[39m
+     [33m[2m✓[22m[39m skips tool summaries for native slash commands [33m 1415[2mms[22m[39m
+     [33m[2m✓[22m[39m dedupes duplicate message updates by update_id [33m 1443[2mms[22m[39m
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mallows concurrent planning requests in the same chat
+[22m[39m[typing] goal start chatId=42
+[typing] goal stop chatId=42
+[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mallows concurrent planning requests in the same chat
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2msets a new_goal anchor after a buffered command flush
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal stop chatId=42
+[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands /new_goal[2m > [22m[2mroutes appended anchor text through the same planner dispatch helper
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for ga callback preface and run-not-found errors
+[22m[39m[typing] callback:approve start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for ga callback preface and run-not-found errors
+[22m[39m[typing] callback:approve stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for gResume callback preface and run-not-found errors
+[22m[39m[typing] callback:resume start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for gResume callback preface and run-not-found errors
+[22m[39m[typing] callback:resume stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_approve preface and run-not-found errors
+[22m[39m[typing] goal_approve start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_approve preface and run-not-found errors
+[22m[39m[typing] goal_approve stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_resume preface and run-not-found errors
+[22m[39m[typing] goal_resume start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_resume preface and run-not-found errors
+[22m[39m[typing] goal_resume stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer usage, run-not-found, and lock responses
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer usage, run-not-found, and lock responses
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback usage, run-not-found, and lock responses
+[22m[39m[typing] goal_feedback start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback usage, run-not-found, and lock responses
+[22m[39m[typing] goal_feedback stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background string results
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background string results
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background plan results
+[22m[39m[typing] goal_answer start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_answer background plan results
+[22m[39m[typing] goal_answer stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback background string results
+[22m[39m[typing] goal_feedback start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_feedback background string results
+[22m[39m[typing] goal_feedback stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_edit background preface and result
+[22m[39m[typing] goal_edit start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mregisterTelegramGoalCommands approve/resume reply threading[2m > [22m[2mthreads replies for /goal_edit background preface and result
+[22m[39m[typing] goal_edit stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mcalls sendChatAction before and during fn execution
+[22m[39m[typing] test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mcalls sendChatAction before and during fn execution
+[22m[39m[typing] test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mpasses message_thread_id when threadId is provided
+[22m[39m[typing] start chatId=42 threadId=7
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mpasses message_thread_id when threadId is provided
+[22m[39m[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mclears interval even if fn throws
+[22m[39m[typing] start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mclears interval even if fn throws
+[22m[39m[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mwithChatAction[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] sendChatAction error chatId=42: API error
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends start preface before background work starts
+[22m[39m[typing] start-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends start preface before background work starts
+[22m[39m[typing] start-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends resume preface before background work starts
+[22m[39m[typing] resume-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2msends resume preface before background work starts
+[22m[39m[typing] resume-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2mthreads reply parameters into the preface acknowledgement
+[22m[39m[typing] reply-param-test start chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mrunGoalInBackground[2m > [22m[2mthreads reply parameters into the preface acknowledgement
+[22m[39m[typing] reply-param-test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2msends typing action immediately on start
+[22m[39m[typing] test start chatId=42
+[typing] test stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mstops cleanly via stop() — no more calls after stop
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mprevents per-chat overlap (stops previous loop)
+[22m[39m[typing] first start chatId=42
+[typing] first stop chatId=42
+[typing] second start chatId=42
+[typing] second stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mkeeps independent loops for different threadIds
+[22m[39m[typing] start chatId=42 threadId=1
+[typing] start chatId=42 threadId=2
+[typing] stop chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mdoes not throw when sendChatAction rejects
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+[typing] sendChatAction error chatId=42: API error
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2mstop() is idempotent
+[22m[39m[typing] start chatId=42
+[typing] stop chatId=42
+
+[90mstdout[2m | src/telegram/goal-commands.test.ts[2m > [22m[2mgoal-commands telegram adapter[2m > [22m[2mstartTypingLoop[2m > [22m[2muses raw API when threadId is provided
+[22m[39m[typing] start chatId=42 threadId=7
+[typing] stop chatId=42
+
+ [31m❯[39m src/telegram/goal-commands.test.ts [2m([22m[2m196 tests[22m[2m | [22m[31m4 failed[39m[2m)[22m[33m 3481[2mms[22m[39m
+       [33m[2m✓[22m[39m captures log and error output [33m 1543[2mms[22m[39m
+       [32m✓[39m exit throws RuntimeExitError[32m 8[2mms[22m[39m
+       [32m✓[39m returns usage on empty text[32m 4[2mms[22m[39m
+       [32m✓[39m creates a plan-only run and returns GoalPlanResult[32m 49[2mms[22m[39m
+       [32m✓[39m runs autocheck in handleGoal when enabled and persists autocheck session metadata[32m 48[2mms[22m[39m
+       [32m✓[39m marks autocheck as skipped in handleGoal when autocheck throws[32m 65[2mms[22m[39m
+       [32m✓[39m skips autocheck in handleGoal when planAutocheck is off[32m 14[2mms[22m[39m
+       [32m✓[39m handles blocked-at-planning outcome[32m 2[2mms[22m[39m
+       [32m✓[39m returns stopped message when planning run is externally cancelled[32m 8[2mms[22m[39m
+       [32m✓[39m handles error from goalCommand[32m 2[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 1[2mms[22m[39m
+       [32m✓[39m returns error for unknown run[32m 1[2mms[22m[39m
+       [32m✓[39m executes an approved run and returns short ack (quiet mode)[32m 6[2mms[22m[39m
+       [32m✓[39m surfaces blocked outcome to user instead of swallowing it[32m 7[2mms[22m[39m
+       [32m✓[39m returns no-op for already done run[32m 10[2mms[22m[39m
+       [32m✓[39m attempts resume for executing runs[32m 8[2mms[22m[39m
+       [32m✓[39m returns undefined when onStatusChange is provided (no stray message)[32m 2[2mms[22m[39m
+       [32m✓[39m returns undefined when blocked update was already sent via onStatusChange[32m 5[2mms[22m[39m
+       [32m✓[39m returns blocked message when no blocked status update was sent[32m 2[2mms[22m[39m
+       [32m✓[39m returns cancelled message when onStatusChange is provided[32m 2[2mms[22m[39m
+       [32m✓[39m still returns error strings even when onStatusChange is provided[32m 1[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 1[2mms[22m[39m
+       [32m✓[39m cancels an awaiting_approval run[32m 7[2mms[22m[39m
+       [32m✓[39m refuses to reject a non-awaiting_approval run[32m 11[2mms[22m[39m
+       [32m✓[39m returns no-op for already cancelled run[32m 12[2mms[22m[39m
+       [32m✓[39m returns error for unknown run[32m 45[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 2[2mms[22m[39m
+       [32m✓[39m returns status output[32m 3[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 3[2mms[22m[39m
+       [32m✓[39m returns detail output[32m 4[2mms[22m[39m
+       [32m✓[39m appends structured task detail sections using short summaries[32m 6[2mms[22m[39m
+       [32m✓[39m sends status as a DAG PNG when the run has a plan[32m 29[2mms[22m[39m
+       [32m✓[39m uses blocked notification delivery for blocked runs and persists reply tracking[32m 17[2mms[22m[39m
+       [32m✓[39m falls back to text when the run has no plan[32m 9[2mms[22m[39m
+       [32m✓[39m sends detail as a DAG PNG when the run has a plan[32m 7[2mms[22m[39m
+       [32m✓[39m falls back to text when the run has no plan[32m 6[2mms[22m[39m
+       [32m✓[39m sends compact all_done captions without redundant DONE prefix[32m 20[2mms[22m[39m
+       [32m✓[39m builds done-message inline keyboard callbacks[32m 2[2mms[22m[39m
+       [32m✓[39m persists manual tests when all_done includes suggestions[32m 11[2mms[22m[39m
+       [32m✓[39m persists an empty manual test array when all_done includes manualTests: [][32m 24[2mms[22m[39m
+       [32m✓[39m persists manual-test generation errors when suggestions are unavailable[32m 16[2mms[22m[39m
+       [32m✓[39m renders the skipped notice when manualTestsStatus is skipped_no_backend[32m 10[2mms[22m[39m
+       [32m✓[39m renders the failed notice with artifact path hint when present[32m 10[2mms[22m[39m
+       [32m✓[39m emits no notice when manualTestsStatus is generated and manualTests are present[32m 9[2mms[22m[39m
+       [32m✓[39m sends step_blocked updates with bold caption and add-details+stop keyboard[32m 11[2mms[22m[39m
+       [32m✓[39m sends fully_blocked updates with bold caption and add-details+resume+stop keyboard[32m 13[2mms[22m[39m
+       [32m✓[39m swallows DAG exceptions and posts fallback text for 'step_blocked' status updates[32m 9[2mms[22m[39m
+       [32m✓[39m swallows DAG exceptions and posts fallback text for 'fully_blocked' status updates[32m 9[2mms[22m[39m
+       [32m✓[39m swallows DAG exceptions and posts fallback text for 'plan_revised' status updates[32m 3[2mms[22m[39m
+       [32m✓[39m swallows DAG exceptions and posts fallback text for 'all_done' status updates[32m 6[2mms[22m[39m
+       [32m✓[39m uses bold caption labels and plan short summary when available[32m 14[2mms[22m[39m
+       [32m✓[39m uses executed backend in plan captions when planner backend is stale[32m 11[2mms[22m[39m
+       [32m✓[39m includes planner fallback notice with reset hint in plan caption[32m 16[2mms[22m[39m
+       [32m✓[39m shows replanned count and max-round warning in plan caption[32m 11[2mms[22m[39m
+       [32m✓[39m shows a notice in the plan caption when autocheck was skipped[32m 10[2mms[22m[39m
+       [32m✓[39m threads reply parameters when PNG plan delivery succeeds[32m 10[2mms[22m[39m
+       [32m✓[39m threads reply parameters when DAG send falls back to text[32m 9[2mms[22m[39m
+       [32m✓[39m repairs Mermaid render errors with the run's codex planner backend[32m 14[2mms[22m[39m
+       [32m✓[39m uses claude planner backend for Mermaid repair prompts[32m 20[2mms[22m[39m
+       [32m✓[39m falls through to keyboarded text when Mermaid repair fails[32m 11[2mms[22m[39m
+       [32m✓[39m threads reply parameters when sendGoalPlanMessage fallback is used[32m 13[2mms[22m[39m
+       [32m✓[39m threads reply parameters when plan delivery reaches minimal fallback[32m 10[2mms[22m[39m
+       [32m✓[39m forwards replyToMessageId on string replies[32m 5[2mms[22m[39m
+       [32m✓[39m forwards replyToMessageId on GoalPlanResult replies[32m 11[2mms[22m[39m
+       [32m✓[39m skips delivery when reply is undefined or null[32m 3[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 2[2mms[22m[39m
+       [32m✓[39m auto-resolves key, passes quiet:true, and returns short ack[32m 6[2mms[22m[39m
+       [32m✓[39m returns error for non-blocked run[32m 3[2mms[22m[39m
+       [32m✓[39m treats non-blocked 'resume' answers as an explicit resume request[32m 6[2mms[22m[39m
+       [32m✓[39m returns error for unknown run[32m 12[2mms[22m[39m
+       [32m✓[39m auto-resumes execution after answering a blocked run (short ack)[32m 4[2mms[22m[39m
+       [32m✓[39m returns short ack when auto-resume results in blocked again[32m 3[2mms[22m[39m
+       [32m✓[39m returns GoalPlanResult with runId and blocked when replanning still needs info[32m 8[2mms[22m[39m
+       [32m✓[39m returns undefined when onStatusChange is provided (blocked path, no stray message)[32m 5[2mms[22m[39m
+       [32m✓[39m suppresses duplicate blocked reply when resume emitted fully_blocked event[32m 7[2mms[22m[39m
+       [32m✓[39m returns blocked reply when resume blocks before status callback emits[32m 3[2mms[22m[39m
+       [32m✓[39m still returns error strings even when onStatusChange is provided (answer path)[32m 1[2mms[22m[39m
+       [32m✓[39m returns formatted code block with runs[32m 2[2mms[22m[39m
+       [32m✓[39m returns no runs message when empty[32m 2[2mms[22m[39m
+       [32m✓[39m replans a done run, preserves completed steps, transitions to executing, and auto-resumes[32m 16[2mms[22m[39m
+       [32m✓[39m retries feedback replanning with subscription auth after api_key auth failure[32m 11[2mms[22m[39m
+       [32m✓[39m emits all_done summary with short headline and Goal ID footer when no new steps are needed[32m 8[2mms[22m[39m
+       [32m✓[39m syncs workingDir from feedback revisions and ensures new directories[32m 11[2mms[22m[39m
+       [32m✓[39m returns usage on empty input[32m 6[2mms[22m[39m
+       [32m✓[39m creates a revision[32m 9[2mms[22m[39m
+       [32m✓[39m syncs run workingDir when revised plan changes it[32m 13[2mms[22m[39m
+       [32m✓[39m runs autocheck in handleGoalEdit and persists updated session metadata[32m 18[2mms[22m[39m
+       [32m✓[39m marks autocheck as skipped in handleGoalEdit when autocheck throws[32m 10[2mms[22m[39m
+       [32m✓[39m skips autocheck in handleGoalEdit when planAutocheck is off[32m 9[2mms[22m[39m
+       [32m✓[39m updates run working dir from explicit edit instructions[32m 14[2mms[22m[39m
+       [32m✓[39m does not parse camelCase identifiers as working dir instructions: workingDir: string[32m 10[2mms[22m[39m
+       [32m✓[39m does not parse camelCase identifiers as working dir instructions: workingDirectory: string[32m 10[2mms[22m[39m
+       [32m✓[39m parses supported working dir instruction phrase: 'working dir should be /home/user/proj…'[32m 20[2mms[22m[39m
+       [32m✓[39m parses supported working dir instruction phrase: 'set working directory to /tmp/build'[32m 9[2mms[22m[39m
+       [32m✓[39m parses supported working dir instruction phrase: 'workdir: /opt/app'[32m 11[2mms[22m[39m
+       [32m✓[39m parses supported working dir instruction phrase: 'Working Directory: /var/data'[32m 9[2mms[22m[39m
+       [32m✓[39m resolves working dir instructions using 'a new folder ~/...'[32m 11[2mms[22m[39m
+       [32m✓[39m resolves bare ~name working dir instructions as ~/name[32m 12[2mms[22m[39m
+       [32m✓[39m resolves conversational 'a new folder ~name' working dir instructions[32m 17[2mms[22m[39m
+       [32m✓[39m resolves working dir instructions using 'the directory ~/...'[32m 9[2mms[22m[39m
+       [32m✓[39m updates run working dir from conversational correction phrasing[32m 12[2mms[22m[39m
+       [32m✓[39m resolves hyphenless working dir hints to an existing sibling directory[32m 11[2mms[22m[39m
+       [32m✓[39m rejects unresolvable relative directory[32m 3[2mms[22m[39m
+       [32m✓[39m refuses non-awaiting_approval run[32m 4[2mms[22m[39m
+       [32m✓[39m refuses run without plan[32m 3[2mms[22m[39m
+       [32m✓[39m shows fallback notice and persists degraded planner metadata on revision fallback[32m 6[2mms[22m[39m
+       [32m✓[39m returns auth error when revision CLI reports auth failure[32m 3[2mms[22m[39m
+       [32m✓[39m returns error for unknown run[32m 3[2mms[22m[39m
+       [32m✓[39m handles blocked revision[32m 6[2mms[22m[39m
+       [32m✓[39m allows concurrent planning requests in the same chat[32m 54[2mms[22m[39m
+       [32m✓[39m sets a new_goal anchor after a buffered command flush[32m 15[2mms[22m[39m
+       [32m✓[39m routes appended anchor text through the same planner dispatch helper[32m 16[2mms[22m[39m
+       [32m✓[39m shows current autocheck mode when no argument is provided[32m 4[2mms[22m[39m
+       [32m✓[39m reports codex as the effective default when planAutocheck is unset and Codex is on PATH[32m 3[2mms[22m[39m
+       [32m✓[39m reports claude_code as the effective default when only Claude Code is available[32m 2[2mms[22m[39m
+       [32m✓[39m reports a clear no-backend message when neither backend is installed[32m 7[2mms[22m[39m
+       [32m✓[39m reports explicit off as a user override even when backends are available[32m 4[2mms[22m[39m
+[31m       [31m×[31m persists a valid autocheck mode and updates in-memory config[39m[32m 30[2mms[22m[39m
+       [32m✓[39m keeps in-memory autocheck mode unchanged when config write fails[32m 3[2mms[22m[39m
+       [32m✓[39m rejects invalid autocheck mode input[32m 3[2mms[22m[39m
+       [32m✓[39m blocks mode changes when config writes are disabled[32m 19[2mms[22m[39m
+       [32m✓[39m blocks lessons clear when config writes are disabled[32m 6[2mms[22m[39m
+       [32m✓[39m does not gate read-only lessons listing when config writes are disabled[32m 4[2mms[22m[39m
+       [32m✓[39m shows current semgrep mode and defaults to goal when unset[32m 6[2mms[22m[39m
+       [32m✓[39m preserves explicit step semgrep mode[32m 2[2mms[22m[39m
+       [32m✓[39m preserves explicit off semgrep mode[32m 6[2mms[22m[39m
+[31m       [31m×[31m persists a valid semgrep mode and updates in-memory config[39m[32m 5[2mms[22m[39m
+       [32m✓[39m keeps in-memory semgrep mode unchanged when config write fails[32m 12[2mms[22m[39m
+       [32m✓[39m rejects invalid semgrep mode input[32m 5[2mms[22m[39m
+       [32m✓[39m shows current workers when no argument is provided[32m 8[2mms[22m[39m
+       [32m✓[39m shows configured, available, and effective workers when only Codex is installed[32m 4[2mms[22m[39m
+       [32m✓[39m shows configured, available, and effective workers when only Claude Code is installed[32m 5[2mms[22m[39m
+       [32m✓[39m shows a setup error when no configured worker backend is installed[32m 6[2mms[22m[39m
+[31m       [31m×[31m persists codex-only workers[39m[32m 6[2mms[22m[39m
+       [32m✓[39m persists claude_code-only workers[32m 6[2mms[22m[39m
+       [32m✓[39m persists both workers[32m 7[2mms[22m[39m
+       [32m✓[39m keeps in-memory workers unchanged when config write fails[32m 3[2mms[22m[39m
+       [32m✓[39m rejects invalid worker input[32m 7[2mms[22m[39m
+       [32m✓[39m blocks worker changes when config writes are disabled[32m 5[2mms[22m[39m
+       [32m✓[39m shows current GitHub push mode when no argument is provided[32m 7[2mms[22m[39m
+[31m       [31m×[31m persists GitHub push mode and updates in-memory config[39m[32m 5[2mms[22m[39m
+       [32m✓[39m keeps in-memory GitHub push mode unchanged when config write fails[32m 6[2mms[22m[39m
+       [32m✓[39m rejects invalid GitHub push input[32m 5[2mms[22m[39m
+       [32m✓[39m blocks GitHub push changes when config writes are disabled[32m 5[2mms[22m[39m
+       [32m✓[39m routes gTD callback to manual test detail message[32m 16[2mms[22m[39m
+       [32m✓[39m routes gTD callback to fallback manual test details when available[32m 25[2mms[22m[39m
+       [32m✓[39m routes gTD callback to a useful fallback when manual tests are unavailable[32m 6[2mms[22m[39m
+       [32m✓[39m routes gTD callback to no-tests-needed details when manualTests is an empty array[32m 4[2mms[22m[39m
+       [32m✓[39m routes gIF callback to force-reply prompt and persists prompt tracking[32m 10[2mms[22m[39m
+       [32m✓[39m sends fallback message when ge force-reply prompt fails[32m 4[2mms[22m[39m
+       [32m✓[39m sends fallback message when gIF force-reply prompt fails[32m 21[2mms[22m[39m
+       [32m✓[39m routes gAD callback to force-reply prompt and persists question tracking[32m 10[2mms[22m[39m
+       [32m✓[39m sends fallback message when gAD force-reply prompt fails[32m 7[2mms[22m[39m
+       [32m✓[39m falls back to persisted done-message id when callback message_id is missing[32m 11[2mms[22m[39m
+       [32m✓[39m threads replies for ga callback preface and run-not-found errors[32m 22[2mms[22m[39m
+       [32m✓[39m threads replies for gr callback responses[32m 8[2mms[22m[39m
+       [32m✓[39m threads replies for gResume callback preface and run-not-found errors[32m 16[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_approve preface and run-not-found errors[32m 8[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_resume preface and run-not-found errors[32m 10[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_approve usage responses[32m 5[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_resume usage responses[32m 3[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_status and /goal_detail responses[32m 12[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_reject responses[32m 6[2mms[22m[39m
+       [32m✓[39m threads replies for reject emoji reactions[32m 12[2mms[22m[39m
+       [32m✓[39m threads replies for gD callback detail responses[32m 9[2mms[22m[39m
+       [32m✓[39m threads replies for gStop callback responses[32m 97[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_list responses[32m 6[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_stop usage responses[32m 10[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_edit usage responses[32m 7[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_answer usage, run-not-found, and lock responses[32m 25[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_feedback usage, run-not-found, and lock responses[32m 16[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_answer background string results[32m 9[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_answer background plan results[32m 17[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_feedback background string results[32m 21[2mms[22m[39m
+       [32m✓[39m threads replies for /goal_edit background preface and result[32m 11[2mms[22m[39m
+       [32m✓[39m calls sendChatAction before and during fn execution[32m 5[2mms[22m[39m
+       [32m✓[39m passes message_thread_id when threadId is provided[32m 4[2mms[22m[39m
+       [32m✓[39m clears interval even if fn throws[32m 5[2mms[22m[39m
+       [32m✓[39m does not throw when sendChatAction rejects[32m 5[2mms[22m[39m
+       [32m✓[39m sends start preface before background work starts[32m 6[2mms[22m[39m
+       [32m✓[39m sends resume preface before background work starts[32m 4[2mms[22m[39m
+       [32m✓[39m threads reply parameters into the preface acknowledgement[32m 4[2mms[22m[39m
+       [32m✓[39m uses start preface for awaiting approval runs[32m 2[2mms[22m[39m
+       [32m✓[39m uses start preface for cancelled runs pending re-approval[32m 2[2mms[22m[39m
+       [32m✓[39m uses resume preface for resumable non-approval states[32m 3[2mms[22m[39m
+       [32m✓[39m sends typing action immediately on start[32m 3[2mms[22m[39m
+       [32m✓[39m stops cleanly via stop() — no more calls after stop[32m 10[2mms[22m[39m
+       [32m✓[39m prevents per-chat overlap (stops previous loop)[32m 5[2mms[22m[39m
+       [32m✓[39m keeps independent loops for different threadIds[32m 3[2mms[22m[39m
+       [32m✓[39m does not throw when sendChatAction rejects[32m 3[2mms[22m[39m
+       [32m✓[39m stop() is idempotent[32m 3[2mms[22m[39m
+       [32m✓[39m uses raw API when threadId is provided[32m 4[2mms[22m[39m
+       [32m✓[39m matches latest messageId[32m 4[2mms[22m[39m
+       [32m✓[39m matches history messageId[32m 4[2mms[22m[39m
+       [32m✓[39m returns undefined for non-goal messages[32m 10[2mms[22m[39m
+       [32m✓[39m returns undefined when no runs have telegramPlanMessage[32m 7[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate callback_query updates by update_id
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/fetch.test.ts[2m > [22m[2mresolveTelegramFetch[2m > [22m[2mreturns wrapped global fetch when available
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/fetch.test.ts[2m > [22m[2mresolveTelegramFetch[2m > [22m[2mprefers proxy fetch when provided
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/fetch.test.ts[2m > [22m[2mresolveTelegramFetch[2m > [22m[2mhonors env enable override
+[22m[39m[telegram] autoSelectFamily=true (env:CLAWDBOT_TELEGRAM_ENABLE_AUTO_SELECT_FAMILY)
+
+[90mstdout[2m | src/telegram/fetch.test.ts[2m > [22m[2mresolveTelegramFetch[2m > [22m[2muses config override when provided
+[22m[39m[telegram] autoSelectFamily=true (config)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate callback_query updates by update_id
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mdedupes duplicate callback_query updates by update_id
+[22m[39m[typing] chat stop chatId=123
+
+[90mstdout[2m | src/telegram/fetch.test.ts[2m > [22m[2mresolveTelegramFetch[2m > [22m[2menv disable override wins over config
+[22m[39m[telegram] autoSelectFamily=false (env:CLAWDBOT_TELEGRAM_DISABLE_AUTO_SELECT_FAMILY)
+
+ [32m✓[39m src/telegram/fetch.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 337[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram inbound media[2m > [22m[2mdownloads media via file_path (no file.download)
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram inbound media[2m > [22m[2mdownloads media via file_path (no file.download)
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram inbound media[2m > [22m[2mdownloads media via file_path (no file.download)
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram inbound media[2m > [22m[2mprefers proxyFetch over global fetch
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram inbound media[2m > [22m[2mprefers proxyFetch over global fetch
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mbuffers messages with same media_group_id and processes them together
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mbuffers messages with same media_group_id and processes them together
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mprocesses separate media groups independently
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mprocesses separate media groups independently
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mprocesses separate media groups independently
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram media groups[2m > [22m[2mprocesses separate media groups independently
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram stickers[2m > [22m[2mdownloads static sticker (WEBP) and includes sticker metadata
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram stickers[2m > [22m[2mdownloads static sticker (WEBP) and includes sticker metadata
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram stickers[2m > [22m[2mrefreshes cached sticker metadata on cache hit
+[22m[39m[typing] chat start chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram stickers[2m > [22m[2mrefreshes cached sticker metadata on cache hit
+[22m[39m[typing] chat stop chatId=1234
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mbuffers near-limit text and processes sequential parts as one message
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mbuffers near-limit text and processes sequential parts as one message
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mappends near-limit text fragments with an ID gap of 3
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mappends near-limit text fragments with an ID gap of 3
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mdoes not append near-limit text fragments when ID gap exceeds 5
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mdoes not append near-limit text fragments when ID gap exceeds 5
+[22m[39m[typing] chat stop chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mdoes not append near-limit text fragments when ID gap exceeds 5
+[22m[39m[typing] chat start chatId=42
+
+[90mstdout[2m | src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts[2m > [22m[2mtelegram text fragments[2m > [22m[2mdoes not append near-limit text fragments when ID gap exceeds 5
+[22m[39m[typing] chat stop chatId=42
+
+ [32m✓[39m src/telegram/bot.media.downloads-media-file-path-no-file-download.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 10359[2mms[22m[39m
+     [33m[2m✓[22m[39m downloads media via file_path (no file.download) [33m 9869[2mms[22m[39m
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers short /new_goal and appends immediate continuation fragments
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers short /new_goal and appends immediate continuation fragments
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers short /new_goal and appends immediate continuation fragments
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers /new_goal when the first chunk is around 2k chars
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers /new_goal when the first chunk is around 2k chars
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers /new_goal when prompt is 3894 chars but full message is 3904
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mintegration[2m > [22m[2mbuffers /new_goal when prompt is 3894 chars but full message is 3904
+[22m[39m[typing] goal stop chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /new_goal into one planner request
+[22m[39m[typing] goal start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /new_goal into one planner request
+[22m[39m[typing] goal stop chatId=42
+
+ [32m✓[39m src/telegram/audit.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 446[2mms[22m[39m
+     [33m[2m✓[22m[39m collects unmentioned numeric group ids and flags wildcard [33m 426[2mms[22m[39m
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /repo_chat into one request and preserves disabled-backend reply
+[22m[39m[typing] repo-chat start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /repo_chat into one request and preserves disabled-backend reply
+[22m[39m[typing] repo-chat stop chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /repo_chat when the first chunk is short
+[22m[39m[typing] repo-chat start chatId=42
+
+[90mstdout[2m | src/telegram/command-fragments.test.ts[2m > [22m[2mcommand-fragments[2m > [22m[2mcreateTelegramBot end-to-end split command flow[2m > [22m[2mcombines split /repo_chat when the first chunk is short
+[22m[39m[typing] repo-chat stop chatId=42
+
+ [32m✓[39m src/telegram/command-fragments.test.ts [2m([22m[2m26 tests[22m[2m)[22m[33m 9470[2mms[22m[39m
+       [33m[2m✓[22m[39m buffers short /new_goal and appends immediate continuation fragments [33m 9190[2mms[22m[39m
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows distinct callback_query ids without update_id
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows distinct callback_query ids without update_id
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows distinct callback_query ids without update_id
+[22m[39m[typing] chat stop chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows distinct callback_query ids without update_id
+[22m[39m[typing] chat start chatId=123
+
+[90mstdout[2m | src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts[2m > [22m[2mcreateTelegramBot[2m > [22m[2mallows distinct callback_query ids without update_id
+[22m[39m[typing] chat stop chatId=123
+
+ [32m✓[39m src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 11880[2mms[22m[39m
+     [33m[2m✓[22m[39m dedupes duplicate callback_query updates by update_id [33m 10052[2mms[22m[39m
+     [33m[2m✓[22m[39m allows distinct callback_query ids without update_id [33m 1815[2mms[22m[39m
+[90mstdout[2m | src/telegram/send.returns-undefined-empty-input.test.ts[2m > [22m[2msendMessageTelegram[2m > [22m[2mpasses timeoutSeconds to grammY client when configured
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+ [32m✓[39m src/telegram/send.returns-undefined-empty-input.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 228[2mms[22m[39m
+ [32m✓[39m src/telegram/goal-sending.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 333[2mms[22m[39m
+[90mstdout[2m | src/telegram/webhook.test.ts[2m > [22m[2mstartTelegramWebhook[2m > [22m[2mstarts server, registers webhook, and serves health
+[22m[39mwebhook listening on http://localhost:0/telegram-webhook
+
+[90mstdout[2m | src/telegram/webhook.test.ts[2m > [22m[2mstartTelegramWebhook[2m > [22m[2minvokes webhook handler on matching path
+[22m[39mwebhook listening on http://localhost:0/hook
+
+ [32m✓[39m src/telegram/webhook.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 157[2mms[22m[39m
+[90mstdout[2m | src/telegram/send.caption-split.test.ts[2m > [22m[2msendMessageTelegram caption splitting[2m > [22m[2msplits long captions into media + text messages when text exceeds 1024 chars
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+ [32m✓[39m src/telegram/send.caption-split.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 195[2mms[22m[39m
+ [32m✓[39m src/telegram/bot/delivery.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 131[2mms[22m[39m
+ [32m✓[39m src/telegram/pairing-store.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 168[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-handlers.repo-chat-routing.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 194[2mms[22m[39m
+ [32m✓[39m src/telegram/goal-message-index.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 180[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-message-context.dm-threads.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 400[2mms[22m[39m
+ [32m✓[39m src/telegram/gateway-restart.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 207[2mms[22m[39m
+[90mstdout[2m | src/telegram/send.preserves-thread-params-plain-text-fallback.test.ts[2m > [22m[2mbuildInlineKeyboard[2m > [22m[2mpreserves thread params in plain text fallback
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+ [32m✓[39m src/telegram/send.preserves-thread-params-plain-text-fallback.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 105[2mms[22m[39m
+ [32m✓[39m src/telegram/repo-chat-commands.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 238[2mms[22m[39m
+[90mstdout[2m | src/telegram/send.edit-message.test.ts[2m > [22m[2meditMessageTelegram[2m > [22m[2mkeeps existing buttons when buttons is undefined (no reply_markup)
+[22m[39m[telegram] autoSelectFamily=false (default-node22)
+
+ [32m✓[39m src/telegram/send.edit-message.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 106[2mms[22m[39m
+ [32m✓[39m src/telegram/monitor.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 150[2mms[22m[39m
+ [32m✓[39m src/telegram/nightwatch-commands.test.ts [2m([22m[2m31 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m src/telegram/goal-router.test.ts [2m([22m[2m29 tests[22m[2m)[22m[32m 57[2mms[22m[39m
+ [32m✓[39m src/telegram/sticker-cache.test.ts [2m([22m[2m17 tests[22m[2m)[22m[32m 82[2mms[22m[39m
+ [32m✓[39m src/telegram/send.proxy.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+ [32m✓[39m src/telegram/format.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 113[2mms[22m[39m
+ [32m✓[39m src/telegram/download.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 61[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-message.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m src/telegram/targets.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/telegram/update-offset-store.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 49[2mms[22m[39m
+ [32m✓[39m src/telegram/bot/helpers.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+ [32m✓[39m src/telegram/voice.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/telegram/network-errors.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/telegram/token.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-message-context.sender-prefix.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 83[2mms[22m[39m
+ [32m✓[39m src/telegram/inline-buttons.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/telegram/reaction-level.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m src/telegram/accounts.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/telegram/sent-message-cache.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m src/telegram/bot/helpers.expand-text-links.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m src/telegram/network-config.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 26[2mms[22m[39m
+ [32m✓[39m src/telegram/group-migration.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/telegram/draft-chunking.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32m✓[39m src/telegram/goal-formatting.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-native-commands.plugin-auth.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 53[2mms[22m[39m
+ [32m✓[39m src/telegram/bot-handlers.goal-routing.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+
+[2m Test Files [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m52 passed[39m[22m[90m (54)[39m
+[2m      Tests [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m608 passed[39m[22m[90m (614)[39m
+[2m   Start at [22m 11:56:36
+[2m   Duration [22m 94.95s[2m (transform 61.23s, setup 4.46s, import 111.46s, tests 235.42s, environment 19ms)[22m
+

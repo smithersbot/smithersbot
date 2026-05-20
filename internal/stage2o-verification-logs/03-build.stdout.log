@@ -1,0 +1,6 @@
+
+> smithersbot@2026.1.29 build /home/matt/moltbot
+> tsc -p tsconfig.json && node --import tsx scripts/canvas-a2ui-copy.ts && node --import tsx scripts/copy-hook-metadata.ts && node --import tsx scripts/copy-scout-template.ts && node --import tsx scripts/write-build-info.ts
+
+[copy-hook-metadata] Done
+[copy-scout-template] Copied scout_prompt_template.md

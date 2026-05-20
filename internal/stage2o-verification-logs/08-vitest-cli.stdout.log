@@ -1,0 +1,88 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/matt/moltbot[39m
+
+ [32m✓[39m src/cli/gateway.sigterm.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 9096[2mms[22m[39m
+     [33m[2m✓[22m[39m exits 0 on SIGTERM [33m 9090[2mms[22m[39m
+ [32m✓[39m src/cli/daemon-cli.coverage.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 11491[2mms[22m[39m
+     [33m[2m✓[22m[39m probes gateway status by default [33m 9428[2mms[22m[39m
+     [33m[2m✓[22m[39m installs the daemon when requested [33m 1616[2mms[22m[39m
+     [33m[2m✓[22m[39m installs the daemon with json output [33m 371[2mms[22m[39m
+ [32m✓[39m src/cli/exec-approvals-cli.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 5315[2mms[22m[39m
+     [33m[2m✓[22m[39m loads local approvals by default [33m 5291[2mms[22m[39m
+ [32m✓[39m src/cli/cron-cli.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 4162[2mms[22m[39m
+     [33m[2m✓[22m[39m trims model and thinking on cron add [33m 4104[2mms[22m[39m
+ [32m✓[39m src/cli/update-cli.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 1420[2mms[22m[39m
+     [33m[2m✓[22m[39m exports updateCommand and registerUpdateCli [33m 1113[2mms[22m[39m
+ [32m✓[39m src/cli/logs-cli.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 4131[2mms[22m[39m
+     [33m[2m✓[22m[39m writes output directly to stdout/stderr [33m 4116[2mms[22m[39m
+ [32m✓[39m src/cli/nodes-cli.coverage.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 1052[2mms[22m[39m
+     [33m[2m✓[22m[39m lists nodes via node.list [33m 1020[2mms[22m[39m
+ [32m✓[39m src/cli/gateway-cli.coverage.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 28644[2mms[22m[39m
+     [33m[2m✓[22m[39m prints stop hints on GatewayLockError when service is loaded [33m 1045[2mms[22m[39m
+ [32m✓[39m src/cli/models-cli.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 28874[2mms[22m[39m
+     [33m[2m✓[22m[39m registers github-copilot login command [33m 28867[2mms[22m[39m
+ [32m✓[39m src/cli/pairing-cli.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 356[2mms[22m[39m
+     [33m[2m✓[22m[39m evaluates pairing channels when registering the CLI (not at import) [33m 308[2mms[22m[39m
+ [32m✓[39m src/cli/browser-cli-extension.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 453[2mms[22m[39m
+     [33m[2m✓[22m[39m installs into the state dir (never node_modules) [33m 402[2mms[22m[39m
+[90mstdout[2m | src/cli/memory-cli.test.ts[2m > [22m[2mmemory cli[2m > [22m[2menables verbose logging with --verbose
+[22m[39mMemory Search (main)
+Provider: openai (requested: openai)
+Model: text-embedding-3-small
+Indexed: 0/0 files · 0 chunks
+Dirty: no
+Store: /tmp/memory.sqlite
+Workspace: /tmp/clawd
+Vector: ready
+Issues:
+  memory directory missing (/tmp/clawd/memory)
+
+
+[90mstdout[2m | src/cli/memory-cli.test.ts[2m > [22m[2mmemory cli[2m > [22m[2mlogs close failure after status
+[22m[39mMemory Search (main)
+Provider: openai (requested: openai)
+Model: text-embedding-3-small
+Indexed: 1/0 files · 1 chunks
+Dirty: no
+Store: /tmp/memory.sqlite
+Workspace: /tmp/clawd
+Issues:
+  memory directory missing (/tmp/clawd/memory)
+
+
+[90mstdout[2m | src/cli/memory-cli.test.ts[2m > [22m[2mmemory cli[2m > [22m[2mlogs close failures without failing the command
+[22m[39mMemory index updated (main).
+
+[90mstdout[2m | src/cli/memory-cli.test.ts[2m > [22m[2mmemory cli[2m > [22m[2mlogs close failure after search
+[22m[39m0.500 memory/2026-01-12.md:1-2
+Hello
+
+ [32m✓[39m src/cli/memory-cli.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 414[2mms[22m[39m
+ [32m✓[39m src/cli/browser-cli-inspect.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 212[2mms[22m[39m
+ [32m✓[39m src/cli/banner.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 247[2mms[22m[39m
+ [32m✓[39m src/cli/program/register.subclis.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 213[2mms[22m[39m
+ [32m✓[39m src/cli/program.nodes-basic.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 501[2mms[22m[39m
+ [32m✓[39m src/cli/program.nodes-media.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 638[2mms[22m[39m
+     [33m[2m✓[22m[39m runs nodes camera snap and prints two MEDIA paths [33m 417[2mms[22m[39m
+ [32m✓[39m src/cli/nodes-camera.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 88[2mms[22m[39m
+ [32m✓[39m src/cli/progress.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/cli/profile.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 71[2mms[22m[39m
+ [32m✓[39m src/cli/program.force.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32m✓[39m src/cli/argv.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+ [32m✓[39m src/cli/nodes-canvas.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m src/cli/browser-cli.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+ [32m✓[39m src/cli/skills-cli.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 52[2mms[22m[39m
+ [32m✓[39m src/cli/program.smoke.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 303[2mms[22m[39m
+ [32m✓[39m src/cli/parse-duration.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32m✓[39m src/cli/wait.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m src/cli/nodes-screen.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32m✓[39m src/cli/prompt.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m src/cli/dns-cli.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 129[2mms[22m[39m
+ [32m✓[39m src/cli/hooks-cli.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 28[2mms[22m[39m
+ [32m✓[39m src/cli/run-main.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m33 passed[39m[22m[90m (33)[39m
+[2m      Tests [22m [1m[32m195 passed[39m[22m[90m (195)[39m
+[2m   Start at [22m 11:58:53
+[2m   Duration [22m 51.65s[2m (transform 51.06s, setup 3.17s, import 75.46s, tests 98.13s, environment 28ms)[22m
+
