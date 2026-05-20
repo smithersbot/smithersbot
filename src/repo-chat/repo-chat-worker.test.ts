@@ -677,6 +677,52 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("claude-json-session");
     });
 
+    it("regression: answers the launch-kit readiness prompt from Claude stdout without writing a response file", async () => {
+      const launchKitPrompt =
+        'Is this prompt ready to run? "/new_goal Build the SmithersBot launch kit: create the smithersbot.com landing page, a launch posting cadence for X, LinkedIn, and any other relevant channels, and launch posts in my voice. Use README.md, SETUP.md, and review every asset and reference inside internal/launch-inputs for branding, screenshots, copy direction and layout references."';
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: [
+          JSON.stringify({
+            type: "system",
+            subtype: "init",
+            session_id: "claude-launch-kit-session",
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "text",
+                  text: "The prompt is close, but I would narrow the launch channels and define success criteria before running it.",
+                },
+              ],
+            },
+            session_id: "claude-launch-kit-session",
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 121,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: launchKitPrompt,
+        workingDir: "/repo",
+      });
+
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(RESPONSE_FILE_PATH)).toBe(false);
+      const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[] };
+      expect(call.args.at(-1)).toContain(launchKitPrompt);
+      expect(call.args.at(-1)).not.toContain("cat <<");
+      expect(result.text).toContain("narrow the launch channels");
+      expect(result.cliSessionId).toBe("claude-launch-kit-session");
+    });
+
     it("redacts secret values from CLI-native extracted responses", async () => {
       vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_NATIVE_SECRET_789");
       runCliProcessMock.mockResolvedValueOnce({
@@ -702,6 +748,35 @@ describe("repo-chat-worker", () => {
 
       expect(result.text).toContain("[REDACTED]");
       expect(result.text).not.toContain("FAKE_NATIVE_SECRET_789");
+    });
+
+    it("regression: redacts fake secret values from Codex output-last-message content", async () => {
+      vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_OUTPUT_LAST_SECRET_123");
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(
+          LAST_MESSAGE_FILE_PATH,
+          "The answer must hide FAKE_OUTPUT_LAST_SECRET_123\n",
+          "utf-8",
+        );
+        return {
+          stdout: '{"type":"thread.started","thread_id":"codex-redact-last"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 46,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "redact output-last-message response",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toContain("[REDACTED]");
+      expect(result.text).not.toContain("FAKE_OUTPUT_LAST_SECRET_123");
+      expect(result.cliSessionId).toBe("codex-redact-last");
     });
 
     it("repairs when response file is missing", async () => {
@@ -764,6 +839,46 @@ describe("repo-chat-worker", () => {
       expect(repairCall.args.at(-1)).toContain("Do not write files.");
       expect(repairCall.args.at(-1)).not.toContain("cat <<");
       expect(result.text).toBe("Recovered response");
+    });
+
+    it("regression: sandbox-safe repair returns a final assistant message without file writes", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: '{"session_id":"claude-safe-repair"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 48,
+        })
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Safe repair answer" }],
+            },
+            session_id: "claude-safe-repair",
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 58,
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "repair without response file write",
+        workingDir: "/repo",
+      });
+
+      const repairCall = runCliProcessMock.mock.calls[1]?.[0] as { args: string[] };
+      expect(repairCall.args.at(-1)).toContain("Do not write files.");
+      expect(repairCall.args.at(-1)).toContain("Do not use shell redirects.");
+      expect(repairCall.args.at(-1)).not.toContain("cat <<");
+      expect(result.text).toBe("Safe repair answer");
+      expect(result.cliSessionId).toBe("claude-safe-repair");
     });
 
     it("preserves MCP isolation invariants on Claude repair path with a multi-KB RESPONSE FILE prompt", async () => {
@@ -953,6 +1068,103 @@ describe("repo-chat-worker", () => {
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-thread-stdout");
+    });
+
+    it("regression: returns Codex --output-last-message content before legacy response files", async () => {
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Codex final answer from output-last-message\n");
+        fs.writeFileSync(RESPONSE_FILE_PATH, "legacy response file should not win\n");
+        return {
+          stdout: '{"type":"thread.started","thread_id":"codex-last-message-regression"}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 29,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "prefer output-last-message content",
+        workingDir: "/repo",
+      });
+
+      const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[] };
+      expect(call.args).toContain("--output-last-message");
+      expect(call.args).toContain(LAST_MESSAGE_FILE_PATH);
+      expect(result.text).toBe("Codex final answer from output-last-message");
+      expect(result.cliSessionId).toBe("codex-last-message-regression");
+    });
+
+    it("regression: repo-chat invocation keeps repository mutation disabled", async () => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-readonly-"));
+      const repoFile = path.join(repoDir, "README.md");
+      fs.writeFileSync(repoFile, "original\n", "utf-8");
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I can inspect this repository but cannot edit it." }],
+          },
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 30,
+      });
+
+      try {
+        const result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "Please append a line to README.md",
+          workingDir: repoDir,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[]; cwd: string };
+        expect(call.cwd).toBe(repoDir);
+        expect(call.args).toContain("--sandbox");
+        expect(call.args).toContain("read-only");
+        expect(call.args).not.toContain("workspace-write");
+        expect(fs.readFileSync(repoFile, "utf-8")).toBe("original\n");
+        expect(result.text).toContain("cannot edit");
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    });
+
+    it("regression: returns backend refusal text as the repo-chat response", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "I can’t help modify repository files from repo chat, but I can explain the relevant code.",
+              },
+            ],
+          },
+          session_id: "claude-refusal-session",
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 31,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "Write a new file in the repository",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toContain("can’t help modify repository files");
+      expect(result.cliSessionId).toBe("claude-refusal-session");
     });
 
     it("extracts codex response from stdout for resumed sessions", async () => {
