@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { isSecretPath, SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "./secret-paths.js";
+import { createConfigIO } from "../config/config.js";
+import {
+  isSecretPath,
+  redactSecretValues,
+  SECRET_PATH_DENY_REASON,
+  SECRET_PATH_PATTERNS,
+} from "./secret-paths.js";
 
 const tmpDirs: string[] = [];
 
@@ -129,4 +135,73 @@ describe("secret paths", () => {
       expect(isSecretPath(filePath, { cwd, homeDir: makeTmpDir() })).toBe(false);
     },
   );
+});
+
+describe("secret value redaction", () => {
+  it("redacts explicit known secret values", () => {
+    const redacted = redactSecretValues(
+      ["telegram=FAKE_TELEGRAM_SECRET_123", "gateway=FAKE_GATEWAY_SECRET_456", "safe=visible"].join(
+        "\n",
+      ),
+      {
+        secretValues: ["FAKE_TELEGRAM_SECRET_123", "FAKE_GATEWAY_SECRET_456"],
+      },
+    );
+
+    expect(redacted).toContain("telegram=[REDACTED]");
+    expect(redacted).toContain("gateway=[REDACTED]");
+    expect(redacted).toContain("safe=visible");
+    expect(redacted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+    expect(redacted).not.toContain("FAKE_GATEWAY_SECRET_456");
+  });
+
+  it("redacts documented provider token prefixes without redacting git shas", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const redacted = redactSecretValues(
+      [
+        `sha=${sha}`,
+        "openai=sk-FAKE_TELEGRAM_SECRET_123",
+        "github=ghp_FAKEGITHUBSECRET1234567890",
+        "slack=xoxb-1234567890-abcdefghi",
+        "aws=AKIA1234567890ABCDEF",
+        "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturepart",
+      ].join("\n"),
+    );
+
+    expect(redacted).toContain(`sha=${sha}`);
+    expect(redacted.match(/\[REDACTED\]/g)).toHaveLength(5);
+    expect(redacted).not.toContain("sk-FAKE_TELEGRAM_SECRET_123");
+    expect(redacted).not.toContain("ghp_FAKEGITHUBSECRET1234567890");
+    expect(redacted).not.toContain("xoxb-1234567890-abcdefghi");
+    expect(redacted).not.toContain("AKIA1234567890ABCDEF");
+    expect(redacted).not.toContain("eyJhbGciOiJIUzI1NiJ9");
+  });
+
+  it("leaves gateway config loading unchanged when redaction is not invoked", () => {
+    const homeDir = makeTmpDir();
+    const configPath = path.join(makeTmpDir(), "config.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        gateway: {
+          auth: {
+            mode: "token",
+            token: "FAKE_GATEWAY_SECRET_456",
+          },
+        },
+      }),
+    );
+
+    const cfg = createConfigIO({
+      configPath,
+      env: {},
+      homedir: () => homeDir,
+      logger: {
+        error: () => undefined,
+        warn: () => undefined,
+      },
+    }).loadConfig();
+
+    expect(cfg.gateway?.auth?.token).toBe("FAKE_GATEWAY_SECRET_456");
+  });
 });

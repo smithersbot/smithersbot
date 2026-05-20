@@ -66,6 +66,11 @@ export interface IsSecretPathOptions {
   homeDir?: string;
 }
 
+export interface RedactSecretValuesOptions {
+  secretValues?: readonly (string | null | undefined)[];
+  replacement?: string;
+}
+
 const HOME_SECRET_DIRS = [
   ".smithersbot",
   ".moltbot",
@@ -104,6 +109,16 @@ const SECRET_FILE_EXTENSIONS = new Set([
   ".keystore",
   ".tfvars",
 ]);
+
+const DEFAULT_SECRET_REPLACEMENT = "[REDACTED]";
+
+const PREFIX_SECRET_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{8,}\b/g,
+  /\bghp_[A-Za-z0-9_]{8,}\b/g,
+  /\bxoxb-[A-Za-z0-9-]{8,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){0,2}\b/g,
+] as const;
 
 function normalizePath(filePath: string): string {
   return path.resolve(filePath).replace(/\\/g, "/");
@@ -216,6 +231,21 @@ function matchesSecretPath(candidate: string, homeDir: string): boolean {
   return hasSecretFileName(path.basename(normalizedCandidate));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeSecretValues(values: readonly (string | null | undefined)[]): string[] {
+  const normalized = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.length < 8) continue;
+    normalized.add(trimmed);
+  }
+  return [...normalized].sort((a, b) => b.length - a.length);
+}
+
 export function isSecretPath(filePath: string, options: IsSecretPathOptions = {}): boolean {
   const resolvedOptions: Required<IsSecretPathOptions> = {
     cwd: options.cwd ?? process.cwd(),
@@ -225,4 +255,19 @@ export function isSecretPath(filePath: string, options: IsSecretPathOptions = {}
   return getResolvedPathCandidates(resolvedPath).some((candidate) =>
     matchesSecretPath(candidate, resolvedOptions.homeDir),
   );
+}
+
+export function redactSecretValues(text: string, options: RedactSecretValuesOptions = {}): string {
+  const replacement = options.replacement ?? DEFAULT_SECRET_REPLACEMENT;
+  let redacted = text;
+
+  for (const secretValue of normalizeSecretValues(options.secretValues ?? [])) {
+    redacted = redacted.replace(new RegExp(escapeRegExp(secretValue), "g"), replacement);
+  }
+
+  for (const pattern of PREFIX_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, replacement);
+  }
+
+  return redacted;
 }
