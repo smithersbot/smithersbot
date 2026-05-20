@@ -7,6 +7,7 @@ import { resetMessageIndex } from "./goal-message-index.js";
 import type { SerializedRun } from "../goal/types.js";
 
 let testGoalsDir: string;
+const mockRedactSecretValues = vi.hoisted(() => vi.fn());
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
@@ -18,6 +19,17 @@ vi.mock("../goal/run-store.js", async (importOriginal) => {
     saveRun: (run: SerializedRun, dir?: string) => actual.saveRun(run, dir ?? testGoalsDir),
     resolveRunId: (partial: string, dir?: string) =>
       actual.resolveRunId(partial, dir ?? testGoalsDir),
+  };
+});
+
+vi.mock("../security/secret-paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../security/secret-paths.js")>();
+  return {
+    ...actual,
+    redactSecretValues: (...args: Parameters<typeof actual.redactSecretValues>) => {
+      mockRedactSecretValues(...args);
+      return actual.redactSecretValues(...args);
+    },
   };
 });
 
@@ -3677,13 +3689,17 @@ describe("goal-commands telegram adapter", () => {
       expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
         expect.objectContaining({ channelId: "telegram", accountId: "default" }),
       );
-      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      // Stage 2O redaction reloads config secrets while sending the confirmation reply.
+      expect(mockLoadConfig).toHaveBeenCalledTimes(2);
       expect(mockWriteConfigFile).toHaveBeenCalledWith(
         expect.objectContaining({
           goal: expect.objectContaining({ planAutocheck: "claude_code" }),
         }),
       );
       expect((cfg.goal as { planAutocheck: string }).planAutocheck).toBe("claude_code");
+      expect(mockRedactSecretValues).toHaveBeenCalledWith(
+        expect.stringContaining("Goal plan autocheck set to `claude_code`"),
+      );
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Goal plan autocheck set to");
       expect(sentText).toContain("claude_code");
@@ -3973,13 +3989,17 @@ describe("goal-commands telegram adapter", () => {
       expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
         expect.objectContaining({ channelId: "telegram", accountId: "default" }),
       );
-      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      // Stage 2O redaction reloads config secrets while sending the confirmation reply.
+      expect(mockLoadConfig).toHaveBeenCalledTimes(2);
       expect(mockWriteConfigFile).toHaveBeenCalledWith(
         expect.objectContaining({
           goal: expect.objectContaining({ semgrep: "goal" }),
         }),
       );
       expect((cfg.goal as { semgrep: string }).semgrep).toBe("goal");
+      expect(mockRedactSecretValues).toHaveBeenCalledWith(
+        expect.stringContaining("Semgrep will run only after the last step completes."),
+      );
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Semgrep will run only after the last step completes.");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
@@ -4178,13 +4198,17 @@ describe("goal-commands telegram adapter", () => {
       expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
         expect.objectContaining({ channelId: "telegram", accountId: "default" }),
       );
-      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      // Stage 2O redaction reloads config secrets while sending the confirmation reply.
+      expect(mockLoadConfig).toHaveBeenCalledTimes(2);
       expect(mockWriteConfigFile).toHaveBeenCalledWith(
         expect.objectContaining({
           goal: expect.objectContaining({ enabledWorkers: ["codex"] }),
         }),
       );
       expect((cfg.goal as { enabledWorkers: string[] }).enabledWorkers).toEqual(["codex"]);
+      expect(mockRedactSecretValues).toHaveBeenCalledWith(
+        expect.stringContaining("Enabled goal workers set to `codex`"),
+      );
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Enabled goal workers set to");
       expect(sentText).toContain("codex");
@@ -4381,13 +4405,17 @@ describe("goal-commands telegram adapter", () => {
       expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
         expect.objectContaining({ channelId: "telegram", accountId: "default" }),
       );
-      expect(mockLoadConfig).toHaveBeenCalledOnce();
+      // Stage 2O redaction reloads config secrets while sending the confirmation reply.
+      expect(mockLoadConfig).toHaveBeenCalledTimes(2);
       expect(mockWriteConfigFile).toHaveBeenCalledWith(
         expect.objectContaining({
           goal: expect.objectContaining({ githubPush: expect.objectContaining({ enabled: true }) }),
         }),
       );
       expect((cfg.goal as { githubPush: { enabled: boolean } }).githubPush.enabled).toBe(true);
+      expect(mockRedactSecretValues).toHaveBeenCalledWith(
+        expect.stringContaining("GitHub push enabled"),
+      );
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("GitHub push enabled");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);

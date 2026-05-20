@@ -22,8 +22,8 @@
 ## Security
 
 - Never commit secrets, credentials, tokens, private keys, or live configuration values.
-- Use fake placeholders in tests and examples.
-- Do not edit sensitive files such as `.env*`, `*.pem`, `*.key`, `credentials*`, `.aws/**`, or `.ssh/**`.
+- Use fake placeholders for secrets in tests and examples.
+- Do not access sensitive files such as `.env*`, `*.pem`, `*.key`, `credentials*`, `.aws/**`, or `.ssh/**`.
 
 ## File Operations
 
