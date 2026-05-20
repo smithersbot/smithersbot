@@ -1,7 +1,18 @@
-import type { CliWorkerId, GoalConfig, PlanAutocheckMode } from "../config/types.goal.js";
+import type {
+  CliWorkerId,
+  GoalConfig,
+  PlanAutocheckMode,
+  SemgrepMode,
+} from "../config/types.goal.js";
 import { detectBackendAvailability } from "./backend-availability.js";
 import type { BackendAvailability } from "./backend-types.js";
 import { resolveEnabledWorkers } from "./backend-types.js";
+
+export const DEFAULT_SEMGREP_MODE: SemgrepMode = "goal";
+
+export function resolveDefaultSemgrepMode(): SemgrepMode {
+  return DEFAULT_SEMGREP_MODE;
+}
 
 export const NO_WORKER_BACKEND_ERROR =
   "No worker backend available. Install Codex or Claude Code and rerun.";

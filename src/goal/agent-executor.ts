@@ -22,6 +22,7 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
+import { resolveDefaultSemgrepMode } from "./effective-workers.js";
 import {
   buildDefaultSastCommand,
   formatExecError,
@@ -177,7 +178,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   const plan = session.plan;
   if (!plan) throw new Error("No plan to execute");
-  const semgrepMode: SemgrepMode = config?.goal?.semgrep ?? "step";
+  const semgrepMode: SemgrepMode = config?.goal?.semgrep ?? resolveDefaultSemgrepMode();
 
   session.state = "executing";
   session.buildGateConfig = plan.buildGate;

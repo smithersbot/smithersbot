@@ -58,6 +58,21 @@ vi.mock("./manual-tests.js", () => ({
   generateManualTests: () => Promise.reject(new Error("mock: no client in integration tests")),
 }));
 
+// Pretend semgrep is not installed so the goal-level final gate's SAST step is a no-op.
+// Integration tests don't simulate a real repo workingDir.
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawnSync: (command: string, args?: readonly string[], options?: unknown) => {
+      if (command === "which" && Array.isArray(args) && args[0] === "semgrep") {
+        return { status: 1, signal: null, stdout: "", stderr: "", pid: 0, output: [] };
+      }
+      return actual.spawnSync(command, args as readonly string[], options as never);
+    },
+  };
+});
+
 // --- Real run-store backed by temp directory ---
 
 let testGoalsDir: string;

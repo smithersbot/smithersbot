@@ -683,6 +683,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-build-gate-retry",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "step" } },
       onProgress: (text) => progress.push(text),
     });
 
@@ -807,6 +808,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-build-gate-limit",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "step" } },
     });
 
     expect(outcome.status).toBe("blocked");
@@ -846,6 +848,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-build-gate-resume-count",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "step" } },
       serializedRun: { buildGateFixCounts: { "1": 2 } } as unknown as SerializedRun,
     });
 
@@ -934,6 +937,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-build-gate-semgrep-infra",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "step" } },
     });
 
     expect(outcome.status).toBe("blocked");
@@ -962,6 +966,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-build-gate-empty",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
     });
 
     expect(outcome.status).toBe("done");
@@ -1044,6 +1049,47 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     ]);
   });
 
+  it("defaults to goal-level semgrep when config has no semgrep override", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    mockBuildDefaultSastCommand.mockReturnValue("semgrep scan --config auto --error .");
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-semgrep-default",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: {},
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledTimes(1);
+    expect(mockBuildDefaultSastCommand).toHaveBeenCalledWith({
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+    const bashCommands = mockSpawnSync.mock.calls
+      .filter((call) => call[0] === "bash")
+      .map((call) => (Array.isArray(call[1]) ? call[1][1] : undefined))
+      .filter((command): command is string => typeof command === "string");
+    expect(bashCommands).toEqual([
+      "pnpm build",
+      "semgrep scan --config auto --error .",
+      "pnpm build",
+    ]);
+  });
+
   it("runs semgrep only in the final gate when goal.semgrep is goal", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
@@ -1108,6 +1154,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-final-build-gate",
       workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
     });
 
     expect(outcome.status).toBe("blocked");

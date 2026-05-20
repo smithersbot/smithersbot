@@ -3807,7 +3807,7 @@ describe("goal-commands telegram adapter", () => {
       return options?.reply_parameters?.message_id;
     }
 
-    it("shows current semgrep mode and defaults to step when unset", async () => {
+    it("shows current semgrep mode and defaults to goal when unset", async () => {
       const harness = makeCommandHarness();
       await harness.register();
 
@@ -3816,8 +3816,33 @@ describe("goal-commands telegram adapter", () => {
       expect(harness.sendMessage).toHaveBeenCalled();
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Goal semgrep mode:");
-      expect(sentText).toContain("step");
+      expect(sentText).toContain("goal");
+      expect(sentText).not.toMatch(/Goal semgrep mode: `step`/);
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it("preserves explicit step semgrep mode", async () => {
+      const harness = makeCommandHarness({ goal: { semgrep: "step" } });
+      await harness.register();
+
+      await harness.handlers.goal_semgrep?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal semgrep mode:");
+      expect(sentText).toContain("step");
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it("preserves explicit off semgrep mode", async () => {
+      const harness = makeCommandHarness({ goal: { semgrep: "off" } });
+      await harness.register();
+
+      await harness.handlers.goal_semgrep?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal semgrep mode:");
+      expect(sentText).toContain("off");
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
     });
 

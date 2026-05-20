@@ -27,6 +27,7 @@ import {
   NO_BACKEND_AUTOCHECK_ERROR,
   NO_WORKER_BACKEND_ERROR,
   resolveDefaultPlanAutocheckMode,
+  resolveDefaultSemgrepMode,
   resolveEffectiveEnabledWorkers,
 } from "../goal/effective-workers.js";
 import { AUTH_RE } from "../goal/error-patterns.js";
@@ -2187,7 +2188,7 @@ export function registerTelegramGoalCommands({
 
     const rawMode = ctx.match?.trim() ?? "";
     if (!rawMode) {
-      const currentMode = cfg.goal?.semgrep ?? "step";
+      const currentMode = cfg.goal?.semgrep ?? resolveDefaultSemgrepMode();
       await sendGoalReply(
         bot,
         resolved.chatId,
@@ -2205,7 +2206,7 @@ export function registerTelegramGoalCommands({
         ? normalized
         : undefined;
     if (!nextMode) {
-      const currentMode = cfg.goal?.semgrep ?? "step";
+      const currentMode = cfg.goal?.semgrep ?? resolveDefaultSemgrepMode();
       await sendGoalReply(
         bot,
         resolved.chatId,
