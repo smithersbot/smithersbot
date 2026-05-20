@@ -2,13 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
-import { resolveEnabledWorkers } from "./backend-types.js";
 import { buildClaudeCodeEnv, writeAuthModeArtifact } from "./claude-code-env.js";
 import { runCliProcess } from "./cli-process.js";
-import {
-  detectBackendAvailability,
-  getCodexAskForApprovalPlacement,
-} from "./backend-availability.js";
+import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import { requireEffectiveEnabledWorkers } from "./effective-workers.js";
 import { RATE_LIMIT_RE } from "./error-patterns.js";
 import {
   PLAN_SYSTEM_PROMPT,
@@ -171,25 +168,10 @@ function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
   ];
 }
 
-const NO_WORKER_BACKEND_ERROR =
-  "No worker backend available. Install Codex or Claude Code and rerun.";
-
 function resolvePlannerBackends(enabledWorkers?: CliWorkerId[]): CliWorkerId[] {
-  const resolvedWorkers = resolveEnabledWorkers(enabledWorkers ? { enabledWorkers } : undefined);
-  const availability = detectBackendAvailability();
-  const isAvailable = (backend: CliWorkerId) =>
-    availability.find((entry) => entry.id === backend)?.available === true;
-  const ordered: CliWorkerId[] = [];
-  if (resolvedWorkers.includes("claude_code") && isAvailable("claude_code")) {
-    ordered.push("claude_code");
-  }
-  if (resolvedWorkers.includes("codex") && isAvailable("codex")) {
-    ordered.push("codex");
-  }
-  if (ordered.length === 0) {
-    throw new Error(NO_WORKER_BACKEND_ERROR);
-  }
-  return ordered;
+  return requireEffectiveEnabledWorkers({
+    config: enabledWorkers ? { enabledWorkers } : undefined,
+  });
 }
 
 function formatCodexFallbackDisabledError(params: {

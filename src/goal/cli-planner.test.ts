@@ -4,6 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
 import { runCliPlanning, runCliPlanRevision, EXECUTION_PLAN_FILE } from "./cli-planner.js";
+import {
+  NO_WORKER_BACKEND_ERROR,
+  requireEffectiveEnabledWorkers,
+  resolveEffectiveEnabledWorkers,
+} from "./effective-workers.js";
 
 const mockRunCliProcess = vi.fn();
 vi.mock("./cli-process.js", () => ({
@@ -29,6 +34,57 @@ vi.mock("./backend-availability.js", () => ({
   detectBackendAvailability: () => mockDetectBackendAvailability(),
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
 }));
+
+describe("resolveEffectiveEnabledWorkers", () => {
+  it("uses Codex only when Codex is the only available backend", () => {
+    expect(
+      resolveEffectiveEnabledWorkers({
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: true },
+          { id: "claude_code", available: false, reason: "not found" },
+        ],
+      }),
+    ).toEqual(["codex"]);
+  });
+
+  it("uses Claude Code only when Claude Code is the only available backend", () => {
+    expect(
+      resolveEffectiveEnabledWorkers({
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: false, reason: "not found" },
+          { id: "claude_code", available: true },
+        ],
+      }),
+    ).toEqual(["claude_code"]);
+  });
+
+  it("keeps both workers when both backends are available", () => {
+    expect(
+      resolveEffectiveEnabledWorkers({
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: true },
+          { id: "claude_code", available: true },
+        ],
+      }),
+    ).toEqual(["claude_code", "codex"]);
+  });
+
+  it("returns no workers and raises the canonical setup error when neither backend is available", () => {
+    const availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not found" },
+      { id: "claude_code", available: false, reason: "not found" },
+    ] as const;
+
+    expect(resolveEffectiveEnabledWorkers({ availability: [...availability] })).toEqual([]);
+    expect(() => requireEffectiveEnabledWorkers({ availability: [...availability] })).toThrow(
+      NO_WORKER_BACKEND_ERROR,
+    );
+  });
+});
 
 function writeScoutArtifacts(scoutDir: string, goalId: string): void {
   fs.mkdirSync(path.join(scoutDir, "node_specs"), { recursive: true });
