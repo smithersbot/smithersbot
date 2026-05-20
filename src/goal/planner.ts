@@ -129,6 +129,7 @@ Step schema:
 - constraints (required): array of explicit do-not-do constraints (can be [] if none)
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): ${backendUnion} — execution backend
+- requiresNetwork (optional): true only when this step explicitly needs internet/network access; omit or false for normal repo-local work.
 - risk (optional): "low" | "medium" | "high" — Flag steps as "high" risk if they touch critical paths, have uncertain requirements, or could break existing behavior. The executor allocates extra retries to high-risk steps. Default: "low".
 
 Top-level summary fields:
@@ -157,7 +158,8 @@ Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your 
       "successCriteria": "Verifiable done-when condition",
       "constraints": ["Explicit do-not-do constraint"],
       "durationMinutes": 12,
-      "backend": "${exampleBackend}"
+      "backend": "${exampleBackend}",
+      "requiresNetwork": false
     }
   ]
 }
@@ -532,6 +534,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       status: "pending",
       durationMinutes,
       backend,
+      ...(step.requiresNetwork === true ? { requiresNetwork: true } : {}),
     });
   }
 

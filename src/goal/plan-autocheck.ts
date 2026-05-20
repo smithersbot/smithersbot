@@ -424,6 +424,7 @@ function buildPlanSnapshot(plan: Plan): string {
         backend: step.backend,
         dependsOn: step.dependsOn,
         durationMinutes: step.durationMinutes,
+        requiresNetwork: step.requiresNetwork,
       })),
     },
     null,

@@ -92,6 +92,8 @@ export type PlanStep = {
   backend?: GoalBackendId;
   /** Sticky: set once a backend is chosen, persisted across retries/resume. */
   executedBackend?: GoalBackendId;
+  /** Opt in to network access for Codex worker execution. Defaults to false. */
+  requiresNetwork?: boolean;
 };
 
 export type PlanBuildGate = {

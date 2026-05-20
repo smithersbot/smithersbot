@@ -329,7 +329,7 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--output-schema");
     });
 
-    it("allows network and git writes for codex workspace-write workers", () => {
+    it("disables network by default and allows git writes for codex workspace-write workers", () => {
       const args = buildCliArgs({
         backend: "codex",
         prompt: "test",
@@ -338,15 +338,28 @@ describe("cli-worker", () => {
       });
 
       const netConfigIndex = args.findIndex(
-        (arg, index) => arg === "-c" && args[index + 1] === "net.allowed=true",
+        (arg, index) => arg === "-c" && args[index + 1] === "net.allowed=false",
       );
       expect(netConfigIndex).toBeGreaterThanOrEqual(0);
       expect(args.slice(netConfigIndex, netConfigIndex + 4)).toEqual([
         "-c",
-        "net.allowed=true",
+        "net.allowed=false",
         "-c",
         'sandbox_workspace_write.writable_roots=["/tmp/sample-workspace/.git"]',
       ]);
+    });
+
+    it("enables codex worker network only when the step explicitly opts in", () => {
+      const args = buildCliArgs({
+        backend: "codex",
+        prompt: "test",
+        workingDir: "/tmp/sample-workspace",
+        denyFilePath: "/tmp/deny",
+        requiresNetwork: true,
+      });
+
+      expect(args).toContain("net.allowed=true");
+      expect(args).not.toContain("net.allowed=false");
     });
 
     it("prepends project conventions before worker context for codex workers", () => {
@@ -486,6 +499,57 @@ describe("cli-worker", () => {
   });
 
   describe("executeTaskWithCliWorker", () => {
+    it("passes step.requiresNetwork through to codex worker args", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-network-"));
+      const runId = "run-network";
+      const stepId = "step-network";
+      const step = makeStep({ id: stepId, requiresNetwork: true });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "Network opt-in passed through" }),
+          "utf8",
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify network opt-in",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+      });
+
+      const args = runCliProcessMock.mock.calls[0]?.[0]?.args ?? [];
+      expect(args).toContain("net.allowed=true");
+      expect(args).not.toContain("net.allowed=false");
+    });
+
     it("terminates a hanging process once worker_result.json is detected", async () => {
       vi.useFakeTimers();
 

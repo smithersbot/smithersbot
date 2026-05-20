@@ -300,6 +300,7 @@ export async function executeTaskWithCliWorker(
     workingDir,
     denyFilePath,
     model,
+    requiresNetwork: step.requiresNetwork === true,
     projectConventions,
     promptPayload,
   });
@@ -783,6 +784,7 @@ export function buildCliArgs(params: {
   workingDir: string;
   denyFilePath: string;
   model?: string;
+  requiresNetwork?: boolean;
   projectConventions?: string;
   promptPayload?: {
     promptArg: string;
@@ -790,8 +792,16 @@ export function buildCliArgs(params: {
     appendedSystemPrompt?: string;
   };
 }): string[] {
-  const { backend, prompt, workingDir, denyFilePath, model, projectConventions, promptPayload } =
-    params;
+  const {
+    backend,
+    prompt,
+    workingDir,
+    denyFilePath,
+    model,
+    requiresNetwork = false,
+    projectConventions,
+    promptPayload,
+  } = params;
   const assembledPrompt =
     promptPayload ??
     buildCliPromptPayload({
@@ -814,7 +824,7 @@ export function buildCliArgs(params: {
       workingDir,
     ];
 
-    args.push("-c", "net.allowed=true");
+    args.push("-c", `net.allowed=${requiresNetwork ? "true" : "false"}`);
     // codex's workspace-write sandbox protects `.git` as read-only by default
     // (via PROTECTED_METADATA_PATH_NAMES + bubblewrap `--ro-bind`). Adding an
     // explicit writable_roots entry for the working dir's `.git` overrides that

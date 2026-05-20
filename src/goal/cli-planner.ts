@@ -359,6 +359,7 @@ function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
       constraints: step.constraints,
       durationMinutes: step.durationMinutes,
       backend: step.backend,
+      requiresNetwork: step.requiresNetwork,
     })),
   };
   try {
@@ -415,6 +416,7 @@ function buildPlanRevisionPrompt(params: {
         constraints: step.constraints,
         durationMinutes: step.durationMinutes,
         backend: step.backend,
+        requiresNetwork: step.requiresNetwork,
       })),
     },
     null,
