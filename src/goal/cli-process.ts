@@ -1,5 +1,18 @@
+// Subprocess launcher contract:
+// LLM callers (Claude Code, Codex, repo-chat workers, planners, reviewers, lessons,
+// nightwatch, manual-tests, etc.) MUST pass an explicit `env` so they opt in to the
+// credential set their subprocess needs — typically buildClaudeCodeEnv() or
+// buildCredentialStrippedEnv(). If `env` is omitted, the default is a
+// credential-stripped copy of process.env (see buildCredentialStrippedEnv in
+// claude-code-env.ts). This default exists so that any new caller that forgets to
+// pass env still fails closed for secret exposure rather than leaking the full
+// gateway environment to the spawned process. Non-LLM callers (e.g. the mmdc
+// Puppeteer renderer in mermaid-png.ts) use Node's `execFileSync` directly and are
+// unaffected by this contract.
+
 import fs from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
+import { buildCredentialStrippedEnv } from "./claude-code-env.js";
 
 const SIGTERM_GRACE_MS = 5_000;
 
@@ -12,7 +25,11 @@ export type RunCliProcessParams = {
   stdin?: string;
   stdoutPath?: string;
   stderrPath?: string;
-  /** Custom environment variables for the spawned process. Defaults to process.env. */
+  /**
+   * Custom environment variables for the spawned process. LLM callers must pass
+   * an explicit env. When omitted, the default is buildCredentialStrippedEnv()
+   * — a copy of process.env with known credential keys removed.
+   */
   env?: Record<string, string | undefined>;
 };
 
@@ -88,7 +105,7 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
     const proc: ChildProcess = spawn(command, args, {
       cwd,
       stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"],
-      env: params.env ?? { ...process.env },
+      env: params.env ?? buildCredentialStrippedEnv(),
     });
 
     if (stdin && proc.stdin) {

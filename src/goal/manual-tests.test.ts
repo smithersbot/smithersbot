@@ -771,6 +771,72 @@ describe("generateManualTests diagnostics artifacts", () => {
     expect(fs.existsSync(expectedStderrPath)).toBe(true);
   });
 
+  it("strips known credential keys from the env passed to runCliProcess (Codex branch)", async () => {
+    // Delegate the env-builder mock to the real implementation for this test
+    // so we can verify the actual key-strip behavior end to end.
+    const { buildCredentialStrippedEnv: realBuildCredentialStrippedEnv } =
+      await vi.importActual<typeof import("./claude-code-env.js")>("./claude-code-env.js");
+    buildCredentialStrippedEnvMock.mockImplementation(realBuildCredentialStrippedEnv);
+
+    const originalTelegram = process.env.TELEGRAM_BOT_TOKEN;
+    const originalGateway = process.env.SMITHERSBOT_GATEWAY_TOKEN;
+    const originalLegacyGateway = process.env.MOLTBOT_GATEWAY_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_TELEGRAM_TOKEN_FOR_TEST";
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "FAKE_GATEWAY_TOKEN_FOR_TEST";
+    process.env.MOLTBOT_GATEWAY_TOKEN = "FAKE_LEGACY_GATEWAY_TOKEN_FOR_TEST";
+
+    try {
+      resolveClaudeBinaryMock.mockReturnValue(null);
+      detectBackendAvailabilityMock.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ]);
+      const codexJsonl = [
+        JSON.stringify({ type: "thread.started", thread_id: "thread_env_strip" }),
+        JSON.stringify({ type: "result", result: JSON.stringify({ tests: [] }) }),
+      ].join("\n");
+      runCliProcessMock.mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const stdoutPath = params.stdoutPath as string | undefined;
+        const stderrPath = params.stderrPath as string | undefined;
+        if (stdoutPath) fs.writeFileSync(stdoutPath, codexJsonl, "utf8");
+        if (stderrPath) fs.writeFileSync(stderrPath, "", "utf8");
+        return {
+          stdout: codexJsonl,
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 8,
+        };
+      });
+
+      await withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Verify credential env strip",
+          steps: makeDoneSteps(),
+          runDir: tmpRunDir,
+        }),
+      );
+
+      const call = runCliProcessMock.mock.calls[0]?.[0] as {
+        command: string;
+        env: Record<string, string>;
+      };
+      expect(call.command).toBe("codex");
+      expect(call.env).not.toHaveProperty("TELEGRAM_BOT_TOKEN");
+      expect(call.env).not.toHaveProperty("SMITHERSBOT_GATEWAY_TOKEN");
+      expect(call.env).not.toHaveProperty("MOLTBOT_GATEWAY_TOKEN");
+    } finally {
+      if (originalTelegram == null) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = originalTelegram;
+      if (originalGateway == null) delete process.env.SMITHERSBOT_GATEWAY_TOKEN;
+      else process.env.SMITHERSBOT_GATEWAY_TOKEN = originalGateway;
+      if (originalLegacyGateway == null) delete process.env.MOLTBOT_GATEWAY_TOKEN;
+      else process.env.MOLTBOT_GATEWAY_TOKEN = originalLegacyGateway;
+    }
+  });
+
   it("uses the credential-stripped env for the Codex branch", async () => {
     resolveClaudeBinaryMock.mockReturnValue(null);
     detectBackendAvailabilityMock.mockReturnValue([
