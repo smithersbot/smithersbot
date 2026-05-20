@@ -4,10 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
-import {
-  CLAUDE_ALLOWED_TOOLS_READ_ONLY,
-  CLAUDE_READ_ONLY_PROMPT,
-} from "../goal/claude-code-constants.js";
+import { CLAUDE_READ_ONLY_PROMPT } from "../goal/claude-code-constants.js";
 import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-mcp-isolation.js";
 import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
@@ -17,6 +14,18 @@ import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
+const REPO_CHAT_CLAUDE_ALLOWED_TOOLS_READ_ONLY = [
+  "Read",
+  "Glob",
+  "Grep",
+  "Bash(git log:*)",
+  "Bash(git diff:*)",
+  "Bash(git show:*)",
+  "Bash(rg:*)",
+  "Bash(ls:*)",
+  "Bash(wc:*)",
+  "Bash(find:*)",
+].join(",");
 const CODEX_STYLE_DIRECTIVE =
   "Answer directly and concisely — the user sees only your final answer";
 const MAX_ERROR_DETAIL_CHARS = 8_000;
@@ -37,7 +46,7 @@ export function buildClaudeRepoChatArgs(params: {
     "json",
     "--verbose",
     "--allowedTools",
-    CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+    REPO_CHAT_CLAUDE_ALLOWED_TOOLS_READ_ONLY,
     "--append-system-prompt",
     CLAUDE_APPENDED_PROMPT,
   ];
@@ -88,7 +97,7 @@ export function buildCodexRepoChatArgs(params: {
     "--color",
     "never",
     "--sandbox",
-    "workspace-write",
+    "read-only",
     "--skip-git-repo-check",
     "--cd",
     params.workingDir,
@@ -538,5 +547,5 @@ export async function runRepoChatWorker(
 }
 
 export const REPO_CHAT_READ_ONLY_PROMPT = CLAUDE_READ_ONLY_PROMPT;
-export const REPO_CHAT_CLAUDE_ALLOWED_TOOLS = CLAUDE_ALLOWED_TOOLS_READ_ONLY;
+export const REPO_CHAT_CLAUDE_ALLOWED_TOOLS = REPO_CHAT_CLAUDE_ALLOWED_TOOLS_READ_ONLY;
 export const REPO_CHAT_CODEX_STYLE_PROMPT = CODEX_STYLE_DIRECTIVE;

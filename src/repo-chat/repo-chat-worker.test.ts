@@ -91,6 +91,27 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("stream-json");
     });
 
+    it("uses a repo-chat Claude tool list without Write or unrestricted Bash", () => {
+      const tools = REPO_CHAT_CLAUDE_ALLOWED_TOOLS.split(",");
+
+      expect(tools).toContain("Read");
+      expect(tools).toContain("Glob");
+      expect(tools).toContain("Grep");
+      expect(tools).not.toContain("Write");
+      expect(tools).not.toContain("Bash");
+      expect(tools).toEqual(
+        expect.arrayContaining([
+          "Bash(git log:*)",
+          "Bash(git diff:*)",
+          "Bash(git show:*)",
+          "Bash(rg:*)",
+          "Bash(ls:*)",
+          "Bash(wc:*)",
+          "Bash(find:*)",
+        ]),
+      );
+    });
+
     it("isolates Claude from global MCP config with strict empty MCP flags", () => {
       const args = buildClaudeRepoChatArgs({
         prompt: "Explain repo structure",
@@ -153,7 +174,7 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
-    it("builds Codex initial args with workspace-write sandbox", () => {
+    it("builds Codex initial args with read-only sandbox", () => {
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
@@ -165,8 +186,8 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--color");
       expect(args).toContain("never");
       expect(args).toContain("--sandbox");
-      expect(args).toContain("workspace-write");
-      expect(args).not.toContain("read-only");
+      expect(args).toContain("read-only");
+      expect(args).not.toContain("workspace-write");
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
