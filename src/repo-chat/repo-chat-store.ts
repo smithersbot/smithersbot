@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { redactSecretValues } from "../security/secret-paths.js";
 import type { RepoChatMessageRef, RepoChatSession } from "./types.js";
 
 const REPO_CHATS_DIRNAME = "repo-chats";
@@ -63,6 +64,16 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
   fs.renameSync(tmpPath, filePath);
   fs.chmodSync(filePath, 0o600);
+}
+
+function redactSession(session: RepoChatSession): RepoChatSession {
+  return {
+    ...session,
+    id: redactSecretValues(session.id),
+    workingDir: redactSecretValues(session.workingDir),
+    cliSessionId:
+      session.cliSessionId == null ? undefined : redactSecretValues(session.cliSessionId),
+  };
 }
 
 function readSessionAtPath(filePath: string): RepoChatSession | undefined {
@@ -148,9 +159,10 @@ export function saveRepoChatSession(
   session: RepoChatSession,
   repoChatsDir: string = resolveRepoChatsDir(),
 ): void {
-  const filePath = resolveSessionPath(session.id, repoChatsDir);
-  atomicWriteJson(filePath, session);
-  indexSession(getIndex(repoChatsDir), session);
+  const redactedSession = redactSession(session);
+  const filePath = resolveSessionPath(redactedSession.id, repoChatsDir);
+  atomicWriteJson(filePath, redactedSession);
+  indexSession(getIndex(repoChatsDir), redactedSession);
 }
 
 export function loadRepoChatSession(

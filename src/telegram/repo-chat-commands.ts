@@ -22,6 +22,7 @@ import {
 import type { RepoChatBackend, RepoChatSession } from "../repo-chat/types.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import {
   buildCommandFragmentKey,
@@ -174,7 +175,8 @@ async function sendRepoChatReply(params: {
   threadId?: number;
   replyToMessageId: number;
 }): Promise<number[]> {
-  const markdown = params.text.trim() ? params.text : "No output.";
+  const redactedText = redactSecretValues(params.text);
+  const markdown = redactedText.trim() ? redactedText : "No output.";
   const chunks = markdownToTelegramChunks(markdown, 4000);
   const replyChunks =
     chunks.length > MAX_REPLY_CHUNKS

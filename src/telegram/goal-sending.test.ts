@@ -41,7 +41,12 @@ vi.mock("../goal/mermaid-png.js", async (importOriginal) => {
 });
 
 import { loadRun, saveRun } from "../goal/run-store.js";
-import { sendBlockedNotification, sendDagPng } from "./goal-sending.js";
+import {
+  sendBlockedNotification,
+  sendDagPng,
+  sendGoalBackgroundResult,
+  sendGoalPlanResult,
+} from "./goal-sending.js";
 
 function makeBlockedStep(overrides: Partial<PlanStep> = {}): PlanStep {
   return {
@@ -109,6 +114,7 @@ describe("sendBlockedNotification", () => {
 
   afterEach(() => {
     fs.rmSync(testGoalsDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   it("persists question tracking when PNG delivery succeeds", async () => {
@@ -323,5 +329,51 @@ describe("sendBlockedNotification", () => {
     for (const key of forbiddenKeys) {
       expect(env).not.toHaveProperty(key);
     }
+  });
+
+  it("redacts secret values from agent-derived background replies", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "FAKE_TELEGRAM_SECRET_123");
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 111 });
+    const bot = {
+      api: {
+        sendMessage,
+      },
+    };
+
+    await sendGoalBackgroundResult(
+      {
+        bot: bot as never,
+        chatId: 5005,
+        runtime: createRuntime(),
+      },
+      "Agent output includes FAKE_TELEGRAM_SECRET_123",
+    );
+
+    const sentText = sendMessage.mock.calls[0]?.[1] as string;
+    expect(sentText).toContain("[REDACTED]");
+    expect(sentText).not.toContain("FAKE_TELEGRAM_SECRET_123");
+  });
+
+  it("redacts secret values from agent-derived plan result text", async () => {
+    vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_GATEWAY_SECRET_456");
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 222 });
+    const bot = {
+      api: {
+        sendMessage,
+      },
+    };
+
+    await sendGoalPlanResult({
+      bot: bot as never,
+      chatId: 5006,
+      runtime: createRuntime(),
+      result: {
+        text: "Planner output includes FAKE_GATEWAY_SECRET_456",
+      },
+    });
+
+    const sentText = sendMessage.mock.calls[0]?.[1] as string;
+    expect(sentText).toContain("[REDACTED]");
+    expect(sentText).not.toContain("FAKE_GATEWAY_SECRET_456");
   });
 });

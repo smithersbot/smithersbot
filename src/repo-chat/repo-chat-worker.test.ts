@@ -441,6 +441,36 @@ describe("repo-chat-worker", () => {
       expect(result.cliSessionId).toBe("codex-thread-file");
     });
 
+    it("redacts secret values from response files and captured subprocess output", async () => {
+      vi.stubEnv("TELEGRAM_BOT_TOKEN", "FAKE_TELEGRAM_SECRET_123");
+      vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_GATEWAY_SECRET_456");
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.writeFileSync(RESPONSE_FILE_PATH, "Do not leak FAKE_TELEGRAM_SECRET_123\n", "utf-8");
+        return {
+          stdout: "stdout has FAKE_GATEWAY_SECRET_456",
+          stderr: "stderr has FAKE_TELEGRAM_SECRET_123",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "How does repo chat work?",
+        workingDir: "/repo",
+        cliSessionId: "codex-session-existing",
+      });
+
+      expect(result.text).toContain("[REDACTED]");
+      expect(result.text).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      expect(result.stdout).toContain("[REDACTED]");
+      expect(result.stdout).not.toContain("FAKE_GATEWAY_SECRET_456");
+      expect(result.stderr).toContain("[REDACTED]");
+      expect(result.stderr).not.toContain("FAKE_TELEGRAM_SECRET_123");
+    });
+
     it("returns manual markdown when Codex last-message and stdout are Done.", async () => {
       const fullMarkdown = "## Repo chat answer\n\n- First line\n- Second line";
       runCliProcessMock.mockImplementationOnce(async () => {

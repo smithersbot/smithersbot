@@ -9,6 +9,7 @@ import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-m
 import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { getLogger } from "../logging/logger.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 
@@ -115,13 +116,15 @@ export function buildCodexRepoChatArgs(params: {
 }
 
 function truncateErrorDetail(detail: string): string {
-  if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
-  return `${detail.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
+  const redacted = redactSecretValues(detail);
+  if (redacted.length <= MAX_ERROR_DETAIL_CHARS) return redacted;
+  return `${redacted.slice(0, MAX_ERROR_DETAIL_CHARS)}...`;
 }
 
 function tailErrorDetail(detail: string): string {
-  if (detail.length <= MAX_ERROR_DETAIL_CHARS) return detail;
-  return `...${detail.slice(detail.length - MAX_ERROR_DETAIL_CHARS)}`;
+  const redacted = redactSecretValues(detail);
+  if (redacted.length <= MAX_ERROR_DETAIL_CHARS) return redacted;
+  return `...${redacted.slice(redacted.length - MAX_ERROR_DETAIL_CHARS)}`;
 }
 
 function parseClaudeStdoutEvents(stdout: string): Array<Record<string, unknown>> {
@@ -313,7 +316,7 @@ function cleanupResponseFile(filePath: string): void {
 
 function readResponseFile(filePath: string): string {
   try {
-    return fs.readFileSync(filePath, "utf-8").trim();
+    return redactSecretValues(fs.readFileSync(filePath, "utf-8").trim());
   } catch {
     return "";
   }
@@ -401,7 +404,7 @@ async function repairResponseFile(params: {
   });
 
   try {
-    return fs.readFileSync(params.responseFilePath, "utf-8").trim();
+    return redactSecretValues(fs.readFileSync(params.responseFilePath, "utf-8").trim());
   } catch {
     return "";
   }
@@ -512,7 +515,7 @@ export async function runRepoChatWorker(
       if (isPlaceholderRepoChatReply(stdoutFallbackText)) {
         rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(stdoutFallbackText);
       } else {
-        responseText = stdoutFallbackText;
+        responseText = redactSecretValues(stdoutFallbackText);
       }
     }
 
@@ -537,8 +540,8 @@ export async function runRepoChatWorker(
       text: responseText,
       cliSessionId,
       durationMs,
-      stdout,
-      stderr,
+      stdout: redactSecretValues(stdout),
+      stderr: redactSecretValues(stderr),
     };
   } finally {
     cleanupResponseFile(manualResponseFilePath);

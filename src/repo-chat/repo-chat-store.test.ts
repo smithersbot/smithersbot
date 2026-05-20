@@ -107,4 +107,25 @@ describe("repo-chat-store", () => {
     expect(oldRef).toBeUndefined();
     expect(newRef?.id).toBe("repo-chat-1");
   });
+
+  it("redacts secret values from persisted session artifacts", () => {
+    const originalToken = process.env.SMITHERSBOT_GATEWAY_TOKEN;
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "FAKE_GATEWAY_SECRET_456";
+    try {
+      saveRepoChatSession(
+        makeSession({
+          cliSessionId: "thread-FAKE_GATEWAY_SECRET_456",
+          workingDir: "/tmp/FAKE_GATEWAY_SECRET_456/repo",
+        }),
+        tmpDir,
+      );
+    } finally {
+      if (originalToken === undefined) delete process.env.SMITHERSBOT_GATEWAY_TOKEN;
+      else process.env.SMITHERSBOT_GATEWAY_TOKEN = originalToken;
+    }
+
+    const sessionJson = fs.readFileSync(path.join(tmpDir, "repo-chat-1", "session.json"), "utf8");
+    expect(sessionJson).toContain("[REDACTED]");
+    expect(sessionJson).not.toContain("FAKE_GATEWAY_SECRET_456");
+  });
 });

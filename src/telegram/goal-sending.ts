@@ -26,6 +26,7 @@ import type {
   StepResult,
 } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { shortenHomePath } from "../utils.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks, markdownToTelegramHtml } from "./format.js";
@@ -52,7 +53,8 @@ export async function sendGoalReply(
   replyToMessageId?: number,
   replyMarkup?: InlineKeyboardMarkup,
 ): Promise<number | undefined> {
-  if (!markdown.trim()) {
+  const safeMarkdown = redactSecretValues(markdown);
+  if (!safeMarkdown.trim()) {
     const threadParams = threadId != null ? { message_thread_id: threadId } : {};
     const replyParams =
       replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
@@ -70,7 +72,7 @@ export async function sendGoalReply(
     return sent?.message_id;
   }
   let lastMessageId: number | undefined;
-  const chunks = markdownToTelegramChunks(markdown, 4000);
+  const chunks = markdownToTelegramChunks(safeMarkdown, 4000);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const isLast = i === chunks.length - 1;
@@ -138,9 +140,10 @@ async function sendGoalPlanMessage(params: {
 }): Promise<number | undefined> {
   const { bot, chatId, markdown, runtime, runIdPrefix, revision, threadId, replyToMessageId } =
     params;
-  if (!markdown.trim()) return undefined;
+  const safeMarkdown = redactSecretValues(markdown);
+  if (!safeMarkdown.trim()) return undefined;
 
-  const chunks = markdownToTelegramChunks(markdown, 4000);
+  const chunks = markdownToTelegramChunks(safeMarkdown, 4000);
   const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, revision);
   let lastMessageId: number | undefined;
 
@@ -278,12 +281,17 @@ export function persistManualTests(
   const run = loadRun(runId);
   if (!run) return;
   if (manualTests !== undefined && manualTests !== null) {
-    run.manualTests = manualTests;
+    run.manualTests = manualTests.map((test) => ({
+      ...test,
+      description: redactSecretValues(test.description),
+      reason: test.reason == null ? undefined : redactSecretValues(test.reason),
+      detail: redactSecretValues(test.detail),
+    }));
     delete run.manualTestsError;
   } else {
     delete run.manualTests;
     if (manualTestsError?.trim()) {
-      run.manualTestsError = manualTestsError.trim();
+      run.manualTestsError = redactSecretValues(manualTestsError.trim());
     } else {
       delete run.manualTestsError;
     }
@@ -501,9 +509,9 @@ export async function sendGoalPlanResult(params: {
 
     try {
       // Build a rich caption header with metadata
-      const captionHeader = result.plan
-        ? buildCaptionHeader(result)
-        : formatCaptionLabel("Plan", runIdPrefix);
+      const captionHeader = redactSecretValues(
+        result.plan ? buildCaptionHeader(result) : formatCaptionLabel("Plan", runIdPrefix),
+      );
 
       // Try to send plan DAG as a single PNG photo with inline keyboard
       if (result.plan) {
@@ -591,7 +599,7 @@ export async function sendGoalPlanResult(params: {
     const sentId = await sendGoalReply(
       bot,
       chatId,
-      result.text,
+      redactSecretValues(result.text),
       runtime,
       threadId,
       replyToMessageId,
@@ -607,7 +615,14 @@ export async function sendGoalPlanResult(params: {
       });
     }
   } else {
-    await sendGoalReply(bot, chatId, result.text, runtime, threadId, replyToMessageId);
+    await sendGoalReply(
+      bot,
+      chatId,
+      redactSecretValues(result.text),
+      runtime,
+      threadId,
+      replyToMessageId,
+    );
   }
 }
 
