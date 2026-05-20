@@ -1,0 +1,8 @@
+./src/gateway/gateway-cli-backend.live.test.ts:49:    expect(resolved?.config.args).not.toContain("--dangerously-skip-permissions");
+./src/gateway/gateway-cli-backend.live.test.ts:50:    expect(resolved?.config.resumeArgs).not.toContain("--dangerously-skip-permissions");
+./src/gateway/gateway-cli-backend.live.test.ts:59:              args: ["-p", "--output-format", "json", "--dangerously-skip-permissions"],
+./src/gateway/gateway-cli-backend.live.test.ts:66:    expect(resolved?.config.args).toContain("--dangerously-skip-permissions");
+./src/agents/cli-backends.test.ts:17:    expect(resolved?.config.args).not.toContain("--dangerously-skip-permissions");
+./src/agents/cli-backends.test.ts:18:    expect(resolved?.config.resumeArgs).not.toContain("--dangerously-skip-permissions");
+./src/agents/cli-backends.test.ts:27:              args: ["-p", "--output-format", "json", "--dangerously-skip-permissions"],
+./src/agents/cli-backends.test.ts:34:    expect(resolved?.config.args).toContain("--dangerously-skip-permissions");

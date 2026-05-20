@@ -1,0 +1,18 @@
+./src/cron/nightwatch.ts:320:  const result = await runCliProcess({
+./src/cron/nightwatch.ts:354:  const result = await runCliProcess({
+./src/goal/post-execution-review.ts:350:    result = await runCliProcess({
+./src/goal/cli-worker.ts:208:  await runCliProcess({
+./src/goal/cli-worker.ts:347:  const processPromise = runCliProcess({
+./src/goal/plan-autocheck.ts:582:  const procResult = await runCliProcess({
+./src/goal/cli-process.test.ts:41:    const result = await runCliProcess({
+./src/goal/cli-process.test.ts:61:    const result = await runCliProcess({
+./src/goal/cli-process.ts:65:export async function runCliProcess(params: RunCliProcessParams): Promise<RunCliProcessResult> {
+./src/goal/cli-planner.ts:535:    procResult = await runCliProcess({
+./src/goal/cli-planner.ts:683:    procResult = await runCliProcess({
+./src/goal/manual-tests.ts:297:  const procResult = await runCliProcess({
+./src/goal/lessons.ts:346:  const result = await runCliProcess({
+./src/goal/lessons.ts:385:  const result = await runCliProcess({
+./src/repo-chat/repo-chat-worker.ts:397:  await runCliProcess({
+./src/repo-chat/repo-chat-worker.ts:444:    const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
+./src/telegram/goal-sending.ts:741:    const result = await runCliProcess({
+./src/telegram/goal-sending.ts:764:  const result = await runCliProcess({
