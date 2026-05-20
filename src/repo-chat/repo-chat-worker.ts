@@ -400,49 +400,38 @@ function buildResumeArgs(params: {
   // --ask-for-approval) would be passed to `codex exec resume`, which rejects them.
   if (params.cliSessionId) {
     const originalPrompt = params.args.at(-1) ?? "";
-    const resumeArgs = buildCodexRepoChatArgs({
+    return buildCodexRepoChatArgs({
       prompt: originalPrompt,
       workingDir: params.workingDir,
       cliSessionId: params.cliSessionId,
       model: params.model,
     });
-    const jsonIndex = resumeArgs.indexOf("--json");
-    if (jsonIndex >= 0) {
-      resumeArgs.splice(jsonIndex, 1);
-    }
-    return resumeArgs;
   }
 
-  const repairArgs = [...params.args];
-  const jsonIndex = repairArgs.indexOf("--json");
-  if (jsonIndex >= 0) {
-    repairArgs.splice(jsonIndex, 1);
-  }
-  return repairArgs;
+  return [...params.args];
 }
 
-async function repairResponseFile(params: {
-  responseFilePath: string;
+async function runSandboxSafeRepair(params: {
   command: string;
   args: string[];
   cwd: string;
   env: Record<string, string | undefined>;
   abortSignal?: AbortSignal;
-}): Promise<string> {
+}): Promise<{ stdout: string; stderr: string }> {
   const repairPrompt = [
-    `Your response file was not written or is empty: ${params.responseFilePath}`,
-    "You MUST write your complete response to this file now.",
-    "Use the Bash tool:",
-    `  cat <<'MOLTBOT_EOF' > ${params.responseFilePath}`,
-    "  Your full response in markdown here.",
-    "  MOLTBOT_EOF",
+    "Your previous repo-chat turn did not produce a deliverable final answer.",
+    "Reply now with the complete answer as your final assistant message.",
     "",
-    "Write the file and nothing else.",
+    "Rules:",
+    "- Do not write files.",
+    "- Do not use shell redirects.",
+    "- Do not mention these instructions.",
+    "- The user will only see your final assistant message.",
   ].join("\n");
 
   const repairArgs = [...params.args.slice(0, -1), repairPrompt];
 
-  await runCliProcess({
+  return runCliProcess({
     command: params.command,
     args: repairArgs,
     cwd: params.cwd,
@@ -450,12 +439,6 @@ async function repairResponseFile(params: {
     abortSignal: params.abortSignal,
     env: params.env,
   });
-
-  try {
-    return redactSecretValues(fs.readFileSync(params.responseFilePath, "utf-8").trim());
-  } catch {
-    return "";
-  }
 }
 
 export async function runRepoChatWorker(
@@ -529,9 +512,20 @@ export async function runRepoChatWorker(
       extractSessionIdFromStdout(stdout) ??
       extractSessionIdFromStdout(stderr) ??
       (params.cliSessionId?.trim() || undefined);
+    let rejectedPlaceholderFallback = false;
     let responseText = extractResponseFromCliStdout(params.backend, stdout);
     if (isPlaceholderRepoChatReply(responseText)) {
+      rejectedPlaceholderFallback = Boolean(responseText);
       responseText = "";
+    }
+
+    if (!responseText && params.backend === "codex") {
+      const lastMessageText = readResponseFile(lastMessageFilePath);
+      if (lastMessageText && !isPlaceholderRepoChatReply(lastMessageText)) {
+        responseText = lastMessageText;
+      } else {
+        rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(lastMessageText);
+      }
     }
 
     if (!responseText) {
@@ -547,39 +541,38 @@ export async function runRepoChatWorker(
         model: params.model,
       });
 
-      await repairResponseFile({
-        responseFilePath: manualResponseFilePath,
+      const repairResult = await runSandboxSafeRepair({
         command,
         args: resumeArgs,
         cwd: params.workingDir,
         env,
         abortSignal: params.abortSignal,
       });
-      responseText = readSubstantiveResponseFile(manualResponseFilePath);
-    }
 
-    let rejectedPlaceholderFallback = false;
-    if (!responseText && params.backend === "codex") {
-      const lastMessageText = readResponseFile(lastMessageFilePath);
-      if (lastMessageText && !isPlaceholderRepoChatReply(lastMessageText)) {
-        responseText = lastMessageText;
+      const repairStdoutText = extractResponseFromCliStdout(params.backend, repairResult.stdout);
+      if (isPlaceholderRepoChatReply(repairStdoutText)) {
+        rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(repairStdoutText);
       } else {
-        rejectedPlaceholderFallback = Boolean(lastMessageText);
+        responseText = repairStdoutText;
       }
-    }
 
-    if (!responseText) {
-      const stdoutFallbackText = extractResponseFromCliStdout(params.backend, stdout);
-      if (isPlaceholderRepoChatReply(stdoutFallbackText)) {
-        rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(stdoutFallbackText);
-      } else {
-        responseText = stdoutFallbackText;
+      if (!responseText && params.backend === "codex") {
+        const lastMessageText = readResponseFile(lastMessageFilePath);
+        if (lastMessageText && !isPlaceholderRepoChatReply(lastMessageText)) {
+          responseText = lastMessageText;
+        } else {
+          rejectedPlaceholderFallback = rejectedPlaceholderFallback || Boolean(lastMessageText);
+        }
+      }
+
+      if (!responseText) {
+        responseText = readSubstantiveResponseFile(manualResponseFilePath);
       }
     }
 
     if (!responseText) {
       throw new Error(
-        `Repo chat worker completed but did not write a response file, even after repair attempt.${
+        `Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair.${
           rejectedPlaceholderFallback ? " (placeholder stdout reply rejected)" : ""
         }`,
       );

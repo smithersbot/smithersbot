@@ -583,7 +583,7 @@ describe("repo-chat-worker", () => {
 
       expect(result).toBeUndefined();
       expect((caught as Error | undefined)?.message).toContain(
-        "did not write a response file, even after repair attempt",
+        "completed without a deliverable response after CLI extraction",
       );
     });
 
@@ -714,16 +714,19 @@ describe("repo-chat-worker", () => {
           signal: null,
           durationMs: 44,
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered response", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 55,
-          };
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Recovered response" }],
+            },
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 55,
         });
 
       const result = await runRepoChatWorker({
@@ -755,7 +758,11 @@ describe("repo-chat-worker", () => {
       const repairSepIdx = repairCall.args.indexOf("--");
       expect(repairSepIdx).toBeGreaterThan(repairResumeIdx);
       expect(repairSepIdx).toBe(repairCall.args.length - 2);
-      expect(repairCall.args.at(-1)).toContain("Your response file was not written or is empty");
+      expect(repairCall.args.at(-1)).toContain(
+        "Reply now with the complete answer as your final assistant message.",
+      );
+      expect(repairCall.args.at(-1)).toContain("Do not write files.");
+      expect(repairCall.args.at(-1)).not.toContain("cat <<");
       expect(result.text).toBe("Recovered response");
     });
 
@@ -771,16 +778,19 @@ describe("repo-chat-worker", () => {
           signal: null,
           durationMs: 50,
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Repaired big response", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 60,
-          };
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Repaired big response" }],
+            },
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 60,
         });
 
       await runRepoChatWorker({
@@ -843,16 +853,14 @@ describe("repo-chat-worker", () => {
             durationMs: 25,
           };
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered from empty file", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 26,
-          };
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Recovered from empty file"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 26,
         });
 
       const result = await runRepoChatWorker({
@@ -867,8 +875,11 @@ describe("repo-chat-worker", () => {
       };
       expect(repairCall.args).toContain("resume");
       expect(repairCall.args).toContain("codex-thread-1");
-      expect(repairCall.args).not.toContain("--json");
-      expect(repairCall.args.at(-1)).toContain("Write the file and nothing else.");
+      expect(repairCall.args).toContain("--json");
+      expect(repairCall.args.at(-1)).toContain(
+        "Reply now with the complete answer as your final assistant message.",
+      );
+      expect(repairCall.args.at(-1)).not.toContain("cat <<");
       expect(result.text).toBe("Recovered from empty file");
     });
 
@@ -885,16 +896,14 @@ describe("repo-chat-worker", () => {
             durationMs: 25,
           };
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered with preserved session", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 26,
-          };
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Recovered with preserved session"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 26,
         });
 
       const result = await runRepoChatWorker({
@@ -992,16 +1001,14 @@ describe("repo-chat-worker", () => {
           signal: null,
           durationMs: 30,
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered repo answer", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 31,
-          };
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Recovered repo answer"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
         });
 
       const result = await runRepoChatWorker({
@@ -1030,16 +1037,14 @@ describe("repo-chat-worker", () => {
             durationMs: 36,
           };
         })
-        .mockImplementationOnce(async () => {
-          fs.writeFileSync(RESPONSE_FILE_PATH, "Recovered after missing manual file", "utf-8");
-          return {
-            stdout: "",
-            stderr: "",
-            timedOut: false,
-            exitCode: 0,
-            signal: null,
-            durationMs: 37,
-          };
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Recovered after missing manual file"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 37,
         });
 
       const result = await runRepoChatWorker({
@@ -1081,7 +1086,7 @@ describe("repo-chat-worker", () => {
           workingDir: "/repo",
         }),
       ).rejects.toThrow(
-        "Repo chat worker completed but did not write a response file, even after repair attempt. (placeholder stdout reply rejected)",
+        "Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair. (placeholder stdout reply rejected)",
       );
       expect(runCliProcessMock).toHaveBeenCalledTimes(2);
     });
@@ -1118,7 +1123,7 @@ describe("repo-chat-worker", () => {
           workingDir: "/repo",
         }),
       ).rejects.toThrow(
-        "Repo chat worker completed but did not write a response file, even after repair attempt. (placeholder stdout reply rejected)",
+        "Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair. (placeholder stdout reply rejected)",
       );
       expect(runCliProcessMock).toHaveBeenCalledTimes(2);
     });
@@ -1179,7 +1184,7 @@ describe("repo-chat-worker", () => {
           workingDir: "/repo",
         }),
       ).rejects.toThrow(
-        "Repo chat worker completed but did not write a response file, even after repair attempt.",
+        "Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair.",
       );
       expect(runCliProcessMock).toHaveBeenCalledTimes(2);
     });
