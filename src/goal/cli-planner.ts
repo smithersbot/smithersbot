@@ -10,7 +10,7 @@ import {
 import { runCliProcess } from "./cli-process.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { requireEffectiveEnabledWorkers } from "./effective-workers.js";
-import { RATE_LIMIT_RE } from "./error-patterns.js";
+import { PROVIDER_TRANSIENT_OVERLOAD_RE, RATE_LIMIT_RE } from "./error-patterns.js";
 import {
   PlanParseError,
   buildPlanSystemPrompt,
@@ -152,6 +152,7 @@ const PLAN_REVISION_PROMPT_FILE_RE = /^revision_prompt_r(\d+)\.txt$/;
 function detectAnthropicDegradedReason(errorMessage: string): PlannerDegradedReason | undefined {
   if (!errorMessage) return undefined;
   if (ANTHROPIC_USAGE_LIMIT_RE.test(errorMessage)) return "anthropic_usage_limit";
+  if (PROVIDER_TRANSIENT_OVERLOAD_RE.test(errorMessage)) return "anthropic_overloaded";
   if (RATE_LIMIT_RE.test(errorMessage)) return "anthropic_rate_limit";
   return undefined;
 }

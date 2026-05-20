@@ -177,6 +177,7 @@ export type PlannerBackendId = "claude_code" | "codex";
 export type PlannerDegradedReason =
   | "anthropic_rate_limit"
   | "anthropic_usage_limit"
+  | "anthropic_overloaded"
   | "planner_backend_unavailable";
 
 /** Serialized form of a goal session persisted to disk. */
