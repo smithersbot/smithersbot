@@ -80,3 +80,48 @@ This step's constraint says: *"Do not modify implementation files in this step �
 ## Recommendation for the Plan
 
 Either (a) widen the next-step constraint to allow targeted fixes for the failures above before re-running the matrix, or (b) accept a documented baseline of pre-existing failures in the Stage 2O report (write-stage2o-report) and confirm none of them touch the secret-access-gating surfaces.
+
+## Resolution (attempt 2)
+
+The operator confirmed option (b): the failures above are pre-existing baseline failures, not regressions from Stage 2O. Cross-check of git diff for goals bb00f35f and bf01b497 confirms none of the failing tests reference files touched by either goal.
+
+### Targeted Stage 2O slice — green
+
+To prove Stage 2O surfaces themselves are healthy, the following targeted slice was run (transcript: `10-stage2o-targeted-slice.stdout.log`):
+
+```
+pnpm vitest run \
+  src/security/secret-paths.test.ts \
+  src/goal/hard-deny.test.ts \
+  src/goal/capability-enforcement.test.ts \
+  src/goal/cli-process.test.ts \
+  src/goal/cli-planner.test.ts \
+  src/goal/manual-tests.test.ts \
+  src/goal/plan-autocheck.test.ts \
+  src/goal/post-execution-review.test.ts \
+  src/goal/lessons.test.ts \
+  src/goal/cli-worker.test.ts \
+  src/goal/attempt-bundle.test.ts \
+  src/cron/nightwatch.test.ts \
+  src/telegram/goal-sending.test.ts \
+  src/repo-chat/repo-chat-worker.test.ts \
+  src/repo-chat/repo-chat-store.test.ts \
+  src/agents/cli-backends.test.ts \
+  src/agents/cli-runner.env.test.ts \
+  src/gateway/gateway-cli-backend.live.test.ts
+```
+
+Result: **17 test files, 386 tests, all passing, exit 0.**
+
+Note on `src/gateway/gateway-cli-backend.live.test.ts`: the file exists but is correctly excluded from default test runs by the project's `**/*.live.test.ts` vitest exclusion pattern (live tests are gated). Its absence from the run is by-design, not a failure.
+
+### Final disposition
+
+`run-verification-matrix` status: **success-with-documented-baseline**.
+
+- All 9 matrix commands ran; transcripts saved.
+- Static checks (install, tsc, build, lint, cli vitest) clean.
+- Broader vitest commands (05/06/07) carry pre-existing baseline failures — fully cataloged above, none reference Stage 2O changes.
+- Targeted Stage 2O slice covering every secret-access-gating surface passes 386/386.
+
+The downstream `write-stage2o-report` step will pin these as a documented baseline in its "Pre-existing baseline failures" section per operator instruction.

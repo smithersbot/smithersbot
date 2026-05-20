@@ -1,0 +1,30 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/matt/moltbot[39m
+
+ [32m✓[39m src/security/secret-paths.test.ts [2m([22m[2m62 tests[22m[2m)[22m[33m 344[2mms[22m[39m
+ [32m✓[39m src/goal/cli-planner.test.ts [2m([22m[2m35 tests[22m[2m)[22m[33m 696[2mms[22m[39m
+ [32m✓[39m src/goal/plan-autocheck.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 899[2mms[22m[39m
+ [32m✓[39m src/goal/cli-process.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 333[2mms[22m[39m
+ [32m✓[39m src/repo-chat/repo-chat-worker.test.ts [2m([22m[2m55 tests[22m[2m)[22m[33m 400[2mms[22m[39m
+ [32m✓[39m src/goal/cli-worker.test.ts [2m([22m[2m54 tests[22m[2m)[22m[32m 231[2mms[22m[39m
+ [32m✓[39m src/goal/lessons.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 7099[2mms[22m[39m
+     [33m[2m✓[22m[39m serializes concurrent addLesson writes so both lessons persist [33m 6260[2mms[22m[39m
+ [32m✓[39m src/telegram/goal-sending.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 276[2mms[22m[39m
+ [32m✓[39m src/cron/nightwatch.test.ts [2m([22m[2m29 tests[22m[2m)[22m[32m 129[2mms[22m[39m
+ [32m✓[39m src/goal/hard-deny.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 244[2mms[22m[39m
+ [32m✓[39m src/goal/manual-tests.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 192[2mms[22m[39m
+ [32m✓[39m src/repo-chat/repo-chat-store.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 98[2mms[22m[39m
+ [32m✓[39m src/goal/capability-enforcement.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 138[2mms[22m[39m
+ [32m✓[39m src/goal/post-execution-review.test.ts [2m([22m[2m24 tests[22m[2m)[22m[32m 127[2mms[22m[39m
+[90mstdout[2m | src/agents/cli-runner.env.test.ts[2m > [22m[2mrunCliAgent env[2m > [22m[2mstrips credential env from spawned CLI backends and preserves explicit backend env
+[22m[39m[agent/claude-cli] cli exec: provider=claude-cli model=opus promptChars=2
+
+ [32m✓[39m src/agents/cli-runner.env.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 96[2mms[22m[39m
+ [32m✓[39m src/goal/attempt-bundle.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/agents/cli-backends.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m17 passed[39m[22m[90m (17)[39m
+[2m      Tests [22m [1m[32m386 passed[39m[22m[90m (386)[39m
+[2m   Start at [22m 14:13:38
+[2m   Duration [22m 19.64s[2m (transform 15.98s, setup 1.63s, import 57.18s, tests 11.33s, environment 7ms)[22m
+
