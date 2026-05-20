@@ -235,7 +235,7 @@ The setup script will:
 
 - ask for your Telegram bot token
 - verify the token
-- tell you to open your new Telegram bot and press **Start**
+- tell you to open `@<your_bot_username>` (your new bot, **not** `@BotFather`) and press **Start**, or send any message
 - detect your Telegram private chat ID automatically
 - ask you to confirm the detected ID
 - create `~/.smithersbot/.env`
@@ -245,7 +245,7 @@ The setup script will:
 - set file permissions to `600`
 - print the next command to run
 
-When the script tells you to open your bot, go to Telegram, open the bot username you created, and press **Start**.
+When the script tells you to open your bot, go to Telegram and open the bot username you created (the one ending in `bot`, **not** `@BotFather`), then press **Start** or send any message.
 
 Then return to the terminal and continue.
 

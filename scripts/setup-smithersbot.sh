@@ -286,11 +286,12 @@ confirm_detected_telegram_id() {
 }
 
 manual_or_retry_telegram_id() {
+  local bot_username=$1
   local answer manual_id
 
   while true; do
     printf 'No private Telegram message was detected before the setup timeout.\n' >&2
-    printf 'Open the bot in Telegram, press Start, then choose retry. You can also enter the private chat ID manually.\n' >&2
+    printf 'Open @%s (your new bot, NOT @BotFather) in Telegram and press Start, or send any message. Then choose retry, or enter the private chat ID manually.\n' "$bot_username" >&2
     printf 'Retry detection or enter ID manually? [r/m] ' >&2
     IFS= read -r answer
     case "$answer" in
@@ -317,7 +318,7 @@ detect_telegram_allowed_id() {
   local poll_interval=${SMITHERSBOT_SETUP_POLL_INTERVAL:-2}
   local start now deadline response description detected chat_id from_id selected_id
 
-  printf 'Open @%s in Telegram, press Start, then come back here.\n' "$bot_username" >&2
+  printf 'Open @%s (your new bot, NOT @BotFather) in Telegram and press Start, or send any message.\n' "$bot_username" >&2
 
   while true; do
     start=$(date +%s)
@@ -357,7 +358,7 @@ detect_telegram_allowed_id() {
       sleep "$poll_interval"
     done
 
-    if manual_or_retry_telegram_id; then
+    if manual_or_retry_telegram_id "$bot_username"; then
       return 0
     fi
   done

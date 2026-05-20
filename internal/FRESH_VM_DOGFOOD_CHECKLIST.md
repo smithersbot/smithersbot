@@ -51,7 +51,7 @@ Do not put real tokens, real chat IDs, or personal machine paths in committed fi
 
     - reads the bot token via hidden input (never echoed),
     - calls `getMe` to verify the token and shows `@<bot_username>`,
-    - tells you to open the bot and press **Start**,
+    - tells you to open `@<bot_username>` (your new bot, NOT `@BotFather`) in Telegram and press **Start**, or send any message,
     - polls `getUpdates` for up to 60s, filters to `message.chat.type === "private"`, prefers the newest update by `update_id`, ignores group/supergroup/channel/edited/callback updates,
     - shows the detected `chat.id` (and `from.id` only when it differs) and asks `Use this Telegram private chat ID for allowFrom? [Y/n]`,
     - on timeout, offers retry or manual entry,

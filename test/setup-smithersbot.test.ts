@@ -168,7 +168,7 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain("Telegram bot verified: @smithersbot2_test_bot");
     expect(result.output).toContain(
-      "Open @smithersbot2_test_bot in Telegram, press Start, then come back here.",
+      "Open @smithersbot2_test_bot (your new bot, NOT @BotFather) in Telegram and press Start, or send any message.",
     );
     expect(result.output).toContain("Use this Telegram private chat ID for allowFrom? [Y/n]");
     expect(result.output).not.toContain(testToken);
