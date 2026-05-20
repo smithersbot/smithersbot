@@ -46,7 +46,7 @@ const PLANNER_STDERR_FILE = "planning_stderr.txt";
 const PLANNER_RAW_OUTPUT_FILE = "planning_raw_output.txt";
 export const EXECUTION_PLAN_FILE = "execution_plan.json";
 
-const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash,Write";
+export const CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash";
 const ANTHROPIC_USAGE_LIMIT_RE =
   /(?:you(?:'|’)?ve|you have)\s+hit\s+your\s+(?:chatgpt\s+)?(?:usage\s+)?limit|usage\s+limit|resets?\s+\d/i;
 

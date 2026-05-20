@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
-import { runCliPlanning, runCliPlanRevision, EXECUTION_PLAN_FILE } from "./cli-planner.js";
+import {
+  CLAUDE_ALLOWED_TOOLS,
+  runCliPlanning,
+  runCliPlanRevision,
+  EXECUTION_PLAN_FILE,
+} from "./cli-planner.js";
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
@@ -71,6 +76,13 @@ function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>):
     expect(env[key]).toBeUndefined();
   }
 }
+
+describe("CLAUDE_ALLOWED_TOOLS", () => {
+  it("does not grant the planner the Write tool", () => {
+    const tools = CLAUDE_ALLOWED_TOOLS.split(",").map((t) => t.trim());
+    expect(tools).not.toContain("Write");
+  });
+});
 
 describe("resolveEffectiveEnabledWorkers", () => {
   it("uses Codex only when Codex is the only available backend", () => {
