@@ -3,7 +3,7 @@ import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
 } from "./backend-availability.js";
-import { collectText, isRecord } from "./cli-output-parsing.js";
+import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
 import { extractJson, PlanParseError } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
@@ -94,8 +94,66 @@ function buildCombinedManualTestsPrompt(userMessage: string): string {
   );
 }
 
-function extractAssistantTextFromCliResult(rawStdout: string): string {
-  const parsed = extractJson(rawStdout);
+function isAssistantLikeEvent(entry: Record<string, unknown>): boolean {
+  const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+  if (role === "assistant") return true;
+  if (!type) return false;
+  return (
+    type.includes("assistant") ||
+    type === "agent_message" ||
+    type === "agent_message_delta" ||
+    type === "item.completed" ||
+    type === "item.text"
+  );
+}
+
+function extractAssistantTextFromEvent(entry: Record<string, unknown>): string {
+  return (
+    collectText(entry.message).trim() ||
+    collectText(entry.content).trim() ||
+    collectText(entry.item).trim() ||
+    collectText(entry.delta).trim() ||
+    collectText(entry).trim()
+  );
+}
+
+function extractAssistantTextFromJsonLines(rawStdout: string): string | undefined {
+  const lines = parseJsonLines(rawStdout);
+  if (lines.length === 0) return undefined;
+
+  // Prefer the final non-error type:"result" event (Codex/Claude stream-json convention).
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const entry = lines[i];
+    if (!entry) continue;
+    const type = typeof entry.type === "string" ? entry.type : "";
+    if (type !== "result") continue;
+    if (entry.is_error === true) continue;
+    const text =
+      collectText(entry.result).trim() ||
+      collectText(entry.message).trim() ||
+      collectText(entry.content).trim();
+    if (text) return text;
+  }
+
+  // Fall back to the latest assistant/item.completed/agent_message/item.text event.
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const entry = lines[i];
+    if (!entry || !isAssistantLikeEvent(entry)) continue;
+    const text = extractAssistantTextFromEvent(entry);
+    if (text) return text;
+  }
+
+  return undefined;
+}
+
+function extractAssistantTextFromSingleObject(rawStdout: string): string | undefined {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = extractJson(rawStdout);
+  } catch {
+    return undefined;
+  }
   const result = parsed.result;
 
   if (Array.isArray(result)) {
@@ -130,6 +188,20 @@ function extractAssistantTextFromCliResult(rawStdout: string): string {
     collectText(parsed.content).trim() ||
     collectText(parsed).trim();
   if (fallbackText) return fallbackText;
+
+  return undefined;
+}
+
+function extractAssistantTextFromCliResult(rawStdout: string): string {
+  // Codex --json emits a JSONL event stream (thread.started, item.completed, agent_message,
+  // and a final type:"result"). Walk from the end and prefer the final result event;
+  // otherwise fall back to assistant/item.completed/agent_message/item.text events.
+  const jsonlText = extractAssistantTextFromJsonLines(rawStdout);
+  if (jsonlText) return jsonlText;
+
+  // Claude `--output-format json --max-turns 1` emits a single JSON object with `result: [...]`.
+  const singleObjectText = extractAssistantTextFromSingleObject(rawStdout);
+  if (singleObjectText) return singleObjectText;
 
   throw new Error("Manual test CLI response did not include assistant text.");
 }

@@ -470,6 +470,179 @@ describe("generateManualTests", () => {
     expect(manualTests).toEqual([]);
   });
 
+  it('parses Codex JSONL with a final type:"result" event containing tests', async () => {
+    const finalTestsJson = JSON.stringify({
+      tests: [
+        {
+          description: "Test Codex JSONL final result parsing",
+          criticality: 7,
+          reason: "Requires a real Codex CLI run",
+          detail:
+            "**Step 1.** Run /new_goal in Telegram.\n**Step 2.** Confirm manual tests appear.",
+        },
+      ],
+    });
+    const codexJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_xyz" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { id: "msg_1", type: "agent_message", text: "interim progress" },
+      }),
+      JSON.stringify({ type: "result", result: finalTestsJson }),
+    ].join("\n");
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: codexJsonl,
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 41,
+    });
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Improve Telegram flow",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([
+      {
+        description: "Test Codex JSONL final result parsing",
+        criticality: 7,
+        reason: "Requires a real Codex CLI run",
+        detail: "**Step 1.** Run /new_goal in Telegram.\n**Step 2.** Confirm manual tests appear.",
+      },
+    ]);
+  });
+
+  it("parses Codex JSONL with thread.started + assistant event returning tests: []", async () => {
+    const codexJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_abc" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          id: "msg_1",
+          type: "agent_message",
+          text: JSON.stringify({
+            tests: [],
+            message: "All functionality was verified automatically",
+          }),
+        },
+      }),
+    ].join("\n");
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: codexJsonl,
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 38,
+    });
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Inspect repository status",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([]);
+  });
+
+  it("ignores irrelevant early Codex JSONL events when extracting the assistant payload", async () => {
+    const finalTestsJson = JSON.stringify({
+      tests: [
+        {
+          description: "Test trailing-event-only parsing",
+          criticality: 4,
+          reason: "Bot cannot validate visual layout",
+          detail: "**Step 1.** Render the page.\n**Step 2.** Confirm spacing looks correct.",
+        },
+      ],
+    });
+    const codexJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_qq" }),
+      JSON.stringify({ type: "turn.started" }),
+      JSON.stringify({ type: "item.started", item: { id: "tool_1", type: "tool_call" } }),
+      JSON.stringify({ type: "item.completed", item: { id: "tool_1", type: "tool_call" } }),
+      JSON.stringify({ type: "result", result: finalTestsJson }),
+      JSON.stringify({ type: "turn.completed" }),
+    ].join("\n");
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: codexJsonl,
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 44,
+    });
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    const manualTests = await withNonTestEnv(() =>
+      generateManualTests({
+        goal: "Polish UI spacing",
+        steps: makeDoneSteps(),
+      }),
+    );
+
+    expect(manualTests).toEqual([
+      {
+        description: "Test trailing-event-only parsing",
+        criticality: 4,
+        reason: "Bot cannot validate visual layout",
+        detail: "**Step 1.** Render the page.\n**Step 2.** Confirm spacing looks correct.",
+      },
+    ]);
+  });
+
+  it("throws a clear error when Codex stdout has no assistant text or final result", async () => {
+    const codexJsonl = [
+      JSON.stringify({ type: "thread.started", thread_id: "thread_no_result" }),
+      JSON.stringify({ type: "turn.started" }),
+    ].join("\n");
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: codexJsonl,
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 21,
+    });
+    resolveClaudeBinaryMock.mockReturnValueOnce(null);
+    detectBackendAvailabilityMock.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({
+          goal: "No-op probe",
+          steps: makeDoneSteps(),
+        }),
+      ),
+    ).rejects.toThrow("Manual test CLI response did not include assistant text.");
+  });
+
   it("throws when the Claude CLI subprocess fails", async () => {
     runCliProcessMock.mockResolvedValueOnce({
       stdout: "",
