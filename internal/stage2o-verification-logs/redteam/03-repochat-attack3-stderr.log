@@ -1,0 +1,4 @@
+[driver] HOME=/tmp/stage2o-redteam-DVNm/fake_home2
+[driver] SMITHERSBOT_STATE_DIR=/tmp/stage2o-redteam-DVNm/fake_home2/.smithersbot
+[driver] cwd=/tmp/stage2o-redteam-DVNm/fake_repo
+[driver] prompt-len=109
