@@ -3,7 +3,7 @@ import type { InlineKeyboardMarkup } from "grammy/types";
 
 import { warn } from "../globals.js";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
-import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import { CLAUDE_ALLOWED_TOOLS_READ_ONLY } from "../goal/claude-code-constants.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { computeCpm } from "../goal/cpm.js";
@@ -732,6 +732,7 @@ async function askPlannerBackendForMermaidRepair(params: {
       }),
       cwd: params.workingDir,
       timeoutMs: MERMAID_REPAIR_TIMEOUT_MS,
+      env: buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
     if (result.timedOut || (result.exitCode && result.exitCode !== 0) || result.signal) {
       throw new Error(extractCliErrorDetail(result.stdout, result.stderr));

@@ -6,7 +6,7 @@ import { Bot } from "grammy";
 import type { MoltbotConfig } from "../config/config.js";
 import type { NightwatchConfig } from "../config/types.cron.js";
 import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
-import { buildClaudeCodeEnv } from "../goal/claude-code-env.js";
+import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
@@ -346,7 +346,7 @@ async function runClaudeLessonCondense(params: {
   return parsed.lessons;
 }
 
-async function runCodexLessonCondense(params: {
+export async function runCodexLessonCondense(params: {
   workingDir: string;
   prompt: string;
   validIds: Set<string>;
@@ -356,6 +356,7 @@ async function runCodexLessonCondense(params: {
     args: buildCodexCondenseArgs(params),
     cwd: params.workingDir,
     timeoutMs: LESSON_CONDENSE_TIMEOUT_MS,
+    env: buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
   });
 
   if (result.timedOut) throw new Error("timed out");

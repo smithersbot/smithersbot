@@ -19,6 +19,15 @@ vi.mock("../goal/scout.js", () => ({
   resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
 }));
 
+const mockRunCliProcess = vi.hoisted(() => vi.fn());
+vi.mock("../goal/cli-process.js", () => ({
+  runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
+}));
+
+vi.mock("../goal/backend-availability.js", () => ({
+  getCodexAskForApprovalPlacement: () => "before_exec",
+}));
+
 import {
   NIGHTWATCH_DEFAULTS,
   NIGHTWATCH_JOB_NAME,
@@ -29,6 +38,7 @@ import {
   expandTilde,
   normalizeCondensedLesson,
   pruneAndCondenseLessons,
+  runCodexLessonCondense,
   registerNightwatchJob,
   runNightwatch,
 } from "./nightwatch.js";
@@ -287,6 +297,49 @@ describe("nightwatch cron", () => {
   });
 
   describe("pruneAndCondenseLessons", () => {
+    it("strips forbidden credential env keys from Codex lesson condense", async () => {
+      const forbiddenKeys = [
+        "TELEGRAM_BOT_TOKEN",
+        "SMITHERSBOT_GATEWAY_TOKEN",
+        "CLAWDBOT_GATEWAY_TOKEN",
+        "MOLTBOT_GATEWAY_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+      ];
+      for (const key of forbiddenKeys) {
+        vi.stubEnv(key, `${key.toLowerCase()}-secret`);
+      }
+      mockRunCliProcess.mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({
+          lessons: [
+            {
+              pattern: "condensed",
+              lesson: "condensed lesson",
+              scope: "project",
+              sourceLessonIds: ["lesson-1"],
+            },
+          ],
+        }),
+        stderr: "",
+      });
+
+      await runCodexLessonCondense({
+        workingDir: "/repo/a",
+        prompt: "Condense lessons.",
+        validIds: new Set(["lesson-1"]),
+      });
+
+      expect(mockRunCliProcess).toHaveBeenCalledOnce();
+      const env = mockRunCliProcess.mock.calls[0]?.[0]?.env as Record<string, string | undefined>;
+      for (const key of forbiddenKeys) {
+        expect(env).not.toHaveProperty(key);
+      }
+    });
+
     it("caps project lessons per workingDir and global lessons across all directories", async () => {
       mockLoadLessons.mockReturnValue([
         {

@@ -13,6 +13,11 @@ const { mockRenderMermaidToPng, mockRepairMermaidDiagram } = vi.hoisted(() => ({
   mockRepairMermaidDiagram: vi.fn(),
 }));
 
+const mockRunCliProcess = vi.hoisted(() => vi.fn());
+vi.mock("../goal/cli-process.js", () => ({
+  runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
+}));
+
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
   return {
@@ -262,5 +267,61 @@ describe("sendBlockedNotification", () => {
         reply_parameters: { message_id: 55 },
       }),
     );
+  });
+
+  it("strips forbidden credential env keys from Codex mermaid repair", async () => {
+    const forbiddenKeys = [
+      "TELEGRAM_BOT_TOKEN",
+      "SMITHERSBOT_GATEWAY_TOKEN",
+      "CLAWDBOT_GATEWAY_TOKEN",
+      "MOLTBOT_GATEWAY_TOKEN",
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GITHUB_TOKEN",
+    ];
+    for (const key of forbiddenKeys) {
+      vi.stubEnv(key, `${key.toLowerCase()}-secret`);
+    }
+    const plan = makePlan([makeBlockedStep()]);
+    const runId = "run-codex-repair-env";
+    saveRun({
+      ...makeRun(runId, plan),
+      plannerBackendUsed: "codex",
+    });
+    mockRenderMermaidToPng.mockReturnValueOnce({ error: "parse error" });
+    mockRepairMermaidDiagram.mockImplementationOnce(async ({ askFn }) => {
+      await askFn("repair this diagram");
+      return Buffer.from("repaired-png");
+    });
+    mockRunCliProcess.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "graph TD\nA-->B",
+      stderr: "",
+    });
+    const sendPhoto = vi.fn().mockResolvedValue({ message_id: 987 });
+    const bot = {
+      api: {
+        sendPhoto,
+        sendMessage: vi.fn(),
+      },
+    };
+
+    await sendDagPng({
+      bot: bot as never,
+      chatId: 4004,
+      runtime: createRuntime(),
+      plan,
+      steps: plan.steps,
+      caption: "caption",
+      runId,
+    });
+
+    expect(mockRunCliProcess).toHaveBeenCalledOnce();
+    const env = mockRunCliProcess.mock.calls[0]?.[0]?.env as Record<string, string | undefined>;
+    for (const key of forbiddenKeys) {
+      expect(env).not.toHaveProperty(key);
+    }
   });
 });
