@@ -1,0 +1,33 @@
+=== Structural Grep Check 1: ?? "step" defaults for semgrep (non-test code) ===
+Pattern: '\?\? "step"' in src/ excluding *.test.ts
+---
+(empty — OK)
+
+=== Structural Grep Check 2: ?? "off" defaults for planAutocheck (non-test code) ===
+Pattern: 'planAutocheck.*\?\?' in src/ excluding *.test.ts
+---
+(empty — OK)
+
+Pattern (broader): 'planAutocheck' near '"off"' in src/ excluding *.test.ts
+---
+src/config/zod-schema.ts-464-        claudeCodeAuth: z.enum(["subscription", "api_key"]).optional(),
+src/config/zod-schema.ts:465:        planAutocheck: z.enum(["codex", "claude_code", "off"]).optional(),
+src/config/zod-schema.ts-466-        semgrep: z.enum(["off", "step", "goal"]).optional(),
+--
+--
+src/telegram/goal-commands.ts:309:  const configuredMode = params.config?.goal?.planAutocheck;
+src/telegram/goal-commands.ts-310-  if (configuredMode === "off") return undefined;
+--
+
+=== Structural Grep Check 3: planner prompt unconditional Use "codex" / Use "claude_code" ===
+Pattern: 'Use "codex"' in src/goal/
+---
+src/goal/planner.ts:36:- Use "codex" for coding tasks (creating/modifying code or files).
+
+Pattern: 'Use "claude_code"' in src/goal/
+---
+src/goal/planner.ts:37:- Use "claude_code" for testing tasks and every other type of task.
+
+Pattern: 'BACKEND SELECTION RULES' in src/goal/
+---
+src/goal/planner.ts:34:BACKEND SELECTION RULES (strict):

@@ -1,0 +1,11 @@
+=== Claude-only /new_goal smoke ===
+Date: 2026-05-20T00:57:03-04:00
+SMITHERSBOT_STATE_DIR: /tmp/stage2n-smoke/state-claude-only
+PATH override: prepend /tmp/stage2n-smoke/no-codex-shim (so 'codex' exits 1)
+Goal: 'Inspect the repository state and report whether the working tree is clean. Do not edit files.'
+Command: node scripts/run-node.mjs goal --dry-run --plan-only --output json --yes --working-dir /home/matt/moltbot 'Inspect ...'
+
+--- Begin output ---
+
+--- End output ---
+Exit code: 0

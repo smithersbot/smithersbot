@@ -1,0 +1,100 @@
++        "Do not treat untracked files as clean."
++      ],
++      "durationMinutes": 5,
++      "backend": "claude_code",
++      "risk": "low"
++    }
++  ]
++}
+diff --git a//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/node_specs/inspect-working-tree.md b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/node_specs/inspect-working-tree.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..b0056b6aed721beb14d8a30fa69bfef6d7e1dac4
+--- /dev/null
++++ b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/node_specs/inspect-working-tree.md
+@@ -0,0 +1,14 @@
++GOAL_ID: 8373ecb6-b4f8-48d6-a52c-da7eeda8b77d
++Type: Other
++Objective: Report git cleanliness
++
++Requirements:
++1. Inspect the repository root git status without editing repository files.
++2. Report whether the working tree is clean and identify any untracked, modified, staged, or deleted paths.
++
++Constraints:
++- Do not edit files in the repository.
++- Do not stage, commit, delete, or clean any working tree paths.
++- Write any required planning artifacts only under `/tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/`.
++
++Verification: git status --short --branch
+diff --git a//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/plan_draft.md b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/plan_draft.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb2a1f0139592f72fc33628c09e5fbe21bc0d455
+--- /dev/null
++++ b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/plan_draft.md
+@@ -0,0 +1,41 @@
++BEGIN_PLAN_DRAFT
++GOAL_ID: 8373ecb6-b4f8-48d6-a52c-da7eeda8b77d
++
++## Project Conventions
++
++- `CLAUDE.md` exists at the project root and is a symlink to `AGENTS.md`.
++- `AGENTS.md` also exists at the project root.
++- SmithersBot is a Node 22+/TypeScript ESM project focused on Telegram and the local goal-system runtime.
++- Source lives in `src/`; Telegram runtime code is in `src/telegram/`; goal-system code is in `src/goal/`; generated output in `dist/` must not be edited by hand.
++- Standard commands are `pnpm build`, `pnpm lint`, `pnpm exec tsc -p tsconfig.json`, targeted `pnpm vitest run <path>`, and `node scripts/run-node.mjs <args>` for the local CLI.
++- Keep changes focused, avoid unrelated refactors, never commit secrets, and verify before reporting completion.
++
++## Repository State
++
++The working tree is not clean. `git status --short --branch` reports the current branch as `claw/run/20260519-201401Z-20bb93d8-6472-40de-8a72-ebf75daee9c2` with two untracked files:
++
++- `internal/stage2n-verification-logs/11-structural-greps.log`
++- `internal/stage2n-verification-logs/12-smoke-codex-only.log`
++
++## Mermaid Dependency Graph
++
++graph TD
++  inspect-working-tree["Inspect working tree state"]
++
++## Node Summary
++
++| Node ID | Type | Objective | Verification | Effort | Risk | Uncertainty |
++|--------|------|-----------|--------------|--------|------|-------------|
++| inspect-working-tree | Other | Report git cleanliness | git status --short --branch | 1 | 1 | 1 |
++
++### Calibration Anchors
++
++- **Effort:** 1 = trivial one-liner change, 2 = small focused change (~10 min), 3 = moderate implementation (~20 min), 4 = substantial multi-file work (~30 min), 5 = complex cross-cutting change (30+ min)
++- **Risk:** 1 = safe isolated change, 3 = touches shared code, 5 = changes critical paths or public APIs
++- **Uncertainty:** 1 = well-understood with clear approach, 3 = some unknowns, 5 = significant unknowns requiring exploration
++
++## Edge Justifications
++
++- No edges are required because the goal is a single read-only repository-state inspection.
++
++END_PLAN_DRAFT
+diff --git a//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/scout_report.json b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/scout_report.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..40991fab5f8061b9e97a4fb35cbc4a9d3dba5d58
+--- /dev/null
++++ b//tmp/moltbot-goal-planner/8373ecb6-b4f8-48d6-a52c-da7eeda8b77d/scout/scout_report.json
+@@ -0,0 +1,15 @@
++{
++  "goal_id": "8373ecb6-b4f8-48d6-a52c-da7eeda8b77d",
++  "nodes": [
++    {
++      "id": "inspect-working-tree",
++      "type": "Other",
++      "objective": "Report git cleanliness",
++      "verification": "git status --short --branch",
++      "effort": 1,
++      "risk": 1,
++      "uncertainty": 1
++    }
++  ],
++  "edges": []
++}
+
+2026-05-20T04:52:56.098983Z ERROR codex_core::session: failed to record rollout items: thread 019e43b9-95f1-7a32-92ef-27b931de1cd4 not found
+tokens used
+58,843

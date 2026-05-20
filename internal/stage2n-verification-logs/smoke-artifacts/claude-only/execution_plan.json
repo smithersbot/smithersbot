@@ -1,0 +1,26 @@
+{
+  "workingDir": "/home/matt/moltbot",
+  "summary": "Inspect repository state via git and report whether the working tree is clean. Read-only task — no files are created or modified. Reports branch name plus a breakdown of modified, staged, and untracked files based on `git status --porcelain` output.",
+  "shortSummary": "Report whether the git working tree is clean",
+  "buildGate": {
+    "commands": [],
+    "runBetweenSteps": false
+  },
+  "steps": [
+    {
+      "id": "inspect-working-tree",
+      "description": "From /home/matt/moltbot, run `git rev-parse --abbrev-ref HEAD` to capture the current branch and `git status --porcelain` to enumerate any modifications. Report a single clear conclusion: 'clean' if the porcelain output is empty, otherwise 'not clean' with counts/listing broken down by modified, staged, and untracked entries. Do not edit, stage, commit, push, or delete anything. Do not run `git add`, `git clean`, `git reset`, or any other state-changing git command.",
+      "shortSummary": "Inspect and report working tree state",
+      "dependsOn": [],
+      "successCriteria": "Agent reports the current branch and a definitive clean/not-clean verdict based on `git status --porcelain`, with a listing of any untracked/modified/staged files when not clean. No files in the repository have been created, modified, staged, or deleted.",
+      "constraints": [
+        "Do not modify, create, stage, commit, push, or delete any files",
+        "Do not run git add, git clean, git reset, git checkout -- , or any other state-changing git command",
+        "Do not touch the .git directory directly",
+        "Read-only inspection only"
+      ],
+      "durationMinutes": 5,
+      "backend": "claude_code"
+    }
+  ]
+}
