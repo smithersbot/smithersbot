@@ -7,6 +7,7 @@ import { runCliPlanning, runCliPlanRevision, EXECUTION_PLAN_FILE } from "./cli-p
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
+  resolveDefaultPlanAutocheckMode,
   resolveEffectiveEnabledWorkers,
 } from "./effective-workers.js";
 
@@ -83,6 +84,58 @@ describe("resolveEffectiveEnabledWorkers", () => {
     expect(() => requireEffectiveEnabledWorkers({ availability: [...availability] })).toThrow(
       NO_WORKER_BACKEND_ERROR,
     );
+  });
+});
+
+describe("resolveDefaultPlanAutocheckMode", () => {
+  it("prefers codex when Codex is available", () => {
+    expect(
+      resolveDefaultPlanAutocheckMode([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: true },
+      ]),
+    ).toBe("codex");
+  });
+
+  it("returns codex when only Codex is available", () => {
+    expect(
+      resolveDefaultPlanAutocheckMode([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "not found" },
+      ]),
+    ).toBe("codex");
+  });
+
+  it("returns claude_code when only Claude Code is available", () => {
+    expect(
+      resolveDefaultPlanAutocheckMode([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "not found" },
+        { id: "claude_code", available: true },
+      ]),
+    ).toBe("claude_code");
+  });
+
+  it("returns undefined when neither worker backend is available", () => {
+    expect(
+      resolveDefaultPlanAutocheckMode([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "not found" },
+        { id: "claude_code", available: false, reason: "not found" },
+      ]),
+    ).toBeUndefined();
+  });
+
+  it("probes backend availability when none is provided", () => {
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not found" },
+      { id: "claude_code", available: true },
+    ]);
+    expect(resolveDefaultPlanAutocheckMode()).toBe("claude_code");
+    expect(mockDetectBackendAvailability).toHaveBeenCalledTimes(1);
   });
 });
 

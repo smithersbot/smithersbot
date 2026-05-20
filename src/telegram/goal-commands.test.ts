@@ -3484,6 +3484,72 @@ describe("goal-commands telegram adapter", () => {
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
     });
 
+    it("reports codex as the effective default when planAutocheck is unset and Codex is on PATH", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: true },
+      ]);
+      const harness = makeCommandHarness({ goal: {} });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Goal plan autocheck mode:");
+      expect(sentText).toContain("codex");
+      expect(sentText).toContain("default");
+      expect(sentText).not.toContain("`off`");
+    });
+
+    it("reports claude_code as the effective default when only Claude Code is available", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "not found" },
+        { id: "claude_code", available: true },
+      ]);
+      const harness = makeCommandHarness({ goal: {} });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("claude_code");
+      expect(sentText).toContain("default");
+    });
+
+    it("reports a clear no-backend message when neither backend is installed", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "not found" },
+        { id: "claude_code", available: false, reason: "not found" },
+      ]);
+      const harness = makeCommandHarness({ goal: {} });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("No LLM backend available for plan autocheck");
+      expect(sentText).toContain("Install Codex or Claude Code");
+    });
+
+    it("reports explicit off as a user override even when backends are available", async () => {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: true },
+      ]);
+      const harness = makeCommandHarness({ goal: { planAutocheck: "off" } });
+      await harness.register();
+
+      await harness.handlers.goal_plan_autocheck?.(makeCommandCtx());
+
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("off");
+      expect(sentText).toContain("user override");
+    });
+
     it("persists a valid autocheck mode and updates in-memory config", async () => {
       const cfg = { goal: { planAutocheck: "off" } };
       mockLoadConfig.mockReturnValue({ goal: {} });

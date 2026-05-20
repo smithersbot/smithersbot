@@ -24,7 +24,9 @@ import { detectBackendAvailability } from "../goal/backend-availability.js";
 import { resolveEnabledWorkers } from "../goal/backend-types.js";
 import { runCliPlanRevision } from "../goal/cli-planner.js";
 import {
+  NO_BACKEND_AUTOCHECK_ERROR,
   NO_WORKER_BACKEND_ERROR,
+  resolveDefaultPlanAutocheckMode,
   resolveEffectiveEnabledWorkers,
 } from "../goal/effective-workers.js";
 import { AUTH_RE } from "../goal/error-patterns.js";
@@ -52,7 +54,7 @@ import {
   saveRun,
 } from "../goal/run-store.js";
 import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
-import type { CliWorkerId } from "../config/types.goal.js";
+import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildGoalDoneInlineKeyboard,
@@ -239,6 +241,27 @@ function formatGoalWorkersStatus(params: {
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
+function describeEffectivePlanAutocheckMode(configured: PlanAutocheckMode | undefined): string {
+  if (configured === "off") return "off";
+  if (configured === "codex" || configured === "claude_code") return configured;
+  const effectiveDefault = resolveDefaultPlanAutocheckMode();
+  return effectiveDefault ?? "off";
+}
+
+function formatGoalPlanAutocheckStatus(configured: PlanAutocheckMode | undefined): string {
+  if (configured === "off") {
+    return `Goal plan autocheck mode: \`off\` (user override).\n${GOAL_PLAN_AUTOCHECK_USAGE}`;
+  }
+  if (configured === "codex" || configured === "claude_code") {
+    return `Goal plan autocheck mode: \`${configured}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}`;
+  }
+  const effectiveDefault = resolveDefaultPlanAutocheckMode();
+  if (!effectiveDefault) {
+    return `${NO_BACKEND_AUTOCHECK_ERROR}\nGoal plan autocheck mode: \`off\` (no backend).\n${GOAL_PLAN_AUTOCHECK_USAGE}`;
+  }
+  return `Goal plan autocheck mode: \`${effectiveDefault}\` (default — no explicit config).\n${GOAL_PLAN_AUTOCHECK_USAGE}`;
+}
+
 type PlanAutocheckDisplayInfo = {
   rounds: number;
   maxRounds: number;
@@ -282,8 +305,12 @@ async function runGoalPlanAutocheck(params: {
   existingSessionId?: string;
   existingBackend?: SerializedRun["autocheckBackend"];
 }): Promise<{ run: SerializedRun; plan: Plan; display: PlanAutocheckDisplayInfo } | undefined> {
-  const mode = params.config?.goal?.planAutocheck;
-  if (!isPlanAutocheckBackend(mode)) return undefined;
+  const configuredMode = params.config?.goal?.planAutocheck;
+  if (configuredMode === "off") return undefined;
+  const mode = isPlanAutocheckBackend(configuredMode)
+    ? configuredMode
+    : resolveDefaultPlanAutocheckMode();
+  if (!mode) return undefined;
   const userEditInstructions = (params.run.planHistory ?? [])
     .filter((entry) => entry.source === "user")
     .map((entry) => entry.editInstructions?.trim() ?? "")
@@ -2076,11 +2103,10 @@ export function registerTelegramGoalCommands({
 
     const rawMode = ctx.match?.trim() ?? "";
     if (!rawMode) {
-      const currentMode = cfg.goal?.planAutocheck ?? "off";
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Goal plan autocheck mode: \`${currentMode}\`.\n${GOAL_PLAN_AUTOCHECK_USAGE}`,
+        formatGoalPlanAutocheckStatus(cfg.goal?.planAutocheck),
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
@@ -2090,7 +2116,7 @@ export function registerTelegramGoalCommands({
 
     const nextMode = parseGoalPlanAutocheckMode(rawMode);
     if (!nextMode) {
-      const currentMode = cfg.goal?.planAutocheck ?? "off";
+      const currentMode = describeEffectivePlanAutocheckMode(cfg.goal?.planAutocheck);
       await sendGoalReply(
         bot,
         resolved.chatId,
