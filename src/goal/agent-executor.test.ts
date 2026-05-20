@@ -612,6 +612,207 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockCliExecute).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back from Codex to Claude Code when Codex hits a rate limit", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const progress: string[] = [];
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Codex usage limit reached",
+        blockedReason: "rate_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered with Claude Code",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-rate-limit-fallback",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(executedCliBackends).toEqual(["codex", "claude_code"]);
+    expect(progress).toContain("  [retry] codex hit rate_limit; retrying task with claude_code");
+  });
+
+  it("blocks clearly when Codex rate-limits and Claude Code is disabled", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Codex usage limit reached",
+      blockedReason: "rate_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-rate-limit-claude-disabled",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.executedBackend).toBe("codex");
+    expect(executedCliBackends).toEqual(["codex"]);
+    expect(step.blockedQuestion).toContain("codex hit a rate limit");
+    expect(step.blockedQuestion).toContain("single enabled worker");
+  });
+
+  it("falls back from Claude Code to Codex when Claude Code hits a rate limit", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Claude usage limit reached",
+        blockedReason: "usage_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered with Codex",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-claude-rate-limit-fallback",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(step.executedBackend).toBe("codex");
+    expect(executedCliBackends).toEqual(["claude_code", "codex"]);
+  });
+
+  it("does not fallback outside an explicit backend override", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Codex usage limit reached",
+      blockedReason: "rate_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-rate-limit-override",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      serializedRun: { backendOverride: "codex" } as unknown as SerializedRun,
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.executedBackend).toBe("codex");
+    expect(executedCliBackends).toEqual(["codex"]);
+    expect(step.blockedQuestion).toContain("constrained to backend 'codex'");
+  });
+
+  it("blocks with the PATH availability reason when fallback backend is unavailable", async () => {
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude_code not found on PATH" },
+    ];
+
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Codex usage limit reached",
+      blockedReason: "rate_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-rate-limit-claude-path",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.executedBackend).toBe("codex");
+    expect(executedCliBackends).toEqual(["codex"]);
+    expect(step.blockedQuestion).toContain("claude_code not found on PATH");
+  });
+
+  it("records the fallback backend on task artifacts used by captions", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const updates: unknown[] = [];
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Codex usage limit reached",
+        blockedReason: "usage_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Fallback worker completed the task",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-fallback-caption-backend",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      onTaskUpdate: (update) => updates.push(update),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(session.plan.steps[0]?.executedBackend).toBe("claude_code");
+    expect(session.stepResults.get("1")?.output).toBe("Fallback worker completed the task");
+    expect(updates).toEqual([
+      expect.objectContaining({
+        taskId: "1",
+        outcome: "done",
+        summary: "Fallback worker completed the task",
+      }),
+    ]);
+  });
+
   it("reverts on ralph and retries with ralph context", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
