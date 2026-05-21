@@ -1,4 +1,10 @@
 // CLI worker execution for /goal — runs steps via Codex CLI or Claude Code.
+//
+// Stage 2S defaults new work to SmithersBot-managed workspaces under
+// <root>/agent/workspaces/<workspace>/repo. Legacy workingDir values outside
+// the managed agent root remain supported by default with a warning; setting
+// goal.allowLegacyWorkingDir=false fails closed. Real workspace env files under
+// <root>/private/env are host-side only and are not passed to workers by default.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +21,7 @@ import {
   type AttemptOutcome,
 } from "./attempt-bundle.js";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import type { GoalConfig } from "../config/types.goal.js";
 import { classifyProviderError } from "./error-patterns.js";
 import { runCliProcess } from "./cli-process.js";
 import {
@@ -25,6 +32,7 @@ import {
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 
 // --- Constants ---
 
@@ -64,6 +72,8 @@ export type CliWorkerParams = {
   claudeCodeAuth?: ClaudeCodeAuthMode;
   /** Optional project conventions from CLAUDE.md for Codex worker prompts. */
   projectConventions?: string;
+  /** Goal config for Stage 2S managed-workspace compatibility policy. */
+  goalConfig?: GoalConfig;
 };
 
 function resolveWorkspaceResultPath(params: {
@@ -138,10 +148,11 @@ function redactTextArtifactIfExists(filePath: string): void {
 export function buildGoalWorkerEnv(
   backend: GoalBackendId,
   claudeCodeAuth: ClaudeCodeAuthMode,
+  options: { trustedHostEnv?: Record<string, string> } = {},
 ): Record<string, string | undefined> {
   const base =
     backend === "claude_code" ? buildClaudeCodeEnv(claudeCodeAuth) : buildCredentialStrippedEnv();
-  return { ...base, MOLTBOT_GOAL_TEST_SCOPE: "1" };
+  return { ...base, ...options.trustedHostEnv, MOLTBOT_GOAL_TEST_SCOPE: "1" };
 }
 
 /**
@@ -248,7 +259,10 @@ export async function executeTaskWithCliWorker(
     previousAttempt,
     claudeCodeAuth = "subscription",
     projectConventions,
+    goalConfig,
   } = params;
+
+  assertGoalWorkerWorkspace({ workingDir, config: goalConfig, onWarning: onProgress });
 
   const workerDir = resolveWorkerDir(runId, step.id);
   fs.mkdirSync(workerDir, { recursive: true });

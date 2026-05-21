@@ -460,6 +460,8 @@ export const MoltbotSchema = z
     goal: z
       .object({
         defaultWorkingDir: z.string().optional(),
+        defaultWorkspaceName: z.string().optional(),
+        allowLegacyWorkingDir: z.boolean().optional(),
         readOnlyRoots: z.array(z.string()).optional(),
         claudeCodeAuth: z.enum(["subscription", "api_key"]).optional(),
         planAutocheck: z.enum(["codex", "claude_code", "off"]).optional(),

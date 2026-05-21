@@ -226,6 +226,64 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
+  it("allows legacy workingDir by default with a warning", async () => {
+    const root = "/tmp/smithersbot-managed-agent-executor";
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const onProgress = vi.fn();
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    try {
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-legacy-warning",
+        workingDir: "/tmp/moltbot-goal-test",
+        onProgress,
+      });
+
+      expect(outcome.status).toBe("done");
+      expect(onProgress.mock.calls.flat().join("\n")).toContain(
+        "outside the SmithersBot managed agent root",
+      );
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    }
+  });
+
+  it("rejects legacy workingDir when compatibility is disabled", async () => {
+    const root = "/tmp/smithersbot-managed-agent-executor";
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    try {
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      await expect(
+        executeGoalWithAgent({
+          session,
+          runId: "run-legacy-reject",
+          workingDir: "/tmp/moltbot-goal-test",
+          config: { goal: { allowLegacyWorkingDir: false } },
+        }),
+      ).rejects.toThrow("managed agent root");
+      expect(mockCliExecute).not.toHaveBeenCalled();
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    }
+  });
+
   it("clamps claude_code steps to codex when codex is the only enabled worker", async () => {
     const step = makeStep({ backend: "claude_code", executedBackend: "claude_code" });
     const plan = makePlan([step]);

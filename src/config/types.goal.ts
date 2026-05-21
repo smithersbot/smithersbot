@@ -18,6 +18,14 @@ export type GitHubPushConfig = {
 export type GoalConfig = {
   /** Default working directory when --working-dir is not specified. */
   defaultWorkingDir?: string;
+  /** Default managed workspace name for new goal workspaces. */
+  defaultWorkspaceName?: string;
+  /**
+   * Stage 2S transition flag. Default true: workers may still run from legacy
+   * working directories outside the managed agent root, with a warning.
+   * Set false to fail closed for non-managed workspaces.
+   */
+  allowLegacyWorkingDir?: boolean;
   /** Extra directories the agent can read (read-only). Hard denies still apply. */
   readOnlyRoots?: string[];
   /**

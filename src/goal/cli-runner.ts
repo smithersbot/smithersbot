@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, GoalConfig } from "../config/types.goal.js";
 import type { GoalBackendId, GoalWorkerOutput } from "./backend-types.js";
 import { executeTaskWithCliWorker } from "./cli-worker.js";
 import { formatAttemptBundleSummary } from "./attempt-bundle.js";
@@ -12,15 +12,18 @@ export class CliTaskRunner implements TaskRunner {
   private backend: GoalBackendId;
   private model?: string;
   private claudeCodeAuth?: ClaudeCodeAuthMode;
+  private goalConfig?: GoalConfig;
 
   constructor(params: {
     backend: GoalBackendId;
     model?: string;
     claudeCodeAuth?: ClaudeCodeAuthMode;
+    goalConfig?: GoalConfig;
   }) {
     this.backend = params.backend;
     this.model = params.model;
     this.claudeCodeAuth = params.claudeCodeAuth;
+    this.goalConfig = params.goalConfig;
   }
 
   async execute(context: TaskRunnerContext): Promise<TaskRunnerResult> {
@@ -57,6 +60,7 @@ export class CliTaskRunner implements TaskRunner {
       previousAttempt,
       claudeCodeAuth: this.claudeCodeAuth,
       projectConventions,
+      goalConfig: this.goalConfig,
     });
 
     const output = cliResult.output;

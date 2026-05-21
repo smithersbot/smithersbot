@@ -26,6 +26,7 @@ import {
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
+import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -294,6 +295,149 @@ describe("cli-worker", () => {
         else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
         if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
         else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
+      }
+    });
+
+    it("does not include loaded private env unless a trusted host command opts in", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "private-env-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = dir;
+      try {
+        const privateEnvDir = path.join(dir, "private", "env", "sample");
+        fs.mkdirSync(privateEnvDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(privateEnvDir, ".env"),
+          'GOOGLE_DRIVE_API_KEY=fake-private-key\nQUOTED="hello world"\n',
+          "utf8",
+        );
+
+        const loaded = loadWorkspacePrivateEnv("sample");
+        expect(loaded).toEqual({
+          GOOGLE_DRIVE_API_KEY: "fake-private-key",
+          QUOTED: "hello world",
+        });
+        expect(() => loadWorkspacePrivateEnv("../sample")).toThrow();
+
+        const defaultEnv = buildGoalWorkerEnv("codex", "subscription");
+        expect(defaultEnv.GOOGLE_DRIVE_API_KEY).toBeUndefined();
+
+        const trustedEnv = buildGoalWorkerEnv("codex", "subscription", {
+          trustedHostEnv: loaded,
+        });
+        expect(trustedEnv.GOOGLE_DRIVE_API_KEY).toBe("fake-private-key");
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("managed workspace compatibility", () => {
+    function makeRunCliProcessSuccess() {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 5,
+      });
+    }
+
+    it("accepts managed workspace cwd without warning", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = root;
+      const workingDir = path.join(root, "agent", "workspaces", "sample", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      resolveWorkerDirMock.mockReturnValue(path.join(root, "worker"));
+      makeRunCliProcessSuccess();
+      const onProgress = vi.fn();
+
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step: makeStep(),
+          plan: { ...makePlan(), workingDir },
+          goal: "Build auth",
+          workingDir,
+          runId: "run-managed",
+          hardDenies: HARD_DENIES,
+          timeoutMs: 100,
+          onProgress,
+          goalConfig: { allowLegacyWorkingDir: false },
+        });
+
+        expect(runCliProcessMock).toHaveBeenCalledOnce();
+        expect(onProgress.mock.calls.flat().join("\n")).not.toContain("outside the SmithersBot");
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("allows legacy cwd by default with a warning", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+      const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = root;
+      resolveWorkerDirMock.mockReturnValue(path.join(root, "worker"));
+      makeRunCliProcessSuccess();
+      const onProgress = vi.fn();
+
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step: makeStep(),
+          plan: { ...makePlan(), workingDir: legacyDir },
+          goal: "Build auth",
+          workingDir: legacyDir,
+          runId: "run-legacy",
+          hardDenies: HARD_DENIES,
+          timeoutMs: 100,
+          onProgress,
+        });
+
+        expect(runCliProcessMock).toHaveBeenCalledOnce();
+        expect(onProgress.mock.calls.flat().join("\n")).toContain(
+          "outside the SmithersBot managed agent root",
+        );
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects legacy cwd when compatibility is disabled", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+      const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = root;
+
+      try {
+        await expect(
+          executeTaskWithCliWorker({
+            backend: "codex",
+            step: makeStep(),
+            plan: { ...makePlan(), workingDir: legacyDir },
+            goal: "Build auth",
+            workingDir: legacyDir,
+            runId: "run-legacy-closed",
+            hardDenies: HARD_DENIES,
+            timeoutMs: 100,
+            goalConfig: { allowLegacyWorkingDir: false },
+          }),
+        ).rejects.toThrow("managed agent root");
+        expect(runCliProcessMock).not.toHaveBeenCalled();
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(legacyDir, { recursive: true, force: true });
       }
     });
   });

@@ -48,6 +48,11 @@
 - If an environment limitation blocks verification, report the exact command and blocker.
 
 ## Goal-System Self-Verification
+- Stage 2S defaults new goal workspaces to `~/smithersbot-goals/agent/workspaces/<workspace>/repo`.
+- Legacy `workingDir` values outside the managed agent root remain supported during this transition with a warning; operators can set `goal.allowLegacyWorkingDir=false` to fail closed.
+- Real workspace env files live host-side in `~/smithersbot-goals/private/env/<workspace>/.env` and are not agent-visible.
+- Agents should use repo-root `.env.example` for variable names and project code should read normal environment variables, such as `process.env.GOOGLE_DRIVE_API_KEY` or `os.environ["GOOGLE_DRIVE_API_KEY"]`.
+- Goal workers do not receive raw private env values by default. Private env may only be loaded by trusted host-side commands with an explicit opt-in, and SmithersBot does not claim OS-level isolation beyond the native Codex/Claude sandbox currently in use.
 - If a change affects any command in the `/goal` family, exercise the affected CLI path yourself before marking the work complete.
 - Use the local Node entrypoint from the repository root:
 

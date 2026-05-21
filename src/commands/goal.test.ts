@@ -530,8 +530,16 @@ describe("goal command — early failure persistence", () => {
 });
 
 describe("resolveWorkingDir — 4-level precedence", () => {
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.SMITHERSBOT_GOALS_ROOT = "/tmp/smithersbot-goals-test";
+  });
+
+  afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
   });
 
   it("explicit --working-dir wins over everything", async () => {
@@ -556,18 +564,29 @@ describe("resolveWorkingDir — 4-level precedence", () => {
     expect(result).toBe("/config/dir");
   });
 
-  it("falls back to cwd when it is a git repo", async () => {
+  it("falls back to managed workspace repo named after git toplevel", async () => {
     const { resolveWorkingDir } = await import("./goal.js");
     mockIsGitRepo.mockReturnValue(true);
     const result = resolveWorkingDir(undefined, undefined, "/my/repo");
-    expect(result).toBe("/my/repo");
+    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/repo/repo");
   });
 
-  it("falls back to .moltbot-goal-workspace when cwd is not a git repo", async () => {
+  it("falls back to managed default workspace when cwd is not a git repo", async () => {
     const { resolveWorkingDir } = await import("./goal.js");
     mockIsGitRepo.mockReturnValue(false);
     const result = resolveWorkingDir(undefined, undefined, "/some/dir");
-    expect(result).toBe(path.resolve("/some/dir", ".moltbot-goal-workspace"));
+    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/default/repo");
+  });
+
+  it("uses config.goal.defaultWorkspaceName for managed default workspace", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    mockIsGitRepo.mockReturnValue(true);
+    const result = resolveWorkingDir(
+      undefined,
+      { goal: { defaultWorkspaceName: "smithersbot" } },
+      "/my/repo",
+    );
+    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/smithersbot/repo");
   });
 
   it("resolves relative --working-dir to absolute", async () => {

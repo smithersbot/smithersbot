@@ -1,4 +1,5 @@
 import { confirm, isCancel } from "@clack/prompts";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
@@ -22,9 +23,8 @@ import type {
 } from "../goal/types.js";
 import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
 import type { MoltbotConfig } from "../config/types.clawdbot.js";
+import { resolveWorkspaceRepoDir, slugifyWorkspaceName } from "../config/managed-paths.js";
 import type { RuntimeEnv } from "../runtime.js";
-
-const DEFAULT_WORKSPACE_DIR = ".moltbot-goal-workspace";
 
 export type GoalCommandOptions = {
   goal: string;
@@ -72,8 +72,13 @@ function resolveDiagramMode(opts: GoalCommandOptions, outputFormat: OutputFormat
  * Precedence (highest to lowest):
  * 1. Explicit --working-dir flag
  * 2. config.goal.defaultWorkingDir
- * 3. cwd is a git repo → use cwd
- * 4. Fallback to .moltbot-goal-workspace sandbox
+ * 3. parsed user instruction (handled by channel-specific callers before this helper)
+ * 4. managed workspace repo: <root>/agent/workspaces/<workspace-name>/repo
+ *
+ * Stage 2S is transitional: explicit/configured legacy workingDir values remain
+ * supported by worker launch policy unless goal.allowLegacyWorkingDir is false.
+ * Project code should read normal process env variables; real workspace env
+ * files live host-side under private/env and are never the worker default env.
  */
 export function resolveWorkingDir(
   explicit: string | undefined,
@@ -83,8 +88,27 @@ export function resolveWorkingDir(
   if (explicit) return path.resolve(explicit);
   const configDir = config?.goal?.defaultWorkingDir;
   if (configDir) return path.resolve(configDir);
-  if (isGitRepo(cwd)) return cwd;
-  return path.resolve(cwd, DEFAULT_WORKSPACE_DIR);
+  return resolveWorkspaceRepoDir(resolveDefaultWorkspaceName(config, cwd));
+}
+
+function resolveDefaultWorkspaceName(config: MoltbotConfig | undefined, cwd: string): string {
+  const configured = config?.goal?.defaultWorkspaceName;
+  if (configured) return slugifyWorkspaceName(configured);
+  const gitRoot = resolveGitTopLevel(cwd);
+  if (gitRoot) return slugifyWorkspaceName(path.basename(gitRoot));
+  return "default";
+}
+
+function resolveGitTopLevel(cwd: string): string | undefined {
+  try {
+    return execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    if (isGitRepo(cwd)) return cwd;
+    return undefined;
+  }
 }
 
 export async function goalCommand(

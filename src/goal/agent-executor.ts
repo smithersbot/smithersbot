@@ -80,6 +80,7 @@ import type {
   TaskExecutionResult,
 } from "./types.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
+import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
@@ -219,6 +220,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   const plan = session.plan;
   if (!plan) throw new Error("No plan to execute");
   const semgrepMode: SemgrepMode = config?.goal?.semgrep ?? resolveDefaultSemgrepMode();
+  assertGoalWorkerWorkspace({ workingDir, config: config?.goal, onWarning: onProgress });
 
   session.state = "executing";
   session.buildGateConfig = plan.buildGate;
@@ -338,13 +340,18 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   });
   const cliRunners: Partial<Record<CliWorkerId, TaskRunner>> = {};
   if (resolvedEnabledWorkers.includes("codex")) {
-    cliRunners.codex = new CliTaskRunner({ backend: "codex", model: params.model });
+    cliRunners.codex = new CliTaskRunner({
+      backend: "codex",
+      model: params.model,
+      goalConfig: config?.goal,
+    });
   }
   if (resolvedEnabledWorkers.includes("claude_code")) {
     cliRunners.claude_code = new CliTaskRunner({
       backend: "claude_code",
       model: params.model,
       claudeCodeAuth: params.claudeCodeAuth,
+      goalConfig: config?.goal,
     });
   }
 
