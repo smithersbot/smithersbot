@@ -23,7 +23,8 @@ src/prompts/
     review-instruction.ts           REVIEW_INSTRUCTION constant
   worker/
     worker-context.ts               WORKER_CONTEXT / WORKER_CLAUDE_CONTEXT
-                                    / WORKER_AGENTS_CONTEXT
+                                    / WORKER_AGENTS_CONTEXT — reads from
+                                    src/goal/worker-context/shared-worker-contract.md
   repo-chat/
     repo-chat-context.ts            REPO_CHAT_CONTEXT
     response-file-instruction.ts    buildResponseFileInstruction()
@@ -46,7 +47,7 @@ src/prompts/
 | Scout                   | `scout/scout_prompt_template.md` + `scout/loader.ts`                | `src/goal/scout.ts`, `src/goal/cli-planner.ts`|
 | Planner system prompt   | `planner/system-prompt.ts`                                          | `src/goal/planner.ts`, `src/goal/cli-planner.ts` |
 | Plan autocheck reviewer | `plan-autocheck/review-instruction.ts`                              | `src/goal/plan-autocheck.ts`                  |
-| Worker context (CLI)    | `worker/worker-context.ts`                                          | `src/goal/cli-worker.ts`, `src/goal/pi-runner.ts` |
+| Worker context (CLI)    | `worker/worker-context.ts` (reads `src/goal/worker-context/shared-worker-contract.md`) | `src/goal/cli-worker.ts`, `src/goal/pi-runner.ts` |
 | Repo-chat context       | `repo-chat/repo-chat-context.ts`                                    | `src/repo-chat/repo-chat-worker.ts`           |
 | Repo-chat delivery      | `repo-chat/response-file-instruction.ts`                            | `src/repo-chat/repo-chat-worker.ts`           |
 | Repo-chat repair        | `repair/repo-chat-repair.ts`                                        | `src/repo-chat/repo-chat-worker.ts`           |
@@ -59,8 +60,26 @@ src/prompts/
 - `scripts/copy-scout-template.ts` copies `scout/scout_prompt_template.md`
   into `dist/prompts/scout/` so the compiled runtime can resolve it via the
   loader.
+- `scripts/copy-worker-contract.ts` copies the canonical
+  `src/goal/worker-context/shared-worker-contract.md` and its byte-identical
+  mirrors (`AGENTS.md`, `CLAUDE.md`) into `dist/goal/worker-context/` so the
+  compiled `worker/worker-context.ts` loader can read the contract at runtime.
 - All other prompts ship as TypeScript modules and are emitted to
   `dist/prompts/**` by `tsc`.
+
+## Worker context unification
+
+Workers see one canonical contract regardless of backend:
+
+- `src/goal/worker-context/shared-worker-contract.md` — single source of truth.
+- `src/goal/worker-context/AGENTS.md` — Codex-readable mirror (byte-identical).
+- `src/goal/worker-context/CLAUDE.md` — Claude Code-readable mirror (byte-identical).
+
+`src/prompts/worker/worker-context.ts` loads `shared-worker-contract.md` at
+module load. `WORKER_CLAUDE_CONTEXT`, `WORKER_AGENTS_CONTEXT`, and
+`WORKER_CONTEXT` all resolve to the same string — there is no backend-specific
+appendix. Drift between the three markdown files is caught by the suite in
+`src/prompts/prompts.test.ts`.
 
 ## When adding a new active prompt
 

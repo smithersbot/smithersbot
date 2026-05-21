@@ -11,6 +11,13 @@ import {
   WORKER_CONTEXT,
   WORKER_CLAUDE_CONTEXT,
   WORKER_AGENTS_CONTEXT,
+  WORKER_CONTEXT_DIR,
+  SHARED_WORKER_CONTRACT_FILE,
+  WORKER_AGENTS_CONTEXT_FILE,
+  WORKER_CLAUDE_CONTEXT_FILE,
+  resolveSharedWorkerContractPath,
+  resolveWorkerAgentsContextPath,
+  resolveWorkerClaudeContextPath,
 } from "./worker/worker-context.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat/repo-chat-context.js";
 import {
@@ -88,6 +95,44 @@ describe("src/prompts/ — worker context", () => {
 
   it("is the same object identity used by src/goal/worker-context.ts (no drift)", () => {
     expect(WORKER_CONTEXT_FROM_GOAL).toBe(WORKER_CONTEXT);
+  });
+
+  it("Claude and Codex contexts are byte-identical (no backend-specific appendix)", () => {
+    expect(WORKER_CLAUDE_CONTEXT).toBe(WORKER_AGENTS_CONTEXT);
+    expect(WORKER_CLAUDE_CONTEXT).toBe(WORKER_CONTEXT);
+  });
+
+  it("loads from the canonical shared-worker-contract.md on disk", () => {
+    const sharedPath = resolveSharedWorkerContractPath();
+    expect(sharedPath).toBe(path.join(WORKER_CONTEXT_DIR, SHARED_WORKER_CONTRACT_FILE));
+    expect(fs.readFileSync(sharedPath, "utf8")).toBe(WORKER_CONTEXT);
+  });
+
+  it("worker AGENTS.md and CLAUDE.md mirror the shared contract byte-for-byte", () => {
+    const shared = fs.readFileSync(resolveSharedWorkerContractPath(), "utf8");
+    const agents = fs.readFileSync(resolveWorkerAgentsContextPath(), "utf8");
+    const claude = fs.readFileSync(resolveWorkerClaudeContextPath(), "utf8");
+    expect(agents).toBe(shared);
+    expect(claude).toBe(shared);
+    expect(path.basename(resolveWorkerAgentsContextPath())).toBe(WORKER_AGENTS_CONTEXT_FILE);
+    expect(path.basename(resolveWorkerClaudeContextPath())).toBe(WORKER_CLAUDE_CONTEXT_FILE);
+  });
+
+  it("contains the strengthened verification rules required by Stage 2Q", () => {
+    const needles = [
+      "Task SUCCESS CRITERIA are the minimum bar, not the full verification contract.",
+      "Every code-changing task must include implementation, focused tests, and verification inside the **same task**.",
+      "Do not split implementation and tests into separate tasks unless the task is explicitly a final cross-cutting verification sweep.",
+      "Run the smallest relevant test slice",
+      "pnpm exec tsc -p tsconfig.json",
+      "pnpm build",
+      "pnpm lint",
+      "Before reporting completion, list the exact verification commands you ran",
+      "Do NOT restart the gateway service during goal execution.",
+    ];
+    for (const needle of needles) {
+      expect(WORKER_CONTEXT).toContain(needle);
+    }
   });
 });
 
@@ -244,6 +289,10 @@ describe("src/prompts/ — no drift in consumer source files", () => {
     );
     expect(fs.existsSync(path.join(promptsRoot, "manual-tests", "system-prompt.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "worker", "worker-context.ts"))).toBe(true);
+    const workerContextDir = path.join(repoRoot, "src", "goal", "worker-context");
+    expect(fs.existsSync(path.join(workerContextDir, "shared-worker-contract.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workerContextDir, "AGENTS.md"))).toBe(true);
+    expect(fs.existsSync(path.join(workerContextDir, "CLAUDE.md"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "repo-chat", "repo-chat-context.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "repo-chat", "response-file-instruction.ts"))).toBe(
       true,
