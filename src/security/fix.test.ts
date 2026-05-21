@@ -30,9 +30,7 @@ describe("security fix", () => {
         {
           channels: {
             telegram: { groupPolicy: "open" },
-            discord: { groupPolicy: "open" },
-            signal: { groupPolicy: "open" },
-            imessage: { groupPolicy: "open" },
+            googlechat: { groupPolicy: "open" },
           },
           logging: { redactSensitive: "off" },
         },
@@ -58,9 +56,7 @@ describe("security fix", () => {
     expect(res.changes).toEqual(
       expect.arrayContaining([
         "channels.telegram.groupPolicy=open -> allowlist",
-        "channels.discord.groupPolicy=open -> allowlist",
-        "channels.signal.groupPolicy=open -> allowlist",
-        "channels.imessage.groupPolicy=open -> allowlist",
+        "channels.googlechat.groupPolicy=open -> allowlist",
         'logging.redactSensitive=off -> "tools"',
       ]),
     );
@@ -74,9 +70,46 @@ describe("security fix", () => {
     const parsed = JSON.parse(await fs.readFile(configPath, "utf-8")) as Record<string, unknown>;
     const channels = parsed.channels as Record<string, Record<string, unknown>>;
     expect(channels.telegram.groupPolicy).toBe("allowlist");
-    expect(channels.discord.groupPolicy).toBe("allowlist");
-    expect(channels.signal.groupPolicy).toBe("allowlist");
-    expect(channels.imessage.groupPolicy).toBe("allowlist");
+    expect(channels.googlechat.groupPolicy).toBe("allowlist");
+  });
+
+  it("flips googlechat.groupPolicy=open -> allowlist (Stage 2Q regression)", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-security-fix-"));
+    const stateDir = path.join(tmp, "state");
+    await fs.mkdir(stateDir, { recursive: true });
+
+    const configPath = path.join(stateDir, "moltbot.json");
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify(
+        {
+          channels: {
+            googlechat: { groupPolicy: "open" },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf-8",
+    );
+    await fs.chmod(configPath, 0o644);
+
+    const env = {
+      ...process.env,
+      CLAWDBOT_STATE_DIR: stateDir,
+      CLAWDBOT_CONFIG_PATH: "",
+    };
+
+    const res = await fixSecurityFootguns({ env });
+    expect(res.ok).toBe(true);
+    expect(res.configWritten).toBe(true);
+    expect(res.changes).toEqual(
+      expect.arrayContaining(["channels.googlechat.groupPolicy=open -> allowlist"]),
+    );
+
+    const parsed = JSON.parse(await fs.readFile(configPath, "utf-8")) as Record<string, unknown>;
+    const channels = parsed.channels as Record<string, Record<string, unknown>>;
+    expect(channels.googlechat.groupPolicy).toBe("allowlist");
   });
 
   it("returns ok=false for invalid config but still tightens perms", async () => {
