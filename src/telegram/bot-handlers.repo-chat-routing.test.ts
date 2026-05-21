@@ -535,7 +535,7 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       expect(runGoalInBackgroundSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           label,
-          replyToMessageId: 400,
+          replyToMessageId: 501,
         }),
       );
       expect(handlerSpy).toHaveBeenCalledWith(
@@ -551,7 +551,7 @@ describe("registerTelegramHandlers repo-chat routing", () => {
         42,
         "Router result",
         expect.objectContaining({
-          reply_parameters: { message_id: 400 },
+          reply_parameters: { message_id: 501 },
         }),
       );
     },

@@ -1,6 +1,31 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { handleTelegramGoalRouting } from "./bot-handlers.js";
+const mockRuns = vi.hoisted(() => [] as SerializedRun[]);
+const mockHandleGoalEdit = vi.hoisted(() => vi.fn());
+const mockHandleGoalAnswer = vi.hoisted(() => vi.fn());
+const mockHandleGoalFeedback = vi.hoisted(() => vi.fn());
+
+vi.mock("../goal/run-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/run-store.js")>();
+  return {
+    ...actual,
+    listRuns: () => mockRuns.map((run) => ({ runId: run.runId })),
+    loadRun: (runId: string) => mockRuns.find((run) => run.runId === runId) ?? null,
+  };
+});
+
+vi.mock("./goal-commands.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./goal-commands.js")>();
+  return {
+    ...actual,
+    handleGoalEdit: (...args: unknown[]) => mockHandleGoalEdit(...args),
+    handleGoalAnswer: (...args: unknown[]) => mockHandleGoalAnswer(...args),
+    handleGoalFeedback: (...args: unknown[]) => mockHandleGoalFeedback(...args),
+  };
+});
+
+import { handleTelegramGoalRouting, registerTelegramHandlers } from "./bot-handlers.js";
+import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import type { SerializedRun } from "../goal/types.js";
 
 const now = new Date().toISOString();
@@ -484,5 +509,190 @@ describe("handleTelegramGoalRouting", () => {
 
     expect(handled).toBe(true);
     expect(sendReply).toHaveBeenCalled();
+  });
+});
+
+describe("registerTelegramHandlers goal-router reply threading", () => {
+  function makeBotHarness() {
+    mockHandleGoalEdit.mockReset();
+    mockHandleGoalAnswer.mockReset();
+    mockHandleGoalFeedback.mockReset();
+
+    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        messageHandlers.set(event, handler);
+      }),
+      api: {
+        sendMessage: vi.fn(async () => ({ message_id: 999 })),
+        sendChatAction: vi.fn(async () => undefined),
+      },
+    };
+
+    registerTelegramHandlers({
+      cfg: { goal: { claudeCodeAuth: "api_key" } },
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: null,
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      commandFragmentBuffer: undefined,
+    });
+
+    const messageHandler = messageHandlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    if (!messageHandler) throw new Error("Expected message handler");
+    return { bot, messageHandler };
+  }
+
+  async function routeText(params: {
+    text: string;
+    messageId: number;
+    replyToMessageId?: number;
+    runs?: SerializedRun[];
+  }) {
+    mockRuns.length = 0;
+    mockRuns.push(...(params.runs ?? []));
+    const harness = makeBotHarness();
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: params.text,
+        message_id: params.messageId,
+        reply_to_message:
+          params.replyToMessageId != null ? { message_id: params.replyToMessageId } : undefined,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    return harness;
+  }
+
+  function expectSendReplyToCurrentMessage(
+    sendMessage: ReturnType<typeof vi.fn>,
+    messageId: number,
+  ) {
+    expect(sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.any(String),
+      expect.objectContaining({
+        reply_parameters: { message_id: messageId },
+      }),
+    );
+  }
+
+  it("threads natural-language status replies to the current message", async () => {
+    const { bot } = await routeText({ text: "status abcdef12", messageId: 701 });
+
+    expectSendReplyToCurrentMessage(bot.api.sendMessage, 701);
+  });
+
+  it("threads generic natural-language goal-router replies to the current message", async () => {
+    const { bot } = await routeText({ text: "list goals", messageId: 702 });
+
+    expectSendReplyToCurrentMessage(bot.api.sendMessage, 702);
+  });
+
+  it("threads goal-router edit preface and result sends to the current message", async () => {
+    const run = makeRun({
+      runId: "run-edit",
+      state: "awaiting_approval",
+      telegramPlanMessage: { chatId: 42, messageId: 400 },
+    });
+    mockHandleGoalEdit.mockResolvedValue({ text: "Router edit result" });
+
+    const { bot } = await routeText({
+      text: "tighten the plan",
+      messageId: 703,
+      replyToMessageId: 400,
+      runs: [run],
+    });
+
+    await vi.waitFor(() => expect(mockHandleGoalEdit).toHaveBeenCalled());
+    expectSendReplyToCurrentMessage(bot.api.sendMessage, 703);
+    expect(bot.api.sendMessage).not.toHaveBeenCalledWith(
+      42,
+      expect.any(String),
+      expect.objectContaining({
+        reply_parameters: { message_id: 400 },
+      }),
+    );
+  });
+
+  it("threads lock-failed edit, answer, and feedback replies to the current message", async () => {
+    for (const scenario of [
+      {
+        text: "edit while locked",
+        messageId: 704,
+        replyToMessageId: 410,
+        run: makeRun({
+          runId: "locked-edit",
+          state: "awaiting_approval",
+          telegramPlanMessage: { chatId: 42, messageId: 410 },
+        }),
+      },
+      {
+        text: "answer while locked",
+        messageId: 705,
+        replyToMessageId: 420,
+        run: makeRun({
+          runId: "locked-answer",
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need input",
+            requiredInputKey: "input_key",
+          },
+          telegramQuestionMessages: [{ chatId: 42, messageId: 420, requiredInputKey: "input_key" }],
+        }),
+      },
+      {
+        text: "feedback while locked",
+        messageId: 706,
+        replyToMessageId: 430,
+        run: makeRun({
+          runId: "locked-feedback",
+          state: "done",
+          telegramFeedbackPromptMessages: [{ chatId: 42, messageId: 430 }],
+        }),
+      },
+    ]) {
+      const lock = acquireGoalOpLock(scenario.run.runId, "test");
+      expect(lock.acquired).toBe(true);
+      try {
+        const { bot } = await routeText({
+          text: scenario.text,
+          messageId: scenario.messageId,
+          replyToMessageId: scenario.replyToMessageId,
+          runs: [scenario.run],
+        });
+
+        expectSendReplyToCurrentMessage(bot.api.sendMessage, scenario.messageId);
+      } finally {
+        if (lock.acquired) lock.release();
+      }
+    }
   });
 });
