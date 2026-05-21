@@ -76,8 +76,8 @@ real env files, gateway-private config, credentials, or \`<managed-root>/private
 The repo-root \`.env.example\` is the portable variable-name contract and should
 remain readable; project code should use normal environment variables such as
 \`process.env.KEY\` or \`os.environ["KEY"]\`. Native backend sandboxing is used
-only where SmithersBot has implemented and verified it for the selected backend;
-do not claim full OS-level isolation for legacy \`workingDir\` sessions.
+only where SmithersBot has implemented and verified it for the selected backend
+with live probes; do not describe legacy \`workingDir\` sessions as isolated.
 
 Check all candidate directories when looking for runs:
 - \`ls -lt ~/smithersbot-goals/agent/history/goals/\` (agent-readable mirror; preferred for search)

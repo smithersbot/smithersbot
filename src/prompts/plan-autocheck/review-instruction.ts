@@ -30,7 +30,7 @@ export const REVIEW_INSTRUCTION = [
   "- IMPLEMENTATION/TEST SPLITS: reject when step A implements behavior and step B later adds tests for step A. Implementation + tests + focused verification belong in the SAME step by default. (A genuinely cross-cutting integration sweep or report-writing step is allowed AT THE END, but it is not a substitute for per-step tests.)",
   "- TSC-ONLY LOGIC STEPS: reject when a logic-changing step's success criteria only mention `tsc` / `pnpm exec tsc` and no focused vitest (or equivalent) command. Logic changes require a focused regression test command in the same step.",
   "- MISSING FOCUSED REGRESSIONS: reject command-handler, config-schema, prompt, worker-behavior, planner/autocheck, or repo-chat steps that lack a targeted regression test file in the same step. The success criteria must name the exact test path.",
-  "- SANDBOX OVERCLAIMS: reject plans that claim full OS-level isolation, claim legacy workingDir runs are sandboxed, or rely on prompts/CLAUDE.md as a security boundary instead of verified native backend sandboxing.",
+  "- SANDBOX OVERCLAIMS: reject plans that claim broad kernel-level isolation, claim legacy workingDir runs are sandboxed, or rely on prompts/CLAUDE.md as a security boundary instead of verified native backend sandboxing.",
   "- VAGUE SUCCESS CRITERIA: reject success criteria that only say things like 'tests pass', 'add coverage', or 'ensure correctness' without naming the actual command or test path.",
   "- TINY REPEATED TOUCHES: reject plans with many small steps that touch the same files or the same behavior repeatedly and could be a smaller number of self-verifying steps. Merge them.",
   "Concrete Stage 2P anti-patterns to reject:",

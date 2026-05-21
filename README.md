@@ -81,9 +81,12 @@ the portable variable-name contract with placeholder values only. Workers do
 not receive raw secrets in env by default; real env files are loaded only by
 trusted host-side commands with an explicit opt-in. Native backend sandboxing
 is used only where SmithersBot implements and verifies it for the selected
-backend; prompts and convention files are not security boundaries. Full
-OS-level isolation is not claimed beyond backend-specific sandbox probes that
-have actually passed.
+backend; prompts and convention files are not security boundaries. Managed
+workspaces organize which trees workers should use, but are not by themselves a
+kernel boundary. Codex and Claude Code secret-read isolation is claimed only
+after backend-specific live probes pass on the host. Codex `--sandbox
+workspace-write` alone is not enough evidence of secret-read isolation, and
+Claude sandboxing requires its native sandbox to start successfully.
 
 ## Fresh isolated setup
 
@@ -317,7 +320,7 @@ Telegram commands:
 - `/goal_workers` configures goal worker concurrency.
 - `/goal_github_push` toggles automatic GitHub push and PR creation for completed runs.
 - `/nightwatch` configures the scheduled daily review.
-- `/gateway_restart` restarts the local gateway service from an authorized private chat.
+- `/gateway_restart` restarts the local gateway service from an authorized private chat. During the service-name migration it supports both `smithersbot-gateway.service` and legacy `moltbot-gateway-dev.service`; explicit `SMITHERSBOT_SYSTEMD_UNIT`, then deprecated `MOLTBOT_SYSTEMD_UNIT`, then deprecated `CLAWDBOT_SYSTEMD_UNIT` wins over active-unit detection.
 
 ## Repo chat
 
@@ -327,7 +330,7 @@ The main way to use repo chat is to send a normal Telegram message with no slash
 
 `/repo_chat <question>` is also available when you want to force a repo-chat question explicitly.
 
-Repo chat can access every action each agent has taken and can see every file available inside the environment where SmithersBot is running. Use it before `/new_goal` to sharpen the prompt, after the flowchart is created to sanity-check the plan, or during execution to reason about a blocked run.
+Repo chat can access sanitized goal history and the managed workspace trees made available to its backend. It must not be treated as having permission to read gateway-private config, real env files, credentials, or private managed-root state. Use it before `/new_goal` to sharpen the prompt, after the flowchart is created to sanity-check the plan, or during execution to reason about a blocked run.
 
 Examples:
 
@@ -415,14 +418,14 @@ Not for:
 - multi-user deployment
 - running directly on your main personal machine
 - replacing human judgement
-- guaranteeing that agents behave safely
+- treating agent behavior as automatically safe
 - skipping code review or manual testing
 
 A few things are worth knowing up front:
 
 - Execution is sequential, not parallel.
 - Subscription-mode auth strips Anthropic credential env vars from the worker environment so the local CLI uses its own login; it is not a free or unlimited Claude.
-- Crash recovery is best-effort and rolls the interrupted step back to `pending` to be replayed; it is not a formal guarantee.
+- Crash recovery is best-effort and rolls the interrupted step back to `pending` to be replayed; review resumed runs before relying on their output.
 
 ## Attribution
 

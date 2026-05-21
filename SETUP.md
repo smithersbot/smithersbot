@@ -283,6 +283,12 @@ Ctrl-C
 
 That only stops the log view. It does not stop SmithersBot.
 
+`/gateway_restart` resolves the active user service during the migration. The
+explicit env precedence is `SMITHERSBOT_SYSTEMD_UNIT`, then deprecated
+`MOLTBOT_SYSTEMD_UNIT`, then deprecated `CLAWDBOT_SYSTEMD_UNIT`; otherwise
+SmithersBot detects active units including `smithersbot-gateway.service` and
+legacy `moltbot-gateway-dev.service`.
+
 ## 10. Run Telegram smoke tests
 
 Open your SmithersBot Telegram bot and send:
@@ -434,14 +440,18 @@ area that workers never see:
 Stage 2S is intentionally transitional:
 
 - New/default goal workspaces resolve inside the managed agent root.
+- Managed workspaces organize access for workers and repo chat, but are not by
+  themselves a kernel boundary.
 - Legacy `workingDir` values (including `~/moltbot` or any path outside the
   managed root) are still supported and emit a one-line warning. You can opt
   into fail-closed behavior with `config.goal.allowLegacyWorkingDir = false`.
 - Native backend sandboxing is used only where SmithersBot implements and
-  verifies it for the selected backend. Prompts and convention files are not
-  security boundaries.
-- Full OS-level isolation between agent and private trees is NOT claimed beyond
-  backend-specific sandbox probes that have actually passed.
+  verifies it for the selected backend. Codex and Claude Code secret-read
+  isolation is claimed only after backend-specific live probes pass on the host;
+  otherwise that backend remains unproven or blocked on the reported operator
+  action. Codex `--sandbox workspace-write` alone is not enough evidence of
+  secret-read isolation, and Claude sandboxing requires its native sandbox to
+  start successfully. Prompts and convention files are not security boundaries.
 
 ### Portability rule for project code
 

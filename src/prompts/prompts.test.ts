@@ -207,9 +207,13 @@ describe("src/prompts/ — worker context", () => {
       "Workers do NOT receive raw secrets in env by default",
       "buildGoalWorkerEnv",
       "host-side commands (gateway-side flows)",
-      "Native backend sandboxing is used only where SmithersBot has implemented and",
-      "Do not treat prompts, `CLAUDE.md`, or",
-      "full OS-level isolation is NOT claimed",
+      "Native backend sandboxing is used only where SmithersBot has implemented,",
+      "live-probed, and verified it for the selected backend",
+      "Managed workspaces",
+      "not by themselves a kernel boundary",
+      "Do not treat",
+      "prompts, `CLAUDE.md`, or this contract as a security boundary",
+      "backend secret-read isolation is claimed only",
       "`workingDir` values outside",
       "allowLegacyWorkingDir",
     ];
@@ -340,8 +344,34 @@ describe("src/prompts/ — plan autocheck", () => {
     expect(REVIEW_INSTRUCTION).toContain("raw secrets are not passed to workers by default");
     expect(REVIEW_INSTRUCTION).toContain("<managed-root>/private/");
     expect(REVIEW_INSTRUCTION).toContain("SANDBOX OVERCLAIMS");
-    expect(REVIEW_INSTRUCTION).toContain("full OS-level isolation");
+    expect(REVIEW_INSTRUCTION).toContain("broad kernel-level isolation");
     expect(REVIEW_INSTRUCTION).toContain("prompts/CLAUDE.md as a security boundary");
+  });
+});
+
+describe("src/prompts/ — sandbox claim guardrails", () => {
+  it("does not contain broad isolation or visibility overclaims", () => {
+    const files = [
+      path.join(repoRoot, "README.md"),
+      path.join(repoRoot, "SETUP.md"),
+      path.join(promptsRoot, "repo-chat", "repo-chat-context.ts"),
+      path.join(promptsRoot, "planner", "system-prompt.ts"),
+      path.join(promptsRoot, "plan-autocheck", "review-instruction.ts"),
+      promptsReadmePath,
+      resolveSharedWorkerContractPath(),
+      resolveWorkerAgentsContextPath(),
+      resolveWorkerClaudeContextPath(),
+    ];
+    const banned = [
+      new RegExp(["full", "OS-level", "isolation"].join(" "), "i"),
+      new RegExp(["every", "file", "available"].join(" "), "i"),
+    ];
+    for (const file of files) {
+      const text = fs.readFileSync(file, "utf8");
+      for (const pattern of banned) {
+        expect(text, `${file} should not match ${pattern}`).not.toMatch(pattern);
+      }
+    }
   });
 });
 
@@ -472,11 +502,29 @@ describe("project docs — managed workspace and sandbox claims", () => {
       expect(doc).toContain("raw secrets");
       expect(doc).toContain("Native backend sandboxing");
       expect(doc).toMatch(/implements\s+and\s+verifies/);
-      expect(doc).toMatch(/Full OS-level isolation|Full\s+OS-level isolation/i);
-      expect(doc).toMatch(/not claimed/i);
-      expect(doc).toContain("backend-specific sandbox probes");
-      expect(doc).not.toMatch(/full OS-level isolation is (provided|guaranteed|enforced)/i);
+      expect(doc).toMatch(/not by\s+themselves a\s+kernel boundary/);
+      expect(doc).toContain("backend-specific live probes");
+      expect(doc).toMatch(/Codex `--sandbox\s+workspace-write` alone/);
+      expect(doc).toContain("Claude sandboxing requires its native sandbox");
+      expect(doc).not.toMatch(
+        new RegExp(
+          ["full", "OS-level", "isolation", "is"].join(" ") + " (provided|ensured|enforced)",
+          "i",
+        ),
+      );
       expect(doc).not.toMatch(/legacy `workingDir`[^.\n]*(sandboxed|isolated)/i);
+    },
+  );
+
+  it.each(["README.md", "SETUP.md"])(
+    "%s documents gateway restart service migration",
+    (fileName) => {
+      const doc = fs.readFileSync(path.join(repoRoot, fileName), "utf8");
+      expect(doc).toContain("moltbot-gateway-dev.service");
+      expect(doc).toContain("smithersbot-gateway.service");
+      expect(doc).toContain("SMITHERSBOT_SYSTEMD_UNIT");
+      expect(doc).toContain("MOLTBOT_SYSTEMD_UNIT");
+      expect(doc).toContain("CLAWDBOT_SYSTEMD_UNIT");
     },
   );
 });

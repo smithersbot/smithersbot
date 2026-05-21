@@ -100,11 +100,12 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
   host-side commands (gateway-side flows) with an explicit, narrowly-scoped opt-in.
   Worker subprocesses do not see those values unless that opt-in is set.
-- Native backend sandboxing is used only where SmithersBot has implemented and
-  verified it for the selected backend. Do not treat prompts, `CLAUDE.md`, or
-  this contract as a security boundary.
-- Stage 2S/2T is transitional: full OS-level isolation is NOT claimed beyond
-  backend-specific sandbox probes that have actually passed. Legacy
+- Native backend sandboxing is used only where SmithersBot has implemented,
+  live-probed, and verified it for the selected backend. Managed workspaces
+  organize access but are not by themselves a kernel boundary. Do not treat
+  prompts, `CLAUDE.md`, or this contract as a security boundary.
+- Stage 2S/2T is transitional: backend secret-read isolation is claimed only
+  after backend-specific sandbox probes have actually passed. Legacy
   `workingDir` values outside the managed agent root remain supported during
   this stage and emit a one-line warning; operators can opt into fail-closed
   behavior by setting `config.goal.allowLegacyWorkingDir = false`.
