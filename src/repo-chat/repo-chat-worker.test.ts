@@ -450,8 +450,12 @@ describe("repo-chat-worker", () => {
     it("reads Codex manual response file for initial sessions", async () => {
       const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
       const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
+      const prevOauth = process.env.GITHUB_OAUTH_TOKEN;
+      const prevCustomToken = process.env.CUSTOM_SERVICE_TOKEN;
       process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
       process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
+      process.env.GITHUB_OAUTH_TOKEN = "oauth-secret";
+      process.env.CUSTOM_SERVICE_TOKEN = "custom-token-secret";
       runCliProcessMock.mockImplementationOnce(async () => {
         fs.writeFileSync(RESPONSE_FILE_PATH, "Codex answer from file\n", "utf-8");
         fs.writeFileSync(LAST_MESSAGE_FILE_PATH, "Done.\n", "utf-8");
@@ -477,6 +481,10 @@ describe("repo-chat-worker", () => {
         else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
         if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
         else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
+        if (prevOauth === undefined) delete process.env.GITHUB_OAUTH_TOKEN;
+        else process.env.GITHUB_OAUTH_TOKEN = prevOauth;
+        if (prevCustomToken === undefined) delete process.env.CUSTOM_SERVICE_TOKEN;
+        else process.env.CUSTOM_SERVICE_TOKEN = prevCustomToken;
       }
 
       const call = runCliProcessMock.mock.calls[0]?.[0] as {
@@ -487,6 +495,8 @@ describe("repo-chat-worker", () => {
       expect(call.command).toBe("codex");
       expect(call.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
       expect(call.env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
+      expect(call.env.GITHUB_OAUTH_TOKEN).toBeUndefined();
+      expect(call.env.CUSTOM_SERVICE_TOKEN).toBeUndefined();
       expect(call.args).toContain("--output-last-message");
       expect(call.args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(call.args).not.toContain(RESPONSE_FILE_PATH);
@@ -1241,6 +1251,16 @@ describe("repo-chat-worker", () => {
             backend: "codex",
             prompt: "Read private env.",
             workingDir: privateEnvDir,
+          }),
+        ).rejects.toThrow(/private paths/);
+
+        const privateSymlink = path.join(repoDir, "private-env-link");
+        fs.symlinkSync(privateEnvDir, privateSymlink, "dir");
+        await expect(
+          runRepoChatWorker({
+            backend: "codex",
+            prompt: "Read private env through a symlink.",
+            workingDir: privateSymlink,
           }),
         ).rejects.toThrow(/private paths/);
       } finally {

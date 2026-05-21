@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -297,6 +297,27 @@ describe("state + config path candidates", () => {
     expect(isPathInsidePrivateRoot("/m/root/agent/workspaces/x/repo", env, home)).toBe(false);
     expect(isPathInsidePrivateRoot("/m/root/scratch/r/t", env, home)).toBe(false);
     expect(isPathInsidePrivateRoot("/var/tmp/private", env, home)).toBe(false);
+  });
+
+  it("managed root checks follow symlink ancestors before classifying trust zones", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "managed-paths-symlink-"));
+    const env = { SMITHERSBOT_GOALS_ROOT: root } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const privateEnvDir = path.join(root, "private", "env", "smithersbot");
+    const agentWorkspaceDir = path.join(root, "agent", "workspaces", "smithersbot", "repo");
+    mkdirSync(privateEnvDir, { recursive: true });
+    mkdirSync(agentWorkspaceDir, { recursive: true });
+    const linkPath = path.join(agentWorkspaceDir, "env-link");
+    symlinkSync(privateEnvDir, linkPath, "dir");
+
+    try {
+      const linkedEnvFile = path.join(linkPath, ".env");
+      expect(isPathInsideManagedRoot(linkedEnvFile, env, home)).toBe(true);
+      expect(isPathInsidePrivateRoot(linkedEnvFile, env, home)).toBe(true);
+      expect(isPathInsideAgentRoot(linkedEnvFile, env, home)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("setup-smithersbot.sh MANAGED_ROOT_SUBDIRS matches the resolver layout", () => {

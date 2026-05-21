@@ -247,14 +247,20 @@ describe("cli-worker", () => {
       const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
       const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
       const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
+      const prevOauth = process.env.SLACK_OAUTH_ACCESS;
+      const prevCustomToken = process.env.CUSTOM_SERVICE_TOKEN;
       delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
       process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
       process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
+      process.env.SLACK_OAUTH_ACCESS = "oauth-secret";
+      process.env.CUSTOM_SERVICE_TOKEN = "custom-token-secret";
       try {
         const env = buildGoalWorkerEnv("codex", "subscription");
         expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
         expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
         expect(env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
+        expect(env.SLACK_OAUTH_ACCESS).toBeUndefined();
+        expect(env.CUSTOM_SERVICE_TOKEN).toBeUndefined();
         expect(process.env.TELEGRAM_BOT_TOKEN).toBe("telegram-secret");
         expect(process.env.CLAWDBOT_GATEWAY_TOKEN).toBe("gateway-secret");
         expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
@@ -265,6 +271,10 @@ describe("cli-worker", () => {
         else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
         if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;
         else process.env.CLAWDBOT_GATEWAY_TOKEN = prevGateway;
+        if (prevOauth === undefined) delete process.env.SLACK_OAUTH_ACCESS;
+        else process.env.SLACK_OAUTH_ACCESS = prevOauth;
+        if (prevCustomToken === undefined) delete process.env.CUSTOM_SERVICE_TOKEN;
+        else process.env.CUSTOM_SERVICE_TOKEN = prevCustomToken;
       }
     });
 

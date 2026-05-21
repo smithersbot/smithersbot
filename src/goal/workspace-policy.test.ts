@@ -62,4 +62,30 @@ describe("goal workspace policy", () => {
       fs.rmSync(legacyDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects managed private paths and private symlink targets even while legacy dirs are compatible", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-root-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const privateEnvDir = path.join(root, "private", "env", "sample");
+    const repoDir = path.join(root, "agent", "workspaces", "sample", "repo");
+    fs.mkdirSync(privateEnvDir, { recursive: true });
+    fs.mkdirSync(repoDir, { recursive: true });
+    const privateLink = path.join(repoDir, "private-env-link");
+    fs.symlinkSync(privateEnvDir, privateLink, "dir");
+
+    try {
+      expect(() =>
+        assertGoalWorkerWorkspace({
+          workingDir: privateEnvDir,
+        }),
+      ).toThrow(/private paths/);
+      expect(() =>
+        assertGoalWorkerWorkspace({
+          workingDir: privateLink,
+        }),
+      ).toThrow(/private paths/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

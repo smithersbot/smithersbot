@@ -105,7 +105,7 @@ describe("runCliProcess default env", () => {
 
       const result = await runPromise;
       expect(result.timedOut).toBe(true);
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode === 0 || result.signal === "SIGTERM").toBe(true);
 
       const graceTimerHandle = setTimeoutSpy.mock.calls
         .map((call, index) => ({

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -236,6 +237,38 @@ function isInside(child: string, parent: string): boolean {
   return true;
 }
 
+function tryRealpath(candidate: string): string | undefined {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+function pathCandidates(candidate: string): string[] {
+  const resolved = path.resolve(candidate);
+  const candidates = new Set<string>([resolved]);
+  const leafRealpath = tryRealpath(resolved);
+  if (leafRealpath) candidates.add(leafRealpath);
+
+  const parsed = path.parse(resolved);
+  const parts = path.relative(parsed.root, resolved).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    current = path.join(current, parts[index]!);
+    const realAncestor = tryRealpath(current);
+    if (!realAncestor) continue;
+    candidates.add(path.join(realAncestor, ...parts.slice(index + 1)));
+  }
+
+  return [...candidates];
+}
+
+function pathInsideAnyCandidate(candidate: string, parent: string): boolean {
+  return pathCandidates(candidate).some((entry) => isInside(entry, parent));
+}
+
 /** True when `candidate` lies inside <root>/agent. */
 export function isPathInsideAgentRoot(
   candidate: string,
@@ -243,7 +276,8 @@ export function isPathInsideAgentRoot(
   homedir: () => string = os.homedir,
 ): boolean {
   if (typeof candidate !== "string" || candidate.length === 0) return false;
-  return isInside(candidate, resolveAgentRoot(env, homedir));
+  if (pathInsideAnyCandidate(candidate, resolvePrivateRoot(env, homedir))) return false;
+  return pathInsideAnyCandidate(candidate, resolveAgentRoot(env, homedir));
 }
 
 /** True when `candidate` lies inside <root>/private. */
@@ -253,7 +287,7 @@ export function isPathInsidePrivateRoot(
   homedir: () => string = os.homedir,
 ): boolean {
   if (typeof candidate !== "string" || candidate.length === 0) return false;
-  return isInside(candidate, resolvePrivateRoot(env, homedir));
+  return pathInsideAnyCandidate(candidate, resolvePrivateRoot(env, homedir));
 }
 
 /** True when `candidate` lies inside the managed root (agent, private, or scratch). */
@@ -263,5 +297,5 @@ export function isPathInsideManagedRoot(
   homedir: () => string = os.homedir,
 ): boolean {
   if (typeof candidate !== "string" || candidate.length === 0) return false;
-  return isInside(candidate, resolveManagedRoot(env, homedir));
+  return pathInsideAnyCandidate(candidate, resolveManagedRoot(env, homedir));
 }

@@ -1,4 +1,8 @@
-import { isPathInsideAgentRoot, resolveAgentRoot } from "../config/managed-paths.js";
+import {
+  isPathInsideAgentRoot,
+  isPathInsidePrivateRoot,
+  resolveAgentRoot,
+} from "../config/managed-paths.js";
 import type { GoalConfig } from "../config/types.goal.js";
 
 export const LEGACY_WORKING_DIR_WARNING =
@@ -13,6 +17,10 @@ export function assertGoalWorkerWorkspace(params: {
   config?: GoalConfig;
   onWarning?: (message: string) => void;
 }): void {
+  if (isPathInsidePrivateRoot(params.workingDir)) {
+    throw new Error("Goal worker workspace cannot be inside SmithersBot private paths.");
+  }
+
   if (isPathInsideAgentRoot(params.workingDir)) return;
 
   if (!isLegacyWorkingDirAllowed(params.config)) {

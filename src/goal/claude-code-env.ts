@@ -52,6 +52,8 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
 export function shouldStripCredentialKey(key: string): boolean {
   if (CREDENTIAL_KEYS_TO_STRIP.includes(key)) return true;
   if (key.startsWith("OP_SESSION_")) return true;
+  if (key.includes("OAUTH")) return true;
+  if (key.endsWith("_TOKEN")) return true;
   if (key.endsWith("_SECRET")) return true;
   if (key.endsWith("_PRIVATE_KEY")) return true;
   if (!AUTH_KEYS_TO_STRIP.includes(key) && key.endsWith("_API_KEY")) return true;
