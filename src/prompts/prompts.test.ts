@@ -30,6 +30,7 @@ import {
   buildLessonExtractionPrompt,
 } from "./lessons/extraction-prompt.js";
 import { REPO_CHAT_SANDBOX_REPAIR_PROMPT } from "./repair/repo-chat-repair.js";
+import { loadAgentWorkspaceTemplate } from "./agent-workspace/templates.js";
 
 // Re-imports from the consumer modules: every active prompt must continue to
 // resolve to the same identity as the canonical src/prompts/ definition, so
@@ -186,6 +187,15 @@ describe("src/prompts/ — worker context", () => {
   });
 });
 
+describe("src/prompts/ — agent workspace templates", () => {
+  it("serves isolated-agent workspace AGENTS.md from src/prompts", () => {
+    expect(loadAgentWorkspaceTemplate("AGENTS.md")).toContain(
+      "SmithersBot-managed agent workspace",
+    );
+    expect(loadAgentWorkspaceTemplate("AGENTS.md")).not.toContain("docs/reference/templates");
+  });
+});
+
 describe("src/prompts/ — repo-chat context and delivery", () => {
   it("is the same object identity used by src/repo-chat/repo-chat-context.ts", () => {
     expect(REPO_CHAT_CONTEXT_FROM_CONSUMER).toBe(REPO_CHAT_CONTEXT);
@@ -339,6 +349,7 @@ describe("src/prompts/ — no drift in consumer source files", () => {
     );
     expect(fs.existsSync(path.join(promptsRoot, "manual-tests", "system-prompt.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "worker", "worker-context.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(promptsRoot, "agent-workspace", "templates.ts"))).toBe(true);
     const workerContextDir = path.join(repoRoot, "src", "goal", "worker-context");
     expect(fs.existsSync(path.join(workerContextDir, "shared-worker-contract.md"))).toBe(true);
     expect(fs.existsSync(path.join(workerContextDir, "AGENTS.md"))).toBe(true);

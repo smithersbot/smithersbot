@@ -35,6 +35,7 @@ describe("startTelegramWebhook", () => {
       accountId: "opie",
       config: cfg,
       port: 0, // random free port
+      host: "127.0.0.1",
       abortSignal: abort.signal,
     });
     expect(createTelegramBotSpy).toHaveBeenCalledWith(
@@ -49,7 +50,10 @@ describe("startTelegramWebhook", () => {
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
-    expect(setWebhookSpy).toHaveBeenCalled();
+    expect(setWebhookSpy).toHaveBeenCalledWith(
+      `http://127.0.0.1:${address.port}/telegram-webhook`,
+      expect.any(Object),
+    );
 
     abort.abort();
   });
@@ -64,6 +68,7 @@ describe("startTelegramWebhook", () => {
       accountId: "opie",
       config: cfg,
       port: 0,
+      host: "127.0.0.1",
       abortSignal: abort.signal,
       path: "/hook",
     });

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_AGENTS_FILENAME,
   DEFAULT_MEMORY_ALT_FILENAME,
   DEFAULT_MEMORY_FILENAME,
+  ensureAgentWorkspace,
   loadWorkspaceBootstrapFiles,
 } from "./workspace.js";
 import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace.js";
@@ -45,5 +47,20 @@ describe("loadWorkspaceBootstrapFiles", () => {
     );
 
     expect(memoryEntries).toHaveLength(0);
+  });
+});
+
+describe("ensureAgentWorkspace", () => {
+  it("bootstraps templates from centralized prompt sources", async () => {
+    const tempDir = await makeTempWorkspace("moltbot-workspace-");
+
+    const result = await ensureAgentWorkspace({ dir: tempDir, ensureBootstrapFiles: true });
+    const files = await loadWorkspaceBootstrapFiles(tempDir);
+    const agents = files.find((file) => file.name === DEFAULT_AGENTS_FILENAME);
+
+    expect(result.agentsPath).toBeDefined();
+    expect(agents?.missing).toBe(false);
+    expect(agents?.content).toContain("SmithersBot-managed agent workspace");
+    expect(agents?.content).not.toContain("docs/reference/templates");
   });
 });

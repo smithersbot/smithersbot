@@ -1,10 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { runCommandWithTimeout } from "../process/exec.js";
+import {
+  loadAgentWorkspaceTemplate,
+  type AgentWorkspaceTemplateName,
+} from "../prompts/agent-workspace/templates.js";
 import { resolveUserPath } from "../utils.js";
 
 export function resolveDefaultAgentWorkspaceDir(
@@ -29,11 +32,6 @@ export const DEFAULT_BOOTSTRAP_FILENAME = "BOOTSTRAP.md";
 export const DEFAULT_MEMORY_FILENAME = "MEMORY.md";
 export const DEFAULT_MEMORY_ALT_FILENAME = "memory.md";
 
-const TEMPLATE_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../docs/reference/templates",
-);
-
 function stripFrontMatter(content: string): string {
   if (!content.startsWith("---")) return content;
   const endIndex = content.indexOf("\n---", 3);
@@ -44,15 +42,12 @@ function stripFrontMatter(content: string): string {
   return trimmed;
 }
 
-async function loadTemplate(name: string): Promise<string> {
-  const templatePath = path.join(TEMPLATE_DIR, name);
+async function loadTemplate(name: AgentWorkspaceTemplateName): Promise<string> {
   try {
-    const content = await fs.readFile(templatePath, "utf-8");
+    const content = loadAgentWorkspaceTemplate(name);
     return stripFrontMatter(content);
   } catch {
-    throw new Error(
-      `Missing workspace template: ${name} (${templatePath}). Ensure docs/reference/templates are packaged.`,
-    );
+    throw new Error(`Missing workspace template: ${name}. Ensure src/prompts are packaged.`);
   }
 }
 

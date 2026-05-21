@@ -25,6 +25,9 @@ src/prompts/
     worker-context.ts               WORKER_CONTEXT / WORKER_CLAUDE_CONTEXT
                                     / WORKER_AGENTS_CONTEXT — reads from
                                     src/goal/worker-context/shared-worker-contract.md
+  agent-workspace/
+    templates.ts                    local/isolated agent workspace bootstrap
+                                    templates
   repo-chat/
     repo-chat-context.ts            REPO_CHAT_CONTEXT
     response-file-instruction.ts    buildResponseFileInstruction()
@@ -48,6 +51,7 @@ src/prompts/
 | Planner system prompt   | `planner/system-prompt.ts`                                          | `src/goal/planner.ts`, `src/goal/cli-planner.ts` |
 | Plan autocheck reviewer | `plan-autocheck/review-instruction.ts`                              | `src/goal/plan-autocheck.ts`                  |
 | Worker context (CLI)    | `worker/worker-context.ts` (reads `src/goal/worker-context/shared-worker-contract.md`) | `src/goal/cli-worker.ts`, `src/goal/pi-runner.ts` |
+| Agent workspace bootstrap | `agent-workspace/templates.ts`                                  | `src/agents/workspace.ts`, cron isolated-agent runs |
 | Repo-chat context       | `repo-chat/repo-chat-context.ts`                                    | `src/repo-chat/repo-chat-worker.ts`           |
 | Repo-chat delivery      | `repo-chat/response-file-instruction.ts`                            | `src/repo-chat/repo-chat-worker.ts`           |
 | Repo-chat repair        | `repair/repo-chat-repair.ts`                                        | `src/repo-chat/repo-chat-worker.ts`           |

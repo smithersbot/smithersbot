@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { webhookCallback } from "grammy";
 import type { MoltbotConfig } from "../config/config.js";
@@ -95,20 +96,30 @@ export async function startTelegramWebhook(opts: {
     }
   });
 
-  const publicUrl =
-    opts.publicUrl ?? `http://${host === "0.0.0.0" ? "localhost" : host}:${port}${path}`;
-
-  await withTelegramApiErrorLogging({
-    operation: "setWebhook",
-    runtime,
-    fn: () =>
-      bot.api.setWebhook(publicUrl, {
-        secret_token: opts.secret,
-        allowed_updates: resolveTelegramAllowedUpdates(),
-      }),
-  });
-
   await new Promise<void>((resolve) => server.listen(port, host, resolve));
+  const address = server.address();
+  const listenPort = address && typeof address !== "string" ? (address as AddressInfo).port : port;
+  const publicUrl =
+    opts.publicUrl ?? `http://${host === "0.0.0.0" ? "localhost" : host}:${listenPort}${path}`;
+
+  try {
+    await withTelegramApiErrorLogging({
+      operation: "setWebhook",
+      runtime,
+      fn: () =>
+        bot.api.setWebhook(publicUrl, {
+          secret_token: opts.secret,
+          allowed_updates: resolveTelegramAllowedUpdates(),
+        }),
+    });
+  } catch (err) {
+    server.close();
+    void bot.stop();
+    if (diagnosticsEnabled) {
+      stopDiagnosticHeartbeat();
+    }
+    throw err;
+  }
   runtime.log?.(`webhook listening on ${publicUrl}`);
 
   const shutdown = () => {
