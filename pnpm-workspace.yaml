@@ -5,7 +5,6 @@ packages:
   - extensions/telegram
 
 onlyBuiltDependencies:
-  - '@whiskeysockets/baileys'
   - '@lydell/node-pty'
   - authenticate-pam
   - esbuild
