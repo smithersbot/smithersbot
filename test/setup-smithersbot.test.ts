@@ -182,6 +182,83 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(generated.config.gateway.auth.token).toMatch(/^[A-Za-z0-9_-]{32,}$/);
     expect(generated.configMode).toBe(0o600);
     expect(generated.envMode).toBe(0o600);
+
+    // Stage 2S: managed root directory tree is created under HOME.
+    const managedRoot = path.join(home, "smithersbot-goals");
+    const managedSubdirs = [
+      "agent/workspaces",
+      "agent/history/goals",
+      "agent/history/repo-chats",
+      "agent/history/index",
+      "private/env",
+      "private/config",
+      "private/auth",
+      "private/sessions",
+      "scratch",
+    ];
+    for (const subdir of managedSubdirs) {
+      const stat = await fs.stat(path.join(managedRoot, subdir));
+      expect(stat.isDirectory()).toBe(true);
+    }
+    const privateRootStat = await fs.stat(path.join(managedRoot, "private"));
+    expect(privateRootStat.mode & 0o777).toBe(0o700);
+    for (const privSub of ["private/env", "private/config", "private/auth", "private/sessions"]) {
+      const stat = await fs.stat(path.join(managedRoot, privSub));
+      expect(stat.mode & 0o777).toBe(0o700);
+    }
+    expect(result.output).toContain(`Managed root: ${managedRoot}`);
+  });
+
+  it("honors SMITHERSBOT_GOALS_ROOT override and prints managed-root pointer when run outside it", async () => {
+    const home = await mkTempHome();
+    const customRoot = path.join(home, "custom-managed-root");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const child = spawn(
+      "bash",
+      [
+        scriptPath,
+        "--no-build",
+        "--backend",
+        "codex",
+        "--config-dir",
+        path.join(home, ".smithersbot"),
+        "--state-dir",
+        path.join(home, ".smithersbot"),
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: home,
+          SMITHERSBOT_GOALS_ROOT: customRoot,
+          SMITHERSBOT_TELEGRAM_API_BASE: apiBase,
+          SMITHERSBOT_SETUP_POLL_SECONDS: "1",
+          SMITHERSBOT_SETUP_POLL_INTERVAL: "0.05",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+
+    let combined = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (combined += chunk));
+    child.stderr.on("data", (chunk) => (combined += chunk));
+    child.stdin.end(`${testToken}\n\n`);
+    const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+
+    expect(exitCode).toBe(0);
+    for (const subdir of ["agent/workspaces", "agent/history/goals", "private/env", "scratch"]) {
+      const stat = await fs.stat(path.join(customRoot, subdir));
+      expect(stat.isDirectory()).toBe(true);
+    }
+    expect(combined).toContain(`Managed root: ${customRoot}`);
+    expect(combined).toContain(`Recommended workspace path: ${customRoot}/agent/workspaces/`);
   });
 
   it("stops cleanly for an invalid token", async () => {

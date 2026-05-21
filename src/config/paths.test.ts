@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -295,6 +297,89 @@ describe("state + config path candidates", () => {
     expect(isPathInsidePrivateRoot("/m/root/agent/workspaces/x/repo", env, home)).toBe(false);
     expect(isPathInsidePrivateRoot("/m/root/scratch/r/t", env, home)).toBe(false);
     expect(isPathInsidePrivateRoot("/var/tmp/private", env, home)).toBe(false);
+  });
+
+  it("setup-smithersbot.sh MANAGED_ROOT_SUBDIRS matches the resolver layout", () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const repoRoot = path.resolve(here, "..", "..");
+    const scriptPath = path.join(repoRoot, "scripts/setup-smithersbot.sh");
+    const scriptText = readFileSync(scriptPath, "utf-8");
+
+    const arrayMatch = scriptText.match(/MANAGED_ROOT_SUBDIRS=\(([^)]*)\)/);
+    expect(arrayMatch, "setup-smithersbot.sh must define MANAGED_ROOT_SUBDIRS").toBeTruthy();
+    const subdirs = (arrayMatch?.[1] ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/#.*$/, "").trim())
+      .map((line) => {
+        const m = line.match(/^"([^"]+)"$/);
+        return m?.[1] ?? "";
+      })
+      .filter(Boolean);
+
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const managedRoot = resolveManagedRoot(env, home);
+
+    // Build the canonical list of managed-root subpaths from the resolvers.
+    // Workspace/goal-id placeholders are not part of the setup-time directory
+    // tree; only the parent dirs that exist before any workspace is created.
+    const agentRoot = resolveAgentRoot(env, home);
+    const privateRoot = resolvePrivateRoot(env, home);
+    const scratchRoot = resolveScratchRoot(env, home);
+    const indexDir = resolveAgentHistoryIndexDir(env, home);
+    const privateConfig = resolvePrivateConfigDir(env, home);
+    const privateAuth = resolvePrivateAuthDir(env, home);
+    const privateSessions = resolvePrivateSessionsDir(env, home);
+    // Goal/repo-chat history parents: <agent>/history/{goals,repo-chats}.
+    // resolveAgentGoalHistoryDir -> <agent>/history/goals/<ws>/<goal-id>, so
+    // two dirnames up gives the setup-time parent.
+    const goalHistoryParent = path.dirname(
+      path.dirname(resolveAgentGoalHistoryDir("ws", "goal-id", env, home)),
+    );
+    // resolveAgentRepoChatHistoryDir -> <agent>/history/repo-chats/<ws>.
+    const chatHistoryParent = path.dirname(resolveAgentRepoChatHistoryDir("ws", env, home));
+    // Workspace parent: <agent>/workspaces.
+    const workspacesParent = path.dirname(path.dirname(resolveWorkspaceRepoDir("ws", env, home)));
+    // Private env parent: <private>/env.
+    const privateEnvParent = path.dirname(resolvePrivateEnvDir("ws", env, home));
+
+    const resolverDirs = new Set([
+      workspacesParent,
+      goalHistoryParent,
+      chatHistoryParent,
+      indexDir,
+      privateEnvParent,
+      privateConfig,
+      privateAuth,
+      privateSessions,
+      scratchRoot,
+    ]);
+
+    // Verify each subdir from the script resolves to a path under the managed
+    // root and matches a resolver-derived path.
+    for (const subdir of subdirs) {
+      const absolute = path.join(managedRoot, subdir);
+      const insideAgent = isPathInsideAgentRoot(absolute, env, home);
+      const insidePrivate = isPathInsidePrivateRoot(absolute, env, home);
+      const isScratch = absolute === scratchRoot;
+      expect(insideAgent || insidePrivate || isScratch).toBe(true);
+      expect(resolverDirs.has(absolute)).toBe(true);
+    }
+
+    // Sanity: the script must include every essential parent dir we expect.
+    expect(subdirs).toContain("agent/workspaces");
+    expect(subdirs).toContain("agent/history/goals");
+    expect(subdirs).toContain("agent/history/repo-chats");
+    expect(subdirs).toContain("agent/history/index");
+    expect(subdirs).toContain("private/env");
+    expect(subdirs).toContain("private/config");
+    expect(subdirs).toContain("private/auth");
+    expect(subdirs).toContain("private/sessions");
+    expect(subdirs).toContain("scratch");
+
+    // Stub uses of agentRoot/privateRoot to silence unused-variable lint.
+    expect(agentRoot.startsWith(managedRoot)).toBe(true);
+    expect(privateRoot.startsWith(managedRoot)).toBe(true);
   });
 
   it("respects state dir overrides when config is missing", async () => {

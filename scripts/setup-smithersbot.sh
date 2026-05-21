@@ -26,6 +26,67 @@ expand_home() {
   esac
 }
 
+# Stage 2S managed root layout. Keep this list in sync with the resolvers in
+# src/config/managed-paths.ts; src/config/paths.test.ts verifies the match.
+# Subdirs are listed relative to the managed root. Anything under "private"
+# also gets chmod 700.
+MANAGED_ROOT_SUBDIRS=(
+  "agent/workspaces"
+  "agent/history/goals"
+  "agent/history/repo-chats"
+  "agent/history/index"
+  "private/env"
+  "private/config"
+  "private/auth"
+  "private/sessions"
+  "scratch"
+)
+
+resolve_managed_root() {
+  local override=${SMITHERSBOT_GOALS_ROOT:-}
+  if [[ -n "$override" ]]; then
+    expand_home "$override"
+  else
+    expand_home "~/smithersbot-goals"
+  fi
+}
+
+create_managed_tree() {
+  local managed_root=$1
+  local subdir
+
+  mkdir -p "$managed_root"
+  # chmod the managed root itself when practical (best effort; tolerate
+  # restricted environments).
+  chmod 700 "$managed_root" 2>/dev/null || true
+
+  for subdir in "${MANAGED_ROOT_SUBDIRS[@]}"; do
+    mkdir -p "$managed_root/$subdir"
+  done
+
+  # Tighten permissions on the private/* tree so secrets are not world-readable.
+  chmod 700 "$managed_root/private" 2>/dev/null || true
+  for subdir in "${MANAGED_ROOT_SUBDIRS[@]}"; do
+    case "$subdir" in
+      private/*)
+        chmod 700 "$managed_root/$subdir" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+print_managed_root_pointer() {
+  local managed_root=$1
+  local cwd
+  cwd=$(pwd)
+  # Only print the pointer when the caller is running outside the managed root.
+  if [[ "$cwd" != "$managed_root"* ]]; then
+    local repo_name
+    repo_name=$(basename "$cwd")
+    info "Recommended workspace path: $managed_root/agent/workspaces/$repo_name/repo"
+  fi
+}
+
 json_escape() {
   local value=$1
   value=${value//\\/\\\\}
@@ -441,6 +502,11 @@ config_file="$config_dir/smithersbot.json"
 
 mkdir -p "$config_dir" "$state_dir"
 
+managed_root=$(resolve_managed_root)
+create_managed_tree "$managed_root"
+info "Managed root: $managed_root"
+print_managed_root_pointer "$managed_root"
+
 printf 'Telegram bot token: ' >&2
 IFS= read -rs telegram_token
 printf '\n' >&2
@@ -474,6 +540,9 @@ fi
 info ""
 info "SmithersBot setup complete."
 info "Config directory: $config_dir"
+info "Managed root: $managed_root (agent area + private host-only area)"
+info "  Workspaces live in $managed_root/agent/workspaces/<name>/repo"
+info "  Real env files live in $managed_root/private/env/<name>/.env (not agent-visible)"
 if [[ "$state_dir" != "$config_dir" ]]; then
   info "State directory: $state_dir"
   info "Set SMITHERSBOT_STATE_DIR=$state_dir before starting if you want to use this state directory."

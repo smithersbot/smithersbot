@@ -135,6 +135,22 @@ describe("secret paths", () => {
       expect(isSecretPath(filePath, { cwd, homeDir: makeTmpDir() })).toBe(false);
     },
   );
+
+  it.each([".env.example", "nested/.env.example", "subdir/repo/.env.example", ".ENV.EXAMPLE"])(
+    "allows the .env.example variable-name contract %s",
+    (filePath) => {
+      const cwd = makeTmpDir();
+      expect(isSecretPath(filePath, { cwd, homeDir: makeTmpDir() })).toBe(false);
+    },
+  );
+
+  it.each([".env", ".env.local", ".env.production", ".env.test"])(
+    "still denies %s even though .env.example is allowed",
+    (filePath) => {
+      const cwd = makeTmpDir();
+      expect(isSecretPath(filePath, { cwd, homeDir: makeTmpDir() })).toBe(true);
+    },
+  );
 });
 
 describe("secret value redaction", () => {

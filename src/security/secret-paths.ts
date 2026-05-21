@@ -197,6 +197,12 @@ function hasSecretDirectorySegment(parts: string[]): boolean {
 
 function hasSecretFileName(baseName: string): boolean {
   const lower = baseName.toLowerCase();
+  // .env.example is the portable, agent-readable variable-name contract for
+  // Stage 2S. Other .env.* files (.env.local, .env.production, .env.test, ...)
+  // remain denied below.
+  if (lower === ".env.example") {
+    return false;
+  }
   if (SECRET_FILE_NAMES.has(lower)) {
     return true;
   }
