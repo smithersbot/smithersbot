@@ -29,12 +29,11 @@ describe("repo-chat sandbox live probes", () => {
         workingDir: fixture.repoDir,
       });
 
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("read-only");
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("read-only");
       expect(args).not.toContain("workspace-write");
       expect(args).toContain("--cd");
       expect(args).toContain(fixture.agentRoot);
-      expect(args).toContain("net.allowed=false");
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
       expect(args.at(-1)).toContain("DENIED managed private env");

@@ -633,6 +633,8 @@ export function codexNativeSandboxStatus(
     "cat .env.local >/dev/null; echo env_local=$?",
     "cat .env.production >/dev/null; echo env_production=$?",
     "cat .env.test >/dev/null; echo env_test=$?",
+    "cat ~/.smithersbot/.env >/dev/null; echo home_env=$?",
+    "cat ~/.smithersbot/smithersbot.json >/dev/null; echo home_config=$?",
     `cat ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} >/dev/null; echo private_env=$?`,
     "rm -f .smithersbot-codex-env-link",
     `ln -s ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} .smithersbot-codex-env-link`,
@@ -655,6 +657,8 @@ export function codexNativeSandboxStatus(
     output.includes("env_local=1") &&
     output.includes("env_production=1") &&
     output.includes("env_test=1") &&
+    output.includes("home_env=1") &&
+    output.includes("home_config=1") &&
     output.includes("private_env=1") &&
     output.includes("symlink_escape=1") &&
     output.includes("ok");

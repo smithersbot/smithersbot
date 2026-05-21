@@ -523,10 +523,17 @@ describe("cli-worker", () => {
       expect(codexNativeSandbox.configToml).toContain('default_permissions = "smithersbot"');
       expect(codexNativeSandbox.env.CODEX_HOME).toBe(codexNativeSandbox.codexHome);
       expect(codexNativeSandbox.env.PATH).toContain(codexNativeSandbox.helperDir);
+      expect(args).toEqual([
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--json",
+        "--cd",
+        workingDir,
+        args.at(-1),
+      ]);
       expect(args).not.toContain("--sandbox");
       expect(args).not.toContain("workspace-write");
-      expect(args).toContain("--cd");
-      expect(args).toContain(workingDir);
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
     });

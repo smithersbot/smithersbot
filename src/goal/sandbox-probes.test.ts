@@ -31,6 +31,8 @@ describe("goal worker sandbox live probes", () => {
       "home env",
       "home config",
       "repo env local",
+      "repo env production",
+      "repo env test",
       "bash managed private env",
       "python managed private env",
       "private symlink escape",
@@ -67,11 +69,10 @@ describe("goal worker sandbox live probes", () => {
         denyFilePath: denyFile,
       });
 
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("workspace-write");
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("workspace-write");
       expect(args).toContain("--cd");
       expect(args).toContain(fixture.repoDir);
-      expect(args).toContain(`sandbox_workspace_write.writable_roots=["${fixture.repoDir}/.git"]`);
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
       expect(args.at(-1)).toContain("DENIED managed private env");

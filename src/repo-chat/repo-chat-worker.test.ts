@@ -198,18 +198,23 @@ describe("repo-chat-worker", () => {
       expect(codexNativeSandbox.configToml).toContain('default_permissions = "smithersbot"');
       expect(codexNativeSandbox.env.CODEX_HOME).toBe(codexNativeSandbox.codexHome);
       expect(codexNativeSandbox.env.PATH).toContain(codexNativeSandbox.helperDir);
-      expect(args).toContain("exec");
-      expect(args).toContain("--json");
-      expect(args).toContain("--color");
-      expect(args).toContain("never");
+      expect(args).toEqual([
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--skip-git-repo-check",
+        "--cd",
+        "/repo",
+        "--output-last-message",
+        LAST_MESSAGE_FILE_PATH,
+        "Explain the tests in src/goal",
+      ]);
       expect(args).not.toContain("--sandbox");
       expect(args).not.toContain("read-only");
       expect(args).not.toContain("workspace-write");
-      expect(args).toContain("--skip-git-repo-check");
-      expect(args).toContain("--cd");
-      expect(args).toContain("/repo");
-      expect(args).toContain("--output-last-message");
-      expect(args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(args).not.toContain("resume");
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
