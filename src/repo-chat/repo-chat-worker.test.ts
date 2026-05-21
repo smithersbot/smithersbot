@@ -47,6 +47,7 @@ import {
 } from "./repo-chat-worker.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import { EMPTY_MCP_CONFIG_PATH } from "../goal/claude-code-mcp-isolation.js";
+import { buildCodexNativeSandboxConfig } from "../goal/backend-sandbox.js";
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
@@ -180,24 +181,33 @@ describe("repo-chat-worker", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
-    it("builds Codex initial args with read-only sandbox", () => {
+    it("builds Codex initial args with native permission-profile config", () => {
+      const codexNativeSandbox = buildCodexNativeSandboxConfig({
+        workingDir: "/repo",
+        runId: "repo-chat-launch",
+        purpose: "repo-chat",
+        codexPath: "/usr/local/bin/codex",
+      });
       const args = buildCodexRepoChatArgs({
         prompt: "Explain the tests in src/goal",
         workingDir: "/repo",
         lastMessageFilePath: LAST_MESSAGE_FILE_PATH,
+        codexNativeSandbox,
       });
 
+      expect(codexNativeSandbox.configToml).toContain('default_permissions = "smithersbot"');
+      expect(codexNativeSandbox.env.CODEX_HOME).toBe(codexNativeSandbox.codexHome);
+      expect(codexNativeSandbox.env.PATH).toContain(codexNativeSandbox.helperDir);
       expect(args).toContain("exec");
       expect(args).toContain("--json");
       expect(args).toContain("--color");
       expect(args).toContain("never");
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("read-only");
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("read-only");
       expect(args).not.toContain("workspace-write");
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
-      expect(args).toContain("net.allowed=false");
       expect(args).toContain("--output-last-message");
       expect(args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(args).not.toContain("resume");
@@ -1192,11 +1202,23 @@ describe("repo-chat-worker", () => {
           workingDir: repoDir,
         });
 
-        const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[]; cwd: string };
+        const call = runCliProcessMock.mock.calls[0]?.[0] as {
+          args: string[];
+          cwd: string;
+          env: Record<string, string>;
+        };
         expect(call.cwd).toBe(repoDir);
-        expect(call.args).toContain("--sandbox");
-        expect(call.args).toContain("read-only");
+        expect(call.args).not.toContain("--sandbox");
+        expect(call.args).not.toContain("read-only");
         expect(call.args).not.toContain("workspace-write");
+        expect(call.env.CODEX_HOME).toContain("smithersbot-codex-repo-chat-");
+        expect(call.env.PATH).toContain(path.join(call.env.CODEX_HOME, "bin"));
+        expect(fs.existsSync(path.join(call.env.CODEX_HOME, "bin", "codex-linux-sandbox"))).toBe(
+          true,
+        );
+        expect(fs.readFileSync(path.join(call.env.CODEX_HOME, "config.toml"), "utf8")).toContain(
+          'default_permissions = "smithersbot"',
+        );
         expect(fs.readFileSync(repoFile, "utf-8")).toBe("original\n");
         expect(result.text).toContain("cannot edit");
       } finally {

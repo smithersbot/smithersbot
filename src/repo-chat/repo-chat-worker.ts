@@ -23,9 +23,12 @@ import {
   resolveAgentRoot,
 } from "../config/managed-paths.js";
 import {
-  appendCodexSandboxArgs,
   buildClaudeCodeSandboxLaunchConfig,
-  buildCodexSandboxConfig,
+  appendCodexNativeSandboxExecArgs,
+  buildCodexNativeSandboxConfig,
+  mergeCodexNativeSandboxEnv,
+  writeCodexNativeSandboxConfig,
+  type CodexNativeSandboxConfig,
 } from "../goal/backend-sandbox.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
@@ -96,6 +99,7 @@ export function buildCodexRepoChatArgs(params: {
   lastMessageFilePath?: string;
   cliSessionId?: string;
   model?: string;
+  codexNativeSandbox?: CodexNativeSandboxConfig;
 }): string[] {
   if (params.cliSessionId) {
     // Resume only accepts the flags `codex exec resume --help` documents: passing
@@ -111,10 +115,14 @@ export function buildCodexRepoChatArgs(params: {
   }
 
   const askForApprovalPlacement = getCodexAskForApprovalPlacement();
-  const sandboxConfig = buildCodexSandboxConfig({
-    workingDir: params.workingDir,
-    purpose: "repo-chat",
-  });
+  const sandboxConfig =
+    params.codexNativeSandbox ??
+    buildCodexNativeSandboxConfig({
+      workingDir: params.workingDir,
+      runId: "repo-chat",
+      purpose: "repo-chat",
+      codexPath: "codex",
+    });
   const args = [
     ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
@@ -124,7 +132,7 @@ export function buildCodexRepoChatArgs(params: {
     "never",
     "--skip-git-repo-check",
   ];
-  appendCodexSandboxArgs(args, sandboxConfig);
+  appendCodexNativeSandboxExecArgs(args, sandboxConfig);
   if (params.lastMessageFilePath) {
     args.push("--output-last-message", params.lastMessageFilePath);
   }
@@ -439,6 +447,15 @@ export async function runRepoChatWorker(
   const augmentedPrompt = `${responseFileInstruction}\n\n---\n\nUser question:\n${params.prompt}`;
   const codexPrompt = `${REPO_CHAT_CONTEXT}\n\n${CODEX_STYLE_DIRECTIVE}\n\n${augmentedPrompt}`;
   const command = params.backend === "claude_code" ? "claude" : "codex";
+  const codexNativeSandbox =
+    params.backend === "codex"
+      ? writeCodexNativeSandboxConfig({
+          workingDir: params.workingDir,
+          runId: `repo-chat-${responseFileId}`,
+          purpose: "repo-chat",
+          sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+        })
+      : undefined;
   const args =
     params.backend === "claude_code"
       ? buildClaudeRepoChatArgs({
@@ -454,11 +471,12 @@ export async function runRepoChatWorker(
           lastMessageFilePath,
           cliSessionId: params.cliSessionId,
           model: params.model,
+          codexNativeSandbox,
         });
   const env =
     params.backend === "claude_code"
       ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
-      : buildCredentialStrippedEnv();
+      : mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv(), codexNativeSandbox!);
 
   try {
     const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({

@@ -35,10 +35,13 @@ import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import {
-  appendCodexSandboxArgs,
+  appendCodexNativeSandboxExecArgs,
+  buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxLaunchConfig,
-  buildCodexSandboxConfig,
   claudeCodeNativeSandboxStatus,
+  mergeCodexNativeSandboxEnv,
+  writeCodexNativeSandboxConfig,
+  type CodexNativeSandboxConfig,
 } from "./backend-sandbox.js";
 
 // --- Constants ---
@@ -209,12 +212,21 @@ export async function repairResultFile(params: {
   ].join("\n");
 
   const denyFilePath = writeDenyFile(hardDenies, workerDir);
+  const codexNativeSandbox =
+    backend === "codex"
+      ? writeCodexNativeSandboxConfig({
+          workingDir,
+          runId: `repair-${attemptNumber}`,
+          purpose: "goal-worker",
+        })
+      : undefined;
   const args = buildCliArgs({
     backend,
     prompt: repairPrompt,
     workingDir,
     denyFilePath,
     model,
+    codexNativeSandbox,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -231,6 +243,10 @@ export async function repairResultFile(params: {
     abortSignal,
     stdoutPath,
     stderrPath,
+    env:
+      backend === "codex"
+        ? mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv(), codexNativeSandbox!)
+        : undefined,
   });
 
   const repairedRead = readWorkerResultFile({ primaryPath: resultFilePath });
@@ -285,8 +301,22 @@ export async function executeTaskWithCliWorker(
     canonicalResultPath,
   });
 
+  const codexNativeSandbox =
+    backend === "codex"
+      ? writeCodexNativeSandboxConfig({
+          workingDir,
+          runId: `${runId}-${step.id}-attempt-${attemptNumber}`,
+          purpose: "goal-worker",
+          requiresNetwork: step.requiresNetwork === true,
+          sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+        })
+      : undefined;
+
   // Build worker env based on auth mode
-  const workerEnv = buildGoalWorkerEnv(backend, claudeCodeAuth);
+  const workerEnv =
+    backend === "codex"
+      ? mergeCodexNativeSandboxEnv(buildGoalWorkerEnv(backend, claudeCodeAuth), codexNativeSandbox!)
+      : buildGoalWorkerEnv(backend, claudeCodeAuth);
   if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
 
   if (backend === "claude_code" && goalConfig?.requireNativeSandbox === true) {
@@ -338,6 +368,7 @@ export async function executeTaskWithCliWorker(
     requiresNetwork: step.requiresNetwork === true,
     projectConventions,
     promptPayload,
+    codexNativeSandbox,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -827,6 +858,7 @@ export function buildCliArgs(params: {
     persistedPrompt: string;
     appendedSystemPrompt?: string;
   };
+  codexNativeSandbox?: CodexNativeSandboxConfig;
 }): string[] {
   const {
     backend,
@@ -838,6 +870,7 @@ export function buildCliArgs(params: {
     requiresNetwork = false,
     projectConventions,
     promptPayload,
+    codexNativeSandbox,
   } = params;
   const assembledPrompt =
     promptPayload ??
@@ -850,11 +883,16 @@ export function buildCliArgs(params: {
 
   if (backend === "codex") {
     const codexAskForApproval = getCodexAskForApprovalPlacement();
-    const sandboxConfig = buildCodexSandboxConfig({
-      workingDir,
-      purpose: "goal-worker",
-      requiresNetwork,
-    });
+    const sandboxConfig =
+      codexNativeSandbox ??
+      buildCodexNativeSandboxConfig({
+        workingDir,
+        runId,
+        purpose: "goal-worker",
+        requiresNetwork,
+        sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+        codexPath: "codex",
+      });
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
       "exec",
@@ -862,7 +900,7 @@ export function buildCliArgs(params: {
       ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
     ];
 
-    appendCodexSandboxArgs(args, sandboxConfig);
+    appendCodexNativeSandboxExecArgs(args, sandboxConfig);
 
     if (model) args.push("--model", model);
     args.push(assembledPrompt.promptArg);

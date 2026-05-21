@@ -27,7 +27,7 @@ import {
 import { HARD_DENIES } from "./hard-deny.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
-import { claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
+import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -501,28 +501,32 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--output-schema");
     });
 
-    it("disables network by default and allows git writes for codex workspace-write workers", () => {
+    it("uses Codex native permission-profile config for goal-worker launches", () => {
+      const workingDir = "/tmp/sample-workspace";
+      const codexNativeSandbox = buildCodexNativeSandboxConfig({
+        workingDir,
+        runId: "launch-test",
+        purpose: "goal-worker",
+        codexPath: "/usr/local/bin/codex",
+      });
       const args = buildCliArgs({
         backend: "codex",
         prompt: "test",
-        workingDir: "/tmp/sample-workspace",
+        workingDir,
         denyFilePath: "/tmp/deny",
+        codexNativeSandbox,
       });
 
-      const netConfigIndex = args.findIndex(
-        (arg, index) => arg === "-c" && args[index + 1] === "net.allowed=false",
+      expect(codexNativeSandbox.configPath).toBe(
+        "/var/tmp/smithersbot-codex-launch-test/config.toml",
       );
-      expect(netConfigIndex).toBeGreaterThanOrEqual(0);
-      expect(args.slice(netConfigIndex, netConfigIndex + 4)).toEqual([
-        "-c",
-        "net.allowed=false",
-        "-c",
-        'sandbox_workspace_write.writable_roots=["/tmp/sample-workspace/.git"]',
-      ]);
-      expect(args).toContain("--sandbox");
-      expect(args).toContain("workspace-write");
+      expect(codexNativeSandbox.configToml).toContain('default_permissions = "smithersbot"');
+      expect(codexNativeSandbox.env.CODEX_HOME).toBe(codexNativeSandbox.codexHome);
+      expect(codexNativeSandbox.env.PATH).toContain(codexNativeSandbox.helperDir);
+      expect(args).not.toContain("--sandbox");
+      expect(args).not.toContain("workspace-write");
       expect(args).toContain("--cd");
-      expect(args).toContain("/tmp/sample-workspace");
+      expect(args).toContain(workingDir);
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
     });
@@ -571,16 +575,25 @@ describe("cli-worker", () => {
     });
 
     it("enables codex worker network only when the step explicitly opts in", () => {
+      const codexNativeSandbox = buildCodexNativeSandboxConfig({
+        workingDir: "/tmp/sample-workspace",
+        runId: "network-test",
+        purpose: "goal-worker",
+        requiresNetwork: true,
+        codexPath: "/usr/local/bin/codex",
+      });
       const args = buildCliArgs({
         backend: "codex",
         prompt: "test",
         workingDir: "/tmp/sample-workspace",
         denyFilePath: "/tmp/deny",
         requiresNetwork: true,
+        codexNativeSandbox,
       });
 
-      expect(args).toContain("net.allowed=true");
+      expect(codexNativeSandbox.configToml).toContain("enabled = true");
       expect(args).not.toContain("net.allowed=false");
+      expect(args).not.toContain("--sandbox");
     });
 
     it("prepends project conventions before worker context for codex workers", () => {
@@ -767,8 +780,11 @@ describe("cli-worker", () => {
       });
 
       const args = runCliProcessMock.mock.calls[0]?.[0]?.args ?? [];
-      expect(args).toContain("net.allowed=true");
+      const env = runCliProcessMock.mock.calls[0]?.[0]?.env ?? {};
+      const configPath = path.join(String(env.CODEX_HOME), "config.toml");
+      expect(fs.readFileSync(configPath, "utf8")).toContain("enabled = true");
       expect(args).not.toContain("net.allowed=false");
+      expect(args).not.toContain("--sandbox");
     });
 
     it("terminates a hanging process once worker_result.json is detected", async () => {

@@ -173,6 +173,25 @@ export function appendCodexSandboxArgs(args: string[], config: CodexSandboxConfi
   return args;
 }
 
+export function appendCodexNativeSandboxExecArgs(
+  args: string[],
+  config: CodexNativeSandboxConfig,
+): string[] {
+  args.push("--cd", config.executionRoot);
+  return args;
+}
+
+export function mergeCodexNativeSandboxEnv(
+  baseEnv: Record<string, string | undefined>,
+  config: CodexNativeSandboxConfig,
+): Record<string, string | undefined> {
+  return {
+    ...baseEnv,
+    CODEX_HOME: config.env.CODEX_HOME,
+    PATH: `${config.helperDir}${path.delimiter}${baseEnv.PATH ?? process.env.PATH ?? ""}`,
+  };
+}
+
 function buildCodexDeniedReadPaths(workingDir: string): string[] {
   return uniqueValues([
     path.join(workingDir, ".env"),
