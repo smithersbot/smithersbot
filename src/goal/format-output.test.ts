@@ -149,6 +149,16 @@ describe("formatPlanOutput", () => {
       expect(out).toContain("flowchart TD");
     });
 
+    it("renders managed-workspace label as 'Workspace:' when workingDir is provided", () => {
+      const out = formatPlanOutput(samplePlan, {
+        diagram: "none",
+        format: "md",
+        workingDir: "/tmp/workspace",
+      });
+      expect(out).toContain("**Workspace:** /tmp/workspace");
+      expect(out).not.toContain("**Working dir:**");
+    });
+
     it("includes only ASCII when diagram=ascii", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "ascii", format: "md" });
       expect(out).toContain("### Dependencies (ASCII)");

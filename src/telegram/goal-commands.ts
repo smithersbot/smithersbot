@@ -1304,7 +1304,7 @@ export async function handleGoalEdit(
       saveRun(run);
       const lines: string[] = [];
       if (run.workingDir !== originalWorkingDir) {
-        lines.push(`Working dir updated: ${shortenHomePath(run.workingDir)}`);
+        lines.push(`Workspace updated: ${shortenHomePath(run.workingDir)}`);
       }
       if (plannerFallbackNotice) {
         lines.push(plannerFallbackNotice);
@@ -1365,7 +1365,7 @@ export async function handleGoalEdit(
     const parts: string[] = [];
     parts.push(`**Revision ${finalRevision}**\n`);
     if (run.workingDir !== originalWorkingDir) {
-      parts.push(`Working dir: \`${shortenHomePath(run.workingDir)}\`\n`);
+      parts.push(`Workspace: \`${shortenHomePath(run.workingDir)}\`\n`);
     }
     if (plannerFallbackNotice) {
       parts.push(`${plannerFallbackNotice}\n`);

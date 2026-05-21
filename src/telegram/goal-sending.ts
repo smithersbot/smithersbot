@@ -368,7 +368,7 @@ function buildCaptionHeader(result: GoalPlanResult): string {
   // Load run to get workingDir (already persisted before planning)
   const run = result.runId ? loadRun(result.runId) : undefined;
   if (run?.workingDir) {
-    lines.push(formatCaptionLabel("Working dir", shortenHomePath(run.workingDir)));
+    lines.push(formatCaptionLabel("Workspace", shortenHomePath(run.workingDir)));
   }
   const plannerFallbackLine = run ? formatPlannerFallbackLine(run) : undefined;
   if (plannerFallbackLine) {

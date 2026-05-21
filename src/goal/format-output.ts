@@ -72,7 +72,7 @@ function formatMarkdown(
 
   lines.push(`## Plan: ${plan.summary}`);
   if (workingDir) {
-    lines.push(`**Working dir:** ${tildeShorten(workingDir)}`);
+    lines.push(`**Workspace:** ${tildeShorten(workingDir)}`);
   }
   lines.push("");
   lines.push("### Steps");

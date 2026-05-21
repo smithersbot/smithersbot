@@ -1578,7 +1578,7 @@ describe("goal-commands telegram adapter", () => {
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
       expect(options.caption).toContain("<b>Goal ID:</b> test-run");
-      expect(options.caption).toContain("<b>Working dir:</b> /tmp/ws");
+      expect(options.caption).toContain("<b>Workspace:</b> /tmp/ws");
       expect(options.caption).toContain("<b>Workers:</b> Claude Code");
       expect(options.caption).toContain("<b>Plan:</b> Ship secure checkout");
       expect(options.caption).not.toContain("Long plan summary");
@@ -2925,7 +2925,7 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", `working dir should be ${newDir}`);
 
-      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain("Workspace:");
       expect(result.text).toContain(newDir.replace(os.homedir(), "~"));
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3020,7 +3020,7 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", testCase.instructionText);
 
-      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain("Workspace:");
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: testCase.expectedDir,
@@ -3064,7 +3064,7 @@ describe("goal-commands telegram adapter", () => {
         `working directory should be ${instructionValue}`,
       );
 
-      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain("Workspace:");
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: resolvedPath,
@@ -3140,7 +3140,7 @@ describe("goal-commands telegram adapter", () => {
         `you still have the Working Dir as ${originalDir} when it should be ${newDir}`,
       );
 
-      expect(result.text).toContain("Working dir:");
+      expect(result.text).toContain("Workspace:");
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
           cwd: newDir,
