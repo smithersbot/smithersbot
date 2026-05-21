@@ -79,12 +79,47 @@ function formatSpawnDetail(result: {
   return "unknown error";
 }
 
-function normalizeSystemdUnit(raw?: string, profile?: string): string {
+function normalizeSystemdUnit(raw?: string): string | null {
   const unit = raw?.trim();
-  if (!unit) {
-    return `${resolveGatewaySystemdServiceName(profile)}.service`;
-  }
+  if (!unit) return null;
   return unit.endsWith(".service") ? unit : `${unit}.service`;
+}
+
+const GATEWAY_SYSTEMD_UNIT_CANDIDATES = [
+  "smithersbot-gateway",
+  "moltbot-gateway-dev",
+  "moltbot-gateway",
+] as const;
+
+function isSystemdUnitActive(unit: string): boolean {
+  const checks = [
+    ["--user", "is-active", unit],
+    ["is-active", unit],
+  ];
+  for (const args of checks) {
+    const result = spawnSync("systemctl", args, {
+      encoding: "utf8",
+      timeout: SPAWN_TIMEOUT_MS,
+    });
+    if (!result.error && result.status === 0) return true;
+  }
+  return false;
+}
+
+export function resolveGatewaySystemdRestartUnit(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit =
+    normalizeSystemdUnit(env.SMITHERSBOT_SYSTEMD_UNIT) ??
+    normalizeSystemdUnit(env.MOLTBOT_SYSTEMD_UNIT) ??
+    normalizeSystemdUnit(env.CLAWDBOT_SYSTEMD_UNIT);
+  if (explicit) return explicit;
+
+  for (const candidate of GATEWAY_SYSTEMD_UNIT_CANDIDATES) {
+    const unit = normalizeSystemdUnit(candidate);
+    if (unit && isSystemdUnitActive(unit)) return unit;
+  }
+
+  const profile = env.MOLTBOT_PROFILE ?? env.CLAWDBOT_PROFILE;
+  return `${resolveGatewaySystemdServiceName(profile)}.service`;
 }
 
 export function triggerMoltbotRestart(): RestartAttempt {
@@ -94,10 +129,7 @@ export function triggerMoltbotRestart(): RestartAttempt {
   const tried: string[] = [];
   if (process.platform !== "darwin") {
     if (process.platform === "linux") {
-      const unit = normalizeSystemdUnit(
-        process.env.CLAWDBOT_SYSTEMD_UNIT,
-        process.env.MOLTBOT_PROFILE ?? process.env.CLAWDBOT_PROFILE,
-      );
+      const unit = resolveGatewaySystemdRestartUnit();
       const userArgs = ["--user", "restart", unit];
       tried.push(`systemctl ${userArgs.join(" ")}`);
       const userRestart = spawnSync("systemctl", userArgs, {
