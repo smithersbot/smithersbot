@@ -44,6 +44,7 @@ import { REPO_CHAT_CONTEXT as REPO_CHAT_CONTEXT_FROM_CONSUMER } from "../repo-ch
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "..", "..");
 const promptsRoot = path.join(repoRoot, "src", "prompts");
+const promptsReadmePath = path.join(promptsRoot, "README.md");
 
 describe("src/prompts/ — scout template", () => {
   it("resolves the runtime scout template from src/prompts/scout/", () => {
@@ -73,6 +74,11 @@ describe("src/prompts/ — planner system prompt", () => {
     expect(prompt.length).toBeGreaterThan(500);
     expect(prompt).toContain("technical planning agent");
     expect(prompt).toContain("BACKEND SELECTION RULES");
+    expect(prompt).toContain("MANAGED WORKSPACE AND SECRET RULES");
+    expect(prompt).toContain("<managed-root>/agent/workspaces/<workspace-name>/repo");
+    expect(prompt).toContain(".env.example");
+    expect(prompt).toContain("Workers do not receive raw secrets by default");
+    expect(prompt).toContain("only where implemented and verified");
   });
 
   it("rejects an empty worker list", () => {
@@ -188,7 +194,7 @@ describe("src/prompts/ — worker context", () => {
 
   it("contains the Stage 2S Workspace section (transitional managed-workspace contract)", () => {
     const needles = [
-      "## Workspace (Stage 2S — transitional)",
+      "## Workspace (Stage 2S/2T — transitional)",
       "<managed-root>/agent/workspaces/<workspace-name>/repo",
       "~/smithersbot-goals",
       "SMITHERSBOT_GOALS_ROOT",
@@ -201,8 +207,10 @@ describe("src/prompts/ — worker context", () => {
       "Workers do NOT receive raw secrets in env by default",
       "buildGoalWorkerEnv",
       "host-side commands (gateway-side flows)",
+      "Native backend sandboxing is used only where SmithersBot has implemented and",
+      "Do not treat prompts, `CLAUDE.md`, or",
       "full OS-level isolation is NOT claimed",
-      "Legacy `workingDir` values",
+      "`workingDir` values outside",
       "allowLegacyWorkingDir",
     ];
     for (const needle of needles) {
@@ -229,6 +237,11 @@ describe("src/prompts/ — repo-chat context and delivery", () => {
     expect(REPO_CHAT_CONTEXT).toContain("agent/history/goals/");
     expect(REPO_CHAT_CONTEXT).toContain("agent/history/repo-chats/");
     expect(REPO_CHAT_CONTEXT).toContain("agent/history/index/");
+    expect(REPO_CHAT_CONTEXT).toContain("agent/workspaces/");
+    expect(REPO_CHAT_CONTEXT).toContain(".env.example");
+    expect(REPO_CHAT_CONTEXT).toContain("process.env.KEY");
+    expect(REPO_CHAT_CONTEXT).toContain('os.environ["KEY"]');
+    expect(REPO_CHAT_CONTEXT).toContain("only where SmithersBot has implemented and verified");
     expect(REPO_CHAT_CONTEXT).toContain("smithersbot-goals");
     expect(REPO_CHAT_CONTEXT).toContain("SMITHERSBOT_GOALS_ROOT");
     expect(REPO_CHAT_CONTEXT).toMatch(/NEVER read\s+`<managed-root>\/private\//);
@@ -321,6 +334,17 @@ describe("src/prompts/ — manual-tests system prompt", () => {
   });
 });
 
+describe("src/prompts/ — plan autocheck", () => {
+  it("rejects sandbox overclaims and protects the managed env contract", () => {
+    expect(REVIEW_INSTRUCTION).toContain(".env.example");
+    expect(REVIEW_INSTRUCTION).toContain("raw secrets are not passed to workers by default");
+    expect(REVIEW_INSTRUCTION).toContain("<managed-root>/private/");
+    expect(REVIEW_INSTRUCTION).toContain("SANDBOX OVERCLAIMS");
+    expect(REVIEW_INSTRUCTION).toContain("full OS-level isolation");
+    expect(REVIEW_INSTRUCTION).toContain("prompts/CLAUDE.md as a security boundary");
+  });
+});
+
 describe("src/prompts/ — no drift in consumer source files", () => {
   // Stage 2Q: implementation tasks should not paste prompt bodies inline; they
   // must import from src/prompts/. These tests act as a regression fence
@@ -377,7 +401,7 @@ describe("src/prompts/ — no drift in consumer source files", () => {
   }
 
   it("every active prompt module lives under src/prompts/", () => {
-    expect(fs.existsSync(path.join(promptsRoot, "README.md"))).toBe(true);
+    expect(fs.existsSync(promptsReadmePath)).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "scout", "scout_prompt_template.md"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "planner", "system-prompt.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "plan-autocheck", "review-instruction.ts"))).toBe(
@@ -400,4 +424,59 @@ describe("src/prompts/ — no drift in consumer source files", () => {
     expect(fs.existsSync(path.join(promptsRoot, "lessons", "extraction-prompt.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "repair", "repo-chat-repair.ts"))).toBe(true);
   });
+});
+
+describe("src/prompts/ — lifecycle persistence coverage", () => {
+  it("documents persistence behavior for every active lifecycle row", () => {
+    const readme = fs.readFileSync(promptsReadmePath, "utf8");
+    const lifecycleRows = readme
+      .split("\n")
+      .filter((line) => line.startsWith("| "))
+      .filter((line) => !line.includes("Lifecycle step") && !line.includes("---"))
+      .filter((line) => !line.includes("Prompt source"));
+    const expectedSteps = [
+      "Scout",
+      "Planner system prompt",
+      "Plan autocheck reviewer",
+      "Worker context (CLI)",
+      "Agent workspace bootstrap",
+      "Repo-chat context",
+      "Repo-chat delivery",
+      "Repo-chat repair",
+      "Post-execution review",
+      "Manual-test suggester",
+      "Lesson extraction",
+    ];
+
+    expect(lifecycleRows).toHaveLength(expectedSteps.length);
+    for (const step of expectedSteps) {
+      const row = lifecycleRows.find((line) => line.includes(`| ${step}`));
+      expect(row, `missing lifecycle row for ${step}`).toBeDefined();
+      expect(row).toMatch(/summary|metadata|No LLM call|not mirrored|lessons/i);
+    }
+
+    expect(readme).toContain("<managed-root>/agent/history/");
+    expect(readme).toContain("Raw stdout/stderr, raw transcripts, private env");
+    expect(readme).toContain("agent/history/index/all-goals.jsonl");
+    expect(readme).toContain("agent/history/index/all-repo-chats.jsonl");
+  });
+});
+
+describe("project docs — managed workspace and sandbox claims", () => {
+  it.each(["README.md", "SETUP.md"])(
+    "%s preserves no-raw-secrets guidance and avoids OS-isolation overclaims",
+    (fileName) => {
+      const doc = fs.readFileSync(path.join(repoRoot, fileName), "utf8");
+      expect(doc).toContain(".env.example");
+      expect(doc).toContain("Workers do");
+      expect(doc).toContain("raw secrets");
+      expect(doc).toContain("Native backend sandboxing");
+      expect(doc).toMatch(/implements\s+and\s+verifies/);
+      expect(doc).toMatch(/Full OS-level isolation|Full\s+OS-level isolation/i);
+      expect(doc).toMatch(/not claimed/i);
+      expect(doc).toContain("backend-specific sandbox probes");
+      expect(doc).not.toMatch(/full OS-level isolation is (provided|guaranteed|enforced)/i);
+      expect(doc).not.toMatch(/legacy `workingDir`[^.\n]*(sandboxed|isolated)/i);
+    },
+  );
 });

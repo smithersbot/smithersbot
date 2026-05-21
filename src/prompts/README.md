@@ -45,19 +45,24 @@ src/prompts/
 
 ## Lifecycle map
 
-| Lifecycle step          | Prompt source                                                       | Used by                                       |
-| ----------------------- | ------------------------------------------------------------------- | --------------------------------------------- |
-| Scout                   | `scout/scout_prompt_template.md` + `scout/loader.ts`                | `src/goal/scout.ts`, `src/goal/cli-planner.ts`|
-| Planner system prompt   | `planner/system-prompt.ts`                                          | `src/goal/planner.ts`, `src/goal/cli-planner.ts` |
-| Plan autocheck reviewer | `plan-autocheck/review-instruction.ts`                              | `src/goal/plan-autocheck.ts`                  |
-| Worker context (CLI)    | `worker/worker-context.ts` (reads `src/goal/worker-context/shared-worker-contract.md`) | `src/goal/cli-worker.ts`, `src/goal/pi-runner.ts` |
-| Agent workspace bootstrap | `agent-workspace/templates.ts`                                  | `src/agents/workspace.ts`, cron isolated-agent runs |
-| Repo-chat context       | `repo-chat/repo-chat-context.ts`                                    | `src/repo-chat/repo-chat-worker.ts`           |
-| Repo-chat delivery      | `repo-chat/response-file-instruction.ts`                            | `src/repo-chat/repo-chat-worker.ts`           |
-| Repo-chat repair        | `repair/repo-chat-repair.ts`                                        | `src/repo-chat/repo-chat-worker.ts`           |
-| Post-execution review   | `post-execution-review/build-prompt.ts`                             | `src/goal/post-execution-review.ts`           |
-| Manual-test suggester   | `manual-tests/system-prompt.ts`                                     | `src/goal/manual-tests.ts`                    |
-| Lesson extraction       | `lessons/extraction-prompt.ts`                                      | `src/goal/lessons.ts`                         |
+Every active LLM lifecycle step must have an explicit persistence behavior.
+Agent-readable copies go under `<managed-root>/agent/history/` as sanitized
+summaries or indexed artifacts. Raw stdout/stderr, raw transcripts, private env
+values, gateway config, and credentials must not be mirrored into agent history.
+
+| Lifecycle step          | Prompt source                                                       | Used by                                       | Persistence behavior |
+| ----------------------- | ------------------------------------------------------------------- | --------------------------------------------- | -------------------- |
+| Scout                   | `scout/scout_prompt_template.md` + `scout/loader.ts`                | `src/goal/scout.ts`, `src/goal/cli-planner.ts`| Persisted inside goal run state and mirrored through the sanitized goal summary under `agent/history/goals/<workspace>/<runId>/summary.json`; indexed once in `agent/history/index/all-goals.jsonl`. |
+| Planner system prompt   | `planner/system-prompt.ts`                                          | `src/goal/planner.ts`, `src/goal/cli-planner.ts` | Plan metadata is persisted in `run.json` and mirrored as sanitized plan summary/step metadata under `agent/history/goals/<workspace>/<runId>/summary.json`; raw planner output remains in the runtime store only and is not mirrored to agent history. |
+| Plan autocheck reviewer | `plan-autocheck/review-instruction.ts`                              | `src/goal/plan-autocheck.ts`                  | Review outcome is persisted as goal-run metadata and becomes searchable through the sanitized goal summary; raw reviewer transcript is not mirrored. |
+| Worker context (CLI)    | `worker/worker-context.ts` (reads `src/goal/worker-context/shared-worker-contract.md`) | `src/goal/cli-worker.ts`, `src/goal/pi-runner.ts` | Worker result/status is persisted in the runtime run store and mirrored only as sanitized step status/title metadata in the goal summary; raw worker stdout/stderr and transcripts are not mirrored. |
+| Agent workspace bootstrap | `agent-workspace/templates.ts`                                  | `src/agents/workspace.ts`, cron isolated-agent runs | No LLM call is made by the bootstrap template loader itself; generated workspace instruction files are local workspace artifacts, not history records. |
+| Repo-chat context       | `repo-chat/repo-chat-context.ts`                                    | `src/repo-chat/repo-chat-worker.ts`           | Repo-chat session metadata is persisted in the runtime repo-chat store and mirrored as sanitized summaries under `agent/history/repo-chats/<workspace>/<sessionId>/summary.json`; indexed once in `agent/history/index/all-repo-chats.jsonl`. |
+| Repo-chat delivery      | `repo-chat/response-file-instruction.ts`                            | `src/repo-chat/repo-chat-worker.ts`           | Final response text is persisted through the repo-chat session store with secret redaction before the sanitized summary mirror is updated; temp response files are runtime scratch artifacts and are not mirrored. |
+| Repo-chat repair        | `repair/repo-chat-repair.ts`                                        | `src/repo-chat/repo-chat-worker.ts`           | Repair output is treated as repo-chat response content and follows the same redacted repo-chat session persistence; repair scratch files/transcripts are not mirrored. |
+| Post-execution review   | `post-execution-review/build-prompt.ts`                             | `src/goal/post-execution-review.ts`           | Review result is stored with the goal run and mirrored only through sanitized goal summary metadata; raw diff/prompt/transcript is not mirrored to agent history. |
+| Manual-test suggester   | `manual-tests/system-prompt.ts`                                     | `src/goal/manual-tests.ts`                    | Suggested manual checks are stored in goal-run metadata when produced and exposed via the sanitized goal summary; raw model transcript is not mirrored. |
+| Lesson extraction       | `lessons/extraction-prompt.ts`                                      | `src/goal/lessons.ts`                         | Extracted lessons are persisted as reusable lessons in the runtime store; any goal-run linkage is searchable through the sanitized goal summary, while raw extraction prompts/transcripts are not mirrored. |
 
 ## Build wiring
 

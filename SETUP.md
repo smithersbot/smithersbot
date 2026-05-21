@@ -437,8 +437,11 @@ Stage 2S is intentionally transitional:
 - Legacy `workingDir` values (including `~/moltbot` or any path outside the
   managed root) are still supported and emit a one-line warning. You can opt
   into fail-closed behavior with `config.goal.allowLegacyWorkingDir = false`.
+- Native backend sandboxing is used only where SmithersBot implements and
+  verifies it for the selected backend. Prompts and convention files are not
+  security boundaries.
 - Full OS-level isolation between agent and private trees is NOT claimed beyond
-  what the native Codex/Claude sandbox enforces.
+  backend-specific sandbox probes that have actually passed.
 
 ### Portability rule for project code
 

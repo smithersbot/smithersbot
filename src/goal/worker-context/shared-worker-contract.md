@@ -79,7 +79,7 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - Follow the conventions you see in surrounding code (naming, structure, error handling).
 - Keep changes minimal and focused on the task. Do not refactor unrelated code.
 
-## Workspace (Stage 2S — transitional)
+## Workspace (Stage 2S/2T — transitional)
 
 - The managed workspace cwd is the new default for new/default goal runs:
   `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
@@ -100,11 +100,14 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
   host-side commands (gateway-side flows) with an explicit, narrowly-scoped opt-in.
   Worker subprocesses do not see those values unless that opt-in is set.
-- Stage 2S is transitional: full OS-level isolation is NOT claimed beyond what
-  the native Codex/Claude sandbox enforces. Legacy `workingDir` values outside
-  the managed agent root remain supported during this stage and emit a one-line
-  warning; operators can opt into fail-closed behavior by setting
-  `config.goal.allowLegacyWorkingDir = false`.
+- Native backend sandboxing is used only where SmithersBot has implemented and
+  verified it for the selected backend. Do not treat prompts, `CLAUDE.md`, or
+  this contract as a security boundary.
+- Stage 2S/2T is transitional: full OS-level isolation is NOT claimed beyond
+  backend-specific sandbox probes that have actually passed. Legacy
+  `workingDir` values outside the managed agent root remain supported during
+  this stage and emit a one-line warning; operators can opt into fail-closed
+  behavior by setting `config.goal.allowLegacyWorkingDir = false`.
 - If you need a real credential to test something, request it through the trusted
   host-side opt-in path instead of trying to read private env files yourself.
 

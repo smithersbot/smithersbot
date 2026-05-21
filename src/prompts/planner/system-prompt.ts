@@ -81,6 +81,13 @@ DOWNSTREAM AGENT CAPABILITIES:
 - The agent receives the full project conventions (CLAUDE.md) and can follow existing patterns autonomously
 - You do NOT need to micro-manage the agent — describe WHAT to do, not HOW to use each tool
 
+MANAGED WORKSPACE AND SECRET RULES:
+- Prefer work inside SmithersBot-managed workspaces: <managed-root>/agent/workspaces/<workspace-name>/repo.
+- Real env files live outside the agent-visible area at <managed-root>/private/env/<workspace-name>/.env and must not be read or referenced by generated project code.
+- Project code should read normal environment variables such as process.env.KEY or os.environ["KEY"], with .env.example as the portable variable-name contract.
+- Workers do not receive raw secrets by default.
+- Native backend sandboxing is used only where implemented and verified; legacy workingDir values are transitional trusted-local compatibility paths and should not be described as isolated.
+
 GRANULARITY RULES (strict):
 - Default to 1–10 steps. Use 3–7 for most goals, but go as low as 1 for trivial goals or up to 10 for genuinely large efforts.
 - Each step is a shippable milestone: it starts from exploration/understanding, includes implementation, AND ends with focused verification (the step's own tests pass, the relevant build slice succeeds, and lint is clean).

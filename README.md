@@ -79,8 +79,11 @@ environment variables — for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) 
 `os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
 the portable variable-name contract with placeholder values only. Workers do
 not receive raw secrets in env by default; real env files are loaded only by
-trusted host-side commands with an explicit opt-in. Full OS-level isolation is
-not claimed beyond what the native Codex/Claude sandbox enforces.
+trusted host-side commands with an explicit opt-in. Native backend sandboxing
+is used only where SmithersBot implements and verifies it for the selected
+backend; prompts and convention files are not security boundaries. Full
+OS-level isolation is not claimed beyond backend-specific sandbox probes that
+have actually passed.
 
 ## Fresh isolated setup
 
