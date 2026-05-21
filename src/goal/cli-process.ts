@@ -54,12 +54,13 @@ function isProcessAlive(pid: number): boolean {
 function terminateProcess(proc: ChildProcess): void {
   if (!proc.pid) return;
   proc.kill("SIGTERM");
-  setTimeout(() => {
+  const killTimer = setTimeout(() => {
     if (!proc.pid) return;
     if (isProcessAlive(proc.pid)) {
       proc.kill("SIGKILL");
     }
   }, SIGTERM_GRACE_MS);
+  proc.once("close", () => clearTimeout(killTimer));
 }
 
 export async function runCliProcess(params: RunCliProcessParams): Promise<RunCliProcessResult> {

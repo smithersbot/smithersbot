@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runCliProcess } from "./cli-process.js";
 
 // Smoke tests for the runCliProcess default-env contract: callers that omit
@@ -75,5 +75,50 @@ describe("runCliProcess default env", () => {
     const childEnv = JSON.parse(result.stdout) as Record<string, string>;
     // Explicit env is honored verbatim — callers that opt in keep their keys.
     expect(childEnv.TELEGRAM_BOT_TOKEN).toBe("EXPLICIT_OPT_IN_TOKEN");
+  });
+
+  it("clears the SIGTERM grace timer when an aborted process exits promptly", async () => {
+    const abortController = new AbortController();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+    try {
+      const runPromise = runCliProcess({
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "process.on('SIGTERM', () => process.exit(0));",
+            "process.stdout.write('ready');",
+            "setInterval(() => {}, 1000);",
+          ].join(""),
+        ],
+        cwd: workDir,
+        timeoutMs: 30_000,
+        abortSignal: abortController.signal,
+        stdoutPath: outPath,
+        stderrPath: errPath,
+      });
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      abortController.abort();
+
+      const result = await runPromise;
+      expect(result.timedOut).toBe(true);
+      expect(result.exitCode).toBe(0);
+
+      const graceTimerHandle = setTimeoutSpy.mock.calls
+        .map((call, index) => ({
+          delay: call[1],
+          handle: setTimeoutSpy.mock.results[index]?.value,
+        }))
+        .find((call) => call.delay === 5_000)?.handle;
+
+      expect(graceTimerHandle).toBeDefined();
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(graceTimerHandle);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
   });
 });
