@@ -222,6 +222,13 @@ function buildCodexPermissionProfileToml(params: {
   const filesystemLines = [
     "[permissions.smithersbot.filesystem]",
     "glob_scan_max_depth = 8",
+    // Base read access to the whole filesystem so the codex-linux-sandbox helper,
+    // system binaries (sh), and shared libraries remain executable inside the
+    // bubblewrap sandbox. Without this, a permissions profile that only grants the
+    // workspace makes /bin/sh and the helper unreadable and bwrap fails with
+    // "execvp codex-linux-sandbox: No such file or directory". Specific write and
+    // deny rules below override this broad read grant by path specificity.
+    '"/" = "read"',
     `${tomlQuotedKey(params.executionRoot)} = "${
       params.writablePaths.includes(params.executionRoot) ? "write" : "read"
     }"`,

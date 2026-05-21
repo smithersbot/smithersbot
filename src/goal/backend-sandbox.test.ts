@@ -79,6 +79,10 @@ describe("Codex native permission-profile sandbox config", () => {
       expect(config.configToml).toContain('default_permissions = "smithersbot"');
       expect(config.configToml).toContain("[permissions.smithersbot.filesystem]");
       expect(config.configToml).toContain("glob_scan_max_depth = 8");
+      // Base read grant keeps /bin/sh, shared libs, and the codex-linux-sandbox
+      // helper executable inside the bubblewrap sandbox; specific write/deny rules
+      // below override it by path specificity.
+      expect(config.configToml).toContain('"/" = "read"');
       expect(config.configToml).toContain(`${JSON.stringify(workingDir)} = "write"`);
       expect(config.configToml).toContain(
         `${JSON.stringify(path.join(workingDir, ".env.local"))} = "deny"`,
@@ -193,7 +197,7 @@ describe("Codex native permission-profile sandbox config", () => {
     mockSpawnSync.mockReturnValue({
       status: 0,
       stdout:
-        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nprivate_env=1\nsymlink_escape=1\nok",
+        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\nsymlink_escape=1\nok",
       stderr: "",
     });
 
