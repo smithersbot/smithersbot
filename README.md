@@ -48,6 +48,40 @@ smithersbot goal "<task>" --plan-only
 
 Goal state is persisted on disk. Set the state directory environment variable when you need to redirect that state for local testing or inspection.
 
+### Where files live (Stage 2S, transitional)
+
+Stage 2S introduces a managed agent root that separates the agent-readable
+workspace from a private area workers never see. New/default goal workspaces
+resolve inside the managed agent root; existing installs at legacy paths still
+work and are supported during this stage with a warning (opt into fail-closed
+behavior with `config.goal.allowLegacyWorkingDir = false`).
+
+```text
+~/smithersbot-goals/                       # managed root (override: SMITHERSBOT_GOALS_ROOT)
+  agent/
+    workspaces/<workspace-name>/repo/      # goal worker cwd
+    history/
+      goals/<workspace>/<goalId>/          # sanitized goal-run summaries
+      repo-chats/<workspace>/              # sanitized repo-chat sessions
+      index/                               # global JSONL indexes for grep
+  private/                                 # NOT agent-visible
+    env/<workspace-name>/.env              # real env, host-side only
+    config/  auth/  sessions/
+  scratch/<runId>/<taskId>/                # gateway-controlled temp state
+
+~/.smithersbot/                            # gateway-private state (unchanged)
+  .env  smithersbot.json
+  goals/  repo-chats/                      # canonical runtime stores
+```
+
+Portability rule for project code: read configuration through standard
+environment variables — for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
+`os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
+the portable variable-name contract with placeholder values only. Workers do
+not receive raw secrets in env by default; real env files are loaded only by
+trusted host-side commands with an explicit opt-in. Full OS-level isolation is
+not claimed beyond what the native Codex/Claude sandbox enforces.
+
 ## Fresh isolated setup
 
 Use a fresh isolated machine for real operation: a VirtualBox VM, VPS, Docker container, dedicated machine, or isolated development machine. Do not run SmithersBot directly on your primary personal computer.

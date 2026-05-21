@@ -53,23 +53,42 @@ The goal system (\`src/goal/\`) is the autonomous task execution engine:
 
 Each goal run persists its state to disk under the active SmithersBot state directory:
 
-- Canonical default: \`~/.smithersbot/goals/<runId>/\`
+- Canonical runtime store: \`~/.smithersbot/goals/<runId>/\`
 - Deprecated fallbacks: \`~/.moltbot/goals/<runId>/\` and \`~/.clawdbot/goals/<runId>/\` may exist for older installs.
 
+Stage 2S adds an agent-readable, sanitized mirror under the managed root
+(default \`~/smithersbot-goals\`, override via \`SMITHERSBOT_GOALS_ROOT\`):
+
+- \`<managed-root>/agent/history/goals/<workspace>/<goalId>/\` — sanitized run summaries
+- \`<managed-root>/agent/history/repo-chats/<workspace>/\` — sanitized repo-chat sessions
+- \`<managed-root>/agent/history/index/\` — global JSONL indexes for grep/search across runs
+
+Prefer the managed agent-history mirror for cross-workspace search. The legacy
+\`~/.smithersbot/goals/\` location remains the canonical runtime store for now and
+is the deprecated fallback for cross-run lookups.
+
+You must NEVER read \`<managed-root>/private/\` (env, config, auth, sessions). That
+tree is intentionally outside the agent-readable area.
+
 Check all candidate directories when looking for runs:
-- \`ls -lt ~/.smithersbot/goals/\` (canonical default)
+- \`ls -lt ~/smithersbot-goals/agent/history/goals/\` (agent-readable mirror; preferred for search)
+- \`ls -lt ~/.smithersbot/goals/\` (canonical runtime store)
 - \`ls -lt ~/.moltbot/goals/\` (deprecated fallback)
 - \`ls -lt ~/.clawdbot/goals/\` (deprecated fallback)
 
-Each run directory contains:
+Each runtime run directory contains:
 - \`run.json\` — full run state (plan, tasks, results, metadata)
 - \`sessions/\` — agent session transcripts
 - \`workers/\` — per-worker attempt artifacts
 - \`plan-raw.txt\` — raw planner output (saved on parse failures)
 
+Agent-history mirror entries contain sanitized summaries only (no raw stdout/stderr
+or raw transcripts unless explicitly opted in).
+
 ## Repo Chat Sessions
 
-Repo chat sessions are stored at: \`~/.smithersbot/repo-chats/<sessionId>/session.json\`
+- Canonical runtime store: \`~/.smithersbot/repo-chats/<sessionId>/session.json\`
+- Agent-readable sanitized mirror: \`<managed-root>/agent/history/repo-chats/<workspace>/<sessionId>/\`
 
 ## Configuration
 

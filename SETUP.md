@@ -389,22 +389,79 @@ journalctl --user -u smithersbot-gateway.service -f
 
 ## Where files live
 
-SmithersBot stores local config and state here:
+SmithersBot uses two roots: a gateway-private state directory and a managed
+agent root. Stage 2S introduces the managed agent root as the new default for
+new goal workspaces; existing installs that still use only `~/.smithersbot`
+continue to work without changes.
+
+### Gateway-private state (unchanged)
+
+Gateway credentials, the Telegram bot token, and the canonical runtime stores
+for goals and repo-chats live here:
 
 ```text
 ~/.smithersbot/
-```
-
-Important files and directories:
-
-```text
 ~/.smithersbot/.env
 ~/.smithersbot/smithersbot.json
 ~/.smithersbot/goals/
 ~/.smithersbot/repo-chats/
 ```
 
-Check permissions:
+Workers never read this tree directly.
+
+### Managed agent root (Stage 2S, transitional)
+
+The managed root defaults to `~/smithersbot-goals` and is overridable with
+`SMITHERSBOT_GOALS_ROOT`. It separates the agent-readable area from a private
+area that workers never see:
+
+```text
+~/smithersbot-goals/
+  agent/
+    workspaces/<workspace-name>/repo/   # where goal workers run
+    history/
+      goals/<workspace>/<goalId>/       # sanitized goal-run summaries
+      repo-chats/<workspace>/           # sanitized repo-chat sessions
+      index/                            # global JSONL indexes for search
+  private/
+    env/<workspace-name>/.env           # real env, host-side only
+    config/
+    auth/
+    sessions/
+  scratch/<runId>/<taskId>/             # gateway-controlled temp state
+```
+
+Stage 2S is intentionally transitional:
+
+- New/default goal workspaces resolve inside the managed agent root.
+- Legacy `workingDir` values (including `~/moltbot` or any path outside the
+  managed root) are still supported and emit a one-line warning. You can opt
+  into fail-closed behavior with `config.goal.allowLegacyWorkingDir = false`.
+- Full OS-level isolation between agent and private trees is NOT claimed beyond
+  what the native Codex/Claude sandbox enforces.
+
+### Portability rule for project code
+
+Project code committed by goal workers must read configuration through standard
+environment variables — for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
+`os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
+the portable variable-name contract — it must contain placeholder values only.
+
+Workers do NOT receive raw secrets in env by default. Real env files at
+`~/smithersbot-goals/private/env/<workspace-name>/.env` may only be loaded by
+trusted host-side commands (gateway-side flows) with an explicit, narrowly-scoped
+opt-in. Worker subprocesses never see those values unless that opt-in is set.
+
+### Initial setup order
+
+`scripts/setup-smithersbot.sh` creates the managed tree on first run, including
+`agent/workspaces`, `agent/history/{goals,repo-chats,index}`,
+`private/{env,config,auth,sessions}`, and `scratch`, and applies `chmod 0700` to
+the managed root and `private/*` where practical. If you run setup from a repo
+outside the managed root, the script prints the recommended managed workspace
+path (`~/smithersbot-goals/agent/workspaces/<repo>/repo`).
+
+### Permission check
 
 ```bash
 ls -l ~/.smithersbot/.env ~/.smithersbot/smithersbot.json
@@ -427,6 +484,13 @@ Do not run SmithersBot directly on your primary personal machine.
 Run it in an isolated environment.
 
 The gateway needs the Telegram token, but worker processes should not receive Telegram or config secrets.
+
+Real env files for managed workspaces live at
+`~/smithersbot-goals/private/env/<workspace-name>/.env`. That tree is not
+agent-visible and is loaded only by trusted host-side commands. Project code
+inside `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo` should read
+configuration through normal environment variables and document variable names
+in the repo's `.env.example`.
 
 ## Troubleshooting
 

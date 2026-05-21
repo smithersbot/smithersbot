@@ -185,6 +185,30 @@ describe("src/prompts/ — worker context", () => {
       expect(WORKER_CONTEXT).toContain(needle);
     }
   });
+
+  it("contains the Stage 2S Workspace section (transitional managed-workspace contract)", () => {
+    const needles = [
+      "## Workspace (Stage 2S — transitional)",
+      "<managed-root>/agent/workspaces/<workspace-name>/repo",
+      "~/smithersbot-goals",
+      "SMITHERSBOT_GOALS_ROOT",
+      "process.env.GOOGLE_DRIVE_API_KEY",
+      'os.environ["GOOGLE_DRIVE_API_KEY"]',
+      "<managed-root>/private/env/<workspace-name>/.env",
+      ".env.example",
+      "<managed-root>/agent/history/",
+      "sanitized summaries",
+      "Workers do NOT receive raw secrets in env by default",
+      "buildGoalWorkerEnv",
+      "host-side commands (gateway-side flows)",
+      "full OS-level isolation is NOT claimed",
+      "Legacy `workingDir` values",
+      "allowLegacyWorkingDir",
+    ];
+    for (const needle of needles) {
+      expect(WORKER_CONTEXT).toContain(needle);
+    }
+  });
 });
 
 describe("src/prompts/ — agent workspace templates", () => {
@@ -199,6 +223,18 @@ describe("src/prompts/ — agent workspace templates", () => {
 describe("src/prompts/ — repo-chat context and delivery", () => {
   it("is the same object identity used by src/repo-chat/repo-chat-context.ts", () => {
     expect(REPO_CHAT_CONTEXT_FROM_CONSUMER).toBe(REPO_CHAT_CONTEXT);
+  });
+
+  it("references the Stage 2S agent-history mirror and excludes the private tree", () => {
+    expect(REPO_CHAT_CONTEXT).toContain("agent/history/goals/");
+    expect(REPO_CHAT_CONTEXT).toContain("agent/history/repo-chats/");
+    expect(REPO_CHAT_CONTEXT).toContain("agent/history/index/");
+    expect(REPO_CHAT_CONTEXT).toContain("smithersbot-goals");
+    expect(REPO_CHAT_CONTEXT).toContain("SMITHERSBOT_GOALS_ROOT");
+    expect(REPO_CHAT_CONTEXT).toMatch(/NEVER read\s+`<managed-root>\/private\//);
+    // Legacy ~/.smithersbot remains a deprecated fallback but is no longer the
+    // sole "canonical default" line — keep the runtime store reference.
+    expect(REPO_CHAT_CONTEXT).toContain("~/.smithersbot/goals/");
   });
 
   it("emits a Codex-style response-file instruction with the temp path", () => {

@@ -79,6 +79,35 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - Follow the conventions you see in surrounding code (naming, structure, error handling).
 - Keep changes minimal and focused on the task. Do not refactor unrelated code.
 
+## Workspace (Stage 2S — transitional)
+
+- The managed workspace cwd is the new default for new/default goal runs:
+  `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
+  defaults to `~/smithersbot-goals` (override via `SMITHERSBOT_GOALS_ROOT`).
+- Project code must read configuration through standard environment variables —
+  for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
+  `os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). Do NOT generate code that opens
+  SmithersBot private env paths directly.
+- Real env files live at `<managed-root>/private/env/<workspace-name>/.env` and
+  are NOT agent-visible. The repo-root `.env.example` is the safe variable-name
+  contract — it must contain placeholder values only.
+- Agent-readable history lives under `<managed-root>/agent/history/` (goals and
+  repo-chats) as sanitized summaries. Raw stdout/stderr blobs and raw transcripts
+  are not mirrored there by default; if any worker output is included it has
+  passed through secret redaction and a size cap.
+- Workers do NOT receive raw secrets in env by default. The standard
+  `buildGoalWorkerEnv` flow strips provider credentials before launch.
+- `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
+  host-side commands (gateway-side flows) with an explicit, narrowly-scoped opt-in.
+  Worker subprocesses do not see those values unless that opt-in is set.
+- Stage 2S is transitional: full OS-level isolation is NOT claimed beyond what
+  the native Codex/Claude sandbox enforces. Legacy `workingDir` values outside
+  the managed agent root remain supported during this stage and emit a one-line
+  warning; operators can opt into fail-closed behavior by setting
+  `config.goal.allowLegacyWorkingDir = false`.
+- If you need a real credential to test something, request it through the trusted
+  host-side opt-in path instead of trying to read private env files yourself.
+
 ## Git
 
 - Make small, scoped commits with clear, action-oriented messages.
