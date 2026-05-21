@@ -3,6 +3,7 @@ import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { loadJsonFile } from "../infra/json-file.js";
 import { aggregateBlockedDetails } from "./blocked.js";
+import { mirrorGoalRunToAgentHistory } from "./agent-history.js";
 import type {
   GoalSession,
   PlanStep,
@@ -41,9 +42,14 @@ function atomicWriteJson(filePath: string, data: unknown): void {
 
 /** Persist a run to disk. Creates the run directory if needed. */
 export function saveRun(run: SerializedRun, goalsDir: string = resolveGoalsDir()): void {
+  // Stage 2S transition: ~/.smithersbot/goals remains the canonical runtime store;
+  // agent/history receives a sanitized mirror for agent-readable context.
   const runDir = resolveRunDir(run.runId, goalsDir);
   const filePath = path.join(runDir, RUN_FILENAME);
   atomicWriteJson(filePath, run);
+  if (run.state === "done" || run.state === "blocked" || run.state === "cancelled") {
+    mirrorGoalRunToAgentHistory(run);
+  }
 }
 
 /** Load a run by ID. Returns undefined if the file does not exist. */

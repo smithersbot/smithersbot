@@ -42,6 +42,7 @@ import {
   REPO_CHAT_CLAUDE_ALLOWED_TOOLS,
   REPO_CHAT_CODEX_STYLE_PROMPT,
   REPO_CHAT_READ_ONLY_PROMPT,
+  resolveRepoChatExecutionRoot,
   runRepoChatWorker,
 } from "./repo-chat-worker.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
@@ -195,6 +196,56 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--output-last-message");
       expect(args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(args).not.toContain("resume");
+    });
+
+    it("runs managed repo chat from the agent root so workspaces and history are readable", () => {
+      const originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-agent-root-"));
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      try {
+        const agentRoot = path.join(managedRoot, "agent");
+        const repoDir = path.join(agentRoot, "workspaces", "smithersbot", "repo");
+        const historyDir = path.join(agentRoot, "history", "goals", "smithersbot", "run-1");
+        const privateEnvDir = path.join(managedRoot, "private", "env", "smithersbot");
+        fs.mkdirSync(repoDir, { recursive: true });
+        fs.mkdirSync(historyDir, { recursive: true });
+        fs.mkdirSync(privateEnvDir, { recursive: true });
+
+        const args = buildCodexRepoChatArgs({
+          prompt: "Read README and history",
+          workingDir: repoDir,
+        });
+        const cdIdx = args.indexOf("--cd");
+        expect(args[cdIdx + 1]).toBe(agentRoot);
+        expect(resolveRepoChatExecutionRoot(repoDir)).toBe(agentRoot);
+        expect(path.relative(agentRoot, historyDir)).toBe(
+          path.join("history", "goals", "smithersbot", "run-1"),
+        );
+        expect(path.relative(agentRoot, privateEnvDir).startsWith("..")).toBe(true);
+      } finally {
+        if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects repo chat execution from SmithersBot private paths", () => {
+      const originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-private-root-"));
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      try {
+        const privateEnvDir = path.join(managedRoot, "private", "env", "smithersbot");
+        expect(() =>
+          buildCodexRepoChatArgs({
+            prompt: "Read private env",
+            workingDir: privateEnvDir,
+          }),
+        ).toThrow(/private paths/);
+      } finally {
+        if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
     });
 
     it("builds Codex resume args with only flags supported by `codex exec resume --help`", () => {
@@ -1132,6 +1183,66 @@ describe("repo-chat-worker", () => {
         expect(result.text).toContain("cannot edit");
       } finally {
         fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    });
+
+    it("repo-chat worker uses agent root for managed workspaces and refuses private env cwd", async () => {
+      const originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-managed-run-"));
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      try {
+        const agentRoot = path.join(managedRoot, "agent");
+        const repoDir = path.join(agentRoot, "workspaces", "smithersbot", "repo");
+        const historyDir = path.join(agentRoot, "history", "repo-chats", "smithersbot");
+        const privateEnvDir = path.join(managedRoot, "private", "env", "smithersbot");
+        fs.mkdirSync(repoDir, { recursive: true });
+        fs.mkdirSync(historyDir, { recursive: true });
+        fs.mkdirSync(privateEnvDir, { recursive: true });
+        fs.writeFileSync(path.join(repoDir, "README.md"), "managed repo\n", "utf8");
+        fs.writeFileSync(path.join(historyDir, "summary.json"), '{"safe":true}\n', "utf8");
+
+        runCliProcessMock.mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            type: "assistant",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Read managed repo and sanitized history." }],
+            },
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
+        });
+
+        const result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "Read README and history.",
+          workingDir: repoDir,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0] as { args: string[]; cwd: string };
+        const cdIdx = call.args.indexOf("--cd");
+        expect(call.cwd).toBe(agentRoot);
+        expect(call.args[cdIdx + 1]).toBe(agentRoot);
+        expect(fs.existsSync(path.join(call.cwd, "history", "repo-chats", "smithersbot"))).toBe(
+          true,
+        );
+        expect(path.relative(call.cwd, privateEnvDir).startsWith("..")).toBe(true);
+        expect(result.text).toContain("sanitized history");
+
+        await expect(
+          runRepoChatWorker({
+            backend: "codex",
+            prompt: "Read private env.",
+            workingDir: privateEnvDir,
+          }),
+        ).rejects.toThrow(/private paths/);
+      } finally {
+        if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
+        fs.rmSync(managedRoot, { recursive: true, force: true });
       }
     });
 

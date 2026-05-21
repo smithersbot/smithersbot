@@ -17,6 +17,11 @@ import {
 import { redactSecretValues } from "../security/secret-paths.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
+import {
+  isPathInsideAgentRoot,
+  isPathInsidePrivateRoot,
+  resolveAgentRoot,
+} from "../config/managed-paths.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
@@ -93,6 +98,7 @@ export function buildCodexRepoChatArgs(params: {
   }
 
   const askForApprovalPlacement = getCodexAskForApprovalPlacement();
+  const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
   const args = [
     ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
@@ -104,7 +110,7 @@ export function buildCodexRepoChatArgs(params: {
     "read-only",
     "--skip-git-repo-check",
     "--cd",
-    params.workingDir,
+    executionRoot,
   ];
   if (params.lastMessageFilePath) {
     args.push("--output-last-message", params.lastMessageFilePath);
@@ -116,6 +122,13 @@ export function buildCodexRepoChatArgs(params: {
 
   args.push(params.prompt);
   return args;
+}
+
+export function resolveRepoChatExecutionRoot(workingDir: string): string {
+  if (isPathInsidePrivateRoot(workingDir)) {
+    throw new Error("Repo chat cannot run from SmithersBot private paths.");
+  }
+  return isPathInsideAgentRoot(workingDir) ? resolveAgentRoot() : workingDir;
 }
 
 function truncateErrorDetail(detail: string): string {
@@ -401,6 +414,7 @@ async function runSandboxSafeRepair(params: {
 export async function runRepoChatWorker(
   params: RepoChatWorkerParams,
 ): Promise<RepoChatWorkerResult> {
+  const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const responseFileId = crypto.randomUUID();
   const manualResponseFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}.md`);
@@ -435,7 +449,7 @@ export async function runRepoChatWorker(
     const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
       command,
       args,
-      cwd: params.workingDir,
+      cwd: executionRoot,
       timeoutMs,
       abortSignal: params.abortSignal,
       env,
@@ -501,7 +515,7 @@ export async function runRepoChatWorker(
       const repairResult = await runSandboxSafeRepair({
         command,
         args: resumeArgs,
-        cwd: params.workingDir,
+        cwd: executionRoot,
         env,
         abortSignal: params.abortSignal,
       });

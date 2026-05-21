@@ -28,13 +28,18 @@ function makeSession(overrides: Partial<RepoChatSession> = {}): RepoChatSession 
 
 describe("repo-chat-store", () => {
   let tmpDir: string;
+  let originalManagedRoot: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-store-"));
+    originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = path.join(tmpDir, "managed");
     resetRepoChatStoreIndexForTests();
   });
 
   afterEach(() => {
+    if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
     fs.rmSync(tmpDir, { recursive: true, force: true });
     resetRepoChatStoreIndexForTests();
   });
@@ -127,5 +132,61 @@ describe("repo-chat-store", () => {
     const sessionJson = fs.readFileSync(path.join(tmpDir, "repo-chat-1", "session.json"), "utf8");
     expect(sessionJson).toContain("[REDACTED]");
     expect(sessionJson).not.toContain("FAKE_GATEWAY_SECRET_456");
+  });
+
+  it("mirrors sanitized repo-chat summaries to agent history and indexes once", () => {
+    const originalToken = process.env.SMITHERSBOT_GATEWAY_TOKEN;
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "FAKE_REPO_CHAT_SECRET_789";
+    try {
+      saveRepoChatSession(
+        makeSession({
+          id: "repo-chat-history",
+          cliSessionId: "thread-FAKE_REPO_CHAT_SECRET_789",
+          workingDir: path.join(
+            process.env.SMITHERSBOT_GOALS_ROOT!,
+            "agent",
+            "workspaces",
+            "smithersbot",
+            "repo",
+          ),
+        }),
+        tmpDir,
+      );
+    } finally {
+      if (originalToken === undefined) delete process.env.SMITHERSBOT_GATEWAY_TOKEN;
+      else process.env.SMITHERSBOT_GATEWAY_TOKEN = originalToken;
+    }
+
+    const summaryPath = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "history",
+      "repo-chats",
+      "smithersbot",
+      "repo-chat-history",
+      "summary.json",
+    );
+    const indexPath = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "history",
+      "index",
+      "all-repo-chats.jsonl",
+    );
+    const summaryRaw = fs.readFileSync(summaryPath, "utf8");
+    expect(summaryRaw).toContain("[REDACTED]");
+    expect(summaryRaw).not.toContain("FAKE_REPO_CHAT_SECRET_789");
+    expect(summaryRaw).not.toContain("raw transcript");
+    expect(JSON.parse(summaryRaw)).toMatchObject({
+      kind: "repo-chat-session-summary",
+      sessionId: "repo-chat-history",
+      workspace: "smithersbot",
+      messageCount: 2,
+    });
+
+    saveRepoChatSession(makeSession({ id: "repo-chat-history" }), tmpDir);
+    const indexLines = fs.readFileSync(indexPath, "utf8").trim().split("\n");
+    expect(indexLines).toHaveLength(1);
+    expect(indexLines[0]).toContain("repo-chat-history");
   });
 });

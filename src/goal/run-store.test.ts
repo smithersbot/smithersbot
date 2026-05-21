@@ -16,12 +16,17 @@ import type { GoalSession, SerializedRun } from "./types.js";
 
 describe("run-store", () => {
   let tmpDir: string;
+  let originalManagedRoot: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-store-test-"));
+    originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = path.join(tmpDir, "managed");
   });
 
   afterEach(() => {
+    if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -65,6 +70,82 @@ describe("run-store", () => {
     const content = JSON.parse(fs.readFileSync(filePath, "utf8")) as SerializedRun;
     expect(content.runId).toBe("test-run-123");
     expect(content.goal).toBe("Build something");
+  });
+
+  it("mirrors terminal runs to sanitized agent history without raw worker transcripts", () => {
+    const originalToken = process.env.SMITHERSBOT_GATEWAY_TOKEN;
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "FAKE_HISTORY_SECRET_123";
+    try {
+      saveRun(
+        {
+          ...sampleRun,
+          runId: "history-mirror-run",
+          goal: "Use FAKE_HISTORY_SECRET_123 safely",
+          workingDir: path.join(
+            process.env.SMITHERSBOT_GOALS_ROOT!,
+            "agent",
+            "workspaces",
+            "smithersbot",
+            "repo",
+          ),
+          stepResults: {
+            "1": {
+              stepId: "1",
+              success: true,
+              output: "RAW_STDOUT_BLOB FAKE_HISTORY_SECRET_123",
+              error: "RAW_STDERR_BLOB FAKE_HISTORY_SECRET_123",
+              durationMs: 1,
+            },
+          },
+          buildGateResults: {
+            "1": {
+              passed: false,
+              failedCommand: "echo FAKE_HISTORY_SECRET_123",
+              output: "build output FAKE_HISTORY_SECRET_123",
+              timestamp: "2026-01-30T10:02:00.000Z",
+            },
+          },
+        },
+        tmpDir,
+      );
+    } finally {
+      if (originalToken === undefined) delete process.env.SMITHERSBOT_GATEWAY_TOKEN;
+      else process.env.SMITHERSBOT_GATEWAY_TOKEN = originalToken;
+    }
+
+    const summaryPath = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "history",
+      "goals",
+      "smithersbot",
+      "history-mirror-run",
+      "summary.json",
+    );
+    const indexPath = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "history",
+      "index",
+      "all-goals.jsonl",
+    );
+
+    const summaryRaw = fs.readFileSync(summaryPath, "utf8");
+    expect(summaryRaw).toContain("[REDACTED]");
+    expect(summaryRaw).not.toContain("FAKE_HISTORY_SECRET_123");
+    expect(summaryRaw).not.toContain("RAW_STDOUT_BLOB");
+    expect(summaryRaw).not.toContain("RAW_STDERR_BLOB");
+    expect(JSON.parse(summaryRaw)).toMatchObject({
+      kind: "goal-run-summary",
+      runId: "history-mirror-run",
+      workspace: "smithersbot",
+      state: "done",
+    });
+
+    saveRun({ ...sampleRun, runId: "history-mirror-run" }, tmpDir);
+    const indexLines = fs.readFileSync(indexPath, "utf8").trim().split("\n");
+    expect(indexLines).toHaveLength(1);
+    expect(indexLines[0]).toContain("history-mirror-run");
   });
 
   it("loadRun returns the run data", () => {

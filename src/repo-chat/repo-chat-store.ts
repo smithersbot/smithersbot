@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { mirrorRepoChatSessionToAgentHistory } from "../goal/agent-history.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import type { RepoChatMessageRef, RepoChatSession } from "./types.js";
 
@@ -159,10 +160,13 @@ export function saveRepoChatSession(
   session: RepoChatSession,
   repoChatsDir: string = resolveRepoChatsDir(),
 ): void {
+  // Stage 2S transition: legacy repo-chats storage remains canonical while
+  // agent/history receives sanitized summaries for repo-chat search context.
   const redactedSession = redactSession(session);
   const filePath = resolveSessionPath(redactedSession.id, repoChatsDir);
   atomicWriteJson(filePath, redactedSession);
   indexSession(getIndex(repoChatsDir), redactedSession);
+  mirrorRepoChatSessionToAgentHistory(redactedSession);
 }
 
 export function loadRepoChatSession(
