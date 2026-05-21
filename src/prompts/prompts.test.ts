@@ -85,6 +85,56 @@ describe("src/prompts/ — plan-autocheck review instruction", () => {
     expect(REVIEW_INSTRUCTION).toContain("## 5. OUTPUT FORMAT");
     expect(REVIEW_INSTRUCTION).toContain('{"approved": true}');
   });
+
+  it("encodes the Stage 2Q self-verifying-plan rubric", () => {
+    const needles = [
+      "Every code-changing step is SELF-VERIFYING",
+      "IMPLEMENTATION/TEST SPLITS",
+      "TSC-ONLY LOGIC STEPS",
+      "MISSING FOCUSED REGRESSIONS",
+      "TINY REPEATED TOUCHES",
+      "add-529-transient-classifier",
+      "add-repo-chat-cli-output-extraction",
+      "EXPLICITLY ALLOWED",
+      "final verification-matrix step",
+      "final report-writing / documentation step",
+    ];
+    for (const needle of needles) {
+      expect(REVIEW_INSTRUCTION).toContain(needle);
+    }
+  });
+});
+
+describe("src/prompts/ — planner system prompt (Stage 2Q self-verifying)", () => {
+  it("declares implementation + tests + verification belong in the same step", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(prompt).toContain(
+      'DO NOT split "implement X" and "add tests for X" into separate steps.',
+    );
+    expect(prompt).toContain(
+      "Implementation + tests + focused verification belong in the same step",
+    );
+  });
+
+  it("declares success criteria are additive minimums", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(prompt).toContain("SUCCESS CRITERIA AS ADDITIVE MINIMUMS");
+    expect(prompt).toContain("MINIMUM bar to consider a step done");
+  });
+
+  it("requires focused test commands in implementation step success criteria", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(prompt).toContain(
+      "Every implementation step MUST include the EXACT focused test command(s)",
+    );
+  });
+
+  it("embeds the Stage 2P bad fixtures verbatim as examples", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(prompt).toContain('BAD PLAN B (Stage 2P "under-tested split" anti-pattern)');
+    expect(prompt).toContain('BAD PLAN C (Stage 2P "repo-chat split" anti-pattern)');
+    expect(prompt).toContain("GOOD COMBINED VARIANT");
+  });
 });
 
 describe("src/prompts/ — worker context", () => {

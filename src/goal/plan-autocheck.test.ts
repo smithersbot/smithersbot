@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
 import { runPlanAutocheck } from "./plan-autocheck.js";
+import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 
 const mockRunCliProcess = vi.hoisted(() => vi.fn());
 vi.mock("./cli-process.js", () => ({
@@ -951,5 +952,222 @@ describe("runPlanAutocheck", () => {
       backend: "claude_code",
     });
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+  });
+});
+
+describe("Stage 2Q — plan-autocheck reviewer instruction", () => {
+  // These tests fence the reviewer prompt against drift away from the Stage 2Q
+  // rules that the checker must reject implementation/test splits, tsc-only
+  // logic steps, missing focused regressions for command/config/prompt/worker/
+  // repo-chat steps, and many-tiny-repeated-touches plans — while still
+  // allowing a final verification-matrix step and a final report step.
+
+  it("instructs the checker to verify every code-changing step is self-verifying", () => {
+    expect(REVIEW_INSTRUCTION).toContain("Every code-changing step is SELF-VERIFYING");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "it includes implementation AND focused tests AND a focused test command in its success criteria",
+    );
+  });
+
+  it("rejects implementation/test splits", () => {
+    expect(REVIEW_INSTRUCTION).toContain("IMPLEMENTATION/TEST SPLITS");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "step A implements behavior and step B later adds tests for step A",
+    );
+  });
+
+  it("rejects tsc-only success criteria for logic-changing steps", () => {
+    expect(REVIEW_INSTRUCTION).toContain("TSC-ONLY LOGIC STEPS");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "Logic changes require a focused regression test command in the same step",
+    );
+  });
+
+  it("rejects missing focused regressions for command/config/prompt/worker/repo-chat steps", () => {
+    expect(REVIEW_INSTRUCTION).toContain("MISSING FOCUSED REGRESSIONS");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "command-handler, config-schema, prompt, worker-behavior, planner/autocheck, or repo-chat steps that lack a targeted regression test file",
+    );
+  });
+
+  it("rejects vague success criteria phrases", () => {
+    expect(REVIEW_INSTRUCTION).toContain("VAGUE SUCCESS CRITERIA");
+  });
+
+  it("rejects many tiny repeated touches that should be merged", () => {
+    expect(REVIEW_INSTRUCTION).toContain("TINY REPEATED TOUCHES");
+    expect(REVIEW_INSTRUCTION).toContain("could be a smaller number of self-verifying steps");
+  });
+
+  it("calls out the Stage 2P bad fixture for add-529-transient-classifier", () => {
+    expect(REVIEW_INSTRUCTION).toContain("add-529-transient-classifier");
+    expect(REVIEW_INSTRUCTION).toContain("only run `tsc`");
+  });
+
+  it("calls out the Stage 2P bad fixture for the repo-chat split", () => {
+    expect(REVIEW_INSTRUCTION).toContain("add-repo-chat-cli-output-extraction");
+    expect(REVIEW_INSTRUCTION).toContain("add-repo-chat-regression-tests");
+  });
+
+  it("explicitly allows a final verification-matrix and report-writing step", () => {
+    expect(REVIEW_INSTRUCTION).toContain("EXPLICITLY ALLOWED");
+    expect(REVIEW_INSTRUCTION).toContain("final verification-matrix step");
+    expect(REVIEW_INSTRUCTION).toContain("final report-writing / documentation step");
+  });
+
+  it("warns the checker not to be so rigid that it rejects normal well-scoped plans", () => {
+    expect(REVIEW_INSTRUCTION).toContain(
+      "Do not make this rubric so rigid that it rejects normal, well-scoped plans",
+    );
+  });
+});
+
+describe("Stage 2Q — Stage 2P regression fixtures", () => {
+  // Synthetic plan fixtures that materialize the Stage 2P bad/good patterns.
+  // These tests verify that the *reviewer rubric text* declares each case
+  // either rejectable or allowed, so future drift in the prompt is caught.
+
+  type StepFixture = {
+    id: string;
+    description: string;
+    successCriteria?: string;
+    dependsOn: string[];
+  };
+  type PlanFixture = { name: string; steps: StepFixture[] };
+
+  const STAGE_2P_BAD_529: PlanFixture = {
+    name: "stage-2p-bad-529-split",
+    steps: [
+      {
+        id: "add-529-transient-classifier",
+        description: "Add transient-overload classifier to src/goal/error-patterns.ts.",
+        successCriteria: "pnpm exec tsc -p tsconfig.json passes.",
+        dependsOn: [],
+      },
+      {
+        id: "add-planner-bounded-retry",
+        description: "Wire bounded retry into the planner.",
+        successCriteria: "pnpm exec tsc passes.",
+        dependsOn: ["add-529-transient-classifier"],
+      },
+      {
+        id: "update-529-messages-and-tests",
+        description: "Add tests for the classifier and retry.",
+        successCriteria: "Tests pass.",
+        dependsOn: ["add-planner-bounded-retry"],
+      },
+    ],
+  };
+
+  const STAGE_2P_GOOD_529: PlanFixture = {
+    name: "stage-2p-good-529-combined",
+    steps: [
+      {
+        id: "add-529-transient-handling",
+        description:
+          "Add transient-overload classifier, bounded planner retry, and user-facing messages with tests in src/goal/error-patterns.test.ts and src/goal/cli-planner.test.ts.",
+        successCriteria:
+          "pnpm vitest run src/goal/error-patterns.test.ts src/goal/cli-planner.test.ts passes; pnpm exec tsc -p tsconfig.json clean; pnpm lint reports 0 warnings.",
+        dependsOn: [],
+      },
+    ],
+  };
+
+  const STAGE_2P_BAD_REPO_CHAT: PlanFixture = {
+    name: "stage-2p-bad-repo-chat-split",
+    steps: [
+      {
+        id: "add-repo-chat-cli-output-extraction",
+        description: "Implement CLI stdout extraction.",
+        successCriteria: "pnpm exec tsc passes.",
+        dependsOn: [],
+      },
+      {
+        id: "fix-repo-chat-resolution-order",
+        description: "Fix backend resolution order.",
+        successCriteria: "pnpm exec tsc passes.",
+        dependsOn: ["add-repo-chat-cli-output-extraction"],
+      },
+      {
+        id: "add-repo-chat-regression-tests",
+        description: "Add regression tests for the two implementations above.",
+        successCriteria: "Tests pass.",
+        dependsOn: ["fix-repo-chat-resolution-order"],
+      },
+    ],
+  };
+
+  const STAGE_2P_GOOD_REPO_CHAT: PlanFixture = {
+    name: "stage-2p-good-repo-chat-combined",
+    steps: [
+      {
+        id: "fix-repo-chat-output-and-resolution",
+        description:
+          "Implement CLI output extraction AND resolution-order fix AND regression tests in src/repo-chat/.",
+        successCriteria:
+          "pnpm vitest run src/repo-chat/ passes; pnpm exec tsc -p tsconfig.json clean; pnpm lint reports 0 warnings.",
+        dependsOn: [],
+      },
+    ],
+  };
+
+  // Pure-rubric check: given the fixture, the reviewer rubric should call out
+  // each anti-pattern (implementation/test split, tsc-only, vague tests-pass).
+  function flagsForFixture(fixture: PlanFixture): string[] {
+    const flags: string[] = [];
+    const implIds = new Set(fixture.steps.map((s) => s.id));
+    const testStepIds = fixture.steps
+      .filter(
+        (s) => /test|regression/i.test(s.id) || /add tests|regression test/i.test(s.description),
+      )
+      .map((s) => s.id);
+    const nonTestImplSteps = fixture.steps.filter((s) => !testStepIds.includes(s.id));
+
+    if (testStepIds.length > 0 && nonTestImplSteps.length > 0) {
+      // Test step depends on impl step(s).
+      const testSteps = fixture.steps.filter((s) => testStepIds.includes(s.id));
+      const split = testSteps.some((t) => t.dependsOn.some((d) => implIds.has(d)));
+      if (split) flags.push("implementation-test-split");
+    }
+    for (const step of nonTestImplSteps) {
+      const crit = (step.successCriteria ?? "").toLowerCase();
+      const isLogicChange = /classifier|retry|extraction|resolution|wire|implement/.test(
+        step.description.toLowerCase(),
+      );
+      const mentionsVitest = /vitest|test\.[tj]sx?/.test(crit);
+      const onlyTsc = /^[^a-z]*(pnpm\s+)?exec\s+tsc/.test(crit) || crit.startsWith("pnpm exec tsc");
+      if (isLogicChange && !mentionsVitest && (onlyTsc || crit === "tests pass.")) {
+        flags.push(`tsc-only-or-vague:${step.id}`);
+      }
+    }
+    return flags;
+  }
+
+  it("classifier-split fixture is flagged as bad by the static rubric", () => {
+    const flags = flagsForFixture(STAGE_2P_BAD_529);
+    expect(flags).toContain("implementation-test-split");
+    // The two impl steps both have tsc-only / vague criteria.
+    expect(flags.filter((f) => f.startsWith("tsc-only-or-vague")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("classifier-combined fixture passes the static rubric", () => {
+    expect(flagsForFixture(STAGE_2P_GOOD_529)).toEqual([]);
+  });
+
+  it("repo-chat-split fixture is flagged as bad by the static rubric", () => {
+    const flags = flagsForFixture(STAGE_2P_BAD_REPO_CHAT);
+    expect(flags).toContain("implementation-test-split");
+    expect(flags.filter((f) => f.startsWith("tsc-only-or-vague")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("repo-chat-combined fixture passes the static rubric", () => {
+    expect(flagsForFixture(STAGE_2P_GOOD_REPO_CHAT)).toEqual([]);
+  });
+
+  it("reviewer prompt explicitly names every anti-pattern these fixtures embody", () => {
+    expect(REVIEW_INSTRUCTION).toContain("add-529-transient-classifier");
+    expect(REVIEW_INSTRUCTION).toContain("add-repo-chat-cli-output-extraction");
+    expect(REVIEW_INSTRUCTION).toContain("IMPLEMENTATION/TEST SPLITS");
+    expect(REVIEW_INSTRUCTION).toContain("TSC-ONLY LOGIC STEPS");
   });
 });

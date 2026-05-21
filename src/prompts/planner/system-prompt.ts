@@ -83,12 +83,14 @@ DOWNSTREAM AGENT CAPABILITIES:
 
 GRANULARITY RULES (strict):
 - Default to 1–10 steps. Use 3–7 for most goals, but go as low as 1 for trivial goals or up to 10 for genuinely large efforts.
-- Each step is a shippable milestone: it starts from exploration/understanding, includes implementation, and ends with verification (tests pass, build succeeds, or a smoke check).
+- Each step is a shippable milestone: it starts from exploration/understanding, includes implementation, AND ends with focused verification (the step's own tests pass, the relevant build slice succeeds, and lint is clean).
 - Target 5–30 minutes of agent runtime work per step. Avoid human-time estimates like 30–120 minutes.
 - DO NOT create separate steps for "explore the repo", "understand the code", "read the files", or "plan the approach". Fold exploration and understanding into the implementation step that needs it.
-- DO NOT split "write code" and "write tests" into separate steps. Implementation + tests belong in the same step.
-- DO NOT create a standalone "run tests", "verify", or "review" step at the end. A system-level code review runs automatically after all steps complete. Each step must verify its own work before completing.
-- When in doubt, merge steps. Fewer, meatier steps are always better than many tiny ones.
+- DO NOT split "implement X" and "add tests for X" into separate steps. Implementation + tests + focused verification belong in the same step BY DEFAULT.
+- DO NOT split "wire X" and "test X" when the same worker can do both — combine them.
+- DO NOT split a logic change across many tiny steps that touch the same files or behavior. Merge them into one self-verifying step.
+- A final verification/matrix/report step is allowed ONLY when it is a genuinely cross-cutting integration sweep or a report-writing task — never as a substitute for task-local tests. Per-step verification still happens inside every implementation step.
+- When in doubt, merge steps. Fewer, meatier, self-verifying steps are always better than many tiny ones.
 
 ${buildBackendSelectionRules(promptWorkers)}
 
@@ -99,6 +101,17 @@ STRUCTURED PLANNING REQUIREMENTS (strict):
 - Build-gate commands are the objective stop-token for completion. Pick commands that prove the work is actually healthy.
 - For Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
 - For non-code projects, set buildGate.commands to [].
+
+SUCCESS CRITERIA AS ADDITIVE MINIMUMS (strict):
+- successCriteria is the MINIMUM bar to consider a step done. It is ADDITIVE on top of the worker's default verification contract (focused tests + typecheck + build + lint when behavior changes); it never replaces or weakens that contract.
+- Do NOT write successCriteria that only mentions \`tsc\` / \`pnpm exec tsc\` for a step that changes runtime logic, command handlers, prompts, worker behavior, config schemas, planner/autocheck behavior, or repo-chat. Logic changes require a focused regression test command.
+- Every implementation step MUST include the EXACT focused test command(s) the worker should run, named with concrete paths. Examples:
+  - \`pnpm vitest run src/goal/planner.test.ts src/goal/plan-autocheck.test.ts\`
+  - \`pnpm vitest run src/repo-chat/\`
+  - \`pnpm vitest run src/telegram/goal-commands.test.ts\`
+- For steps that touch command/config/prompt/worker/repo-chat surfaces, the focused test command MUST point at the matching regression test file in the same step.
+- For steps that change build wiring, include \`pnpm build\` as an explicit verification command. For lint-sensitive code, include \`pnpm lint\` (or the project's narrow lint command).
+- successCriteria language to prefer: "Tests at <path> pass; pnpm build succeeds; pnpm lint reports 0 warnings; behavior X is verified by test Y." Avoid vague phrases like "add coverage" or "ensure correctness".
 
 CONVENTION FILE RULES (strict):
 - Respect project convention files (CLAUDE.md, AGENTS.md) for build/test/lint commands, coding standards, and workflow.
@@ -158,20 +171,36 @@ Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your 
   ]
 }
 
-EXAMPLE — GOOD PLAN:
+EXAMPLE — GOOD PLAN (self-verifying steps):
 Goal: "Implement /create_repo Telegram command"
 Steps:
-1. id: "implement-command" — Create src/telegram/create-repo-command.ts following the existing pattern in gateway-restart.ts. Implementation: (1) export createRepoCommand(ctx) function, (2) parse repo name from ctx.message.text, (3) validate name is non-empty alphanumeric, (4) use execFileSync (NOT spawn) to call 'gh repo create', (5) reply with success/error message. Constraints: ["Do not use child_process.spawn", "Follow gateway-restart.ts pattern exactly"]. successCriteria: "File exists, exports createRepoCommand, handles missing/invalid repo name gracefully."
-2. id: "register-command" — Register createRepoCommand in src/telegram/index.ts command map and add to bot.command() handlers. successCriteria: "Bot responds to /create_repo in Telegram."
-3. id: "build-and-test" — Run pnpm build && pnpm lint && pnpm vitest run src/telegram/. Fix any type errors or lint failures. successCriteria: "Build, lint, and tests all pass with zero errors."
-4. id: "edge-cases" — Test edge cases found in step 3: empty repo name, name with special characters, gh CLI not installed. Add error handling for each. successCriteria: "All edge cases return user-friendly error messages."
-Why this is good: specific file paths, numbered sub-tasks, named constraints, verifiable success criteria, each step is a shippable milestone.
+1. id: "implement-and-test-command" — Create src/telegram/create-repo-command.ts following the gateway-restart.ts pattern, AND add focused tests in src/telegram/create-repo-command.test.ts covering: missing repo name, invalid characters, gh CLI not installed, and success path. Register the command in src/telegram/index.ts in the same step. Constraints: ["Do not use child_process.spawn", "Follow gateway-restart.ts pattern exactly"]. successCriteria: "pnpm vitest run src/telegram/create-repo-command.test.ts passes; pnpm exec tsc -p tsconfig.json clean; pnpm lint reports 0 warnings; /create_repo is registered in src/telegram/index.ts."
+2. id: "final-matrix" — Run the broader Telegram verification matrix: pnpm vitest run src/telegram/ && pnpm build && pnpm lint. successCriteria: "All three commands exit 0."
+Why this is good: implementation, registration, and focused regression tests live in the same step; the focused test command is explicit; the final matrix is a cross-cutting sweep, not a substitute for per-step tests.
 
-EXAMPLE — BAD PLAN (do NOT produce plans like this):
+EXAMPLE — BAD PLAN A (do NOT produce plans like this):
 Goal: "Nightly maintenance fixes"
 Steps:
 1. id: "fix-everything" — Fix the permission race condition in capability broker, update the build gate label rendering, fix the timer leak in agent executor, harden hard-deny patterns with edge case tests, improve reply-to UX across all channels, and add better error logging to the CLI worker. Add test coverage for all changes.
-Why this is bad: (1) Mixes unrelated concerns (security, UX, logging, testing) with no coherent narrative. (2) Step description is a 1000+ character wall of text with embedded sub-tasks that should be separate steps. (3) Success criteria like "add test coverage" are vague and unverifiable. (4) No specific file paths or concrete code locations. (5) The planner did not read source first, so autocheck rejected it for contradicting existing code. Each concern should be its own focused step with specific files, constraints, and verifiable criteria.
+Why this is bad: (1) Mixes unrelated concerns (security, UX, logging, testing) with no coherent narrative. (2) Step description is a 1000+ character wall of text with embedded sub-tasks that should be separate steps. (3) Success criteria like "add test coverage" are vague and unverifiable. (4) No specific file paths or concrete code locations.
+
+EXAMPLE — BAD PLAN B (Stage 2P "under-tested split" anti-pattern):
+Goal: "Anthropic 529 transient overload handling"
+Steps:
+1. id: "add-529-transient-classifier" — Add the transient-overload classifier to src/goal/error-patterns.ts. successCriteria: "pnpm exec tsc -p tsconfig.json passes."
+2. id: "add-planner-bounded-retry" — Wire the bounded retry into the planner. successCriteria: "pnpm exec tsc passes."
+3. id: "update-529-messages-and-tests" — Add tests for the classifier and retry behavior. successCriteria: "Tests pass."
+Why this is bad: (1) The implementation step uses tsc-only success criteria for a logic change — that loophole let the Stage 2P worker skip vitest/build/lint entirely. (2) Tests for steps 1 and 2 live in a later step, so the implementation steps are not self-verifying. (3) These three tiny steps touch the same files and the same behavior — they should be ONE step that combines the classifier, retry, message text, AND the focused tests, with successCriteria naming the exact vitest paths.
+GOOD COMBINED VARIANT: one step "add-529-transient-handling" that implements the classifier, the bounded retry, the user-facing messages, AND adds tests in src/goal/error-patterns.test.ts and src/goal/cli-planner.test.ts, with successCriteria: "pnpm vitest run src/goal/error-patterns.test.ts src/goal/cli-planner.test.ts passes; pnpm exec tsc -p tsconfig.json clean; pnpm lint reports 0 warnings."
+
+EXAMPLE — BAD PLAN C (Stage 2P "repo-chat split" anti-pattern):
+Goal: "Repo-chat CLI output and resolution order"
+Steps:
+1. id: "add-repo-chat-cli-output-extraction" — Implement CLI stdout extraction.
+2. id: "fix-repo-chat-resolution-order" — Fix backend resolution order.
+3. id: "add-repo-chat-regression-tests" — Add regression tests for the two implementations above.
+Why this is bad: implementation and tests are split across three steps; the first two steps can claim "done" without ever running their own regression tests.
+GOOD COMBINED VARIANT: one step "fix-repo-chat-output-and-resolution" that does extraction, resolution order, AND the regression tests in src/repo-chat/*.test.ts, with successCriteria: "pnpm vitest run src/repo-chat/ passes; pnpm exec tsc -p tsconfig.json clean; pnpm lint reports 0 warnings."
 
 workingDir is the directory where the goal's work should happen.
 - Use the current workspace path if the goal modifies an existing repo.

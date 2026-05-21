@@ -775,4 +775,72 @@ describe("planner", () => {
       expect(content).toBe(rawText);
     });
   });
+
+  describe("Stage 2Q — self-verifying planner prompt", () => {
+    // These tests fence the planner system prompt against drift away from the
+    // Stage 2Q rules that implementation + tests + focused verification belong
+    // in the SAME step, that success criteria are additive minimums, and that
+    // logic-changing steps must name a focused test command.
+
+    it("forbids splitting implementation and tests into separate steps", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain(
+        'DO NOT split "implement X" and "add tests for X" into separate steps. Implementation + tests + focused verification belong in the same step BY DEFAULT.',
+      );
+    });
+
+    it("declares success criteria are additive minimums, not the full verification contract", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("SUCCESS CRITERIA AS ADDITIVE MINIMUMS");
+      expect(prompt).toContain("MINIMUM bar to consider a step done");
+      expect(prompt).toContain("ADDITIVE on top of the worker's default verification contract");
+    });
+
+    it("forbids tsc-only success criteria for logic-changing steps", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain(
+        "Do NOT write successCriteria that only mentions `tsc` / `pnpm exec tsc` for a step that changes runtime logic",
+      );
+    });
+
+    it("requires the exact focused test command in implementation step success criteria", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain(
+        "Every implementation step MUST include the EXACT focused test command(s) the worker should run",
+      );
+      expect(prompt).toContain("pnpm vitest run src/goal/planner.test.ts");
+    });
+
+    it("requires regression tests for command/config/prompt/worker/repo-chat surfaces", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain(
+        "For steps that touch command/config/prompt/worker/repo-chat surfaces",
+      );
+      expect(prompt).toContain(
+        "the focused test command MUST point at the matching regression test file in the same step",
+      );
+    });
+
+    it("preserves an allowance for final verification-matrix and report steps", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain(
+        "A final verification/matrix/report step is allowed ONLY when it is a genuinely cross-cutting integration sweep or a report-writing task",
+      );
+    });
+
+    it("includes a Stage 2P bad-fixture example for add-529-transient-classifier", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("add-529-transient-classifier");
+      expect(prompt).toContain('BAD PLAN B (Stage 2P "under-tested split" anti-pattern)');
+      expect(prompt).toContain("GOOD COMBINED VARIANT");
+    });
+
+    it("includes a Stage 2P bad-fixture example for the repo-chat split", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain('BAD PLAN C (Stage 2P "repo-chat split" anti-pattern)');
+      expect(prompt).toContain("add-repo-chat-cli-output-extraction");
+      expect(prompt).toContain("fix-repo-chat-resolution-order");
+      expect(prompt).toContain("add-repo-chat-regression-tests");
+    });
+  });
 });
