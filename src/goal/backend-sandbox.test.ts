@@ -12,21 +12,217 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
+  codexNativeSandboxStatus,
   claudeCodeNativeSandboxStatus,
+  writeCodexNativeSandboxConfig,
   writeClaudeCodeSandboxSettings,
 } from "./backend-sandbox.js";
 
 function mockCommandPaths(): void {
   mockExecFileSync.mockImplementation((command: string, args: string[]) => {
     const joined = [command, ...args].join(" ");
+    if (joined === "sh -lc command -v codex") return "/usr/local/bin/codex\n";
     if (joined === "sh -lc command -v claude") return "/usr/local/bin/claude\n";
     if (joined === "sh -lc command -v bwrap") return "/usr/bin/bwrap\n";
     if (joined === "sh -lc command -v socat") return "/usr/bin/socat\n";
+    if (joined === "codex --version") return "codex-cli 0.133.0\n";
     if (joined === "claude --version") return "2.1.143 (Claude Code)\n";
     throw new Error(`unexpected command: ${joined}`);
   });
 }
+
+describe("Codex native permission-profile sandbox config", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
+  });
+
+  it("generates per-run config under /var/tmp by default, outside the repo", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+      runId: "run/with spaces",
+      purpose: "goal-worker",
+      codexPath: "/usr/local/bin/codex",
+    });
+
+    expect(config.codexHome).toBe("/var/tmp/smithersbot-codex-run-with-spaces");
+    expect(config.configPath).toBe(path.join(config.codexHome, "config.toml"));
+    expect(config.helperPath).toBe(path.join(config.codexHome, "bin", "codex-linux-sandbox"));
+    expect(config.configPath).not.toContain("/agent/workspaces/smithersbot/repo");
+    expect(config.args).toEqual([
+      "sandbox",
+      "linux",
+      "--permissions-profile",
+      "smithersbot",
+      "--cd",
+      "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+    ]);
+    expect(config.args).not.toContain("--sandbox");
+  });
+
+  it("emits the Codex 0.133 permission-profile TOML shape without broad recursive denies", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      const config = buildCodexNativeSandboxConfig({
+        workingDir,
+        runId: "toml-shape",
+        purpose: "goal-worker",
+        codexPath: "/usr/local/bin/codex",
+      });
+
+      expect(config.configToml).toContain('default_permissions = "smithersbot"');
+      expect(config.configToml).toContain("[permissions.smithersbot.filesystem]");
+      expect(config.configToml).toContain("glob_scan_max_depth = 8");
+      expect(config.configToml).toContain(`${JSON.stringify(workingDir)} = "write"`);
+      expect(config.configToml).toContain(
+        `${JSON.stringify(path.join(workingDir, ".env.local"))} = "deny"`,
+      );
+      expect(config.configToml).toContain(
+        `${JSON.stringify(path.join(managedRoot, "private", "env", "smithersbot", ".env"))} = "deny"`,
+      );
+      expect(config.configToml).toContain("[permissions.smithersbot.network]");
+      expect(config.configToml).toContain("enabled = false");
+
+      for (const deniedPath of [
+        "/",
+        os.homedir(),
+        path.join(os.homedir(), ".smithersbot"),
+        path.join(os.homedir(), ".codex"),
+      ]) {
+        expect(config.deniedReadPaths).not.toContain(deniedPath);
+        expect(config.deniedReadPaths).not.toContain(path.join(deniedPath, "**"));
+      }
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("writes config and makes codex-linux-sandbox visible through a per-run helper directory", () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const fakeInstall = fs.mkdtempSync(path.join(os.tmpdir(), "codex-install-"));
+    const binDir = path.join(fakeInstall, "bin");
+    const nativeDir = path.join(
+      fakeInstall,
+      "lib",
+      "node_modules",
+      "@openai",
+      "codex",
+      "node_modules",
+      "@openai",
+      "codex-linux-x64",
+      "vendor",
+      "x86_64-unknown-linux-musl",
+      "bin",
+    );
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.mkdirSync(nativeDir, { recursive: true });
+    const codexPath = path.join(binDir, "codex");
+    const nativePath = path.join(nativeDir, "codex");
+    fs.writeFileSync(codexPath, "#!/bin/sh\n");
+    fs.writeFileSync(nativePath, "#!/bin/sh\n");
+
+    try {
+      const config = writeCodexNativeSandboxConfig({
+        workingDir: process.cwd(),
+        runId: "helper-test",
+        purpose: "goal-worker",
+        sandboxRoot,
+        codexPath,
+      });
+
+      expect(config.configPath).toBe(
+        path.join(sandboxRoot, "smithersbot-codex-helper-test", "config.toml"),
+      );
+      expect(fs.readFileSync(config.configPath, "utf8")).toBe(config.configToml);
+      expect(fs.existsSync(config.helperPath)).toBe(true);
+      expect(config.env.CODEX_HOME).toBe(config.codexHome);
+      expect(config.env.PATH.startsWith(`${config.helperDir}${path.delimiter}`)).toBe(true);
+    } finally {
+      fs.rmSync(sandboxRoot, { recursive: true, force: true });
+      fs.rmSync(fakeInstall, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a structured fail-closed blocker until the Codex live probe is explicitly enabled", () => {
+    mockCommandPaths();
+    mockExecFileSync.mockImplementation((command: string, args: string[]) => {
+      const joined = [command, ...args].join(" ");
+      if (joined === "sh -lc command -v codex") return "/usr/local/bin/codex\n";
+      if (joined === "find /usr/local/lib/node_modules/@openai/codex -path */bin/codex -type f") {
+        return "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex\n";
+      }
+      if (joined === "codex --version") return "codex-cli 0.133.0\n";
+      throw new Error(`unexpected command: ${joined}`);
+    });
+
+    const status = codexNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "status-test",
+      sandboxRoot: os.tmpdir(),
+      env: {},
+    });
+
+    expect(status.proven).toBe(false);
+    if (!status.proven) {
+      expect(status.blocker).toBe("live-probe-required");
+      expect(status.command).toContain("--permissions-profile smithersbot");
+      expect(status.reason).toContain("SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES=1");
+    }
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("reports proven only after the live permission-profile probe passes", () => {
+    mockCommandPaths();
+    mockExecFileSync.mockImplementation((command: string, args: string[]) => {
+      const joined = [command, ...args].join(" ");
+      if (joined === "sh -lc command -v codex") return "/usr/local/bin/codex\n";
+      if (joined === "find /usr/local/lib/node_modules/@openai/codex -path */bin/codex -type f") {
+        return "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex\n";
+      }
+      if (joined === "codex --version") return "codex-cli 0.133.0\n";
+      throw new Error(`unexpected command: ${joined}`);
+    });
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout:
+        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nprivate_env=1\nsymlink_escape=1\nok",
+      stderr: "",
+    });
+
+    const status = codexNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "live-ok",
+      sandboxRoot: os.tmpdir(),
+      env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
+    });
+
+    expect(status.proven).toBe(true);
+    if (status.proven) {
+      expect(status.version).toBe("codex-cli 0.133.0");
+      expect(status.configPath).toContain("smithersbot-codex-live-ok");
+      expect(status.helperPath).toContain("codex-linux-sandbox");
+    }
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      "codex",
+      expect.arrayContaining(["sandbox", "linux", "--permissions-profile", "smithersbot"]),
+      expect.objectContaining({
+        cwd: process.cwd(),
+        env: expect.objectContaining({
+          CODEX_HOME: expect.stringContaining("smithersbot-codex-live-ok"),
+          PATH: expect.stringContaining("smithersbot-codex-live-ok/bin"),
+        }),
+      }),
+    );
+  });
+});
 
 describe("Claude Code native sandbox settings", () => {
   beforeEach(() => {

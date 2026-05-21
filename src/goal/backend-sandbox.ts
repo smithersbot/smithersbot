@@ -18,6 +18,46 @@ export type CodexSandboxConfig = {
   configOverrides: string[];
 };
 
+export type CodexNativeSandboxConfig = {
+  profileName: "smithersbot";
+  executionRoot: string;
+  codexHome: string;
+  configPath: string;
+  helperDir: string;
+  helperPath: string;
+  codexPath: string;
+  env: Record<string, string>;
+  args: string[];
+  configToml: string;
+  deniedReadPaths: string[];
+  allowedReadPaths: string[];
+  writablePaths: string[];
+};
+
+export type CodexNativeSandboxStatus =
+  | {
+      proven: true;
+      codexPath: string;
+      version: string;
+      configPath: string;
+      helperPath: string;
+      summary: string;
+    }
+  | {
+      proven: false;
+      reason: string;
+      blocker:
+        | "codex-not-found"
+        | "helper-discovery-failed"
+        | "config-generation-failed"
+        | "live-probe-required"
+        | "live-probe-failed"
+        | "operator-action-required";
+      command?: string;
+      operatorCommand?: string;
+      details?: string;
+    };
+
 export type ClaudeCodeSandboxSettingsConfig = {
   settingsDir: string;
   settingsPath: string;
@@ -61,6 +101,8 @@ export type ClaudeCodeNativeSandboxStatus =
       details?: string;
     };
 
+const DEFAULT_CODEX_SANDBOX_ROOT = "/var/tmp";
+const CODEX_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES";
 const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = "/var/tmp";
 const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
@@ -83,6 +125,10 @@ export function resolveManagedExecutionRoot(params: {
 
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function tomlQuotedKey(value: string): string {
+  return `"${escapeTomlString(value)}"`;
 }
 
 export function buildCodexSandboxConfig(params: {
@@ -120,6 +166,184 @@ export function appendCodexSandboxArgs(args: string[], config: CodexSandboxConfi
     args.push("-c", override);
   }
   return args;
+}
+
+function buildCodexDeniedReadPaths(workingDir: string): string[] {
+  return uniqueValues([
+    path.join(workingDir, ".env"),
+    path.join(workingDir, ".env.local"),
+    path.join(workingDir, ".env.production"),
+    path.join(workingDir, ".env.test"),
+    path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"),
+    path.join(os.homedir(), ".smithersbot", ".env"),
+    path.join(os.homedir(), ".smithersbot", "smithersbot.json"),
+    path.join(os.homedir(), ".moltbot", "moltbot.json"),
+    path.join(os.homedir(), ".clawdbot", "clawdbot.json"),
+    path.join(os.homedir(), ".clawdbot-dev", "moltbot.json"),
+    path.join(os.homedir(), ".codex", "auth.json"),
+    path.join(os.homedir(), ".codex", "config.toml"),
+    path.join(os.homedir(), ".claude", "settings.json"),
+    path.join(os.homedir(), ".ssh", "id_rsa"),
+    path.join(os.homedir(), ".aws", "credentials"),
+    path.join(os.homedir(), ".gnupg", "pubring.kbx"),
+  ]);
+}
+
+function buildCodexPermissionProfileToml(params: {
+  executionRoot: string;
+  deniedReadPaths: string[];
+  writablePaths: string[];
+  requiresNetwork?: boolean;
+}): string {
+  const filesystemLines = [
+    "[permissions.smithersbot.filesystem]",
+    "glob_scan_max_depth = 8",
+    `${tomlQuotedKey(params.executionRoot)} = "${
+      params.writablePaths.includes(params.executionRoot) ? "write" : "read"
+    }"`,
+    ...params.writablePaths
+      .filter((writablePath) => writablePath !== params.executionRoot)
+      .map((writablePath) => `${tomlQuotedKey(writablePath)} = "write"`),
+    ...params.deniedReadPaths.map((deniedPath) => `${tomlQuotedKey(deniedPath)} = "deny"`),
+  ];
+
+  return [
+    'default_permissions = "smithersbot"',
+    "",
+    ...filesystemLines,
+    "",
+    "[permissions.smithersbot.network]",
+    `enabled = ${params.requiresNetwork === true ? "true" : "false"}`,
+    "",
+  ].join("\n");
+}
+
+function discoverCodexNativeBinary(codexPath: string): string | undefined {
+  const candidate = path.resolve(
+    path.dirname(codexPath),
+    "..",
+    "lib",
+    "node_modules",
+    "@openai",
+    "codex",
+    "node_modules",
+    "@openai",
+    "codex-linux-x64",
+    "vendor",
+    "x86_64-unknown-linux-musl",
+    "bin",
+    "codex",
+  );
+  if (fs.existsSync(candidate)) return candidate;
+
+  const packageRoot = path.resolve(
+    path.dirname(codexPath),
+    "..",
+    "lib",
+    "node_modules",
+    "@openai",
+    "codex",
+  );
+  try {
+    const result = execFileSync("find", [packageRoot, "-path", "*/bin/codex", "-type", "f"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.includes("codex-linux"));
+    return result || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildCodexNativeSandboxConfig(params: {
+  workingDir: string;
+  runId: string;
+  purpose: CodexSandboxPurpose;
+  requiresNetwork?: boolean;
+  sandboxRoot?: string;
+  codexPath?: string;
+}): CodexNativeSandboxConfig {
+  const executionRoot = resolveManagedExecutionRoot({
+    workingDir: params.workingDir,
+    purpose: params.purpose,
+  });
+  const codexPath = params.codexPath ?? commandPath("codex");
+  if (!codexPath) {
+    throw new Error("codex CLI is not available on PATH.");
+  }
+
+  const sandboxRoot = params.sandboxRoot ?? DEFAULT_CODEX_SANDBOX_ROOT;
+  const codexHome = path.join(sandboxRoot, `smithersbot-codex-${safeRunIdSegment(params.runId)}`);
+  const helperDir = path.join(codexHome, "bin");
+  const helperPath = path.join(helperDir, "codex-linux-sandbox");
+  const allowedReadPaths =
+    params.purpose === "repo-chat"
+      ? uniqueValues([resolveAgentRoot(), params.workingDir])
+      : uniqueValues([params.workingDir, path.join(resolveAgentRoot(), "history")]);
+  const writablePaths =
+    params.purpose === "repo-chat"
+      ? []
+      : uniqueValues([params.workingDir, path.join(params.workingDir, ".git")]);
+  const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir);
+  const configToml = buildCodexPermissionProfileToml({
+    executionRoot,
+    deniedReadPaths,
+    writablePaths,
+    requiresNetwork: params.requiresNetwork,
+  });
+
+  return {
+    profileName: "smithersbot",
+    executionRoot,
+    codexHome,
+    configPath: path.join(codexHome, "config.toml"),
+    helperDir,
+    helperPath,
+    codexPath,
+    env: {
+      CODEX_HOME: codexHome,
+      PATH: `${helperDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+    args: ["sandbox", "linux", "--permissions-profile", "smithersbot", "--cd", executionRoot],
+    configToml,
+    deniedReadPaths,
+    allowedReadPaths,
+    writablePaths,
+  };
+}
+
+export function writeCodexNativeSandboxConfig(params: {
+  workingDir: string;
+  runId: string;
+  purpose: CodexSandboxPurpose;
+  requiresNetwork?: boolean;
+  sandboxRoot?: string;
+  codexPath?: string;
+}): CodexNativeSandboxConfig {
+  const config = buildCodexNativeSandboxConfig(params);
+  if (isPathInsideAgentRoot(config.codexHome) || config.codexHome.startsWith(params.workingDir)) {
+    throw new Error("Codex native sandbox config must be outside agent-visible paths.");
+  }
+
+  const nativeCodexPath = discoverCodexNativeBinary(config.codexPath);
+  if (!nativeCodexPath) {
+    throw new Error("Unable to locate the Codex native binary for codex-linux-sandbox helper.");
+  }
+
+  fs.mkdirSync(config.helperDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(config.configPath, config.configToml, { encoding: "utf8", mode: 0o600 });
+  try {
+    fs.rmSync(config.helperPath, { force: true });
+    fs.symlinkSync(nativeCodexPath, config.helperPath);
+  } catch {
+    fs.copyFileSync(nativeCodexPath, config.helperPath);
+    fs.chmodSync(config.helperPath, 0o700);
+  }
+  return config;
 }
 
 function safeRunIdSegment(runId: string): string {
@@ -262,6 +486,142 @@ function formatSpawnOutput(result: ReturnType<typeof spawnSync>): string {
     ? result.stderr.toString("utf8")
     : String(result.stderr ?? "");
   return [stdout, stderr, result.error?.message].filter(Boolean).join("\n").trim();
+}
+
+function classifyCodexProbeFailure(output: string): CodexNativeSandboxStatus {
+  if (output.includes("Read-only file system") && output.includes("/var/tmp")) {
+    return {
+      proven: false,
+      blocker: "operator-action-required",
+      reason: "Codex native sandbox config could not be written under /var/tmp.",
+      details: output,
+      operatorCommand:
+        "mount | grep ' /var/tmp ' && touch /var/tmp/smithersbot-codex-write-test && rm /var/tmp/smithersbot-codex-write-test",
+    };
+  }
+  if (
+    output.includes("Failed to create NETLINK_ROUTE socket") ||
+    output.includes("Operation not permitted")
+  ) {
+    return {
+      proven: false,
+      blocker: "operator-action-required",
+      reason:
+        "Codex bubblewrap sandbox could not create the required Linux namespace on this host.",
+      details: output,
+      operatorCommand:
+        "codex sandbox linux --permissions-profile smithersbot sh -lc 'echo smithersbot-codex-sandbox-ok'",
+    };
+  }
+  return {
+    proven: false,
+    blocker: "live-probe-failed",
+    reason: "Codex native permission-profile live probe did not complete successfully.",
+    details: output,
+  };
+}
+
+export function codexNativeSandboxStatus(
+  params: {
+    workingDir?: string;
+    runId?: string;
+    purpose?: CodexSandboxPurpose;
+    requiresNetwork?: boolean;
+    sandboxRoot?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): CodexNativeSandboxStatus {
+  const env = params.env ?? process.env;
+  const codexPath = commandPath("codex");
+  if (!codexPath) {
+    return {
+      proven: false,
+      blocker: "codex-not-found",
+      reason: "codex CLI is not available on PATH.",
+      command: "codex --version",
+    };
+  }
+
+  const workingDir = params.workingDir ?? process.cwd();
+  let sandboxConfig: CodexNativeSandboxConfig;
+  try {
+    sandboxConfig = writeCodexNativeSandboxConfig({
+      workingDir,
+      runId: params.runId ?? `status-${Date.now()}`,
+      purpose: params.purpose ?? "goal-worker",
+      requiresNetwork: params.requiresNetwork,
+      sandboxRoot: params.sandboxRoot,
+      codexPath,
+    });
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    return {
+      proven: false,
+      blocker: details.includes("native binary")
+        ? "helper-discovery-failed"
+        : "config-generation-failed",
+      reason: "Codex native sandbox config/helper setup failed.",
+      details,
+    };
+  }
+
+  if (env[CODEX_SANDBOX_LIVE_PROBES_ENV] !== "1") {
+    return {
+      proven: false,
+      blocker: "live-probe-required",
+      reason: `Set ${CODEX_SANDBOX_LIVE_PROBES_ENV}=1 to prove Codex native permission-profile enforcement with a live probe.`,
+      command: `CODEX_HOME=${sandboxConfig.codexHome} PATH=${sandboxConfig.helperDir}:$PATH codex ${sandboxConfig.args.join(" ")} sh -lc '<probe>'`,
+    };
+  }
+
+  const probe = [
+    "set +e",
+    "cat README.md >/dev/null; echo readme=$?",
+    "cat .env.example >/dev/null; echo env_example=$?",
+    "cat .env.local >/dev/null; echo env_local=$?",
+    "cat .env.production >/dev/null; echo env_production=$?",
+    "cat .env.test >/dev/null; echo env_test=$?",
+    `cat ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} >/dev/null; echo private_env=$?`,
+    "rm -f .smithersbot-codex-env-link",
+    `ln -s ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} .smithersbot-codex-env-link`,
+    "cat .smithersbot-codex-env-link >/dev/null; echo symlink_escape=$?",
+    "rm -f .smithersbot-codex-env-link",
+    "printf ok > .smithersbot-codex-write-probe && cat .smithersbot-codex-write-probe && rm -f .smithersbot-codex-write-probe",
+  ].join("; ");
+  const result = spawnSync("codex", [...sandboxConfig.args, "sh", "-lc", probe], {
+    cwd: workingDir,
+    env: { ...process.env, ...sandboxConfig.env },
+    encoding: "utf8",
+    timeout: 45000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const output = formatSpawnOutput(result);
+  const passed =
+    result.status === 0 &&
+    output.includes("readme=0") &&
+    output.includes("env_example=0") &&
+    output.includes("env_local=1") &&
+    output.includes("env_production=1") &&
+    output.includes("env_test=1") &&
+    output.includes("private_env=1") &&
+    output.includes("symlink_escape=1") &&
+    output.includes("ok");
+  if (passed) {
+    return {
+      proven: true,
+      codexPath,
+      version: commandVersion("codex"),
+      configPath: sandboxConfig.configPath,
+      helperPath: sandboxConfig.helperPath,
+      summary:
+        "Codex native permission profile denied secret reads and allowed workspace reads/writes.",
+    };
+  }
+  return classifyCodexProbeFailure(output);
+}
+
+function escapeShellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function classifyClaudeProbeFailure(output: string): ClaudeCodeNativeSandboxStatus {
