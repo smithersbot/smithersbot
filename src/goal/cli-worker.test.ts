@@ -473,10 +473,17 @@ describe("cli-worker", () => {
       expect(args.join(" ")).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });
 
-    it("does not claim Claude Code has a native filesystem sandbox in this CLI surface", () => {
-      const status = claudeCodeNativeSandboxStatus();
+    it("does not claim Claude Code has a native filesystem sandbox without a live probe", () => {
+      const status = claudeCodeNativeSandboxStatus({
+        workingDir: process.cwd(),
+        runId: "cli-worker-test",
+        settingsRoot: os.tmpdir(),
+        env: {},
+      });
       expect(status.supported).toBe(false);
-      expect(status.reason).toContain("no native filesystem sandbox");
+      if (!status.supported) {
+        expect(status.reason).toContain("live probe");
+      }
     });
 
     it("does not include --output-schema for codex workers", () => {

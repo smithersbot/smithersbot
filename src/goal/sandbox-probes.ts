@@ -164,6 +164,9 @@ export function classifyBackendProbeReadiness(backend: GoalBackendId): SandboxPr
   }
   if (backend === "claude_code") {
     const status = claudeCodeNativeSandboxStatus();
+    if (status.supported) {
+      return { backend, status: "proven", summary: status.summary };
+    }
     return { backend, status: "unproven", reason: status.reason };
   }
   if (!isCommandAvailable("codex")) {
