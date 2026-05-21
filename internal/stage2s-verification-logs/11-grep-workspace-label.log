@@ -1,0 +1,18 @@
+src/agents/workspace.ts:102:async function ensureGitRepo(dir: string, isBrandNewWorkspace: boolean) {
+src/auto-reply/reply/commands-context-report.ts:273:        `Workspace: ${workspaceLabel}`,
+src/auto-reply/reply/commands-context-report.ts:310:      `Workspace: ${workspaceLabel}`,
+src/commands/agents.commands.add.ts:155:      runtime.log(`Workspace: ${shortenHomePath(workspaceDir)}`);
+src/commands/agents.commands.identity.ts:221:  if (workspaceDir) runtime.log(`Workspace: ${shortenHomePath(workspaceDir)}`);
+src/commands/agents.commands.list.ts:44:  lines.push(`  Workspace: ${shortenHomePath(summary.workspace)}`);
+src/commands/doctor-workspace.ts:46:  activeWorkspace: string;
+src/commands/goal.ts:142:    runtime.log(`Workspace: ${workingDir}`);
+src/goal/format-output.test.ts:152:    it("renders managed-workspace label as 'Workspace:' when workingDir is provided", () => {
+src/goal/format-output.test.ts:158:      expect(out).toContain("**Workspace:** /tmp/workspace");
+src/goal/format-output.ts:75:    lines.push(`**Workspace:** ${tildeShorten(workingDir)}`);
+src/goal/workspace-policy.ts:24:  params.onWarning?.(`${LEGACY_WORKING_DIR_WARNING} Workspace: ${params.workingDir}`);
+src/telegram/goal-commands.test.ts:1581:      expect(options.caption).toContain("<b>Workspace:</b> /tmp/ws");
+src/telegram/goal-commands.test.ts:2928:      expect(result.text).toContain("Workspace:");
+src/telegram/goal-commands.test.ts:3023:      expect(result.text).toContain("Workspace:");
+src/telegram/goal-commands.test.ts:3067:      expect(result.text).toContain("Workspace:");
+src/telegram/goal-commands.test.ts:3143:      expect(result.text).toContain("Workspace:");
+src/telegram/goal-commands.ts:1368:      parts.push(`Workspace: \`${shortenHomePath(run.workingDir)}\`\n`);

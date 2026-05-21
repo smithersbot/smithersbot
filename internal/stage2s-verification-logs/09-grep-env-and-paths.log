@@ -1,0 +1,81 @@
+README.md:79:`os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
+README.md:136:cp .env.example ~/.smithersbot/.env
+SETUP.md:447:`os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
+SETUP.md:451:`~/smithersbot-goals/private/env/<workspace-name>/.env` may only be loaded by
+SETUP.md:458:`agent/workspaces`, `agent/history/{goals,repo-chats,index}`,
+SETUP.md:462:path (`~/smithersbot-goals/agent/workspaces/<repo>/repo`).
+SETUP.md:489:`~/smithersbot-goals/private/env/<workspace-name>/.env`. That tree is not
+SETUP.md:491:inside `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo` should read
+SETUP.md:493:in the repo's `.env.example`.
+scripts/setup-smithersbot.sh:34:  "agent/workspaces"
+scripts/setup-smithersbot.sh:35:  "agent/history/goals"
+scripts/setup-smithersbot.sh:36:  "agent/history/repo-chats"
+scripts/setup-smithersbot.sh:37:  "agent/history/index"
+scripts/setup-smithersbot.sh:38:  "private/env"
+scripts/setup-smithersbot.sh:86:    info "Recommended workspace path: $managed_root/agent/workspaces/$repo_name/repo"
+scripts/setup-smithersbot.sh:544:info "  Workspaces live in $managed_root/agent/workspaces/<name>/repo"
+scripts/setup-smithersbot.sh:545:info "  Real env files live in $managed_root/private/env/<name>/.env (not agent-visible)"
+src/commands/goal.test.ts:571:    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/repo/repo");
+src/commands/goal.test.ts:578:    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/default/repo");
+src/commands/goal.test.ts:589:    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/smithersbot/repo");
+src/commands/goal.ts:76: * 4. managed workspace repo: <root>/agent/workspaces/<workspace-name>/repo
+src/commands/goal.ts:81: * files live host-side under private/env and are never the worker default env.
+src/config/managed-paths.ts:14: * live in <root>/private/env/<workspace-name>/.env and are not agent-visible.
+src/config/managed-paths.ts:132:/** Workspace repo path: <root>/agent/workspaces/<name>/repo. */
+src/config/managed-paths.ts:142:/** Agent-readable goal history dir: <root>/agent/history/goals/<workspace>/<goal-id>. */
+src/config/managed-paths.ts:154:/** Agent-readable repo-chat history dir: <root>/agent/history/repo-chats/<workspace>. */
+src/config/managed-paths.ts:164:/** Agent-readable history index dir: <root>/agent/history/index. */
+src/config/managed-paths.ts:172:/** Private env file for a workspace: <root>/private/env/<workspace>/.env. */
+src/config/managed-paths.ts:182:/** Private env workspace dir: <root>/private/env/<workspace>. */
+src/config/paths.test.ts:204:    expect(repo).toBe(path.resolve("/m/root/agent/workspaces/smithersbot/repo"));
+src/config/paths.test.ts:215:    expect(goalDir).toBe(path.resolve("/m/root/agent/history/goals/ws/goal-abc"));
+src/config/paths.test.ts:216:    expect(chatDir).toBe(path.resolve("/m/root/agent/history/repo-chats/ws"));
+src/config/paths.test.ts:217:    expect(indexDir).toBe(path.resolve("/m/root/agent/history/index"));
+src/config/paths.test.ts:231:    expect(envFile).toBe(path.resolve("/m/root/private/env/smithersbot/.env"));
+src/config/paths.test.ts:232:    expect(envDir).toBe(path.resolve("/m/root/private/env/smithersbot"));
+src/config/paths.test.ts:285:    expect(isPathInsideAgentRoot("/m/root/agent/workspaces/foo", env, home)).toBe(true);
+src/config/paths.test.ts:286:    expect(isPathInsideAgentRoot("/m/root/private/env/foo/.env", env, home)).toBe(false);
+src/config/paths.test.ts:296:    expect(isPathInsidePrivateRoot("/m/root/private/env/x/.env", env, home)).toBe(true);
+src/config/paths.test.ts:297:    expect(isPathInsidePrivateRoot("/m/root/agent/workspaces/x/repo", env, home)).toBe(false);
+src/config/paths.test.ts:370:    expect(subdirs).toContain("agent/workspaces");
+src/config/paths.test.ts:371:    expect(subdirs).toContain("agent/history/goals");
+src/config/paths.test.ts:372:    expect(subdirs).toContain("agent/history/repo-chats");
+src/config/paths.test.ts:373:    expect(subdirs).toContain("agent/history/index");
+src/config/paths.test.ts:374:    expect(subdirs).toContain("private/env");
+src/goal/cli-worker.ts:4:// <root>/agent/workspaces/<workspace>/repo. Legacy workingDir values outside
+src/goal/cli-worker.ts:7:// <root>/private/env are host-side only and are not passed to workers by default.
+src/goal/run-store.ts:46:  // agent/history receives a sanitized mirror for agent-readable context.
+src/goal/worker-context/AGENTS.md:85:  `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
+src/goal/worker-context/AGENTS.md:91:- Real env files live at `<managed-root>/private/env/<workspace-name>/.env` and
+src/goal/worker-context/AGENTS.md:92:  are NOT agent-visible. The repo-root `.env.example` is the safe variable-name
+src/goal/worker-context/AGENTS.md:94:- Agent-readable history lives under `<managed-root>/agent/history/` (goals and
+src/goal/worker-context/AGENTS.md:100:- `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
+src/goal/worker-context/CLAUDE.md:85:  `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
+src/goal/worker-context/CLAUDE.md:91:- Real env files live at `<managed-root>/private/env/<workspace-name>/.env` and
+src/goal/worker-context/CLAUDE.md:92:  are NOT agent-visible. The repo-root `.env.example` is the safe variable-name
+src/goal/worker-context/CLAUDE.md:94:- Agent-readable history lives under `<managed-root>/agent/history/` (goals and
+src/goal/worker-context/CLAUDE.md:100:- `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
+src/goal/worker-context/shared-worker-contract.md:85:  `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
+src/goal/worker-context/shared-worker-contract.md:91:- Real env files live at `<managed-root>/private/env/<workspace-name>/.env` and
+src/goal/worker-context/shared-worker-contract.md:92:  are NOT agent-visible. The repo-root `.env.example` is the safe variable-name
+src/goal/worker-context/shared-worker-contract.md:94:- Agent-readable history lives under `<managed-root>/agent/history/` (goals and
+src/goal/worker-context/shared-worker-contract.md:100:- `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
+src/goal/workspace-private-env.ts:15: * This reads <managed-root>/private/env/<workspace>/.env for trusted gateway
+src/prompts/prompts.test.ts:192:      "<managed-root>/agent/workspaces/<workspace-name>/repo",
+src/prompts/prompts.test.ts:197:      "<managed-root>/private/env/<workspace-name>/.env",
+src/prompts/prompts.test.ts:198:      ".env.example",
+src/prompts/prompts.test.ts:199:      "<managed-root>/agent/history/",
+src/prompts/prompts.test.ts:229:    expect(REPO_CHAT_CONTEXT).toContain("agent/history/goals/");
+src/prompts/prompts.test.ts:230:    expect(REPO_CHAT_CONTEXT).toContain("agent/history/repo-chats/");
+src/prompts/prompts.test.ts:231:    expect(REPO_CHAT_CONTEXT).toContain("agent/history/index/");
+src/prompts/repo-chat/repo-chat-context.ts:62:- \`<managed-root>/agent/history/goals/<workspace>/<goalId>/\` — sanitized run summaries
+src/prompts/repo-chat/repo-chat-context.ts:63:- \`<managed-root>/agent/history/repo-chats/<workspace>/\` — sanitized repo-chat sessions
+src/prompts/repo-chat/repo-chat-context.ts:64:- \`<managed-root>/agent/history/index/\` — global JSONL indexes for grep/search across runs
+src/prompts/repo-chat/repo-chat-context.ts:74:- \`ls -lt ~/smithersbot-goals/agent/history/goals/\` (agent-readable mirror; preferred for search)
+src/prompts/repo-chat/repo-chat-context.ts:91:- Agent-readable sanitized mirror: \`<managed-root>/agent/history/repo-chats/<workspace>/<sessionId>/\`
+src/repo-chat/repo-chat-store.ts:164:  // agent/history receives sanitized summaries for repo-chat search context.
+src/security/secret-paths.test.ts:139:  it.each([".env.example", "nested/.env.example", "subdir/repo/.env.example", ".ENV.EXAMPLE"])(
+src/security/secret-paths.test.ts:140:    "allows the .env.example variable-name contract %s",
+src/security/secret-paths.test.ts:148:    "still denies %s even though .env.example is allowed",
+src/security/secret-paths.ts:200:  // .env.example is the portable, agent-readable variable-name contract for
+src/security/secret-paths.ts:203:  if (lower === ".env.example") {

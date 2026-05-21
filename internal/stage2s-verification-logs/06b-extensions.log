@@ -1,0 +1,11 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/matt/moltbot[39m
+
+ [32m✓[39m extensions/memory-core/index.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m extensions/telegram/index.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 11[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m      Tests [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+[2m   Start at [22m 12:32:12
+[2m   Duration [22m 7.23s[2m (transform 7.42s, setup 498ms, import 13.30s, tests 30ms, environment 0ms)[22m
+
