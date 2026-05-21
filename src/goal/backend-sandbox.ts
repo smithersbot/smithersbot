@@ -78,6 +78,11 @@ export type ClaudeCodeSandboxSettingsConfig = {
   };
 };
 
+export type ClaudeCodeLaunchSandboxConfig = {
+  settingsPath: string;
+  args: string[];
+};
+
 export type ClaudeCodeNativeSandboxStatus =
   | {
       supported: true;
@@ -103,7 +108,7 @@ export type ClaudeCodeNativeSandboxStatus =
 
 const DEFAULT_CODEX_SANDBOX_ROOT = "/var/tmp";
 const CODEX_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES";
-const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = "/var/tmp";
+const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = os.tmpdir();
 const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
@@ -452,6 +457,34 @@ export function writeClaudeCodeSandboxSettings(params: {
     mode: 0o600,
   });
   return config;
+}
+
+export function buildClaudeCodeSandboxLaunchConfig(params: {
+  workingDir: string;
+  runId: string;
+  purpose: ClaudeSandboxPurpose;
+  settingsRoot?: string;
+}): ClaudeCodeLaunchSandboxConfig {
+  const config = writeClaudeCodeSandboxSettings(params);
+  return {
+    settingsPath: config.settingsPath,
+    args: [
+      "--settings",
+      config.settingsPath,
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+    ],
+  };
+}
+
+export function appendClaudeCodeSandboxArgs(
+  args: string[],
+  config: ClaudeCodeLaunchSandboxConfig,
+): string[] {
+  args.push(...config.args);
+  return args;
 }
 
 function commandPath(command: string): string | undefined {

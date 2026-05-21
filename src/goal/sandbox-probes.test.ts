@@ -31,6 +31,7 @@ describe("goal worker sandbox live probes", () => {
       "home env",
       "home config",
       "repo env local",
+      "bash managed private env",
       "python managed private env",
       "private symlink escape",
     ]);

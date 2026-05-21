@@ -40,6 +40,8 @@ export type GoalConfig = {
   semgrep?: SemgrepMode;
   /** Enabled CLI workers for goal planning and execution. */
   enabledWorkers?: EnabledWorkers;
+  /** Require backend-native sandbox support before launching managed workspace workers. */
+  requireNativeSandbox?: boolean;
   /** GitHub push integration for completed goal runs. */
   githubPush?: GitHubPushConfig;
 };

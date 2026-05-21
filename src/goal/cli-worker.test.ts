@@ -469,6 +469,10 @@ describe("cli-worker", () => {
       });
 
       expect(args).not.toContain("--cwd");
+      expect(args).toContain("--settings");
+      expect(args).toContain("--setting-sources");
+      expect(args).not.toContain("--dangerously-skip-permissions");
+      expect(args).not.toContain("--allow-dangerously-skip-permissions");
       expect(args[args.length - 1]).toBe("do the task");
       expect(args.join(" ")).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });

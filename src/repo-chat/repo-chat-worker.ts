@@ -22,7 +22,11 @@ import {
   isPathInsidePrivateRoot,
   resolveAgentRoot,
 } from "../config/managed-paths.js";
-import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "../goal/backend-sandbox.js";
+import {
+  appendCodexSandboxArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  buildCodexSandboxConfig,
+} from "../goal/backend-sandbox.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
@@ -47,14 +51,22 @@ const CLAUDE_STARTUP_HINT =
 
 export function buildClaudeRepoChatArgs(params: {
   prompt: string;
+  workingDir?: string;
+  runId?: string;
   cliSessionId?: string;
   model?: string;
 }): string[] {
+  const sandboxConfig = buildClaudeCodeSandboxLaunchConfig({
+    workingDir: params.workingDir ?? process.cwd(),
+    runId: params.runId ?? "repo-chat",
+    purpose: "repo-chat",
+  });
   const baseArgs = [
     "-p",
     "--output-format",
     "json",
     "--verbose",
+    ...sandboxConfig.args,
     "--allowedTools",
     REPO_CHAT_CLAUDE_ALLOWED_TOOLS_READ_ONLY,
     "--append-system-prompt",
@@ -431,6 +443,8 @@ export async function runRepoChatWorker(
     params.backend === "claude_code"
       ? buildClaudeRepoChatArgs({
           prompt: augmentedPrompt,
+          workingDir: params.workingDir,
+          runId: `repo-chat-${responseFileId}`,
           cliSessionId: params.cliSessionId,
           model: params.model,
         })

@@ -7,6 +7,7 @@
 // <root>/private/env are host-side only and are not passed to workers by default.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
@@ -33,7 +34,12 @@ import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
-import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "./backend-sandbox.js";
+import {
+  appendCodexSandboxArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  buildCodexSandboxConfig,
+  claudeCodeNativeSandboxStatus,
+} from "./backend-sandbox.js";
 
 // --- Constants ---
 
@@ -283,6 +289,19 @@ export async function executeTaskWithCliWorker(
   const workerEnv = buildGoalWorkerEnv(backend, claudeCodeAuth);
   if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
 
+  if (backend === "claude_code" && goalConfig?.requireNativeSandbox === true) {
+    const sandboxStatus = claudeCodeNativeSandboxStatus({
+      workingDir,
+      runId,
+      purpose: "goal-worker",
+    });
+    if (!sandboxStatus.supported) {
+      throw new Error(
+        `Claude Code native sandbox is required but unavailable: ${sandboxStatus.reason}`,
+      );
+    }
+  }
+
   const prompt = buildCliWorkerPrompt({
     step,
     plan,
@@ -315,6 +334,7 @@ export async function executeTaskWithCliWorker(
     workingDir,
     denyFilePath,
     model,
+    runId,
     requiresNetwork: step.requiresNetwork === true,
     projectConventions,
     promptPayload,
@@ -799,6 +819,7 @@ export function buildCliArgs(params: {
   workingDir: string;
   denyFilePath: string;
   model?: string;
+  runId?: string;
   requiresNetwork?: boolean;
   projectConventions?: string;
   promptPayload?: {
@@ -813,6 +834,7 @@ export function buildCliArgs(params: {
     workingDir,
     denyFilePath,
     model,
+    runId = "cli-worker",
     requiresNetwork = false,
     projectConventions,
     promptPayload,
@@ -849,11 +871,18 @@ export function buildCliArgs(params: {
 
   // Claude Code
   const allowedTools = buildAllowedToolsList();
+  const sandboxConfig = buildClaudeCodeSandboxLaunchConfig({
+    workingDir,
+    runId,
+    purpose: "goal-worker",
+    settingsRoot: process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT ?? os.tmpdir(),
+  });
   const args = [
     "-p",
     "--verbose",
     "--output-format",
     "stream-json",
+    ...sandboxConfig.args,
     "--allowedTools",
     allowedTools.join(","),
     "--append-system-prompt",

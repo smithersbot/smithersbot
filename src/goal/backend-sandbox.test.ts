@@ -230,14 +230,14 @@ describe("Claude Code native sandbox settings", () => {
     mockSpawnSync.mockReset();
   });
 
-  it("generates per-run settings under /var/tmp by default, outside the repo", () => {
+  it("generates per-run settings under the OS temp dir by default, outside the repo", () => {
     const config = buildClaudeCodeSandboxSettingsConfig({
       workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
       runId: "run/with spaces",
       purpose: "goal-worker",
     });
 
-    expect(config.settingsDir).toBe("/var/tmp/smithersbot-claude-run-with-spaces");
+    expect(config.settingsDir).toBe(path.join(os.tmpdir(), "smithersbot-claude-run-with-spaces"));
     expect(config.settingsPath).toBe(path.join(config.settingsDir, "settings.json"));
     expect(config.settingsPath).not.toContain("/agent/workspaces/smithersbot/repo");
   });

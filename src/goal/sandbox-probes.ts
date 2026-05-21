@@ -104,6 +104,11 @@ export function buildSandboxProbeCases(fixture: SandboxProbeFixture): SandboxPro
     { kind: "denied", label: "repo env local", command: "cat .env.local" },
     {
       kind: "denied",
+      label: "bash managed private env",
+      command: `bash -c ${shellQuote(`cat ${shellQuote(fixture.privateEnvFile)}`)}`,
+    },
+    {
+      kind: "denied",
       label: "python managed private env",
       command: `python3 -c ${shellQuote(`open(${JSON.stringify(fixture.privateEnvFile)}).read()`)}`,
     },

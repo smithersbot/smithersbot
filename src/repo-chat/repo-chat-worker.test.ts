@@ -81,6 +81,10 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--resume");
       expect(args).toContain("claude-session-1");
       expect(args).toContain("--verbose");
+      expect(args).toContain("--settings");
+      expect(args).toContain("--setting-sources");
+      expect(args).not.toContain("--dangerously-skip-permissions");
+      expect(args).not.toContain("--allow-dangerously-skip-permissions");
       expect(args).toContain("--allowedTools");
       expect(args).toContain(REPO_CHAT_CLAUDE_ALLOWED_TOOLS);
       expect(args).toContain("--append-system-prompt");
