@@ -101,6 +101,18 @@ describe("checkCommandDeny", () => {
     expect(checkCommandDeny("echo ok; sudo whoami")).not.toBeNull();
   });
 
+  it("blocks denied commands in newline-separated commands", () => {
+    expect(checkCommandDeny("echo ok\nsudo whoami")?.pattern).toBe("sudo");
+  });
+
+  it("does not flag quoted newline content that only mentions denied commands", () => {
+    expect(checkCommandDeny('echo "ok\nsudo whoami"')).toBeNull();
+  });
+
+  it("blocks publish commands in newline-separated commands", () => {
+    expect(checkCommandDeny("echo ok\nnpm publish --tag latest")?.pattern).toBe("npm publish");
+  });
+
   it("blocks denied commands in compound '&&' commands", () => {
     expect(checkCommandDeny("echo ok && npm publish")).not.toBeNull();
   });

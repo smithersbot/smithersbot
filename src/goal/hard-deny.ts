@@ -300,7 +300,7 @@ function splitCompoundCommand(command: string): string[] {
       continue;
     }
 
-    if (ch === ";") {
+    if (ch === ";" || ch === "\n") {
       pushCurrent();
       continue;
     }
