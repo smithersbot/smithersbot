@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
+import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "./backend-sandbox.js";
 
 type CodexAskForApprovalPlacement = "before_exec" | "after_exec" | "unsupported";
 
@@ -120,19 +121,20 @@ export function detectBackendAvailability(): BackendAvailability[] {
     helpArgs: ["exec", "--help"],
     // Safe no-op probe: include the actual flags plus --help to avoid invoking the model.
     flagProbeArgs: ({ workingDir }) => {
+      const sandboxConfig = buildCodexSandboxConfig({
+        workingDir,
+        purpose: "goal-worker",
+        requiresNetwork: true,
+      });
       const args = [
         ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
         "exec",
         "--json",
         ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
-        "--sandbox",
-        "workspace-write",
-        "--cd",
-        workingDir,
-        "-c",
-        "net.allowed=true",
-        "--help",
+        "--skip-git-repo-check",
       ];
+      appendCodexSandboxArgs(args, sandboxConfig);
+      args.push("--help");
       return args;
     },
   });

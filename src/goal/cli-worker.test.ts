@@ -27,6 +27,7 @@ import {
 import { HARD_DENIES } from "./hard-deny.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
+import { claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -462,6 +463,12 @@ describe("cli-worker", () => {
       expect(args.join(" ")).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });
 
+    it("does not claim Claude Code has a native filesystem sandbox in this CLI surface", () => {
+      const status = claudeCodeNativeSandboxStatus();
+      expect(status.supported).toBe(false);
+      expect(status.reason).toContain("no native filesystem sandbox");
+    });
+
     it("does not include --output-schema for codex workers", () => {
       const args = buildCliArgs({
         backend: "codex",
@@ -491,6 +498,55 @@ describe("cli-worker", () => {
         "-c",
         'sandbox_workspace_write.writable_roots=["/tmp/sample-workspace/.git"]',
       ]);
+      expect(args).toContain("--sandbox");
+      expect(args).toContain("workspace-write");
+      expect(args).toContain("--cd");
+      expect(args).toContain("/tmp/sample-workspace");
+      expect(args.join(" ")).not.toContain("danger-full-access");
+      expect(args.join(" ")).not.toContain("dangerously-bypass");
+    });
+
+    it("does not use the managed root as the codex worker sandbox root", () => {
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-worker-root-"));
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      try {
+        const workingDir = path.join(managedRoot, "agent", "workspaces", "sample", "repo");
+        const args = buildCliArgs({
+          backend: "codex",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+        });
+        const cdIdx = args.indexOf("--cd");
+        expect(args[cdIdx + 1]).toBe(workingDir);
+        expect(args[cdIdx + 1]).not.toBe(managedRoot);
+        expect(args.join(" ")).not.toContain(path.join(managedRoot, "private"));
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects codex worker sandbox construction from managed private paths", () => {
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-worker-private-"));
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      try {
+        expect(() =>
+          buildCliArgs({
+            backend: "codex",
+            prompt: "test",
+            workingDir: path.join(managedRoot, "private", "env", "sample"),
+            denyFilePath: path.join(managedRoot, "agent", "deny"),
+          }),
+        ).toThrow(/private paths/);
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
     });
 
     it("enables codex worker network only when the step explicitly opts in", () => {

@@ -22,6 +22,7 @@ import {
   isPathInsidePrivateRoot,
   resolveAgentRoot,
 } from "../config/managed-paths.js";
+import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "../goal/backend-sandbox.js";
 
 const DEFAULT_TIMEOUT_MS = 3_600_000;
 const CLAUDE_APPENDED_PROMPT = `${CLAUDE_READ_ONLY_PROMPT}\n\n${REPO_CHAT_CONTEXT}`;
@@ -98,7 +99,10 @@ export function buildCodexRepoChatArgs(params: {
   }
 
   const askForApprovalPlacement = getCodexAskForApprovalPlacement();
-  const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
+  const sandboxConfig = buildCodexSandboxConfig({
+    workingDir: params.workingDir,
+    purpose: "repo-chat",
+  });
   const args = [
     ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
@@ -106,12 +110,9 @@ export function buildCodexRepoChatArgs(params: {
     "--json",
     "--color",
     "never",
-    "--sandbox",
-    "read-only",
     "--skip-git-repo-check",
-    "--cd",
-    executionRoot,
   ];
+  appendCodexSandboxArgs(args, sandboxConfig);
   if (params.lastMessageFilePath) {
     args.push("--output-last-message", params.lastMessageFilePath);
   }

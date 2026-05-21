@@ -193,9 +193,12 @@ describe("repo-chat-worker", () => {
       expect(args).toContain("--skip-git-repo-check");
       expect(args).toContain("--cd");
       expect(args).toContain("/repo");
+      expect(args).toContain("net.allowed=false");
       expect(args).toContain("--output-last-message");
       expect(args).toContain(LAST_MESSAGE_FILE_PATH);
       expect(args).not.toContain("resume");
+      expect(args.join(" ")).not.toContain("danger-full-access");
+      expect(args.join(" ")).not.toContain("dangerously-bypass");
     });
 
     it("runs managed repo chat from the agent root so workspaces and history are readable", () => {
@@ -218,6 +221,7 @@ describe("repo-chat-worker", () => {
         const cdIdx = args.indexOf("--cd");
         expect(args[cdIdx + 1]).toBe(agentRoot);
         expect(resolveRepoChatExecutionRoot(repoDir)).toBe(agentRoot);
+        expect(args.join(" ")).not.toContain(path.join(managedRoot, "private"));
         expect(path.relative(agentRoot, historyDir)).toBe(
           path.join("history", "goals", "smithersbot", "run-1"),
         );

@@ -40,17 +40,21 @@ function makeProbeResult(overrides: SpawnResult = {}): SpawnResult {
 }
 
 function codexFlagProbeArgs(): string[] {
+  const gitPath = `${process.cwd()}/.git`;
   return [
     "--ask-for-approval",
     "never",
     "exec",
     "--json",
+    "--skip-git-repo-check",
     "--sandbox",
     "workspace-write",
     "--cd",
     process.cwd(),
     "-c",
     "net.allowed=true",
+    "-c",
+    `sandbox_workspace_write.writable_roots=["${gitPath}"]`,
     "--help",
   ];
 }
@@ -208,5 +212,25 @@ describe("detectBackendAvailability", () => {
       reason: "claude --help exited with code 1: still starting",
     });
     expect(tracker.getCallCount("claude", claudeHelpArgs)).toBe(2);
+  });
+
+  it("probes codex with sandboxed workspace-write flags and no dangerous bypass", () => {
+    installProbeResponses(baseProbeResponses());
+
+    detectBackendAvailability();
+
+    const codexProbe = mockSpawnSync.mock.calls.find(
+      ([binary, args]) =>
+        binary === "codex" && Array.isArray(args) && args.includes("--skip-git-repo-check"),
+    );
+    expect(codexProbe).toBeDefined();
+    const args = codexProbe?.[1] as string[];
+    expect(args).toContain("--sandbox");
+    expect(args).toContain("workspace-write");
+    expect(args).toContain("--cd");
+    expect(args).toContain(process.cwd());
+    expect(args).toContain("net.allowed=true");
+    expect(args.join(" ")).not.toContain("danger-full-access");
+    expect(args.join(" ")).not.toContain("dangerously-bypass");
   });
 });

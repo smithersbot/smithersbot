@@ -33,6 +33,7 @@ import { WORKER_CONTEXT } from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
+import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "./backend-sandbox.js";
 
 // --- Constants ---
 
@@ -827,27 +828,19 @@ export function buildCliArgs(params: {
 
   if (backend === "codex") {
     const codexAskForApproval = getCodexAskForApprovalPlacement();
+    const sandboxConfig = buildCodexSandboxConfig({
+      workingDir,
+      purpose: "goal-worker",
+      requiresNetwork,
+    });
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
       "exec",
       "--json",
       ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
-      "--sandbox",
-      "workspace-write",
-      "--cd",
-      workingDir,
     ];
 
-    args.push("-c", `net.allowed=${requiresNetwork ? "true" : "false"}`);
-    // codex's workspace-write sandbox protects `.git` as read-only by default
-    // (via PROTECTED_METADATA_PATH_NAMES + bubblewrap `--ro-bind`). Adding an
-    // explicit writable_roots entry for the working dir's `.git` overrides that
-    // default and lets scripts/committer succeed from inside the worker. The
-    // hallucinated `sandbox_workspace_write.allow_git_writes` key is a silent
-    // no-op; codex 0.125.0 has no such option.
-    const gitWritablePath = path.join(workingDir, ".git");
-    const escapedGitPath = gitWritablePath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    args.push("-c", `sandbox_workspace_write.writable_roots=["${escapedGitPath}"]`);
+    appendCodexSandboxArgs(args, sandboxConfig);
 
     if (model) args.push("--model", model);
     args.push(assembledPrompt.promptArg);
