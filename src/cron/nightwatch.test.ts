@@ -31,6 +31,7 @@ vi.mock("../goal/backend-availability.js", () => ({
 import {
   NIGHTWATCH_DEFAULTS,
   NIGHTWATCH_JOB_NAME,
+  NIGHTWATCH_PROMPT_KEY_FILES,
   buildClaudeCondensePrompt,
   buildLessonCondensePrompt,
   buildNightwatchPrompt,
@@ -213,24 +214,24 @@ describe("nightwatch cron", () => {
 
     it("references existing key files and includes current goal architecture files", () => {
       const prompt = buildNightwatchPrompt();
-      const keyFilePaths = prompt
-        .split("\n")
-        .filter((line) => line.startsWith("Key files: "))
-        .flatMap((line) =>
-          line
-            .slice("Key files: ".length)
-            .split(", ")
-            .map((entry) => entry.replace(/\.$/, "")),
-        );
+      const keyFileSections = Object.values(NIGHTWATCH_PROMPT_KEY_FILES);
+      const keyFilePaths = keyFileSections.flatMap((section) => [...section]);
 
       expect(keyFilePaths).toContain("src/goal/claude-code-constants.ts");
       expect(keyFilePaths).toContain("src/goal/llm-client.ts");
+
+      for (const section of keyFileSections) {
+        expect(new Set(section).size, `${section.join(", ")} should not contain duplicates`).toBe(
+          section.length,
+        );
+      }
 
       for (const filePath of keyFilePaths) {
         expect(
           fs.existsSync(path.resolve(process.cwd(), filePath)),
           `${filePath} should exist on disk`,
         ).toBe(true);
+        expect(prompt).toContain(filePath);
       }
     });
   });

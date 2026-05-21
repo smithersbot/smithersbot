@@ -592,6 +592,90 @@ export async function checkGitChanges(
   return { hasChanges: summary.length > 0, summary };
 }
 
+export const NIGHTWATCH_PROMPT_KEY_FILES = {
+  newGoalWorkflow: [
+    "src/goal/planner.ts",
+    "src/goal/agent-executor.ts",
+    "src/goal/cli-worker.ts",
+    "src/goal/plan-autocheck.ts",
+    "src/goal/goal-lock.ts",
+    "src/goal/feedback.ts",
+    "src/goal/backend-availability.ts",
+    "src/goal/types.ts",
+    "src/goal/run-store.ts",
+    "src/goal/backend-types.ts",
+    "src/goal/llm-client.ts",
+    "src/goal/git-checkpoint.ts",
+    "src/commands/goal.ts",
+    "src/commands/goal-answer.ts",
+    "src/commands/goal-detail.ts",
+    "src/commands/goal-list.ts",
+    "src/commands/goal-resume.ts",
+    "src/commands/goal-status.ts",
+    "src/commands/goal-stop.ts",
+    "src/telegram/goal-commands.ts",
+    "src/goal/goal-tools.ts",
+    "src/goal/build-gate.ts",
+    "src/goal/post-execution-review.ts",
+    "src/goal/agent-executor-helpers.ts",
+    "src/goal/cli-planner.ts",
+    "src/goal/scout.ts",
+    "src/goal/lessons.ts",
+    "src/goal/execution-status.ts",
+    "src/goal/manual-tests.ts",
+    "src/goal/cli-runner.ts",
+    "src/goal/blocked.ts",
+    "src/goal/attempt-bundle.ts",
+    "src/goal/task-runner.ts",
+    "src/goal/pi-runner.ts",
+    "src/goal/worker-context.ts",
+    "src/goal/error-patterns.ts",
+    "src/goal/claude-code-env.ts",
+    "src/goal/claude-code-constants.ts",
+    "src/goal/compact-output.ts",
+    "src/goal/format-output.ts",
+    "src/goal/cpm.ts",
+    "src/goal/dag-render.ts",
+    "src/goal/mermaid-render.ts",
+    "src/goal/mermaid-png.ts",
+    "src/goal/errors.ts",
+    "src/goal/goal-schemas.ts",
+    "src/goal/json-repair.ts",
+    "src/goal/plan-order.ts",
+    "src/goal/plan-text.ts",
+    "src/goal/run-journal.ts",
+    "src/goal/cli-process.ts",
+    "src/goal/git-privacy.ts",
+    "src/goal/conventions.ts",
+    "src/goal/cli-output-parsing.ts",
+  ],
+  telegramUxIntegration: [
+    "src/telegram/goal-commands.ts",
+    "src/telegram/bot-native-commands.ts",
+    "src/telegram/nightwatch-commands.ts",
+    "src/telegram/goal-router.ts",
+    "src/telegram/goal-message-index.ts",
+    "src/telegram/goal-sending.ts",
+    "src/telegram/goal-formatting.ts",
+    "src/telegram/goal-blocked-ui.ts",
+  ],
+  securityConcerns: [
+    "src/security/audit.ts",
+    "src/security/audit-extra.ts",
+    "src/security/audit-fs.ts",
+    "src/goal/hard-deny.ts",
+    "src/goal/capability-enforcement.ts",
+    "src/goal/capability-types.ts",
+    "src/security/fix.ts",
+    "src/security/external-content.ts",
+    "src/security/windows-acl.ts",
+  ],
+} as const;
+
+function formatNightwatchKeyFiles(files: readonly string[]): string {
+  return `Key files: ${files.join(", ")}.`;
+}
+
 export function buildNightwatchPrompt(): string {
   return `Nightwatch nightly review for the Moltbot repository.
 
@@ -601,7 +685,7 @@ Perform a thorough analysis of the current codebase focusing on these areas:
 
 ## 1. The /new_goal workflow (end-to-end)
 Trace the full lifecycle: /new_goal command → planner → autocheck loop → approval → executor → workers → completion.
-Key files: src/goal/planner.ts, src/goal/agent-executor.ts, src/goal/cli-worker.ts, src/goal/plan-autocheck.ts, src/goal/goal-lock.ts, src/goal/feedback.ts, src/goal/backend-availability.ts, src/goal/types.ts, src/goal/run-store.ts, src/goal/backend-types.ts, src/goal/llm-client.ts, src/goal/git-checkpoint.ts, src/commands/goal.ts, src/commands/goal-answer.ts, src/commands/goal-detail.ts, src/commands/goal-list.ts, src/commands/goal-resume.ts, src/commands/goal-status.ts, src/commands/goal-stop.ts, src/telegram/goal-commands.ts, src/goal/goal-tools.ts, src/goal/build-gate.ts, src/goal/post-execution-review.ts, src/goal/agent-executor-helpers.ts, src/goal/cli-planner.ts, src/goal/scout.ts, src/goal/lessons.ts, src/goal/execution-status.ts, src/goal/manual-tests.ts, src/goal/cli-runner.ts, src/goal/blocked.ts, src/goal/attempt-bundle.ts, src/goal/task-runner.ts, src/goal/pi-runner.ts, src/goal/worker-context.ts, src/goal/error-patterns.ts, src/goal/claude-code-env.ts, src/goal/claude-code-constants.ts, src/goal/compact-output.ts, src/goal/format-output.ts, src/goal/cpm.ts, src/goal/dag-render.ts, src/goal/mermaid-render.ts, src/goal/mermaid-png.ts, src/goal/errors.ts, src/goal/goal-schemas.ts, src/goal/json-repair.ts, src/goal/plan-order.ts, src/goal/plan-text.ts, src/goal/run-journal.ts, src/goal/cli-process.ts, src/goal/git-privacy.ts, src/goal/conventions.ts, src/goal/cli-output-parsing.ts.
+${formatNightwatchKeyFiles(NIGHTWATCH_PROMPT_KEY_FILES.newGoalWorkflow)}
 Look for:
 - Bugs or logic errors in the happy path
 - Edge cases in blocked/failed/cancelled states and transitions between them
@@ -611,7 +695,7 @@ Look for:
 
 ## 2. Telegram UX integration
 Review how goal commands are wired up in Telegram: command registration, message formatting, button callbacks, thread handling.
-Key files: src/telegram/goal-commands.ts, src/telegram/bot-native-commands.ts, src/telegram/nightwatch-commands.ts, src/telegram/goal-router.ts, src/telegram/goal-message-index.ts, src/telegram/goal-sending.ts, src/telegram/goal-formatting.ts, src/telegram/goal-blocked-ui.ts.
+${formatNightwatchKeyFiles(NIGHTWATCH_PROMPT_KEY_FILES.telegramUxIntegration)}
 Look for:
 - Commands that are missing or not properly registered
 - Inconsistent or confusing user-facing messages
@@ -634,7 +718,7 @@ This is one example pattern — look broadly for any good practice that exists i
 
 ## 5. Security concerns
 Review security posture across goal, gateway, and channel flows.
-Key files: src/security/audit.ts, src/security/audit-extra.ts, src/security/audit-fs.ts, src/goal/hard-deny.ts, src/goal/capability-enforcement.ts, src/goal/capability-types.ts, src/security/fix.ts, src/security/external-content.ts, src/security/windows-acl.ts.
+${formatNightwatchKeyFiles(NIGHTWATCH_PROMPT_KEY_FILES.securityConcerns)}
 Look for:
 - Input validation gaps or unsafe parsing of untrusted input
 - Command or path injection risks in shell/file/process boundaries
