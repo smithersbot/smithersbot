@@ -36,6 +36,7 @@
     "dist/process/**",
     "dist/plugins/**",
     "dist/plugin-sdk/**",
+    "dist/prompts/**",
     "dist/security/**",
     "dist/sessions/**",
     "dist/providers/**",

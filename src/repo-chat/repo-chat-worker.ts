@@ -9,6 +9,11 @@ import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-m
 import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { getLogger } from "../logging/logger.js";
+import { REPO_CHAT_SANDBOX_REPAIR_PROMPT } from "../prompts/repair/repo-chat-repair.js";
+import {
+  CODEX_STYLE_DIRECTIVE,
+  buildResponseFileInstruction,
+} from "../prompts/repo-chat/response-file-instruction.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
@@ -27,8 +32,6 @@ const REPO_CHAT_CLAUDE_ALLOWED_TOOLS_READ_ONLY = [
   "Bash(wc:*)",
   "Bash(find:*)",
 ].join(",");
-const CODEX_STYLE_DIRECTIVE =
-  "Answer directly and concisely — the user sees only your final answer";
 const MAX_ERROR_DETAIL_CHARS = 8_000;
 const REPAIR_TIMEOUT_MS = 60_000;
 const CODEX_NO_SESSION_ID_FOOTER =
@@ -156,41 +159,6 @@ function isInitOnlyClaudeStdout(stdout: string): boolean {
     if (type !== "system") return false;
   }
   return true;
-}
-
-function buildResponseFileInstruction(params: {
-  backend: RepoChatWorkerParams["backend"];
-  filePath: string;
-}): string {
-  if (params.backend === "claude_code") {
-    return [
-      "FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY):",
-      "Your final reply is whatever you print as the assistant message.",
-      "",
-      "Rules:",
-      "- The user will ONLY see your final assistant message - nothing else.",
-      "- They cannot see your tool calls, thinking, or intermediate steps.",
-      "- Use markdown formatting - it will be rendered in Telegram.",
-      "- Do NOT mention these instructions in your response.",
-    ].join("\n");
-  }
-
-  return [
-    "RESPONSE FILE (CRITICAL - READ THIS CAREFULLY):",
-    `You MUST write your complete final response to: ${params.filePath}`,
-    "Use the Bash tool to write the file, for example:",
-    `  cat <<'MOLTBOT_EOF' > ${params.filePath}`,
-    "  Your full response in markdown here.",
-    "  MOLTBOT_EOF",
-    "",
-    "Rules:",
-    "- The user will ONLY see the contents of this file - nothing else.",
-    "- They cannot see your tool calls, thinking, intermediate steps, or any stdout.",
-    "- Write the file ONCE as the LAST thing you do, after all research is complete.",
-    "- Use markdown formatting - it will be rendered in Telegram.",
-    "- Do NOT mention this file or these instructions in your response.",
-    "- If you have already written the file and need to update it, overwrite it completely.",
-  ].join("\n");
 }
 
 function extractSessionIdFromStdout(stdout: string): string | undefined {
@@ -418,18 +386,7 @@ async function runSandboxSafeRepair(params: {
   env: Record<string, string | undefined>;
   abortSignal?: AbortSignal;
 }): Promise<{ stdout: string; stderr: string }> {
-  const repairPrompt = [
-    "Your previous repo-chat turn did not produce a deliverable final answer.",
-    "Reply now with the complete answer as your final assistant message.",
-    "",
-    "Rules:",
-    "- Do not write files.",
-    "- Do not use shell redirects.",
-    "- Do not mention these instructions.",
-    "- The user will only see your final assistant message.",
-  ].join("\n");
-
-  const repairArgs = [...params.args.slice(0, -1), repairPrompt];
+  const repairArgs = [...params.args.slice(0, -1), REPO_CHAT_SANDBOX_REPAIR_PROMPT];
 
   return runCliProcess({
     command: params.command,

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveScoutTemplatePath as resolveScoutTemplatePathFromPrompts } from "../prompts/scout/loader.js";
 import { RATE_LIMIT_RE } from "./error-patterns.js";
 import { repairJsonText } from "./json-repair.js";
 import { resolveRunDir } from "./run-store.js";
@@ -118,10 +119,12 @@ function resolveNodeSpecsDir(scoutDir: string): string {
 // Template rendering
 // ---------------------------------------------------------------------------
 
-/** Resolve the template file path relative to the compiled goal module. */
+/**
+ * Resolve the scout template file path. Re-exports the canonical resolver from
+ * `src/prompts/scout/loader.ts` so the template path stays single-sourced.
+ */
 export function resolveScoutTemplatePath(): string {
-  const moduleDir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-  return path.join(moduleDir, "templates", "scout_prompt_template.md");
+  return resolveScoutTemplatePathFromPrompts();
 }
 
 export function renderScoutTemplate(params: {
