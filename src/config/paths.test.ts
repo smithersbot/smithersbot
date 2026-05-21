@@ -10,6 +10,27 @@ import {
   resolveOAuthPath,
   resolveStateDir,
 } from "./paths.js";
+import {
+  DEFAULT_MANAGED_ROOT_DIRNAME,
+  isPathInsideAgentRoot,
+  isPathInsideManagedRoot,
+  isPathInsidePrivateRoot,
+  resolveAgentGoalHistoryDir,
+  resolveAgentHistoryIndexDir,
+  resolveAgentRepoChatHistoryDir,
+  resolveAgentRoot,
+  resolveManagedRoot,
+  resolvePrivateAuthDir,
+  resolvePrivateConfigDir,
+  resolvePrivateEnvDir,
+  resolvePrivateEnvFile,
+  resolvePrivateRoot,
+  resolvePrivateSessionsDir,
+  resolveScratchDir,
+  resolveScratchRoot,
+  resolveWorkspaceRepoDir,
+  slugifyWorkspaceName,
+} from "./managed-paths.js";
 
 describe("oauth paths", () => {
   it("prefers CLAWDBOT_OAUTH_DIR over CLAWDBOT_STATE_DIR", () => {
@@ -145,6 +166,135 @@ describe("state + config path candidates", () => {
       await fs.rm(root, { recursive: true, force: true });
       vi.resetModules();
     }
+  });
+
+  it("managed root defaults to ~/smithersbot-goals under home", () => {
+    const env = {} as NodeJS.ProcessEnv;
+    const home = "/home/test-user";
+    expect(resolveManagedRoot(env, () => home)).toBe(path.join(home, DEFAULT_MANAGED_ROOT_DIRNAME));
+  });
+
+  it("managed root respects SMITHERSBOT_GOALS_ROOT override", () => {
+    const env = {
+      SMITHERSBOT_GOALS_ROOT: "/custom/managed/root",
+    } as NodeJS.ProcessEnv;
+    expect(resolveManagedRoot(env, () => "/home/test-user")).toBe(
+      path.resolve("/custom/managed/root"),
+    );
+  });
+
+  it("managed root expands ~ prefix in override using os.homedir", () => {
+    const env = {
+      SMITHERSBOT_GOALS_ROOT: "~/custom-goals",
+    } as NodeJS.ProcessEnv;
+    expect(resolveManagedRoot(env, () => "/ignored")).toBe(
+      path.resolve(os.homedir(), "custom-goals"),
+    );
+  });
+
+  it("agent root is <managed>/agent and workspace repo lives inside it", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const agentRoot = resolveAgentRoot(env, home);
+    expect(agentRoot).toBe(path.resolve("/m/root/agent"));
+
+    const repo = resolveWorkspaceRepoDir("smithersbot", env, home);
+    expect(repo).toBe(path.resolve("/m/root/agent/workspaces/smithersbot/repo"));
+    expect(isPathInsideAgentRoot(repo, env, home)).toBe(true);
+    expect(isPathInsidePrivateRoot(repo, env, home)).toBe(false);
+  });
+
+  it("agent history goal/repo-chat/index dirs are inside agent root", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const goalDir = resolveAgentGoalHistoryDir("ws", "goal-abc", env, home);
+    const chatDir = resolveAgentRepoChatHistoryDir("ws", env, home);
+    const indexDir = resolveAgentHistoryIndexDir(env, home);
+    expect(goalDir).toBe(path.resolve("/m/root/agent/history/goals/ws/goal-abc"));
+    expect(chatDir).toBe(path.resolve("/m/root/agent/history/repo-chats/ws"));
+    expect(indexDir).toBe(path.resolve("/m/root/agent/history/index"));
+    expect(isPathInsideAgentRoot(goalDir, env, home)).toBe(true);
+    expect(isPathInsideAgentRoot(chatDir, env, home)).toBe(true);
+    expect(isPathInsideAgentRoot(indexDir, env, home)).toBe(true);
+  });
+
+  it("private env/config/auth/sessions live outside agent root", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const envFile = resolvePrivateEnvFile("smithersbot", env, home);
+    const envDir = resolvePrivateEnvDir("smithersbot", env, home);
+    const cfgDir = resolvePrivateConfigDir(env, home);
+    const authDir = resolvePrivateAuthDir(env, home);
+    const sessDir = resolvePrivateSessionsDir(env, home);
+    expect(envFile).toBe(path.resolve("/m/root/private/env/smithersbot/.env"));
+    expect(envDir).toBe(path.resolve("/m/root/private/env/smithersbot"));
+    expect(cfgDir).toBe(path.resolve("/m/root/private/config"));
+    expect(authDir).toBe(path.resolve("/m/root/private/auth"));
+    expect(sessDir).toBe(path.resolve("/m/root/private/sessions"));
+    for (const p of [envFile, envDir, cfgDir, authDir, sessDir]) {
+      expect(isPathInsidePrivateRoot(p, env, home)).toBe(true);
+      expect(isPathInsideAgentRoot(p, env, home)).toBe(false);
+      expect(isPathInsideManagedRoot(p, env, home)).toBe(true);
+    }
+    expect(resolvePrivateRoot(env, home)).toBe(path.resolve("/m/root/private"));
+  });
+
+  it("scratch dir lives under <root>/scratch and is not inside agent root", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    const scratchRoot = resolveScratchRoot(env, home);
+    const scratchDir = resolveScratchDir("run-1", "task-2", env, home);
+    expect(scratchRoot).toBe(path.resolve("/m/root/scratch"));
+    expect(scratchDir).toBe(path.resolve("/m/root/scratch/run-1/task-2"));
+    expect(isPathInsideAgentRoot(scratchDir, env, home)).toBe(false);
+    expect(isPathInsidePrivateRoot(scratchDir, env, home)).toBe(false);
+    expect(isPathInsideManagedRoot(scratchDir, env, home)).toBe(true);
+  });
+
+  it("slugifyWorkspaceName accepts safe identifiers", () => {
+    expect(slugifyWorkspaceName("smithersbot")).toBe("smithersbot");
+    expect(slugifyWorkspaceName("my-project_2")).toBe("my-project_2");
+    expect(slugifyWorkspaceName("Repo.Name")).toBe("Repo.Name");
+  });
+
+  it("slugifyWorkspaceName replaces unsafe characters with hyphens", () => {
+    expect(slugifyWorkspaceName("my@project!")).toBe("my-project-");
+  });
+
+  it("slugifyWorkspaceName rejects traversal, separators, control chars, and empty input", () => {
+    expect(() => slugifyWorkspaceName("..")).toThrow();
+    expect(() => slugifyWorkspaceName("../etc")).toThrow();
+    expect(() => slugifyWorkspaceName("foo/bar")).toThrow();
+    expect(() => slugifyWorkspaceName("foo\\bar")).toThrow();
+    expect(() => slugifyWorkspaceName("/abs/path")).toThrow();
+    expect(() => slugifyWorkspaceName("")).toThrow();
+    expect(() => slugifyWorkspaceName("   ")).toThrow();
+    expect(() => slugifyWorkspaceName("has space")).toThrow();
+    expect(() => slugifyWorkspaceName("ctrlname")).toThrow();
+    expect(() => slugifyWorkspaceName("null name")).toThrow();
+    expect(() => slugifyWorkspaceName(undefined as unknown as string)).toThrow();
+    expect(() => slugifyWorkspaceName(42 as unknown as string)).toThrow();
+  });
+
+  it("isPathInsideAgentRoot rejects paths outside the agent root", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    expect(isPathInsideAgentRoot("/m/root/agent", env, home)).toBe(true);
+    expect(isPathInsideAgentRoot("/m/root/agent/workspaces/foo", env, home)).toBe(true);
+    expect(isPathInsideAgentRoot("/m/root/private/env/foo/.env", env, home)).toBe(false);
+    expect(isPathInsideAgentRoot("/etc/passwd", env, home)).toBe(false);
+    expect(isPathInsideAgentRoot("/m/root", env, home)).toBe(false);
+    expect(isPathInsideAgentRoot("", env, home)).toBe(false);
+  });
+
+  it("isPathInsidePrivateRoot rejects paths outside the private root", () => {
+    const env = { SMITHERSBOT_GOALS_ROOT: "/m/root" } as NodeJS.ProcessEnv;
+    const home = () => "/home/test";
+    expect(isPathInsidePrivateRoot("/m/root/private", env, home)).toBe(true);
+    expect(isPathInsidePrivateRoot("/m/root/private/env/x/.env", env, home)).toBe(true);
+    expect(isPathInsidePrivateRoot("/m/root/agent/workspaces/x/repo", env, home)).toBe(false);
+    expect(isPathInsidePrivateRoot("/m/root/scratch/r/t", env, home)).toBe(false);
+    expect(isPathInsidePrivateRoot("/var/tmp/private", env, home)).toBe(false);
   });
 
   it("respects state dir overrides when config is missing", async () => {
