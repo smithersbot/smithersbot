@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadRun, saveRun } from "../goal/run-store.js";
 import { resetMessageIndex } from "./goal-message-index.js";
+import { buildBlockedCaption, describeBlockedStep } from "./goal-blocked-ui.js";
 import type { SerializedRun } from "../goal/types.js";
 
 let testGoalsDir: string;
@@ -228,6 +229,21 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
 }
 
 describe("goal-commands telegram adapter", () => {
+  it("does not render technical worker failures as needs input", () => {
+    const step = {
+      id: "classify",
+      description: "Classify interruption",
+      shortSummary: "Classify interruption",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "process_lost",
+    } as const;
+
+    expect(describeBlockedStep(step)).toContain("worker process lost/interrupted");
+    expect(describeBlockedStep(step)).not.toContain("needs input");
+    expect(buildBlockedCaption([step])).not.toContain("needs input");
+  });
+
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-test-"));
     vi.clearAllMocks();

@@ -148,7 +148,7 @@ function mapWorkerErrorTypeToBlockedReason(errorType: string): PlanStep["blocked
   if (normalized === "out_of_credits") return "out_of_credits";
   if (normalized === "auth") return "auth";
   if (normalized === "network") return "network";
-  if (normalized === "missing_result") return "error";
+  if (normalized === "missing_result") return "process_lost";
   if (normalized === "invalid_result") return "error";
   if (normalized === "process_error") return "error";
   if (normalized === "unknown") return "error";

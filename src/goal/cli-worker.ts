@@ -537,8 +537,12 @@ export async function executeTaskWithCliWorker(
         "Parsed Claude Code JSONL stream output.",
       );
     } else if (resultRead.error?.kind === "missing") {
+      const missingResultMessage =
+        exitCode == null && signal == null
+          ? "Worker process was lost/interrupted before producing worker_result.json."
+          : `Worker did not produce result artifact (process exited code ${exitCode ?? "unknown"}).`;
       output = makeFailureOutput(
-        `Worker did not produce result artifact (process exited code ${exitCode ?? "unknown"}).`,
+        missingResultMessage,
         "missing_result",
         "Retry the task and ensure the worker writes worker_result.json.",
         "Looked for worker_result.json after process exit.",
@@ -1152,6 +1156,14 @@ function classifyAttemptOutcome(
   }
   if (output.status === "failed" && output.errorType === "rate_limit") {
     return "rate_limit";
+  }
+  if (
+    output.status === "failed" &&
+    output.errorType === "missing_result" &&
+    exitCode == null &&
+    signal == null
+  ) {
+    return "process_lost";
   }
   if (timedOut) return "timeout";
   if (

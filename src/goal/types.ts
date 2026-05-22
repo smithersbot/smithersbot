@@ -79,6 +79,7 @@ export type PlanStep = {
     | "task_failed"
     | "rate_limit"
     | "usage_limit"
+    | "process_lost"
     | "out_of_credits"
     | "auth"
     | "network"

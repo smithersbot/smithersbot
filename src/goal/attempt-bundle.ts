@@ -13,6 +13,7 @@ export type AttemptOutcome =
   | "ralph"
   | "timeout"
   | "crash"
+  | "process_lost"
   | "rate_limit";
 
 export type AttemptBundle = {

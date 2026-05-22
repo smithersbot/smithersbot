@@ -4,6 +4,10 @@ function buildStuckPrompt(step: PlanStep): string {
   return `Step ${step.id} stuck at in_progress — needs re-execution`;
 }
 
+function isUserInputBlocked(step: PlanStep): boolean {
+  return step.blockedReason === "user_input" || step.blockedReason == null;
+}
+
 export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null {
   const blocked = steps.filter((s) => s.status === "blocked");
   const stuckInProgress = steps.filter((s) => s.status === "in_progress");
@@ -15,10 +19,13 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
       const task = blocked[0]!;
       const prompt =
         task.blockedQuestion ?? `Task ${task.id} is blocked (${task.blockedReason ?? "unknown"}).`;
+      const requiredInputKey = isUserInputBlocked(task)
+        ? `task:${task.id}:input`
+        : "resume_execution";
       return {
         blockedAt: "execution",
         prompt,
-        requiredInputKey: `task:${task.id}:input`,
+        requiredInputKey,
         stepId: task.id,
       };
     }
@@ -30,7 +37,9 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
     return {
       blockedAt: "execution",
       prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
-      requiredInputKey: `tasks:${blocked.map((t) => t.id).join(",")}:input`,
+      requiredInputKey: blocked.every(isUserInputBlocked)
+        ? `tasks:${blocked.map((t) => t.id).join(",")}:input`
+        : "resume_execution",
     };
   }
 

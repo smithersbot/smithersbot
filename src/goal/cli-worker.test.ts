@@ -1016,7 +1016,7 @@ describe("cli-worker", () => {
       });
 
       const result = await executeTaskWithCliWorker({
-        backend: "codex",
+        backend: "claude_code",
         step,
         plan,
         goal: "Verify normal worker exit path",
@@ -1272,7 +1272,7 @@ describe("cli-worker", () => {
         });
 
       const result = await executeTaskWithCliWorker({
-        backend: "codex",
+        backend: "claude_code",
         step,
         plan,
         goal: "Repair invalid worker output",
@@ -1381,6 +1381,51 @@ describe("cli-worker", () => {
             typeof message === "string" && message.includes("attempting result-file repair"),
         ),
       ).toBe(false);
+    });
+
+    it("classifies missing worker_result.json with no exit code or signal as process loss", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-process-lost-"));
+      const runId = "run-process-lost";
+      const stepId = "step-process-lost";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "",
+        timedOut: false,
+        exitCode: null,
+        signal: null,
+        durationMs: 22,
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "claude_code",
+        step,
+        plan,
+        goal: "Verify missing artifact process loss classification",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+      });
+
+      expect(result.output.status).toBe("failed");
+      expect(result.output.errorType).toBe("missing_result");
+      if (result.output.status === "failed") {
+        expect(result.output.reason).toContain("lost/interrupted");
+      }
+      expect(writeAttemptBundleMock).toHaveBeenCalledWith(
+        workerDir,
+        expect.objectContaining({
+          outcome: "process_lost",
+          errorClassification: "missing_result",
+        }),
+      );
     });
   });
 

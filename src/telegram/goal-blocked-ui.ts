@@ -24,8 +24,34 @@ export function buildBlockedCaption(steps: PlanStep[]): string {
 
   const lines: string[] = [];
   for (const step of blocked.slice(0, 3)) {
-    lines.push(`• Step ${step.id}: ${step.blockedQuestion ?? step.blockedReason ?? "needs input"}`);
+    lines.push(`• Step ${step.id}: ${describeBlockedStep(step)}`);
   }
   if (blocked.length > 3) lines.push(`  \u2026and ${blocked.length - 3} more`);
   return lines.join("\n");
+}
+
+export function describeBlockedStep(step: PlanStep): string {
+  if (step.blockedQuestion?.trim()) return step.blockedQuestion;
+  switch (step.blockedReason) {
+    case "user_input":
+    case undefined:
+      return "needs input";
+    case "process_lost":
+      return "worker process lost/interrupted; resume needed";
+    case "timeout":
+      return "worker timed out; resume needed";
+    case "rate_limit":
+    case "usage_limit":
+      return "worker hit a provider limit; resume needed";
+    case "network":
+      return "worker hit a network error; resume needed";
+    case "auth":
+      return "worker authentication failed";
+    case "out_of_credits":
+      return "worker is out of credits";
+    case "task_failed":
+      return "worker failed";
+    default:
+      return "worker failed/interrupted; resume needed";
+  }
 }

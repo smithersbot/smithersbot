@@ -438,9 +438,14 @@ export async function sendBlockedNotification(params: {
   const replyMarkup = blockedDetail.stepId
     ? buildTaskBlockedInlineKeyboard(runIdPrefix)
     : buildGoalBlockedInlineKeyboard(runIdPrefix);
+  const isUserInputBlock = blockedDetail.requiredInputKey !== "resume_execution";
   const title = blockedDetail.stepId
-    ? `**TASK BLOCKED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs input`
-    : `**GOAL BLOCKED** (${runIdPrefix}): no runnable steps - waiting for answers.`;
+    ? isUserInputBlock
+      ? `**TASK BLOCKED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs input`
+      : `**TASK INTERRUPTED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs resume`
+    : isUserInputBlock
+      ? `**GOAL BLOCKED** (${runIdPrefix}): no runnable steps - waiting for answers.`
+      : `**GOAL INTERRUPTED** (${runIdPrefix}): worker failed/interrupted - resume needed.`;
   const caption = blockedCaption
     ? `${title}\n\n${blockedCaption}`
     : `${title}\n\n${blockedDetail.prompt}`;

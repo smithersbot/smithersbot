@@ -768,6 +768,106 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(executedCliBackends).toEqual(["claude_code", "codex"]);
   });
 
+  it("surfaces Codex usage limit plus Claude missing result as technical resume-needed block", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockImplementation(async () => {
+      if (mockCliExecute.mock.calls.length === 1) {
+        appendAttemptBundle({
+          attemptNumber: 1,
+          backend: "codex",
+          outcome: "rate_limit",
+          errorClassification: "usage_limit",
+          durationMs: 10,
+        });
+        return {
+          status: "blocked",
+          question: "Codex hit usage limit",
+          blockedReason: "usage_limit",
+          turnsUsed: 1,
+        };
+      }
+
+      appendAttemptBundle({
+        attemptNumber: 2,
+        backend: "claude_code",
+        outcome: "process_lost",
+        errorClassification: "missing_result",
+        durationMs: 10,
+      });
+      return {
+        status: "blocked",
+        question: "Claude Code fallback exited without result artifact",
+        blockedReason: "process_lost",
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-codex-usage-claude-missing",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("process_lost");
+    expect(step.blockedQuestion).toContain("Claude Code fallback exited without result artifact");
+    expect(step.blockedQuestion).toContain("Attempt 1 [codex]: rate_limit (usage_limit)");
+    expect(step.blockedQuestion).toContain(
+      "Attempt 2 [claude_code]: process_lost (missing_result)",
+    );
+    expect(step.blockedQuestion).not.toContain("needs input");
+    expect(session.blocked?.requiredInputKey).toBe("resume_execution");
+    expect(session.blocked?.prompt).not.toContain("needs input");
+    expect(executedCliBackends).toEqual(["codex", "claude_code"]);
+  });
+
+  it("resumes a technical error-blocked step before unrelated pending steps", async () => {
+    const pendingEarlierStep = makeStep({
+      id: "1",
+      backend: "codex",
+      description: "Unrelated later work",
+    });
+    const blockedStep = makeStep({
+      id: "2",
+      backend: "codex",
+      description: "Retry interrupted work",
+      status: "blocked",
+      blockedReason: "process_lost",
+      blockedQuestion: "Worker process lost; resume needed",
+    });
+    const plan = makePlan([pendingEarlierStep, blockedStep]);
+    const session = makeSession(plan);
+    const executedTaskIds: string[] = [];
+
+    mockCliExecute.mockImplementation(async (context) => {
+      executedTaskIds.push(context.task.id);
+      return {
+        status: "complete",
+        summary: `Done ${context.task.id}`,
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-resume-technical-first",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex"],
+      retryConfig: { maxAttempts: 1, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(executedTaskIds).toEqual(["2", "1"]);
+  });
+
   it("does not fallback outside an explicit backend override", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);

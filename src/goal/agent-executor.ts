@@ -130,6 +130,17 @@ function formatNoFallbackBlockedMessage(
   return `${backend} hit a ${limitLabel}. No fallback backend was used because ${fallbackReason}. ${originalQuestion}`;
 }
 
+function formatTechnicalBlockedQuestion(message: string, attempts: AttemptBundle[]): string {
+  const trimmedMessage = message.trim() || "Worker failed/interrupted; resume needed.";
+  if (trimmedMessage.includes("Attempt history:") || attempts.length === 0) return trimmedMessage;
+
+  const attemptLines = attempts.slice(-3).map((attempt) => {
+    const classification = attempt.errorClassification ? ` (${attempt.errorClassification})` : "";
+    return `- Attempt ${attempt.attemptNumber} [${attempt.backend}]: ${attempt.outcome}${classification}`;
+  });
+  return `${trimmedMessage}\n\nAttempt history:\n${attemptLines.join("\n")}`;
+}
+
 function isAnthropicPlannerDegraded(
   reason: string | undefined,
 ): reason is "anthropic_rate_limit" | "anthropic_usage_limit" {
@@ -382,7 +393,16 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const runnable = findRunnableTasks(orderedSteps, session.answers, retryableBlockedIds);
     if (runnable.length === 0) break;
 
-    const task = pickNextTask(runnable, scores, orderIndex, successors, lastExecutedId);
+    const retryableBlockedRunnable = runnable.filter(
+      (step) => step.status === "blocked" && retryableBlockedIds.has(step.id),
+    );
+    const task = pickNextTask(
+      retryableBlockedRunnable.length > 0 ? retryableBlockedRunnable : runnable,
+      scores,
+      orderIndex,
+      successors,
+      lastExecutedId,
+    );
 
     let resumeAnswer: string | undefined;
     let resumeQuestion: string | undefined;
@@ -788,6 +808,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       });
       lastExecutedId = task.id;
       continue;
+    }
+
+    if (task.status === "blocked" && task.blockedReason !== "user_input") {
+      task.blockedQuestion = formatTechnicalBlockedQuestion(
+        task.blockedQuestion ?? "Worker failed/interrupted; resume needed.",
+        loadAttemptBundles(workerDir),
+      );
     }
 
     recordTaskResult(session, task, taskStartMs, onTaskUpdate);
