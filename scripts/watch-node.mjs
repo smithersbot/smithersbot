@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
+import { resolveTypeScriptCompiler } from "./ts-compiler.mjs";
 
 const args = process.argv.slice(2);
 const env = { ...process.env };
 const cwd = process.cwd();
-const compiler = env.CLAWDBOT_TS_COMPILER === "tsc" ? "tsc" : "tsgo";
+const compilerResolution = resolveTypeScriptCompiler({ cwd, env });
+if (!compilerResolution.ok) {
+  process.stderr.write(`[smithersbot] ${compilerResolution.message}\n`);
+  process.exit(1);
+}
+const compiler = compilerResolution.compiler;
 const projectArgs = ["--project", "tsconfig.json"];
 
 const initialBuild = spawnSync("pnpm", ["exec", compiler, ...projectArgs], {

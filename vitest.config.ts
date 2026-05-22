@@ -1,15 +1,22 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
+const vitestTmpDir = path.join(repoRoot, ".tmp", "vitest");
+fs.mkdirSync(vitestTmpDir, { recursive: true });
+process.env.TMPDIR = vitestTmpDir;
+process.env.TMP = vitestTmpDir;
+process.env.TEMP = vitestTmpDir;
 const isCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
 const isWindows = process.platform === "win32";
 const localWorkers = Math.max(4, Math.min(16, os.cpus().length));
 const ciWorkers = isWindows ? 2 : 3;
 
 export default defineConfig({
+  envFile: false,
   resolve: {
     alias: {
       "clawdbot/plugin-sdk": path.join(repoRoot, "src", "plugin-sdk", "index.ts"),
@@ -17,6 +24,10 @@ export default defineConfig({
     },
   },
   test: {
+    experimental: {
+      fsModuleCache: true,
+      fsModuleCachePath: path.join(repoRoot, "node_modules", ".experimental-vitest-cache"),
+    },
     testTimeout: 120_000,
     hookTimeout: isWindows ? 180_000 : 120_000,
     pool: "forks",
