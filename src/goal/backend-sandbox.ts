@@ -749,7 +749,62 @@ function escapeShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function classifyClaudeProbeFailure(output: string): ClaudeCodeNativeSandboxStatus {
+/**
+ * Markers emitted (one per line) by the Claude sandbox deny/allow probe command.
+ * Each is printed as `SMITHERSBOT_CLAUDE_<marker>=<exit-code>`; deny markers must
+ * report a non-zero (blocked) exit, allow markers a zero (succeeded) exit.
+ */
+const CLAUDE_PROBE_MARKERS = [
+  "readme",
+  "env_example",
+  "env_local",
+  "private_env",
+  "symlink_escape",
+] as const;
+type ClaudeProbeMarker = (typeof CLAUDE_PROBE_MARKERS)[number];
+type ClaudeProbeMatrix = Partial<Record<ClaudeProbeMarker, number>>;
+
+/** Managed private env path for {@link workingDir}'s workspace (never read here). */
+function resolveWorkspacePrivateEnvPath(workingDir: string): string {
+  return path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env");
+}
+
+/**
+ * Build the single deny/allow probe command run inside Claude Code's native
+ * sandbox via the Bash tool. Every read is redirected to /dev/null, so only
+ * `<marker>=<exit-code>` booleans are emitted — never file contents. Deny reads
+ * (managed private env, repo .env.local, symlink-escape to the private env) must
+ * fail; allow reads (README.md, .env.example) must succeed.
+ */
+export function buildClaudeSandboxProbeCommand(workingDir: string): string {
+  const privateEnvPath = resolveWorkspacePrivateEnvPath(workingDir);
+  const linkName = ".smithersbot-claude-env-link";
+  return [
+    "set +e",
+    "cat README.md >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_readme=$?",
+    "cat .env.example >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_env_example=$?",
+    "cat .env.local >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_env_local=$?",
+    `cat ${escapeShellArg(privateEnvPath)} >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_private_env=$?`,
+    `rm -f ${linkName}`,
+    `ln -s ${escapeShellArg(privateEnvPath)} ${linkName} 2>/dev/null`,
+    `cat ${linkName} >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_symlink_escape=$?`,
+    `rm -f ${linkName}`,
+  ].join("; ");
+}
+
+function parseClaudeProbeMatrix(output: string): ClaudeProbeMatrix {
+  const matrix: ClaudeProbeMatrix = {};
+  for (const marker of CLAUDE_PROBE_MARKERS) {
+    const match = output.match(new RegExp(`SMITHERSBOT_CLAUDE_${marker}=(\\d+)`));
+    if (match) matrix[marker] = Number(match[1]);
+  }
+  return matrix;
+}
+
+function classifyClaudeProbeFailure(
+  output: string,
+  matrix?: ClaudeProbeMatrix,
+): ClaudeCodeNativeSandboxStatus {
   if (output.includes(KNOWN_CLAUDE_LIBX32_BWRAP_ERROR)) {
     return {
       supported: false,
@@ -762,10 +817,37 @@ function classifyClaudeProbeFailure(output: string): ClaudeCodeNativeSandboxStat
         "claude update && claude --version && SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES=1 pnpm vitest run src/goal/backend-sandbox.test.ts",
     };
   }
+  if (/not logged in|please run \/login|run \/login|invalid api key/i.test(output)) {
+    return {
+      supported: false,
+      blocker: "operator-action-required",
+      reason:
+        "Claude Code is not logged in, so the native sandbox deny/allow live probe could not run.",
+      details:
+        "Authenticate Claude Code in an operator-controlled context; the worker cannot supply auth because ~/.claude/** is hard-denied.",
+      operatorCommand:
+        "claude /login && SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES=1 node --import tsx scripts/prove-claude-sandbox.ts",
+    };
+  }
+  if (
+    matrix &&
+    (matrix.env_local === 0 || matrix.private_env === 0 || matrix.symlink_escape === 0)
+  ) {
+    return {
+      supported: false,
+      blocker: "operator-action-required",
+      reason:
+        "Claude Code ran but did not honor the fail-closed sandbox deny rules: a protected read succeeded.",
+      details:
+        "A managed private env / repo .env.local / symlink-escape read was not blocked inside the sandbox; the generated settings were not enforced.",
+      operatorCommand:
+        "claude --version && SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES=1 node --import tsx scripts/prove-claude-sandbox.ts",
+    };
+  }
   return {
     supported: false,
     blocker: "live-probe-failed",
-    reason: "Claude Code native sandbox live probe did not complete successfully.",
+    reason: "Claude Code native sandbox deny/allow live probe did not complete successfully.",
     details: output,
   };
 }
@@ -829,6 +911,7 @@ export function claudeCodeNativeSandboxStatus(
     };
   }
 
+  const probeCommand = buildClaudeSandboxProbeCommand(workingDir);
   const result = spawnSync(
     "claude",
     [
@@ -841,25 +924,33 @@ export function claudeCodeNativeSandboxStatus(
       "--permission-mode",
       "default",
       "--allowedTools",
-      "Bash(echo *)",
+      "Bash",
     ],
     {
       cwd: workingDir,
-      input: "Use Bash to run: echo smithersbot-claude-sandbox-ok",
+      input: `Use the Bash tool to run exactly this one command, then reply with only its raw stdout:\n\n${probeCommand}`,
       encoding: "utf8",
-      timeout: 45000,
+      timeout: 60000,
       stdio: ["pipe", "pipe", "pipe"],
     },
   );
   const output = formatSpawnOutput(result);
-  if (result.status === 0 && output.includes("smithersbot-claude-sandbox-ok")) {
+  const matrix = parseClaudeProbeMatrix(output);
+  // Fail closed: supported only when EVERY deny read is blocked (exit != 0) and
+  // EVERY allow read succeeds (exit 0). Missing markers leave the value undefined,
+  // which never equals 0/1, so an incomplete probe is treated as unproven.
+  const denyBlocked =
+    matrix.env_local === 1 && matrix.private_env === 1 && matrix.symlink_escape === 1;
+  const allowSucceeded = matrix.readme === 0 && matrix.env_example === 0;
+  if (result.status === 0 && denyBlocked && allowSucceeded) {
     return {
       supported: true,
       claudePath,
       version: commandVersion("claude"),
       settingsPath: settingsConfig.settingsPath,
-      summary: "Claude Code native sandbox started with fail-closed settings.",
+      summary:
+        "Claude Code native sandbox blocked managed private env, repo .env.local, and symlink-escape reads while allowing README.md and .env.example.",
     };
   }
-  return classifyClaudeProbeFailure(output);
+  return classifyClaudeProbeFailure(output, matrix);
 }

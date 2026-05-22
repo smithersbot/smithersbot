@@ -12,6 +12,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import {
+  buildClaudeSandboxProbeCommand,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
   codexNativeSandboxStatus,
@@ -622,11 +623,20 @@ describe("Claude Code native sandbox settings", () => {
     expect(mockSpawnSync).not.toHaveBeenCalled();
   });
 
-  it("reports supported only after the live startup probe succeeds", () => {
+  const CLAUDE_MATRIX_PASS_STDOUT = [
+    "SMITHERSBOT_CLAUDE_readme=0",
+    "SMITHERSBOT_CLAUDE_env_example=0",
+    "SMITHERSBOT_CLAUDE_env_local=1",
+    "SMITHERSBOT_CLAUDE_private_env=1",
+    "SMITHERSBOT_CLAUDE_symlink_escape=1",
+    "",
+  ].join("\n");
+
+  it("reports supported only after the live deny/allow matrix passes", () => {
     mockCommandPaths();
     mockSpawnSync.mockReturnValue({
       status: 0,
-      stdout: "smithersbot-claude-sandbox-ok\n",
+      stdout: CLAUDE_MATRIX_PASS_STDOUT,
       stderr: "",
     });
 
@@ -641,12 +651,134 @@ describe("Claude Code native sandbox settings", () => {
     if (status.supported) {
       expect(status.version).toBe("2.1.143 (Claude Code)");
       expect(status.settingsPath).toContain("smithersbot-claude-live-ok");
+      expect(status.summary).toContain("blocked managed private env");
     }
+    // The live probe drives Claude through the generated fail-closed settings with
+    // the Bash tool and never via a danger-skip-permissions flag.
     expect(mockSpawnSync).toHaveBeenCalledWith(
       "claude",
-      expect.arrayContaining(["--settings", expect.stringContaining("settings.json")]),
+      expect.arrayContaining([
+        "--settings",
+        expect.stringContaining("settings.json"),
+        "--allowedTools",
+        "Bash",
+      ]),
       expect.objectContaining({ cwd: process.cwd() }),
     );
+    const claudeArgs = mockSpawnSync.mock.calls[0][1] as string[];
+    expect(claudeArgs.join(" ")).not.toContain("dangerously-skip-permissions");
+  });
+
+  it("fails closed (unsupported) when a denied read succeeds inside the sandbox", () => {
+    mockCommandPaths();
+    // env_local read succeeded (=0) — a deny was not honored. Must never report
+    // supported; classified as an operator-action security blocker.
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: [
+        "SMITHERSBOT_CLAUDE_readme=0",
+        "SMITHERSBOT_CLAUDE_env_example=0",
+        "SMITHERSBOT_CLAUDE_env_local=0",
+        "SMITHERSBOT_CLAUDE_private_env=1",
+        "SMITHERSBOT_CLAUDE_symlink_escape=1",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const status = claudeCodeNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "deny-leak",
+      settingsRoot: os.tmpdir(),
+      env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
+    });
+
+    expect(status.supported).toBe(false);
+    if (!status.supported) {
+      expect(status.blocker).toBe("operator-action-required");
+      expect(status.reason).toContain("did not honor");
+    }
+  });
+
+  it("reports unsupported when an allowed read fails inside the sandbox", () => {
+    mockCommandPaths();
+    // README.md read failed (=1) even though every deny blocked — the allow side of
+    // the matrix did not pass, so the probe is not proven.
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: [
+        "SMITHERSBOT_CLAUDE_readme=1",
+        "SMITHERSBOT_CLAUDE_env_example=0",
+        "SMITHERSBOT_CLAUDE_env_local=1",
+        "SMITHERSBOT_CLAUDE_private_env=1",
+        "SMITHERSBOT_CLAUDE_symlink_escape=1",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const status = claudeCodeNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "allow-fail",
+      settingsRoot: os.tmpdir(),
+      env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
+    });
+
+    expect(status.supported).toBe(false);
+    if (!status.supported) {
+      expect(status.blocker).toBe("live-probe-failed");
+    }
+  });
+
+  it("classifies a not-logged-in / settings-not-honored failure as an operator blocker", () => {
+    mockCommandPaths();
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: "",
+      stderr: "Not logged in · Please run /login\n",
+    });
+
+    const status = claudeCodeNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "not-logged-in",
+      settingsRoot: os.tmpdir(),
+      env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
+    });
+
+    expect(status.supported).toBe(false);
+    if (!status.supported) {
+      expect(status.blocker).toBe("operator-action-required");
+      expect(status.reason).toContain("not logged in");
+      expect(status.operatorCommand).toContain("claude /login");
+    }
+  });
+
+  it("builds a deny/allow probe command that prints booleans only and never file contents", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      const command = buildClaudeSandboxProbeCommand(workingDir);
+
+      const privateEnvPath = path.join(managedRoot, "private", "env", "smithersbot", ".env");
+      // Deny + allow checks present; every read redirected to /dev/null (no contents).
+      expect(command).toContain("cat README.md >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_readme=$?");
+      expect(command).toContain("SMITHERSBOT_CLAUDE_env_example=$?");
+      expect(command).toContain("SMITHERSBOT_CLAUDE_env_local=$?");
+      expect(command).toContain("SMITHERSBOT_CLAUDE_private_env=$?");
+      expect(command).toContain("SMITHERSBOT_CLAUDE_symlink_escape=$?");
+      expect(command).toContain(privateEnvPath);
+      // The managed private env is referenced for deny + symlink-escape checks only;
+      // it is always piped to /dev/null, never printed.
+      expect(command).not.toMatch(new RegExp(`cat '${privateEnvPath}'(?! >/dev/null)`));
+      // Symlink-escape probe cleans up the link it creates.
+      expect(command).toContain("rm -f .smithersbot-claude-env-link");
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
   });
 
   it("classifies the known bwrap /newroot/libx32 startup failure with an operator command", () => {
