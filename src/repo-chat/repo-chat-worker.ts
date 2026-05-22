@@ -65,7 +65,6 @@ export function buildClaudeRepoChatArgs(params: {
     workingDir: params.workingDir ?? process.cwd(),
     runId: params.runId ?? "repo-chat",
     purpose: "repo-chat",
-    settingsRoot: process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT,
   });
   const baseArgs = [
     "-p",

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildClaudeCodeEnv, shouldStripCredentialKey } from "./claude-code-env.js";
+import {
+  buildClaudeCodeEnv,
+  shouldStripCredentialKey,
+  stripClaudeSubscriptionAuthEnv,
+} from "./claude-code-env.js";
 
 const PROVIDER_KEYS_TO_STRIP = [
   "OPENAI_API_KEY",
@@ -29,6 +33,9 @@ const PROVIDER_KEYS_TO_STRIP = [
 
 const TEST_KEYS = [
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY_OLD",
+  "ANTHROPIC_BASE_URL",
   ...PROVIDER_KEYS_TO_STRIP,
   "DATABASE_URL",
   "GH_TOKEN",
@@ -60,6 +67,9 @@ beforeEach(() => {
   );
 
   process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
+  process.env.ANTHROPIC_AUTH_TOKEN = "anthropic-auth-token";
+  process.env.ANTHROPIC_API_KEY_OLD = "anthropic-old-key";
+  process.env.ANTHROPIC_BASE_URL = "https://anthropic-proxy.invalid";
   for (const key of PROVIDER_KEYS_TO_STRIP) {
     process.env[key] = `${key.toLowerCase()}-test-value`;
   }
@@ -88,9 +98,12 @@ afterEach(() => {
 });
 
 describe("buildClaudeCodeEnv", () => {
-  it("strips ANTHROPIC_API_KEY in subscription mode", () => {
+  it("strips Claude API-key style env in subscription mode", () => {
     const env = buildClaudeCodeEnv("subscription");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
   it.each(["subscription", "api_key"] as const)(
@@ -136,6 +149,21 @@ describe("buildClaudeCodeEnv", () => {
   it("preserves ANTHROPIC_API_KEY in api_key mode", () => {
     const env = buildClaudeCodeEnv("api_key");
     expect(env.ANTHROPIC_API_KEY).toBe("anthropic-test-key");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("anthropic-auth-token");
+    expect(env.ANTHROPIC_API_KEY_OLD).toBe("anthropic-old-key");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://anthropic-proxy.invalid");
+  });
+
+  it("exposes a reusable subscription env scrubber for proof and launch paths", () => {
+    const env = stripClaudeSubscriptionAuthEnv({
+      ANTHROPIC_API_KEY: "placeholder-api-key",
+      ANTHROPIC_AUTH_TOKEN: "placeholder-auth-token",
+      ANTHROPIC_API_KEY_OLD: "placeholder-old-api-key",
+      ANTHROPIC_BASE_URL: "https://placeholder.invalid",
+      PATH: "/usr/bin",
+    });
+
+    expect(env).toEqual({ PATH: "/usr/bin" });
   });
 
   it.each(["subscription", "api_key"] as const)(

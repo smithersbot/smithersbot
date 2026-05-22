@@ -62,7 +62,9 @@ function main(): number {
     emit("claude-live-sandbox: supported");
     emit(`claude-version: ${status.version}`);
     emit(`settings-path: ${status.settingsPath}`);
-    emit("private-env-blocked=true repo-env-local-blocked=true symlink-escape-blocked=true");
+    emit(
+      "private-env-blocked=true repo-env-local-blocked=true symlink-escape-blocked=true claude-auth-path-blocked=true",
+    );
     emit("readme-allowed=true env-example-allowed=true");
     emit("exit: 0");
     return 0;

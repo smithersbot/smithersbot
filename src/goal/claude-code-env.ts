@@ -10,6 +10,8 @@ export const AUTH_KEYS_TO_STRIP = [
   "ANTHROPIC_API_KEY_OLD",
 ];
 
+export const SUBSCRIPTION_AUTH_ENV_KEYS_TO_STRIP = [...AUTH_KEYS_TO_STRIP, "ANTHROPIC_BASE_URL"];
+
 export const CREDENTIAL_KEYS_TO_STRIP = [
   "DATABASE_URL",
   "DB_PASSWORD",
@@ -50,13 +52,14 @@ export const CREDENTIAL_KEYS_TO_STRIP = [
 ];
 
 export function shouldStripCredentialKey(key: string): boolean {
+  if (AUTH_KEYS_TO_STRIP.includes(key)) return false;
   if (CREDENTIAL_KEYS_TO_STRIP.includes(key)) return true;
   if (key.startsWith("OP_SESSION_")) return true;
   if (key.includes("OAUTH")) return true;
   if (key.endsWith("_TOKEN")) return true;
   if (key.endsWith("_SECRET")) return true;
   if (key.endsWith("_PRIVATE_KEY")) return true;
-  if (!AUTH_KEYS_TO_STRIP.includes(key) && key.endsWith("_API_KEY")) return true;
+  if (key.endsWith("_API_KEY")) return true;
   return false;
 }
 
@@ -76,18 +79,27 @@ export function buildCredentialStrippedEnv(
   return env;
 }
 
+export function stripClaudeSubscriptionAuthEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const next = { ...env };
+  for (const key of SUBSCRIPTION_AUTH_ENV_KEYS_TO_STRIP) {
+    delete next[key];
+  }
+  return next;
+}
+
 /**
  * Build a process env for a Claude Code subprocess.
  * In "subscription" mode, API key env vars are stripped so claude uses its own subscription auth.
  */
 export function buildClaudeCodeEnv(
   authMode: ClaudeCodeAuthMode,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | undefined> {
-  const env = buildCredentialStrippedEnv(process.env);
+  const env = buildCredentialStrippedEnv(sourceEnv);
   if (authMode === "subscription") {
-    for (const key of AUTH_KEYS_TO_STRIP) {
-      delete env[key];
-    }
+    return stripClaudeSubscriptionAuthEnv(env);
   }
   return env;
 }
@@ -96,7 +108,7 @@ export function buildClaudeCodeEnv(
 export function writeAuthModeArtifact(dir: string, authMode: ClaudeCodeAuthMode): void {
   const detail =
     authMode === "subscription"
-      ? `auth_mode=subscription (${AUTH_KEYS_TO_STRIP.join(", ")} + credential env keys stripped)`
+      ? `auth_mode=subscription (${SUBSCRIPTION_AUTH_ENV_KEYS_TO_STRIP.join(", ")} + credential env keys stripped)`
       : "auth_mode=api_key (credential env keys stripped)";
   try {
     fs.writeFileSync(path.join(dir, "auth_mode.txt"), detail, "utf8");

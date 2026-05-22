@@ -8,7 +8,7 @@ import {
   resolveAgentRoot,
   resolvePrivateRoot,
 } from "../config/managed-paths.js";
-import { AUTH_KEYS_TO_STRIP } from "./claude-code-env.js";
+import { stripClaudeSubscriptionAuthEnv } from "./claude-code-env.js";
 
 export type CodexSandboxPurpose = "goal-worker" | "repo-chat";
 export type ClaudeSandboxPurpose = CodexSandboxPurpose;
@@ -155,7 +155,6 @@ const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
 const CLAUDE_AUTH_OK_REPLY = "claude-auth-ok";
-const CLAUDE_BASE_URL_KEY = "ANTHROPIC_BASE_URL";
 
 export function resolveManagedExecutionRoot(params: {
   workingDir: string;
@@ -473,6 +472,17 @@ function uniqueValues(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.length > 0)));
 }
 
+export function resolveClaudeCodeSandboxSettingsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT) {
+    return env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+  }
+  if (env.CODEX_HOME) {
+    const codexMemoryRoot = path.join(env.CODEX_HOME, "memories");
+    if (fs.existsSync(codexMemoryRoot)) return codexMemoryRoot;
+  }
+  return DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+}
+
 function buildClaudeDenyReadPaths(workingDir: string): string[] {
   return uniqueValues([
     path.join(workingDir, ".env"),
@@ -578,7 +588,10 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   purpose: ClaudeSandboxPurpose;
   settingsRoot?: string;
 }): ClaudeCodeLaunchSandboxConfig {
-  const config = writeClaudeCodeSandboxSettings(params);
+  const config = writeClaudeCodeSandboxSettings({
+    ...params,
+    settingsRoot: params.settingsRoot ?? resolveClaudeCodeSandboxSettingsRoot(),
+  });
   return {
     settingsPath: config.settingsPath,
     args: [
@@ -603,11 +616,7 @@ export function appendClaudeCodeSandboxArgs(
 function buildClaudeSubscriptionProbeEnv(
   sourceEnv: NodeJS.ProcessEnv,
 ): Record<string, string | undefined> {
-  const env = { ...sourceEnv };
-  for (const key of [...AUTH_KEYS_TO_STRIP, CLAUDE_BASE_URL_KEY]) {
-    delete env[key];
-  }
-  return env;
+  return stripClaudeSubscriptionAuthEnv(sourceEnv);
 }
 
 function buildClaudeAuthProbeSettingsConfig(params: {
@@ -732,7 +741,7 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
   const purpose = params.purpose ?? "goal-worker";
   const probeEnv = buildClaudeSubscriptionProbeEnv(env);
   const prompt = `Reply exactly: ${CLAUDE_AUTH_OK_REPLY}`;
-  const settingsRoot = params.settingsRoot;
+  const settingsRoot = params.settingsRoot ?? resolveClaudeCodeSandboxSettingsRoot(env);
 
   const makeSettings = (
     id: ClaudeSubscriptionAuthProbeId,
@@ -1097,6 +1106,7 @@ const CLAUDE_PROBE_MARKERS = [
   "env_local",
   "private_env",
   "symlink_escape",
+  "claude_auth_path",
 ] as const;
 type ClaudeProbeMarker = (typeof CLAUDE_PROBE_MARKERS)[number];
 type ClaudeProbeMatrix = Partial<Record<ClaudeProbeMarker, number>>;
@@ -1126,6 +1136,7 @@ export function buildClaudeSandboxProbeCommand(workingDir: string): string {
     `ln -s ${escapeShellArg(privateEnvPath)} ${linkName} 2>/dev/null`,
     `cat ${linkName} >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_symlink_escape=$?`,
     `rm -f ${linkName}`,
+    "cat ~/.claude/settings.json >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_claude_auth_path=$?",
   ].join("; ");
 }
 
@@ -1168,7 +1179,10 @@ function classifyClaudeProbeFailure(
   }
   if (
     matrix &&
-    (matrix.env_local === 0 || matrix.private_env === 0 || matrix.symlink_escape === 0)
+    (matrix.env_local === 0 ||
+      matrix.private_env === 0 ||
+      matrix.symlink_escape === 0 ||
+      matrix.claude_auth_path === 0)
   ) {
     return {
       supported: false,
@@ -1176,7 +1190,7 @@ function classifyClaudeProbeFailure(
       reason:
         "Claude Code ran but did not honor the fail-closed sandbox deny rules: a protected read succeeded.",
       details:
-        "A managed private env / repo .env.local / symlink-escape read was not blocked inside the sandbox; the generated settings were not enforced.",
+        "A managed private env / repo .env.local / symlink-escape / Claude auth-path read was not blocked inside the sandbox; the generated settings were not enforced.",
       operatorCommand:
         "claude --version && SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES=1 node --import tsx scripts/prove-claude-sandbox.ts",
     };
@@ -1228,7 +1242,7 @@ export function claudeCodeNativeSandboxStatus(
       workingDir,
       runId: params.runId ?? `status-${Date.now()}`,
       purpose: params.purpose ?? "goal-worker",
-      settingsRoot: params.settingsRoot,
+      settingsRoot: params.settingsRoot ?? resolveClaudeCodeSandboxSettingsRoot(env),
     });
   } catch (error) {
     return {
@@ -1277,7 +1291,10 @@ export function claudeCodeNativeSandboxStatus(
   // EVERY allow read succeeds (exit 0). Missing markers leave the value undefined,
   // which never equals 0/1, so an incomplete probe is treated as unproven.
   const denyBlocked =
-    matrix.env_local === 1 && matrix.private_env === 1 && matrix.symlink_escape === 1;
+    matrix.env_local === 1 &&
+    matrix.private_env === 1 &&
+    matrix.symlink_escape === 1 &&
+    matrix.claude_auth_path === 1;
   const allowSucceeded = matrix.readme === 0 && matrix.env_example === 0;
   if (result.status === 0 && denyBlocked && allowSucceeded) {
     return {
@@ -1286,7 +1303,7 @@ export function claudeCodeNativeSandboxStatus(
       version: commandVersion("claude"),
       settingsPath: settingsConfig.settingsPath,
       summary:
-        "Claude Code native sandbox blocked managed private env, repo .env.local, and symlink-escape reads while allowing README.md and .env.example.",
+        "Claude Code native sandbox blocked managed private env, repo .env.local, symlink-escape, and Claude auth-path reads while allowing README.md and .env.example.",
     };
   }
   return classifyClaudeProbeFailure(output, matrix);

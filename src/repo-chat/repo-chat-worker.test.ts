@@ -724,6 +724,7 @@ describe("repo-chat-worker", () => {
       };
       expect(call.command).toBe("claude");
       expect(call.env).toEqual({ TEST_ENV: "1" });
+      expect(buildClaudeCodeEnvMock).toHaveBeenCalledWith("subscription");
       expect(call.args.at(-1)).toContain("FINAL RESPONSE");
       expect(call.args.at(-1)).toContain(
         "Your final reply is whatever you print as the assistant message.",

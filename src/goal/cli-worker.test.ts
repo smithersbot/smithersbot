@@ -292,9 +292,15 @@ describe("cli-worker", () => {
     it("keeps scoping local to worker env and preserves global auth env", () => {
       const prevScope = process.env.MOLTBOT_GOAL_TEST_SCOPE;
       const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+      const prevAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN;
+      const prevAnthropicOld = process.env.ANTHROPIC_API_KEY_OLD;
+      const prevAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
       const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
       const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
       process.env.ANTHROPIC_API_KEY = "secret";
+      process.env.ANTHROPIC_AUTH_TOKEN = "auth-token";
+      process.env.ANTHROPIC_API_KEY_OLD = "old-secret";
+      process.env.ANTHROPIC_BASE_URL = "https://anthropic-proxy.invalid";
       process.env.TELEGRAM_BOT_TOKEN = "telegram-secret";
       process.env.CLAWDBOT_GATEWAY_TOKEN = "gateway-secret";
       delete process.env.MOLTBOT_GOAL_TEST_SCOPE;
@@ -302,9 +308,15 @@ describe("cli-worker", () => {
         const env = buildGoalWorkerEnv("claude_code", "subscription");
         expect(env.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
         expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+        expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
         expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
         expect(env.CLAWDBOT_GATEWAY_TOKEN).toBeUndefined();
         expect(process.env.ANTHROPIC_API_KEY).toBe("secret");
+        expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("auth-token");
+        expect(process.env.ANTHROPIC_API_KEY_OLD).toBe("old-secret");
+        expect(process.env.ANTHROPIC_BASE_URL).toBe("https://anthropic-proxy.invalid");
         expect(process.env.TELEGRAM_BOT_TOKEN).toBe("telegram-secret");
         expect(process.env.CLAWDBOT_GATEWAY_TOKEN).toBe("gateway-secret");
         expect(process.env.MOLTBOT_GOAL_TEST_SCOPE).toBeUndefined();
@@ -313,6 +325,12 @@ describe("cli-worker", () => {
         else process.env.MOLTBOT_GOAL_TEST_SCOPE = prevScope;
         if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+        if (prevAnthropicToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+        else process.env.ANTHROPIC_AUTH_TOKEN = prevAnthropicToken;
+        if (prevAnthropicOld === undefined) delete process.env.ANTHROPIC_API_KEY_OLD;
+        else process.env.ANTHROPIC_API_KEY_OLD = prevAnthropicOld;
+        if (prevAnthropicBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+        else process.env.ANTHROPIC_BASE_URL = prevAnthropicBaseUrl;
         if (prevTelegram === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
         else process.env.TELEGRAM_BOT_TOKEN = prevTelegram;
         if (prevGateway === undefined) delete process.env.CLAWDBOT_GATEWAY_TOKEN;

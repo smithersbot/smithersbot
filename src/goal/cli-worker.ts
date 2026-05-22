@@ -7,7 +7,6 @@
 // <root>/private/env are host-side only and are not passed to workers by default.
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
@@ -918,7 +917,6 @@ export function buildCliArgs(params: {
     workingDir,
     runId,
     purpose: "goal-worker",
-    settingsRoot: process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT ?? os.tmpdir(),
   });
   const args = [
     "-p",

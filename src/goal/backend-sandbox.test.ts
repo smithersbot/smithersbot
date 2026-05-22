@@ -21,6 +21,7 @@ import {
   classifyClaudeSubscriptionAuthProbeFailure,
   codexNativeSandboxStatus,
   claudeCodeNativeSandboxStatus,
+  resolveClaudeCodeSandboxSettingsRoot,
   runClaudeSubscriptionAuthDifferentialProbes,
   writeCodexNativeSandboxConfig,
   writeClaudeCodeSandboxSettings,
@@ -599,6 +600,9 @@ describe("Claude Code native sandbox settings", () => {
       expect(parsed.sandbox.filesystem.allowWrite).toEqual([workingDir]);
       expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(workingDir, ".env.local"));
       expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(managedRoot, "private", "**"));
+      expect(parsed.sandbox.filesystem.denyRead).toContain(
+        path.join(os.homedir(), ".claude", "**"),
+      );
       expect(parsed.permissions.deny).toContain("Read(./.env.*)");
       expect(parsed.permissions.deny).toContain("Read(~/.claude/**)");
     } finally {
@@ -634,6 +638,7 @@ describe("Claude Code native sandbox settings", () => {
     "SMITHERSBOT_CLAUDE_env_local=1",
     "SMITHERSBOT_CLAUDE_private_env=1",
     "SMITHERSBOT_CLAUDE_symlink_escape=1",
+    "SMITHERSBOT_CLAUDE_claude_auth_path=1",
     "",
   ].join("\n");
 
@@ -686,6 +691,7 @@ describe("Claude Code native sandbox settings", () => {
         "SMITHERSBOT_CLAUDE_env_local=0",
         "SMITHERSBOT_CLAUDE_private_env=1",
         "SMITHERSBOT_CLAUDE_symlink_escape=1",
+        "SMITHERSBOT_CLAUDE_claude_auth_path=1",
         "",
       ].join("\n"),
       stderr: "",
@@ -717,6 +723,7 @@ describe("Claude Code native sandbox settings", () => {
         "SMITHERSBOT_CLAUDE_env_local=1",
         "SMITHERSBOT_CLAUDE_private_env=1",
         "SMITHERSBOT_CLAUDE_symlink_escape=1",
+        "SMITHERSBOT_CLAUDE_claude_auth_path=1",
         "",
       ].join("\n"),
       stderr: "",
@@ -773,6 +780,8 @@ describe("Claude Code native sandbox settings", () => {
       expect(command).toContain("SMITHERSBOT_CLAUDE_env_local=$?");
       expect(command).toContain("SMITHERSBOT_CLAUDE_private_env=$?");
       expect(command).toContain("SMITHERSBOT_CLAUDE_symlink_escape=$?");
+      expect(command).toContain("SMITHERSBOT_CLAUDE_claude_auth_path=$?");
+      expect(command).toContain("cat ~/.claude/settings.json >/dev/null 2>&1");
       expect(command).toContain(privateEnvPath);
       // The managed private env is referenced for deny + symlink-escape checks only;
       // it is always piped to /dev/null, never printed.
@@ -783,6 +792,26 @@ describe("Claude Code native sandbox settings", () => {
       if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
       fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an explicit Claude settings root or the Codex writable memory root when available", () => {
+    const codexHome = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-home-"));
+    const memories = path.join(codexHome, "memories");
+    fs.mkdirSync(memories, { recursive: true });
+    try {
+      expect(
+        resolveClaudeCodeSandboxSettingsRoot({
+          SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT: "/tmp/explicit-claude-settings",
+          CODEX_HOME: codexHome,
+        } as NodeJS.ProcessEnv),
+      ).toBe("/tmp/explicit-claude-settings");
+      expect(
+        resolveClaudeCodeSandboxSettingsRoot({ CODEX_HOME: codexHome } as NodeJS.ProcessEnv),
+      ).toBe(memories);
+      expect(resolveClaudeCodeSandboxSettingsRoot({} as NodeJS.ProcessEnv)).toBe("/var/tmp");
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
     }
   });
 
