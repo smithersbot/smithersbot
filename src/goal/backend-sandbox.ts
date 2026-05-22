@@ -699,6 +699,10 @@ export function codexNativeSandboxStatus(
     // the sandbox: it resolves to the already-denied real ~/.codex/auth.json, so
     // only the unsandboxed control plane can follow it to authenticate.
     `cat ${escapeShellArg(sandboxConfig.authReferencePath)} >/dev/null; echo codex_auth=$?`,
+    // The real ~/.codex/auth.json must also stay unreadable from the sandboxed
+    // shell — distinct from the generated reference above. The unsandboxed Codex
+    // control plane reads it directly to authenticate; the sandbox must not.
+    `cat ${escapeShellArg(path.join(os.homedir(), ".codex", "auth.json"))} >/dev/null; echo real_codex_auth=$?`,
     "rm -f .smithersbot-codex-env-link",
     `ln -s ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} .smithersbot-codex-env-link`,
     "cat .smithersbot-codex-env-link >/dev/null; echo symlink_escape=$?",
@@ -724,6 +728,7 @@ export function codexNativeSandboxStatus(
     output.includes("home_config=1") &&
     output.includes("private_env=1") &&
     output.includes("codex_auth=1") &&
+    output.includes("real_codex_auth=1") &&
     output.includes("symlink_escape=1") &&
     output.includes("ok");
   if (passed) {

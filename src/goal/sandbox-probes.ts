@@ -6,8 +6,25 @@ import type { GoalBackendId } from "./backend-types.js";
 import type { Plan, PlanStep } from "./types.js";
 import { executeTaskWithCliWorker } from "./cli-worker.js";
 import { claudeCodeNativeSandboxStatus, codexNativeSandboxStatus } from "./backend-sandbox.js";
+import { validateConfigObject } from "../config/config.js";
 
 export const SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_SANDBOX_LIVE_PROBES";
+
+/** Deny sentinel embedded in the fixture's fake ~/.smithersbot/smithersbot.json. */
+export const PROBE_HOME_CONFIG_SENTINEL = "PROBE_HOME_CONFIG_SECRET";
+
+/**
+ * Build the fake ~/.smithersbot/smithersbot.json the live probe drops into the
+ * fixture HOME. It must satisfy the strict SmithersBot config schema: the prior
+ * fixture wrote a bare `{"token":...}` root key that the loader rejected with
+ * "Unrecognized key: token", aborting the probe before any deny check ran. The
+ * sentinel lives in `env.vars` — a free-form string record the schema accepts —
+ * so the home-config deny probe still has recognizable content to confirm it
+ * cannot read.
+ */
+export function buildSandboxProbeHomeConfig(): Record<string, unknown> {
+  return { env: { vars: { PROBE_HOME_CONFIG: PROBE_HOME_CONFIG_SENTINEL } } };
+}
 
 export type SandboxProbeFixture = {
   managedRoot: string;
@@ -49,7 +66,6 @@ export function createSandboxProbeFixture(
   const fakeSmithersbotDir = path.join(fakeHomeDir, ".smithersbot");
 
   fs.mkdirSync(repoDir, { recursive: true });
-  fs.mkdirSync(path.join(repoDir, ".git"), { recursive: true });
   fs.mkdirSync(historyDir, { recursive: true });
   fs.mkdirSync(privateEnvDir, { recursive: true });
   fs.mkdirSync(fakeSmithersbotDir, { recursive: true });
@@ -69,7 +85,21 @@ export function createSandboxProbeFixture(
   const fakeSmithersbotEnv = path.join(fakeSmithersbotDir, ".env");
   const fakeSmithersbotConfig = path.join(fakeSmithersbotDir, "smithersbot.json");
   fs.writeFileSync(fakeSmithersbotEnv, "PROBE_HOME_ENV_SECRET=deny\n", "utf8");
-  fs.writeFileSync(fakeSmithersbotConfig, '{"token":"PROBE_HOME_CONFIG_SECRET"}\n', "utf8");
+
+  const fakeSmithersbotConfigObject = buildSandboxProbeHomeConfig();
+  const configValidation = validateConfigObject(fakeSmithersbotConfigObject);
+  if (!configValidation.ok) {
+    throw new Error(
+      `sandbox probe fixture produced an invalid smithersbot.json: ${configValidation.issues
+        .map((issue) => `${issue.path || "<root>"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  fs.writeFileSync(
+    fakeSmithersbotConfig,
+    `${JSON.stringify(fakeSmithersbotConfigObject, null, 2)}\n`,
+    "utf8",
+  );
 
   const envLink = path.join(repoDir, "env-link");
   try {
@@ -78,6 +108,11 @@ export function createSandboxProbeFixture(
     // Some platforms deny symlink creation in temp dirs; live probes can still
     // exercise explicit private path reads and Python reads.
   }
+
+  // Initialize a real git repo so probe paths that run `git diff` (attempt-bundle
+  // change summaries, build gates) operate on a valid work tree instead of
+  // emitting "Not a git repository" from a bare, empty .git directory.
+  initSandboxProbeGitRepo(repoDir);
 
   return {
     managedRoot,
@@ -164,6 +199,29 @@ export function isCommandAvailable(command: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Initialize a real git repository in the fixture repo, guarded by git
+ * availability. A best-effort baseline commit gives the work tree a HEAD so
+ * `git diff` and `git rev-parse HEAD` succeed; `git init` alone already prevents
+ * the "Not a git repository" failure the probe harness previously hit.
+ */
+function initSandboxProbeGitRepo(repoDir: string): void {
+  if (!isCommandAvailable("git")) return;
+  const run = (args: string[]): void => {
+    execFileSync("git", ["-C", repoDir, ...args], { stdio: "ignore", timeout: 10_000 });
+  };
+  run(["init", "--quiet"]);
+  run(["config", "user.email", "probe@smithersbot.local"]);
+  run(["config", "user.name", "SmithersBot Probe"]);
+  try {
+    run(["add", "-A"]);
+    run(["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "probe fixture baseline"]);
+  } catch {
+    // Baseline commit is best-effort; the initialized repo already satisfies the
+    // git-dependent probe paths even before any commit exists.
   }
 }
 

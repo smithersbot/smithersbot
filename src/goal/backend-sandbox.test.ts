@@ -239,7 +239,7 @@ describe("Codex native permission-profile sandbox config", () => {
     mockSpawnSync.mockReturnValue({
       status: 0,
       stdout:
-        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\ncodex_auth=1\nsymlink_escape=1\nok",
+        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\ncodex_auth=1\nreal_codex_auth=1\nsymlink_escape=1\nok",
       stderr: "",
     });
 
@@ -267,6 +267,39 @@ describe("Codex native permission-profile sandbox config", () => {
         }),
       }),
     );
+  });
+
+  it("fails closed when the real ~/.codex/auth.json read is not blocked", () => {
+    mockCommandPaths();
+    mockExecFileSync.mockImplementation((command: string, args: string[]) => {
+      const joined = [command, ...args].join(" ");
+      if (joined === "sh -lc command -v codex") return "/usr/local/bin/codex\n";
+      if (joined === "find /usr/local/lib/node_modules/@openai/codex -path */bin/codex -type f") {
+        return "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex\n";
+      }
+      if (joined === "codex --version") return "codex-cli 0.133.0\n";
+      throw new Error(`unexpected command: ${joined}`);
+    });
+    // Every deny passes except the real ~/.codex/auth.json read, which succeeded
+    // (real_codex_auth=0). The status must fail closed, never report proven.
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout:
+        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\ncodex_auth=1\nreal_codex_auth=0\nsymlink_escape=1\nok",
+      stderr: "",
+    });
+
+    const status = codexNativeSandboxStatus({
+      workingDir: process.cwd(),
+      runId: "real-auth-leak",
+      sandboxRoot: os.tmpdir(),
+      env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
+    });
+
+    expect(status.proven).toBe(false);
+    if (!status.proven) {
+      expect(status.blocker).toBe("live-probe-failed");
+    }
   });
 });
 

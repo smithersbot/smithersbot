@@ -1,11 +1,17 @@
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildCodexRepoChatArgs, runRepoChatWorker } from "./repo-chat-worker.js";
+import { validateConfigObject } from "../config/config.js";
 import {
   buildSandboxProbePrompt,
   classifyBackendProbeReadiness,
   cleanupSandboxProbeFixture,
   createSandboxProbeFixture,
+  isCommandAvailable,
   isLiveSandboxProbeEnabled,
+  PROBE_HOME_CONFIG_SENTINEL,
   SANDBOX_LIVE_PROBES_ENV,
   type SandboxProbeFixture,
 } from "../goal/sandbox-probes.js";
@@ -18,6 +24,24 @@ afterEach(() => {
 });
 
 describe("repo-chat sandbox live probes", () => {
+  it("creates a schema-valid home config fixture and a real git repo for the probe", () => {
+    fixture = createSandboxProbeFixture("smithersbot-repo-chat-sandbox-probe-");
+
+    const parsedConfig: unknown = JSON.parse(
+      fs.readFileSync(fixture.fakeSmithersbotConfig, "utf8"),
+    );
+    const validation = validateConfigObject(parsedConfig);
+    expect(validation.ok).toBe(true);
+    expect(JSON.stringify(parsedConfig)).toContain(PROBE_HOME_CONFIG_SENTINEL);
+
+    if (isCommandAvailable("git")) {
+      expect(fs.existsSync(path.join(fixture.repoDir, ".git", "HEAD"))).toBe(true);
+      expect(() =>
+        execFileSync("git", ["-C", fixture.repoDir, "diff", "--stat"], { stdio: "ignore" }),
+      ).not.toThrow();
+    }
+  });
+
   it("threads probe prompts through the normal Codex repo-chat read-only sandbox args", () => {
     fixture = createSandboxProbeFixture("smithersbot-repo-chat-sandbox-probe-");
     const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
@@ -44,11 +68,13 @@ describe("repo-chat sandbox live probes", () => {
     }
   });
 
-  it("marks Claude Code repo-chat sandbox probes unproven because no native fs sandbox is configured", () => {
+  it("reports Claude Code repo-chat live probe readiness without faking success", () => {
     const readiness = classifyBackendProbeReadiness("claude_code");
     if (isLiveSandboxProbeEnabled()) {
-      expect(readiness.status).toBe("unproven");
-      expect(readiness.reason).toMatch(/no native filesystem sandbox/i);
+      // Claude readiness is environment-dependent (CLI present, bwrap/socat, the
+      // live-probe flag): proven only when the live deny/allow matrix passes,
+      // otherwise unproven. It must never report not-run once probes are enabled.
+      expect(["proven", "unproven"]).toContain(readiness.status);
     } else {
       expect(readiness.status).toBe("not-run");
       expect(readiness.reason).toContain(SANDBOX_LIVE_PROBES_ENV);
