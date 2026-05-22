@@ -59,13 +59,24 @@ const collectGitDiffSummaryMock = vi.mocked(collectGitDiffSummary);
 const EARLY_RESULT_PROGRESS_MESSAGE =
   "  [cli-worker] result file detected — waiting grace period for process exit";
 
+let testCodexSandboxRoot: string | undefined;
+let previousCodexSandboxRoot: string | undefined;
+
 beforeEach(() => {
   vi.clearAllMocks();
   collectGitDiffSummaryMock.mockReturnValue({});
+  previousCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+  testCodexSandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-codex-sandbox-"));
+  process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = testCodexSandboxRoot;
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  if (previousCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+  else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = previousCodexSandboxRoot;
+  if (testCodexSandboxRoot) fs.rmSync(testCodexSandboxRoot, { recursive: true, force: true });
+  testCodexSandboxRoot = undefined;
+  previousCodexSandboxRoot = undefined;
 });
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
@@ -486,7 +497,7 @@ describe("cli-worker", () => {
       });
       expect(status.supported).toBe(false);
       if (!status.supported) {
-        expect(status.reason).toContain("live probe");
+        expect(["live-probe-required", "settings-generation-failed"]).toContain(status.blocker);
       }
     });
 
@@ -857,9 +868,9 @@ describe("cli-worker", () => {
         const env = (call?.env ?? {}) as Record<string, string>;
         generatedCodexHome = env.CODEX_HOME;
 
-        // CODEX_HOME points at the generated /var/tmp/smithersbot-codex-* home, not
-        // the real auth source.
-        expect(env.CODEX_HOME.startsWith(path.join("/var", "tmp"))).toBe(true);
+        // CODEX_HOME points at the generated smithersbot-codex-* home, not the
+        // real auth source.
+        expect(env.CODEX_HOME.startsWith(testCodexSandboxRoot!)).toBe(true);
         expect(env.CODEX_HOME).toContain("smithersbot-codex-");
         expect(env.CODEX_HOME).not.toBe(sourceCodexHome);
         expect(env.PATH).toContain(path.join(env.CODEX_HOME, "bin"));

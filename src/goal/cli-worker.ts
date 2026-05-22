@@ -218,6 +218,7 @@ export async function repairResultFile(params: {
           workingDir,
           runId: `repair-${attemptNumber}`,
           purpose: "goal-worker",
+          sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
   const args = buildCliArgs({
