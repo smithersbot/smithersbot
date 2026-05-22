@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -324,6 +325,108 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       }),
     );
     expect(routeTelegramTextMock).not.toHaveBeenCalled();
+  });
+
+  it("routes replies to known repo-chat sessions before pending command-fragment append", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    findRepoChatSessionByMessageIdMock.mockReturnValue({ id: "repo-chat-session" });
+    const commandFragmentBuffer = new CommandFragmentBuffer();
+    const commandKey = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+    });
+    const pendingFlush = vi.fn(async () => undefined);
+    commandFragmentBuffer.bufferCommand(commandKey, {
+      commandName: "repo_chat",
+      text: "pending split command",
+      firstMessageId: 499,
+      receivedAtMs: Date.now(),
+      dispatch: {
+        chatId: 42,
+        senderId: "99",
+        sourceMessageId: 499,
+        accountId: "telegram-account",
+      },
+      flushCallback: pendingFlush,
+    });
+
+    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        messageHandlers.set(event, handler);
+      }),
+      api: {
+        answerCallbackQuery: vi.fn(async () => undefined),
+        editMessageText: vi.fn(async () => ({ message_id: 1 })),
+        sendMessage: vi.fn(async () => ({ message_id: 2 })),
+        setMessageReaction: vi.fn(async () => undefined),
+      },
+    };
+
+    registerTelegramHandlers({
+      cfg: { goal: { claudeCodeAuth: "subscription" } },
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: "claude_code",
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      commandFragmentBuffer,
+    });
+
+    const messageHandler = messageHandlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    if (!messageHandler) {
+      throw new Error("Expected Telegram message handler to be registered");
+    }
+
+    await messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "reply should continue the repo-chat session",
+        message_id: 500,
+        date: 1,
+        reply_to_message: { message_id: 400 },
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledTimes(1);
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 42,
+        prompt: "reply should continue the repo-chat session",
+        sourceMessageId: 500,
+        replyToMessageId: 400,
+      }),
+    );
+    expect(pendingFlush).not.toHaveBeenCalled();
+    expect(commandFragmentBuffer.hasPending(commandKey)).toBe(true);
+    vi.useRealTimers();
   });
 
   it("prompts for an explicit choice when a live command anchor blocks repo-chat routing", async () => {

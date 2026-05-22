@@ -409,6 +409,29 @@ describe("command-fragments", () => {
       expect(buffer.hasPending(key)).toBe(false);
     });
 
+    it("reports the pending canonical command for a buffered key", () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const key = "cmd:42:main:7";
+
+      expect(buffer.getPendingCommandName(key)).toBeUndefined();
+      buffer.bufferCommand(key, {
+        commandName: "repo_chat",
+        text: "first",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      expect(buffer.getPendingCommandName(key)).toBe("repo_chat");
+    });
+
     it("auto-flushes after timeout", async () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();
@@ -1009,6 +1032,83 @@ describe("command-fragments", () => {
         expect.objectContaining({
           prompt: part1 + part2,
         }),
+      );
+    });
+
+    it("combines adjacent repeated /repo_chat chunks without duplicate or dropped text", async () => {
+      vi.useFakeTimers();
+      const { createTelegramBot } = await import("./bot.js");
+      createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
+
+      const repoChatHandler = getCommandHandler("repo_chat");
+      const part1 = "First manually split chunk.";
+      const part2 = "Second manually split chunk.";
+
+      await repoChatHandler({
+        match: part1,
+        message: makeTelegramMessage({
+          messageId: 500,
+          text: `/repo_chat ${part1}`,
+        }),
+      });
+      await repoChatHandler({
+        match: part2,
+        message: makeTelegramMessage({
+          messageId: 501,
+          text: `/repo_chat ${part2}`,
+        }),
+      });
+
+      expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+      await waitForAssertion(() => {
+        expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+      });
+      expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({
+          prompt: part1 + part2,
+        }),
+      );
+    });
+
+    it("keeps later repeated /repo_chat commands as separate sessions outside the append window", async () => {
+      vi.useFakeTimers();
+      const { createTelegramBot } = await import("./bot.js");
+      createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
+
+      const repoChatHandler = getCommandHandler("repo_chat");
+
+      await repoChatHandler({
+        match: "first request",
+        message: makeTelegramMessage({
+          messageId: 600,
+          text: "/repo_chat first request",
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+      await waitForAssertion(() => {
+        expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+      });
+
+      await repoChatHandler({
+        match: "second request",
+        message: makeTelegramMessage({
+          messageId: 601,
+          text: "/repo_chat second request",
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+      await waitForAssertion(() => {
+        expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(2);
+      });
+      expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ prompt: "first request" }),
+      );
+      expect(runRepoChatWorkerMock.mock.calls[1]?.[0]).toEqual(
+        expect.objectContaining({ prompt: "second request" }),
       );
     });
   });

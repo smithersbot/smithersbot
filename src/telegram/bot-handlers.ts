@@ -1394,7 +1394,9 @@ export const registerTelegramHandlers = ({
       const textForRouting = text ?? caption;
       const isCommandLike = (textForRouting ?? "").trim().startsWith("/");
 
-      if (!isCommandLike && text && commandFragmentBuffer) {
+      const replyToMessageId = (msg as { reply_to_message?: { message_id?: number } })
+        .reply_to_message?.message_id;
+      if (!isCommandLike && text && commandFragmentBuffer && replyToMessageId == null) {
         const normalized = normalizeCommandFragmentParams(msg, accountId);
         const commandKey = buildCommandFragmentKey(normalized);
         const consumed = commandFragmentBuffer.tryAppend(

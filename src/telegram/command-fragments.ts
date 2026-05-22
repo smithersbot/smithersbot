@@ -116,6 +116,10 @@ export class CommandFragmentBuffer {
     return this.entries.has(key);
   }
 
+  getPendingCommandName(key: string): CommandFragmentCommandName | undefined {
+    return this.entries.get(key)?.commandName;
+  }
+
   bufferCommand(key: string, entry: CommandFragmentBufferEntry): void {
     const existing = this.entries.get(key);
     if (existing) {

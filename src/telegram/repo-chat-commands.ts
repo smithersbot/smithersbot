@@ -459,6 +459,11 @@ export function registerTelegramRepoChatCommands({
     if (msg && commandFragmentBuffer && prompt) {
       const normalized = normalizeCommandFragmentParams(msg, accountId);
       const key = buildCommandFragmentKey(normalized);
+      const nowMs = Date.now();
+      if (commandFragmentBuffer.getPendingCommandName(key) === "repo_chat") {
+        const appended = commandFragmentBuffer.tryAppend(key, msg.message_id, prompt, nowMs);
+        if (appended) return;
+      }
       if (commandFragmentBuffer.hasPending(key)) {
         await commandFragmentBuffer.cancelAndFlush(key);
       }
@@ -466,7 +471,7 @@ export function registerTelegramRepoChatCommands({
         commandName: "repo_chat",
         text: prompt,
         firstMessageId: msg.message_id,
-        receivedAtMs: Date.now(),
+        receivedAtMs: nowMs,
         dispatch: {
           chatId: resolved.chatId,
           threadIdForSend: resolved.threadIdForSend,
