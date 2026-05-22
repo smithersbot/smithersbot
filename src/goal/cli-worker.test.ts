@@ -794,6 +794,109 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--sandbox");
     });
 
+    it("launches codex with the auth-continuous generated CODEX_HOME shape", async () => {
+      // A real auth source must exist for the auth reference symlink to be created.
+      const sourceCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-auth-source-"));
+      fs.writeFileSync(
+        path.join(sourceCodexHome, "auth.json"),
+        '{"OPENAI_API_KEY":"placeholder-not-real"}\n',
+        "utf8",
+      );
+      const previousCodexHome = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = sourceCodexHome;
+
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-codex-auth-"));
+      const runId = "run-codex-auth";
+      const stepId = "step-codex-auth";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "codex auth-continuous launch" }),
+          "utf8",
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      let generatedCodexHome: string | undefined;
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step,
+          plan,
+          goal: "Verify codex auth-continuous launch shape",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        const args = call?.args ?? [];
+        const env = (call?.env ?? {}) as Record<string, string>;
+        generatedCodexHome = env.CODEX_HOME;
+
+        // CODEX_HOME points at the generated /var/tmp/smithersbot-codex-* home, not
+        // the real auth source.
+        expect(env.CODEX_HOME.startsWith(path.join("/var", "tmp"))).toBe(true);
+        expect(env.CODEX_HOME).toContain("smithersbot-codex-");
+        expect(env.CODEX_HOME).not.toBe(sourceCodexHome);
+        expect(env.PATH).toContain(path.join(env.CODEX_HOME, "bin"));
+
+        // The generated home carries the smithersbot permission profile and helper.
+        expect(fs.readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8")).toContain(
+          'default_permissions = "smithersbot"',
+        );
+        expect(fs.existsSync(path.join(env.CODEX_HOME, "bin", "codex-linux-sandbox"))).toBe(true);
+
+        // Auth continuity: the generated auth.json is a symlink to the real source
+        // (never a copy), so only the unsandboxed control plane can follow it.
+        const authReferencePath = path.join(env.CODEX_HOME, "auth.json");
+        expect(fs.lstatSync(authReferencePath).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(authReferencePath)).toBe(path.join(sourceCodexHome, "auth.json"));
+
+        // Launch uses native permission-profile exec — never legacy --sandbox /
+        // workspace-write or danger bypass flags.
+        const execIdx = args.indexOf("exec");
+        const cdIdx = args.indexOf("--cd");
+        expect(execIdx).toBeGreaterThanOrEqual(0);
+        expect(args.indexOf("--json")).toBeGreaterThan(execIdx);
+        expect(cdIdx).toBeGreaterThan(execIdx);
+        expect(args[cdIdx + 1]).toBe(dir);
+        expect(args).not.toContain("--sandbox");
+        expect(args).not.toContain("workspace-write");
+        expect(args.join(" ")).not.toContain("danger-full-access");
+        expect(args.join(" ")).not.toContain("dangerously-bypass");
+      } finally {
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        if (generatedCodexHome) fs.rmSync(generatedCodexHome, { recursive: true, force: true });
+        fs.rmSync(sourceCodexHome, { recursive: true, force: true });
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it("terminates a hanging process once worker_result.json is detected", async () => {
       vi.useFakeTimers();
 

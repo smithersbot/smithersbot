@@ -1231,6 +1231,93 @@ describe("repo-chat-worker", () => {
       }
     });
 
+    it("uses the auth-continuous codex launch shape with a read-only agent-root execution root", async () => {
+      const originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-auth-root-"));
+      // A real auth source must exist for the auth reference symlink to be created.
+      const sourceCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-codex-auth-"));
+      fs.writeFileSync(
+        path.join(sourceCodexHome, "auth.json"),
+        '{"OPENAI_API_KEY":"placeholder-not-real"}\n',
+        "utf8",
+      );
+      const previousCodexHome = process.env.CODEX_HOME;
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+      process.env.CODEX_HOME = sourceCodexHome;
+
+      const agentRoot = path.join(managedRoot, "agent");
+      const repoDir = path.join(agentRoot, "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.writeFileSync(path.join(repoDir, "README.md"), "managed repo\n", "utf8");
+
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I can read this repository read-only." }],
+          },
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 30,
+      });
+
+      let generatedCodexHome: string | undefined;
+      try {
+        const result = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "Explain the repo structure.",
+          workingDir: repoDir,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0] as {
+          args: string[];
+          cwd: string;
+          env: Record<string, string>;
+        };
+        generatedCodexHome = call.env.CODEX_HOME;
+
+        // Generated CODEX_HOME carries the smithersbot permission profile + helper.
+        expect(call.env.CODEX_HOME).toContain("smithersbot-codex-repo-chat-");
+        expect(call.env.CODEX_HOME).not.toBe(sourceCodexHome);
+        expect(call.env.PATH).toContain(path.join(call.env.CODEX_HOME, "bin"));
+        expect(fs.existsSync(path.join(call.env.CODEX_HOME, "bin", "codex-linux-sandbox"))).toBe(
+          true,
+        );
+        const configToml = fs.readFileSync(path.join(call.env.CODEX_HOME, "config.toml"), "utf8");
+        expect(configToml).toContain('default_permissions = "smithersbot"');
+        // Read-only execution root: repo-chat grants no write paths.
+        expect(configToml).not.toContain('= "write"');
+
+        // Auth continuity via symlink (never a copy) to the real source.
+        const authReferencePath = path.join(call.env.CODEX_HOME, "auth.json");
+        expect(fs.lstatSync(authReferencePath).isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(authReferencePath)).toBe(path.join(sourceCodexHome, "auth.json"));
+
+        // Execution root is the agent root and never the legacy sandbox/danger flags.
+        const cdIdx = call.args.indexOf("--cd");
+        expect(call.cwd).toBe(agentRoot);
+        expect(call.args[cdIdx + 1]).toBe(agentRoot);
+        expect(call.args).not.toContain("--sandbox");
+        expect(call.args).not.toContain("read-only");
+        expect(call.args).not.toContain("workspace-write");
+        expect(call.args.join(" ")).not.toContain("danger-full-access");
+        expect(call.args.join(" ")).not.toContain("dangerously-bypass");
+        expect(result.text).toContain("read-only");
+      } finally {
+        if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        if (generatedCodexHome) fs.rmSync(generatedCodexHome, { recursive: true, force: true });
+        fs.rmSync(sourceCodexHome, { recursive: true, force: true });
+        fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
+    });
+
     it("repo-chat worker uses agent root for managed workspaces and refuses private env cwd", async () => {
       const originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-managed-run-"));
