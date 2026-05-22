@@ -444,7 +444,7 @@ export function registerGatewayRestartCommand({
         await sendGatewayRestartMessage(
           bot,
           chatId,
-          `gateway_restart failed: ${unit} reported restart success, but port ${postRestartBinding.port} is still held by stale PID ${postRestartBinding.pid}.`,
+          `gateway_restart failed: ${unit} reported restart success, but port ${postRestartBinding.port} is still held by stale/orphaned process PID ${postRestartBinding.pid}.`,
           messageThreadId,
         );
       }

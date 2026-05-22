@@ -9,12 +9,14 @@ const {
   scheduleGatewaySigusr1RestartMock,
   writeRestartSentinelMock,
   onUpdateProcessedMock,
+  resolveGatewaySystemdRestartUnitMock,
 } = vi.hoisted(() => ({
   spawnSyncMock: vi.fn(),
   triggerMoltbotRestartMock: vi.fn(),
   scheduleGatewaySigusr1RestartMock: vi.fn(),
   writeRestartSentinelMock: vi.fn(),
   onUpdateProcessedMock: vi.fn(),
+  resolveGatewaySystemdRestartUnitMock: vi.fn(),
 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -25,7 +27,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 vi.mock("../infra/restart.js", () => ({
-  resolveGatewaySystemdRestartUnit: () => "moltbot-gateway-dev.service",
+  resolveGatewaySystemdRestartUnit: (...args: unknown[]) =>
+    resolveGatewaySystemdRestartUnitMock(...args),
   scheduleGatewaySigusr1Restart: (...args: unknown[]) => scheduleGatewaySigusr1RestartMock(...args),
   triggerMoltbotRestart: (...args: unknown[]) => triggerMoltbotRestartMock(...args),
 }));
@@ -151,6 +154,8 @@ describe("gateway_restart telegram command", () => {
     testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-restart-test-"));
     process.env.CLAWDBOT_STATE_DIR = testStateDir;
     process.env.SMITHERSBOT_GATEWAY_PORT = "19001";
+    resolveGatewaySystemdRestartUnitMock.mockReset();
+    resolveGatewaySystemdRestartUnitMock.mockReturnValue("moltbot-gateway-dev.service");
     spawnSyncMock.mockReset();
     spawnSyncMock.mockReturnValue({
       status: 1,
@@ -307,6 +312,27 @@ describe("gateway_restart telegram command", () => {
     expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
   });
 
+  it("persists request state and processed update before any restart-side effects", async () => {
+    const observedSteps: string[] = [];
+    const onUpdateProcessed = vi.fn(async () => {
+      observedSteps.push("processed");
+    });
+    writeRestartSentinelMock.mockImplementationOnce(async () => {
+      observedSteps.push("sentinel");
+    });
+    triggerMoltbotRestartMock.mockImplementationOnce(() => {
+      observedSteps.push("restart");
+      expect(listRequestStates()).toHaveLength(1);
+      return { ok: true, method: "systemd", tried: [] };
+    });
+    const { handler } = createHarness({ onUpdateProcessed });
+
+    await handler(createCtx({ chatId: 88, userId: AUTHORIZED_USER_ID, updateId: 9003 }));
+
+    expect(observedSteps).toEqual(["processed", "sentinel", "restart"]);
+    expect(onUpdateProcessed).toHaveBeenCalledWith(9003);
+  });
+
   it("suppresses duplicate accepted update_id without a second user-facing reply", async () => {
     const { handler, sendMessage } = createHarness();
     const ctx = createCtx({ chatId: 91, userId: AUTHORIZED_USER_ID, updateId: 7001 });
@@ -321,7 +347,35 @@ describe("gateway_restart telegram command", () => {
     expect(listRequestStates()).toHaveLength(1);
   });
 
-  it("reports stale PID when the gateway port remains bound after restart success", async () => {
+  it("does not send a direct success reply before the restarted gateway is responsive", async () => {
+    spawnSyncMock
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        output: [null, "1111\n", ""],
+        pid: 0,
+        stdout: "1111\n",
+        stderr: "",
+      })
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        output: [null, "2222\n", ""],
+        pid: 0,
+        stdout: "2222\n",
+        stderr: "",
+      });
+
+    const { handler, sendMessage } = createHarness();
+
+    await handler(createCtx({ chatId: 44, userId: AUTHORIZED_USER_ID, updateId: 4410 }));
+
+    expect(triggerMoltbotRestartMock).toHaveBeenCalledTimes(1);
+    expect(writeRestartSentinelMock).toHaveBeenCalledTimes(1);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("reports stale or orphaned PID on the active legacy unit when the gateway port remains bound after restart success", async () => {
     spawnSyncMock.mockReturnValue({
       status: 0,
       signal: null,
@@ -343,11 +397,39 @@ describe("gateway_restart telegram command", () => {
     );
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(44, expect.stringContaining("stale PID 4242"), {
-      message_thread_id: 19,
+    expect(sendMessage).toHaveBeenCalledWith(
+      44,
+      expect.stringContaining("stale/orphaned process PID 4242"),
+      {
+        message_thread_id: 19,
+      },
+    );
+    const text = String(sendMessage.mock.calls[0]?.[1]);
+    expect(text).toContain("moltbot-gateway-dev.service");
+    expect(text).toContain("port 19001");
+    expect(text).toContain("reported restart success");
+  });
+
+  it("supports smithersbot-gateway.service in stale port diagnostics", async () => {
+    resolveGatewaySystemdRestartUnitMock.mockReturnValue("smithersbot-gateway.service");
+    spawnSyncMock.mockReturnValue({
+      status: 0,
+      signal: null,
+      output: [null, "5252\n", ""],
+      pid: 0,
+      stdout: "5252\n",
+      stderr: "",
     });
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("moltbot-gateway-dev.service");
-    expect(sendMessage.mock.calls[0]?.[1]).toContain("port 19001");
+
+    const { handler, sendMessage } = createHarness();
+
+    await handler(createCtx({ chatId: 45, userId: AUTHORIZED_USER_ID, updateId: 4501 }));
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const text = String(sendMessage.mock.calls[0]?.[1]);
+    expect(text).toContain("smithersbot-gateway.service");
+    expect(text).toContain("port 19001");
+    expect(text).toContain("stale/orphaned process PID 5252");
   });
 
   it("falls back to SIGUSR1 restart when full restart fails", async () => {
@@ -399,6 +481,47 @@ describe("gateway_restart telegram command", () => {
     const triggerFiles = listTriggerRequests();
     expect(triggerFiles).toHaveLength(1);
     expect(triggerFiles[0]).toMatch(/^restart-\d+-[a-f0-9]+\.req$/);
+  });
+
+  it("redacts secret values from user-facing restart failure text", async () => {
+    const previousTelegramToken = process.env.TELEGRAM_TOKEN;
+    const previousGatewayToken = process.env.SMITHERSBOT_GATEWAY_TOKEN;
+    process.env.TELEGRAM_TOKEN = "telegram-token-secret-123";
+    process.env.SMITHERSBOT_GATEWAY_TOKEN = "gateway-token-secret-456";
+    triggerMoltbotRestartMock.mockReturnValueOnce({
+      ok: false,
+      method: "systemd",
+      detail:
+        "failed with telegram-token-secret-123 gateway-token-secret-456 sk-testsecretvalue123",
+      tried: ["systemctl --user restart smithersbot-gateway.service"],
+    });
+    scheduleGatewaySigusr1RestartMock.mockReturnValueOnce({
+      ok: false,
+      pid: process.pid,
+      signal: "SIGUSR1",
+      delayMs: 2000,
+      reason: "telegram /gateway_restart",
+      mode: "emit",
+    });
+
+    try {
+      const { handler, sendMessage } = createHarness();
+
+      await handler(createCtx({ chatId: 78, userId: AUTHORIZED_USER_ID, updateId: 7801 }));
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const text = String(sendMessage.mock.calls[0]?.[1]);
+      expect(text).toContain("direct restart failed");
+      expect(text).not.toContain("telegram-token-secret-123");
+      expect(text).not.toContain("gateway-token-secret-456");
+      expect(text).not.toContain("sk-testsecretvalue123");
+      expect(text).toContain("[REDACTED]");
+    } finally {
+      if (previousTelegramToken === undefined) delete process.env.TELEGRAM_TOKEN;
+      else process.env.TELEGRAM_TOKEN = previousTelegramToken;
+      if (previousGatewayToken === undefined) delete process.env.SMITHERSBOT_GATEWAY_TOKEN;
+      else process.env.SMITHERSBOT_GATEWAY_TOKEN = previousGatewayToken;
+    }
   });
 
   it("appends audit log entries for each request", async () => {
