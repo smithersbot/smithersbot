@@ -50,6 +50,9 @@ function isRepoChatSession(value: unknown): value is RepoChatSession {
   if (!isRepoChatBackend(record.backend)) return false;
   if (typeof record.workingDir !== "string") return false;
   if (record.cliSessionId != null && typeof record.cliSessionId !== "string") return false;
+  if (record.codexSandboxRunId != null && typeof record.codexSandboxRunId !== "string") {
+    return false;
+  }
   if (typeof record.createdAt !== "string") return false;
   if (typeof record.updatedAt !== "string") return false;
   if (!Array.isArray(record.messageRefs)) return false;
@@ -74,6 +77,8 @@ function redactSession(session: RepoChatSession): RepoChatSession {
     workingDir: redactSecretValues(session.workingDir),
     cliSessionId:
       session.cliSessionId == null ? undefined : redactSecretValues(session.cliSessionId),
+    codexSandboxRunId:
+      session.codexSandboxRunId == null ? undefined : redactSecretValues(session.codexSandboxRunId),
   };
 }
 

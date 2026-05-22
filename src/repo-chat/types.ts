@@ -17,6 +17,11 @@ export type RepoChatSession = {
    * - Codex: exec resume <thread-id>
    */
   cliSessionId?: string;
+  /**
+   * Stable sandbox-state key for Codex repo-chat turns. The generated CODEX_HOME
+   * is derived from this value so `codex exec resume` can find prior rollout state.
+   */
+  codexSandboxRunId?: string;
   createdAt: string;
   updatedAt: string;
   /**
@@ -31,6 +36,7 @@ export type RepoChatWorkerParams = {
   prompt: string;
   workingDir: string;
   cliSessionId?: string;
+  codexSandboxRunId?: string;
   /** Claude Code auth mode (defaults to subscription). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
   timeoutMs?: number;

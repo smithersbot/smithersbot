@@ -48,6 +48,7 @@ const REPO_CHAT_DISABLED_MESSAGE =
   "Repo chat is disabled. Enable it with /chat_backend codex or /chat_backend claude_code.";
 const MAX_SESSION_MESSAGE_REFS = 200;
 const MAX_REPLY_CHUNKS = 8;
+const CODEX_REPO_CHAT_SANDBOX_PREFIX = "repo-chat-session-";
 
 type TelegramRepoChatCommandContext = Context & { match?: string };
 
@@ -148,19 +149,22 @@ function appendMessageRefs(
 }
 
 function buildNextRepoChatSession(params: {
+  sessionId: string;
   existingSession?: RepoChatSession;
   backend: RepoChatBackend;
   workingDir: string;
   cliSessionId?: string;
+  codexSandboxRunId?: string;
   messageRefs: RepoChatSession["messageRefs"];
 }): RepoChatSession {
   const now = new Date().toISOString();
   const existing = params.existingSession;
   return {
-    id: existing?.id ?? crypto.randomUUID(),
+    id: params.sessionId,
     backend: existing?.backend ?? params.backend,
     workingDir: existing?.workingDir ?? params.workingDir,
     cliSessionId: params.cliSessionId ?? existing?.cliSessionId,
+    codexSandboxRunId: params.codexSandboxRunId ?? existing?.codexSandboxRunId,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     messageRefs: appendMessageRefs(existing?.messageRefs ?? [], params.messageRefs),
@@ -227,6 +231,12 @@ function runRepoChatInBackground(params: {
   workingDir: string;
 }): void {
   const workingDir = params.existingSession?.workingDir ?? params.workingDir;
+  const sessionId = params.existingSession?.id ?? crypto.randomUUID();
+  const codexSandboxRunId =
+    params.backend === "codex"
+      ? (params.existingSession?.codexSandboxRunId ??
+        `${CODEX_REPO_CHAT_SANDBOX_PREFIX}${sessionId}`)
+      : undefined;
   void (async () => {
     try {
       const workerResult = await withChatAction({
@@ -241,6 +251,7 @@ function runRepoChatInBackground(params: {
             prompt: params.prompt,
             workingDir,
             cliSessionId: params.existingSession?.cliSessionId,
+            codexSandboxRunId,
             claudeCodeAuth: params.claudeCodeAuth,
           }),
       });
@@ -260,10 +271,12 @@ function runRepoChatInBackground(params: {
         })),
       ];
       const nextSession = buildNextRepoChatSession({
+        sessionId,
         existingSession: params.existingSession,
         backend: params.backend,
         workingDir,
         cliSessionId: workerResult.cliSessionId,
+        codexSandboxRunId,
         messageRefs: sessionMessageRefs,
       });
       saveRepoChatSession(nextSession);

@@ -54,7 +54,17 @@ const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`)
 const LAST_MESSAGE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}-last.md`);
 
 describe("repo-chat-worker", () => {
+  let testSandboxRoot: string;
+  let originalCodexSandboxRoot: string | undefined;
+  let originalClaudeSettingsRoot: string | undefined;
+
   beforeEach(() => {
+    fs.mkdirSync(path.join(process.cwd(), ".tmp"), { recursive: true });
+    testSandboxRoot = fs.mkdtempSync(path.join(process.cwd(), ".tmp", "repo-chat-sandbox-"));
+    originalCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+    originalClaudeSettingsRoot = process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+    process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = testSandboxRoot;
+    process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = testSandboxRoot;
     runCliProcessMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReset();
     buildClaudeCodeEnvMock.mockReset();
@@ -68,14 +78,23 @@ describe("repo-chat-worker", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+    else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = originalCodexSandboxRoot;
+    if (originalClaudeSettingsRoot === undefined) {
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+    } else {
+      process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = originalClaudeSettingsRoot;
+    }
     fs.rmSync(RESPONSE_FILE_PATH, { force: true });
     fs.rmSync(LAST_MESSAGE_FILE_PATH, { force: true });
+    fs.rmSync(testSandboxRoot, { recursive: true, force: true });
   });
 
   describe("args", () => {
     it("builds Claude resume args with read-only restrictions re-applied", () => {
       const args = buildClaudeRepoChatArgs({
         prompt: "What does this module do?",
+        workingDir: "/repo",
         cliSessionId: "claude-session-1",
       });
 
@@ -122,6 +141,7 @@ describe("repo-chat-worker", () => {
     it("isolates Claude from global MCP config with strict empty MCP flags", () => {
       const args = buildClaudeRepoChatArgs({
         prompt: "Explain repo structure",
+        workingDir: "/repo",
         model: "claude-sonnet-4-5",
         cliSessionId: "claude-session-mcp",
       });
@@ -153,7 +173,10 @@ describe("repo-chat-worker", () => {
     });
 
     it("includes strict empty MCP flags on initial Claude args without a session id", () => {
-      const args = buildClaudeRepoChatArgs({ prompt: "Initial repo question" });
+      const args = buildClaudeRepoChatArgs({
+        prompt: "Initial repo question",
+        workingDir: "/repo",
+      });
       expect(args).toContain("--strict-mcp-config");
       expect(args).toContain("--mcp-config");
       const mcpIdx = args.indexOf("--mcp-config");
@@ -373,7 +396,7 @@ describe("repo-chat-worker", () => {
         "Your final reply is whatever you print as the assistant message.",
       ].join("\n");
 
-      const args = buildClaudeRepoChatArgs({ prompt });
+      const args = buildClaudeRepoChatArgs({ prompt, workingDir: "/repo" });
       const promptArg = args.at(-1) ?? "";
 
       expect(promptArg).toContain("FINAL RESPONSE");
@@ -401,7 +424,10 @@ describe("repo-chat-worker", () => {
     });
 
     it("inserts `--` end-of-options separator immediately before the prompt to prevent variadic --mcp-config from swallowing it", () => {
-      const args = buildClaudeRepoChatArgs({ prompt: "Some user question" });
+      const args = buildClaudeRepoChatArgs({
+        prompt: "Some user question",
+        workingDir: "/repo",
+      });
       // The prompt is the final positional arg.
       expect(args.at(-1)).toBe("Some user question");
       // The penultimate arg is the `--` end-of-options separator.
@@ -425,6 +451,7 @@ describe("repo-chat-worker", () => {
 
       const args = buildClaudeRepoChatArgs({
         prompt,
+        workingDir: "/repo",
         cliSessionId: "claude-session-xyz",
         model: "claude-sonnet-4-5",
       });
@@ -1451,6 +1478,89 @@ describe("repo-chat-worker", () => {
       expect(call.args.at(-1)).toContain(REPO_CHAT_CODEX_STYLE_PROMPT);
       expect(result.text).toBe("Resumed final answer from codex stdout");
       expect(result.cliSessionId).toBe("codex-resume-thread");
+    });
+
+    it("reuses the same generated CODEX_HOME for Codex follow-up resume turns", async () => {
+      const previousSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+      const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-codex-state-"));
+      process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = sandboxRoot;
+      runCliProcessMock
+        .mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Initial codex answer\n", "utf-8");
+          return {
+            stdout: '{"type":"thread.started","thread_id":"codex-thread-A"}',
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 40,
+          };
+        })
+        .mockResolvedValueOnce({
+          stdout:
+            '{"type":"result","is_error":false,"result":{"content":[{"type":"text","text":"Resumed answer"}]}}',
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 41,
+        });
+
+      try {
+        const first = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "initial question",
+          workingDir: "/repo",
+          codexSandboxRunId: "repo-chat-session-stable",
+        });
+        const followUp = await runRepoChatWorker({
+          backend: "codex",
+          prompt: "follow up",
+          workingDir: "/repo",
+          cliSessionId: first.cliSessionId,
+          codexSandboxRunId: "repo-chat-session-stable",
+        });
+
+        const firstCall = runCliProcessMock.mock.calls[0]?.[0] as {
+          args: string[];
+          env: Record<string, string>;
+        };
+        const secondCall = runCliProcessMock.mock.calls[1]?.[0] as {
+          args: string[];
+          env: Record<string, string>;
+        };
+        expect(first.cliSessionId).toBe("codex-thread-A");
+        expect(followUp.text).toBe("Resumed answer");
+        expect(firstCall.env.CODEX_HOME).toBe(secondCall.env.CODEX_HOME);
+        expect(firstCall.env.CODEX_HOME).toContain("smithersbot-codex-repo-chat-session-stable");
+        expect(secondCall.args.slice(0, 3)).toEqual(["exec", "resume", "codex-thread-A"]);
+        expect(secondCall.args).not.toContain("--cd");
+      } finally {
+        if (previousSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+        else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = previousSandboxRoot;
+        fs.rmSync(sandboxRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("converts missing Codex rollout state into a safe repo-chat error", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "RPC error: no rollout found for thread codex-thread-A",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 42,
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "codex",
+          prompt: "follow up",
+          workingDir: "/repo",
+          cliSessionId: "codex-thread-A",
+          codexSandboxRunId: "repo-chat-session-stable",
+        }),
+      ).rejects.toThrow("Codex resume state missing; start a fresh repo-chat session.");
     });
 
     it("returns repaired content instead of placeholder codex stdout", async () => {

@@ -257,6 +257,109 @@ describe("repo-chat-commands", () => {
     });
   });
 
+  it("reuses stable Codex sandbox state when resuming a repo-chat thread", async () => {
+    runRepoChatWorkerMock
+      .mockResolvedValueOnce({
+        text: "initial output",
+        cliSessionId: "codex-thread-A",
+      })
+      .mockResolvedValueOnce({
+        text: "follow-up output",
+        cliSessionId: "codex-thread-A",
+      });
+
+    const sendMessageMock = vi
+      .fn()
+      .mockResolvedValueOnce({ message_id: 1101 })
+      .mockResolvedValueOnce({ message_id: 1102 })
+      .mockResolvedValueOnce({ message_id: 1201 })
+      .mockResolvedValueOnce({ message_id: 1202 });
+    const bot = { api: { sendMessage: sendMessageMock } };
+    const runtime = buildRuntime();
+    const telegramCfg: TelegramAccountConfig = { repoChatBackend: "codex" };
+
+    expect(
+      dispatchTelegramRepoChatForInboundText({
+        bot: bot as never,
+        runtime,
+        telegramCfg,
+        chatId: 404,
+        prompt: "Initial Codex question",
+        sourceMessageId: 1100,
+        replyToMessageId: undefined,
+      }),
+    ).toBe(true);
+
+    await waitForAssertion(() => {
+      expect(findRepoChatSessionByMessageId({ chatId: 404, messageId: 1101 })).toBeDefined();
+    });
+
+    expect(
+      dispatchTelegramRepoChatForInboundText({
+        bot: bot as never,
+        runtime,
+        telegramCfg,
+        chatId: 404,
+        prompt: "Follow-up Codex question",
+        sourceMessageId: 1200,
+        replyToMessageId: 1101,
+      }),
+    ).toBe(true);
+
+    await waitForAssertion(() => {
+      expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(2);
+    });
+
+    const firstCall = runRepoChatWorkerMock.mock.calls[0]?.[0] as
+      | { cliSessionId?: string; codexSandboxRunId?: string }
+      | undefined;
+    const secondCall = runRepoChatWorkerMock.mock.calls[1]?.[0] as
+      | { cliSessionId?: string; codexSandboxRunId?: string }
+      | undefined;
+    expect(firstCall?.cliSessionId).toBeUndefined();
+    expect(firstCall?.codexSandboxRunId).toMatch(/^repo-chat-session-/);
+    expect(secondCall?.cliSessionId).toBe("codex-thread-A");
+    expect(secondCall?.codexSandboxRunId).toBe(firstCall?.codexSandboxRunId);
+
+    let resumedSession = findRepoChatSessionByMessageId({ chatId: 404, messageId: 1201 });
+    await waitForAssertion(() => {
+      resumedSession = findRepoChatSessionByMessageId({ chatId: 404, messageId: 1201 });
+      expect(resumedSession).toBeDefined();
+    });
+    expect(resumedSession?.cliSessionId).toBe("codex-thread-A");
+    expect(resumedSession?.codexSandboxRunId).toBe(firstCall?.codexSandboxRunId);
+  });
+
+  it("does not leak raw Codex no-rollout errors to Telegram replies", async () => {
+    runRepoChatWorkerMock.mockRejectedValueOnce(
+      new Error("Codex resume state missing; start a fresh repo-chat session."),
+    );
+    const sendMessageMock = vi.fn().mockResolvedValue({ message_id: 1301 });
+    const bot = { api: { sendMessage: sendMessageMock } };
+
+    const started = dispatchTelegramRepoChatForInboundText({
+      bot: bot as never,
+      runtime: buildRuntime(),
+      telegramCfg: { repoChatBackend: "codex" },
+      chatId: 505,
+      prompt: "Follow-up Codex question",
+      sourceMessageId: 1300,
+      replyToMessageId: undefined,
+    });
+
+    expect(started).toBe(true);
+
+    await waitForAssertion(() => {
+      expect(markdownToTelegramChunksMock).toHaveBeenCalled();
+      const renderedText = String(markdownToTelegramChunksMock.mock.calls.at(-1)?.[0] ?? "");
+      expect(renderedText).toContain(
+        "Repo chat failed: Codex resume state missing; start a fresh repo-chat session.",
+      );
+      expect(renderedText).not.toContain("no rollout found");
+      expect(renderedText).not.toContain("RPC error");
+    });
+  });
+
   it("caps repo-chat replies to 8 chunks and appends a truncation notice", async () => {
     runRepoChatWorkerMock.mockResolvedValue({
       text: "very long worker output",

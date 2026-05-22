@@ -16,6 +16,7 @@ function makeSession(overrides: Partial<RepoChatSession> = {}): RepoChatSession 
     backend: "codex",
     workingDir: "/tmp/workspace",
     cliSessionId: "thread-1",
+    codexSandboxRunId: "repo-chat-session-1",
     createdAt: "2026-02-13T00:00:00.000Z",
     updatedAt: "2026-02-13T00:00:00.000Z",
     messageRefs: [
@@ -63,6 +64,7 @@ describe("repo-chat-store", () => {
 
     expect(found?.id).toBe("repo-chat-1");
     expect(found?.cliSessionId).toBe("thread-1");
+    expect(found?.codexSandboxRunId).toBe("repo-chat-session-1");
   });
 
   it("returns undefined for unknown message ids", () => {

@@ -49,6 +49,8 @@ const MAX_ERROR_DETAIL_CHARS = 8_000;
 const REPAIR_TIMEOUT_MS = 60_000;
 const CODEX_NO_SESSION_ID_FOOTER =
   "⚠️ Note: this codex run did not return a session id; the next reply will start a fresh chat.";
+const CODEX_RESUME_STATE_MISSING_MESSAGE =
+  "Codex resume state missing; start a fresh repo-chat session.";
 const CLAUDE_STARTUP_HINT =
   "Claude Code exited during startup, possibly MCP/plugin initialization. Repo chat runs with strict empty MCP config; if this still happens, run claude --debug to inspect startup.";
 
@@ -63,6 +65,7 @@ export function buildClaudeRepoChatArgs(params: {
     workingDir: params.workingDir ?? process.cwd(),
     runId: params.runId ?? "repo-chat",
     purpose: "repo-chat",
+    settingsRoot: process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT,
   });
   const baseArgs = [
     "-p",
@@ -162,6 +165,16 @@ function tailErrorDetail(detail: string): string {
   const redacted = redactSecretValues(detail);
   if (redacted.length <= MAX_ERROR_DETAIL_CHARS) return redacted;
   return `...${redacted.slice(redacted.length - MAX_ERROR_DETAIL_CHARS)}`;
+}
+
+function isCodexMissingRolloutState(params: {
+  backend: RepoChatWorkerParams["backend"];
+  cliSessionId?: string;
+  stdout: string;
+  stderr: string;
+}): boolean {
+  if (params.backend !== "codex" || !params.cliSessionId) return false;
+  return `${params.stderr}\n${params.stdout}`.toLowerCase().includes("no rollout found");
 }
 
 function parseClaudeStdoutEvents(stdout: string): Array<Record<string, unknown>> {
@@ -451,7 +464,7 @@ export async function runRepoChatWorker(
     params.backend === "codex"
       ? writeCodexNativeSandboxConfig({
           workingDir: params.workingDir,
-          runId: `repo-chat-${responseFileId}`,
+          runId: params.codexSandboxRunId ?? `repo-chat-${responseFileId}`,
           purpose: "repo-chat",
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
@@ -493,6 +506,16 @@ export async function runRepoChatWorker(
     }
 
     if (exitCode !== 0) {
+      if (
+        isCodexMissingRolloutState({
+          backend: params.backend,
+          cliSessionId: params.cliSessionId,
+          stdout,
+          stderr,
+        })
+      ) {
+        throw new Error(CODEX_RESUME_STATE_MISSING_MESSAGE);
+      }
       const stderrTrimmed = stderr.trim();
       const stdoutTrimmed = stdout.trim();
       let detailBody = "";

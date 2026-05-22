@@ -94,7 +94,9 @@ describe("repo-chat sandbox live probes", () => {
     }
   });
 
-  it.runIf(isLiveSandboxProbeEnabled())(
+  it.runIf(
+    isLiveSandboxProbeEnabled() && classifyBackendProbeReadiness("codex").status === "proven",
+  )(
     "runs the live Codex repo-chat sandbox probe when explicitly enabled",
     async () => {
       fixture = createSandboxProbeFixture("smithersbot-repo-chat-live-sandbox-probe-");
