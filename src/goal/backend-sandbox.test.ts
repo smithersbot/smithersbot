@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockExecFileSync = vi.fn();
 const mockSpawnSync = vi.fn();
+const HOST_TEMP_ROOT = process.env.CODEX_HOME
+  ? path.join(process.env.CODEX_HOME, "memories")
+  : os.tmpdir();
 
 vi.mock("node:child_process", () => ({
   execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
@@ -15,8 +18,10 @@ import {
   buildClaudeSandboxProbeCommand,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
+  classifyClaudeSubscriptionAuthProbeFailure,
   codexNativeSandboxStatus,
   claudeCodeNativeSandboxStatus,
+  runClaudeSubscriptionAuthDifferentialProbes,
   writeCodexNativeSandboxConfig,
   writeClaudeCodeSandboxSettings,
 } from "./backend-sandbox.js";
@@ -153,7 +158,7 @@ describe("Codex native permission-profile sandbox config", () => {
   });
 
   it("writes config and makes codex-linux-sandbox visible through a per-run helper directory", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
     const fakeInstall = fs.mkdtempSync(path.join(os.tmpdir(), "codex-install-"));
     const binDir = path.join(fakeInstall, "bin");
     const nativeDir = path.join(
@@ -213,7 +218,7 @@ describe("Codex native permission-profile sandbox config", () => {
     const status = codexNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "status-test",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       env: {},
     });
 
@@ -247,7 +252,7 @@ describe("Codex native permission-profile sandbox config", () => {
     const status = codexNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "live-ok",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -293,7 +298,7 @@ describe("Codex native permission-profile sandbox config", () => {
     const status = codexNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "real-auth-leak",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -322,7 +327,7 @@ describe("Codex native sandbox auth continuity", () => {
           workingDir,
           runId: "auth-ref",
           purpose: "goal-worker",
-          sandboxRoot: os.tmpdir(),
+          sandboxRoot: HOST_TEMP_ROOT,
           codexPath: "/usr/local/bin/codex",
         });
 
@@ -342,7 +347,7 @@ describe("Codex native sandbox auth continuity", () => {
       workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
       runId: "perm",
       purpose: "goal-worker",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       codexPath: "/usr/local/bin/codex",
     });
     expect(config.configToml).toContain('default_permissions = "smithersbot"');
@@ -360,7 +365,7 @@ describe("Codex native sandbox auth continuity", () => {
           workingDir,
           runId: "deny",
           purpose: "goal-worker",
-          sandboxRoot: os.tmpdir(),
+          sandboxRoot: HOST_TEMP_ROOT,
           codexPath: "/usr/local/bin/codex",
         });
 
@@ -396,7 +401,7 @@ describe("Codex native sandbox auth continuity", () => {
           workingDir,
           runId: "allow",
           purpose: "goal-worker",
-          sandboxRoot: os.tmpdir(),
+          sandboxRoot: HOST_TEMP_ROOT,
           codexPath: "/usr/local/bin/codex",
         });
 
@@ -428,7 +433,7 @@ describe("Codex native sandbox auth continuity", () => {
         workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
         runId: "auth-block",
         purpose: "goal-worker",
-        sandboxRoot: os.tmpdir(),
+        sandboxRoot: HOST_TEMP_ROOT,
         codexPath: "/usr/local/bin/codex",
       });
 
@@ -443,7 +448,7 @@ describe("Codex native sandbox auth continuity", () => {
   // (g) The control plane authenticates via a real symlink (not a copy) at the
   // generated auth reference, while that reference stays denied to the sandbox.
   it("symlinks the generated auth.json to the real auth source for control-plane auth", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
     const fakeCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-"));
     const install = createFakeCodexInstall();
     fs.writeFileSync(path.join(fakeCodexHome, "auth.json"), '{"OPENAI_API_KEY":"placeholder"}\n');
@@ -474,7 +479,7 @@ describe("Codex native sandbox auth continuity", () => {
   });
 
   it("skips the auth symlink (no copy) when the real auth source is absent", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
     const emptyCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-empty-"));
     const install = createFakeCodexInstall();
     try {
@@ -502,7 +507,7 @@ describe("Codex native sandbox auth continuity", () => {
       workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
       runId: "no-broad",
       purpose: "goal-worker",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       codexPath: "/usr/local/bin/codex",
     });
 
@@ -532,7 +537,7 @@ describe("Codex native sandbox auth continuity", () => {
       workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
       runId: "regression",
       purpose: "goal-worker",
-      sandboxRoot: os.tmpdir(),
+      sandboxRoot: HOST_TEMP_ROOT,
       codexPath: "/usr/local/bin/codex",
     });
 
@@ -557,13 +562,13 @@ describe("Claude Code native sandbox settings", () => {
       purpose: "goal-worker",
     });
 
-    expect(config.settingsDir).toBe(path.join(os.tmpdir(), "smithersbot-claude-run-with-spaces"));
+    expect(config.settingsDir).toBe(path.join("/var/tmp", "smithersbot-claude-run-with-spaces"));
     expect(config.settingsPath).toBe(path.join(config.settingsDir, "settings.json"));
     expect(config.settingsPath).not.toContain("/agent/workspaces/smithersbot/repo");
   });
 
   it("writes fail-closed sandbox settings and denies private/env reads while allowing workspace files", () => {
-    const settingsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-sandbox-settings-"));
+    const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-sandbox-settings-"));
     const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
     const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
@@ -610,7 +615,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "status-test",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: {},
     });
 
@@ -643,7 +648,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "live-ok",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -689,7 +694,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "deny-leak",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -720,7 +725,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "allow-fail",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -741,7 +746,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "not-logged-in",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -792,7 +797,7 @@ describe("Claude Code native sandbox settings", () => {
     const status = claudeCodeNativeSandboxStatus({
       workingDir: process.cwd(),
       runId: "libx32-fail",
-      settingsRoot: os.tmpdir(),
+      settingsRoot: HOST_TEMP_ROOT,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -803,6 +808,171 @@ describe("Claude Code native sandbox settings", () => {
       expect(status.details).toContain("/libx32 as a symlink");
       expect(status.operatorCommand).toContain("claude update");
       expect(status.operatorCommand).not.toContain("mkdir /libx32");
+    }
+  });
+
+  it("keeps Claude subscription-auth differential probes fail-closed unless explicitly enabled", () => {
+    mockCommandPaths();
+
+    const report = runClaudeSubscriptionAuthDifferentialProbes({
+      workingDir: process.cwd(),
+      runId: "auth-disabled",
+      settingsRoot: HOST_TEMP_ROOT,
+      env: {},
+    });
+
+    expect(report).toEqual({
+      enabled: false,
+      ok: false,
+      blocker: "live-probe-required",
+      results: [],
+    });
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("classifies subscription-auth probe failures without carrying raw output", () => {
+    expect(
+      classifyClaudeSubscriptionAuthProbeFailure({
+        output: "Invalid API key provided",
+        usedGeneratedSettings: false,
+      }),
+    ).toBe("api-key-env-poisoning");
+    expect(
+      classifyClaudeSubscriptionAuthProbeFailure({
+        output: "Not logged in. Please run /login",
+        usedGeneratedSettings: false,
+      }),
+    ).toBe("missing-subscription-login");
+    expect(
+      classifyClaudeSubscriptionAuthProbeFailure({
+        output: "Not logged in. Please run /login",
+        usedGeneratedSettings: true,
+      }),
+    ).toBe("generated-settings-hiding-claude-auth");
+    expect(
+      classifyClaudeSubscriptionAuthProbeFailure({
+        output: "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory",
+        usedGeneratedSettings: true,
+      }),
+    ).toBe("native-sandbox-libx32-runtime-blocker");
+    expect(
+      classifyClaudeSubscriptionAuthProbeFailure({
+        output: "unexpected provider failure",
+        usedGeneratedSettings: true,
+      }),
+    ).toBe("generic-failure");
+  });
+
+  it("runs status-only Claude subscription-auth differential probes with API-key env unset", () => {
+    mockCommandPaths();
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: "claude-auth-ok\n",
+      stderr: "",
+    });
+
+    const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-auth-probes-"));
+    try {
+      const report = runClaudeSubscriptionAuthDifferentialProbes({
+        workingDir: process.cwd(),
+        runId: "auth-ok",
+        settingsRoot,
+        env: {
+          SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1",
+          ANTHROPIC_API_KEY: "placeholder-api-key",
+          ANTHROPIC_AUTH_TOKEN: "placeholder-auth-token",
+          ANTHROPIC_API_KEY_OLD: "placeholder-old-api-key",
+          ANTHROPIC_BASE_URL: "https://placeholder.invalid",
+          PATH: process.env.PATH,
+        },
+      });
+
+      expect(report.enabled).toBe(true);
+      expect(report.ok).toBe(true);
+      expect(report.blocker).toBe("none");
+      expect(report.results).toEqual([
+        { id: "plain_unset_api_key_env", ok: true, blocker: "none" },
+        { id: "settings_without_claude_deny", ok: true, blocker: "none" },
+        { id: "setting_sources_empty", ok: true, blocker: "none" },
+        { id: "permissions_deny_claude_only", ok: true, blocker: "none" },
+        { id: "sandbox_deny_claude_only", ok: true, blocker: "none" },
+        { id: "full_generated_settings", ok: true, blocker: "none" },
+      ]);
+
+      expect(mockSpawnSync).toHaveBeenCalledTimes(6);
+      for (const call of mockSpawnSync.mock.calls) {
+        const args = call[1] as string[];
+        const options = call[2] as { env: Record<string, string | undefined> };
+        expect(call[0]).toBe("claude");
+        expect(args.join(" ")).not.toContain("dangerously-skip-permissions");
+        expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(options.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+        expect(options.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+        expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
+      }
+
+      const plainArgs = mockSpawnSync.mock.calls[0][1] as string[];
+      expect(plainArgs).toEqual(["-p", "Reply exactly: claude-auth-ok"]);
+      const allArgs = mockSpawnSync.mock.calls.map((call) => call[1] as string[]);
+      expect(allArgs[1]).toContain("--settings");
+      expect(allArgs[1]).not.toContain("--setting-sources");
+      expect(allArgs.slice(2).every((args) => args.includes("--setting-sources"))).toBe(true);
+
+      for (const result of report.results) {
+        expect(Object.keys(result).sort()).toEqual(["blocker", "id", "ok"]);
+      }
+      expect(JSON.stringify(report)).not.toContain("Invalid API key");
+      expect(JSON.stringify(report)).not.toContain("Not logged in");
+      expect(JSON.stringify(report)).not.toContain("placeholder-api-key");
+    } finally {
+      fs.rmSync(settingsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports generated-settings-hidden auth as a status-only blocker", () => {
+    mockCommandPaths();
+    mockSpawnSync
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: "claude-auth-ok\n",
+        stderr: "",
+      })
+      .mockReturnValueOnce({
+        status: 1,
+        stdout: "",
+        stderr: "Not logged in. Please run /login\n",
+      })
+      .mockReturnValue({
+        status: 1,
+        stdout: "",
+        stderr: "Not logged in. Please run /login\n",
+      });
+
+    const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-auth-probes-"));
+    try {
+      const report = runClaudeSubscriptionAuthDifferentialProbes({
+        workingDir: process.cwd(),
+        runId: "auth-hidden",
+        settingsRoot,
+        env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1", PATH: process.env.PATH },
+      });
+
+      expect(report.ok).toBe(false);
+      expect(report.blocker).toBe("generated-settings-hiding-claude-auth");
+      expect(report.results[0]).toEqual({
+        id: "plain_unset_api_key_env",
+        ok: true,
+        blocker: "none",
+      });
+      expect(report.results[1]).toEqual({
+        id: "settings_without_claude_deny",
+        ok: false,
+        blocker: "generated-settings-hiding-claude-auth",
+      });
+      expect(JSON.stringify(report)).not.toContain("Not logged in");
+      expect(JSON.stringify(report)).not.toContain("/login");
+    } finally {
+      fs.rmSync(settingsRoot, { recursive: true, force: true });
     }
   });
 });

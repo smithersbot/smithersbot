@@ -8,6 +8,7 @@ import {
   resolveAgentRoot,
   resolvePrivateRoot,
 } from "../config/managed-paths.js";
+import { AUTH_KEYS_TO_STRIP } from "./claude-code-env.js";
 
 export type CodexSandboxPurpose = "goal-worker" | "repo-chat";
 export type ClaudeSandboxPurpose = CodexSandboxPurpose;
@@ -115,12 +116,46 @@ export type ClaudeCodeNativeSandboxStatus =
       details?: string;
     };
 
+export type ClaudeSubscriptionAuthProbeId =
+  | "plain_unset_api_key_env"
+  | "settings_without_claude_deny"
+  | "setting_sources_empty"
+  | "permissions_deny_claude_only"
+  | "sandbox_deny_claude_only"
+  | "full_generated_settings";
+
+export type ClaudeSubscriptionAuthProbeBlocker =
+  | "none"
+  | "claude-not-found"
+  | "live-probe-required"
+  | "settings-generation-failed"
+  | "api-key-env-poisoning"
+  | "missing-subscription-login"
+  | "generated-settings-hiding-claude-auth"
+  | "native-sandbox-libx32-runtime-blocker"
+  | "generic-failure";
+
+export type ClaudeSubscriptionAuthProbeResult = {
+  id: ClaudeSubscriptionAuthProbeId;
+  ok: boolean;
+  blocker: ClaudeSubscriptionAuthProbeBlocker;
+};
+
+export type ClaudeSubscriptionAuthProbeReport = {
+  enabled: boolean;
+  ok: boolean;
+  blocker: ClaudeSubscriptionAuthProbeBlocker;
+  results: ClaudeSubscriptionAuthProbeResult[];
+};
+
 const DEFAULT_CODEX_SANDBOX_ROOT = "/var/tmp";
 const CODEX_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES";
-const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = os.tmpdir();
+const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = DEFAULT_CODEX_SANDBOX_ROOT;
 const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
+const CLAUDE_AUTH_OK_REPLY = "claude-auth-ok";
+const CLAUDE_BASE_URL_KEY = "ANTHROPIC_BASE_URL";
 
 export function resolveManagedExecutionRoot(params: {
   workingDir: string;
@@ -563,6 +598,308 @@ export function appendClaudeCodeSandboxArgs(
 ): string[] {
   args.push(...config.args);
   return args;
+}
+
+function buildClaudeSubscriptionProbeEnv(
+  sourceEnv: NodeJS.ProcessEnv,
+): Record<string, string | undefined> {
+  const env = { ...sourceEnv };
+  for (const key of [...AUTH_KEYS_TO_STRIP, CLAUDE_BASE_URL_KEY]) {
+    delete env[key];
+  }
+  return env;
+}
+
+function buildClaudeAuthProbeSettingsConfig(params: {
+  workingDir: string;
+  runId: string;
+  purpose: ClaudeSandboxPurpose;
+  settingsRoot?: string;
+  includePermissionClaudeDeny: boolean;
+  includeSandboxClaudeDeny: boolean;
+}): ClaudeCodeSandboxSettingsConfig {
+  const config = buildClaudeCodeSandboxSettingsConfig(params);
+  const claudeHomePattern = path.join(os.homedir(), ".claude", "**");
+  return {
+    ...config,
+    settings: {
+      ...config.settings,
+      sandbox: {
+        ...config.settings.sandbox,
+        filesystem: {
+          ...config.settings.sandbox.filesystem,
+          denyRead: params.includeSandboxClaudeDeny
+            ? config.settings.sandbox.filesystem.denyRead
+            : config.settings.sandbox.filesystem.denyRead.filter(
+                (deniedPath) => deniedPath !== claudeHomePattern,
+              ),
+        },
+      },
+      permissions: {
+        deny: params.includePermissionClaudeDeny
+          ? config.settings.permissions.deny
+          : config.settings.permissions.deny.filter((rule) => rule !== "Read(~/.claude/**)"),
+      },
+    },
+  };
+}
+
+function writeClaudeAuthProbeSettings(params: {
+  workingDir: string;
+  runId: string;
+  purpose: ClaudeSandboxPurpose;
+  settingsRoot?: string;
+  includePermissionClaudeDeny: boolean;
+  includeSandboxClaudeDeny: boolean;
+}): ClaudeCodeSandboxSettingsConfig {
+  const config = buildClaudeAuthProbeSettingsConfig(params);
+  if (
+    isPathInsideAgentRoot(config.settingsDir) ||
+    config.settingsDir.startsWith(params.workingDir)
+  ) {
+    throw new Error("Claude Code auth probe settings must be outside agent-visible paths.");
+  }
+  fs.mkdirSync(config.settingsDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(config.settingsPath, `${JSON.stringify(config.settings, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return config;
+}
+
+export function classifyClaudeSubscriptionAuthProbeFailure(params: {
+  output: string;
+  usedGeneratedSettings: boolean;
+}): ClaudeSubscriptionAuthProbeBlocker {
+  if (params.output.includes(KNOWN_CLAUDE_LIBX32_BWRAP_ERROR)) {
+    return "native-sandbox-libx32-runtime-blocker";
+  }
+  if (/invalid api key|api key.*invalid|x-api-key/i.test(params.output)) {
+    return "api-key-env-poisoning";
+  }
+  if (
+    /not logged in|please run \/login|run \/login|login required|authentication required/i.test(
+      params.output,
+    )
+  ) {
+    return params.usedGeneratedSettings
+      ? "generated-settings-hiding-claude-auth"
+      : "missing-subscription-login";
+  }
+  return "generic-failure";
+}
+
+function summarizeClaudeSubscriptionAuthProbeResults(
+  results: ClaudeSubscriptionAuthProbeResult[],
+): { ok: boolean; blocker: ClaudeSubscriptionAuthProbeBlocker } {
+  const failed = results.find((result) => !result.ok);
+  return {
+    ok: failed === undefined,
+    blocker: failed?.blocker ?? "none",
+  };
+}
+
+export function runClaudeSubscriptionAuthDifferentialProbes(
+  params: {
+    workingDir?: string;
+    runId?: string;
+    purpose?: ClaudeSandboxPurpose;
+    settingsRoot?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): ClaudeSubscriptionAuthProbeReport {
+  const env = params.env ?? process.env;
+  if (env[CLAUDE_SANDBOX_LIVE_PROBES_ENV] !== "1") {
+    return {
+      enabled: false,
+      ok: false,
+      blocker: "live-probe-required",
+      results: [],
+    };
+  }
+
+  if (!commandPath("claude")) {
+    return {
+      enabled: true,
+      ok: false,
+      blocker: "claude-not-found",
+      results: [],
+    };
+  }
+
+  const workingDir = params.workingDir ?? process.cwd();
+  const runId = params.runId ?? `auth-${Date.now()}`;
+  const purpose = params.purpose ?? "goal-worker";
+  const probeEnv = buildClaudeSubscriptionProbeEnv(env);
+  const prompt = `Reply exactly: ${CLAUDE_AUTH_OK_REPLY}`;
+  const settingsRoot = params.settingsRoot;
+
+  const makeSettings = (
+    id: ClaudeSubscriptionAuthProbeId,
+    includePermissionClaudeDeny: boolean,
+    includeSandboxClaudeDeny: boolean,
+  ): ClaudeCodeSandboxSettingsConfig =>
+    writeClaudeAuthProbeSettings({
+      workingDir,
+      runId: `${runId}-${id}`,
+      purpose,
+      settingsRoot,
+      includePermissionClaudeDeny,
+      includeSandboxClaudeDeny,
+    });
+
+  let cases: Array<{
+    id: ClaudeSubscriptionAuthProbeId;
+    args: string[];
+    usedGeneratedSettings: boolean;
+  }>;
+  try {
+    const settingsWithoutClaudeDeny = makeSettings("settings_without_claude_deny", false, false);
+    const settingSourcesEmpty = makeSettings("setting_sources_empty", false, false);
+    const permissionsOnly = makeSettings("permissions_deny_claude_only", true, false);
+    const sandboxOnly = makeSettings("sandbox_deny_claude_only", false, true);
+    const fullGenerated = writeClaudeCodeSandboxSettings({
+      workingDir,
+      runId: `${runId}-full-generated-settings`,
+      purpose,
+      settingsRoot,
+    });
+
+    cases = [
+      {
+        id: "plain_unset_api_key_env",
+        args: ["-p", prompt],
+        usedGeneratedSettings: false,
+      },
+      {
+        id: "settings_without_claude_deny",
+        args: [
+          "-p",
+          "--bare",
+          "--settings",
+          settingsWithoutClaudeDeny.settingsPath,
+          "--permission-mode",
+          "default",
+          "--allowedTools",
+          "Bash",
+          "--",
+          prompt,
+        ],
+        usedGeneratedSettings: true,
+      },
+      {
+        id: "setting_sources_empty",
+        args: [
+          "-p",
+          "--bare",
+          "--settings",
+          settingSourcesEmpty.settingsPath,
+          "--setting-sources",
+          "",
+          "--permission-mode",
+          "default",
+          "--allowedTools",
+          "Bash",
+          "--",
+          prompt,
+        ],
+        usedGeneratedSettings: true,
+      },
+      {
+        id: "permissions_deny_claude_only",
+        args: [
+          "-p",
+          "--bare",
+          "--settings",
+          permissionsOnly.settingsPath,
+          "--setting-sources",
+          "",
+          "--permission-mode",
+          "default",
+          "--allowedTools",
+          "Bash",
+          "--",
+          prompt,
+        ],
+        usedGeneratedSettings: true,
+      },
+      {
+        id: "sandbox_deny_claude_only",
+        args: [
+          "-p",
+          "--bare",
+          "--settings",
+          sandboxOnly.settingsPath,
+          "--setting-sources",
+          "",
+          "--permission-mode",
+          "default",
+          "--allowedTools",
+          "Bash",
+          "--",
+          prompt,
+        ],
+        usedGeneratedSettings: true,
+      },
+      {
+        id: "full_generated_settings",
+        args: [
+          "-p",
+          "--bare",
+          "--settings",
+          fullGenerated.settingsPath,
+          "--setting-sources",
+          "",
+          "--permission-mode",
+          "default",
+          "--allowedTools",
+          "Bash",
+          "--",
+          prompt,
+        ],
+        usedGeneratedSettings: true,
+      },
+    ];
+  } catch {
+    return {
+      enabled: true,
+      ok: false,
+      blocker: "settings-generation-failed",
+      results: [],
+    };
+  }
+
+  const results = cases.map((probeCase): ClaudeSubscriptionAuthProbeResult => {
+    const result = spawnSync("claude", probeCase.args, {
+      cwd: workingDir,
+      env: probeEnv,
+      encoding: "utf8",
+      timeout: 45000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout = Buffer.isBuffer(result.stdout)
+      ? result.stdout.toString("utf8")
+      : String(result.stdout ?? "");
+    const output = formatSpawnOutput(result);
+    const ok = result.status === 0 && stdout.trim() === CLAUDE_AUTH_OK_REPLY;
+    return {
+      id: probeCase.id,
+      ok,
+      blocker: ok
+        ? "none"
+        : classifyClaudeSubscriptionAuthProbeFailure({
+            output,
+            usedGeneratedSettings: probeCase.usedGeneratedSettings,
+          }),
+    };
+  });
+  const summary = summarizeClaudeSubscriptionAuthProbeResults(results);
+  return {
+    enabled: true,
+    ok: summary.ok,
+    blocker: summary.blocker,
+    results,
+  };
 }
 
 function commandPath(command: string): string | undefined {

@@ -15,7 +15,10 @@
  * bwrap/socat, or a bubblewrap startup error).
  */
 import process from "node:process";
-import { claudeCodeNativeSandboxStatus } from "../src/goal/backend-sandbox.js";
+import {
+  claudeCodeNativeSandboxStatus,
+  runClaudeSubscriptionAuthDifferentialProbes,
+} from "../src/goal/backend-sandbox.js";
 
 const LIVE_PROBE_FLAG = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 
@@ -27,6 +30,23 @@ function main(): number {
   if (process.env[LIVE_PROBE_FLAG] !== "1") {
     emit("claude-live-sandbox: required");
     emit(`reason: set ${LIVE_PROBE_FLAG}=1 to run the live deny/allow probe`);
+    emit("exit: 2");
+    return 2;
+  }
+
+  const authReport = runClaudeSubscriptionAuthDifferentialProbes({
+    workingDir: process.cwd(),
+    runId: `prove-claude-auth-${Date.now()}`,
+    purpose: "goal-worker",
+    env: process.env,
+  });
+  emit(`claude-auth-probes: ${authReport.ok ? "passed" : "failed"}`);
+  emit(`claude-auth-blocker: ${authReport.blocker}`);
+  for (const result of authReport.results) {
+    emit(`claude-auth-probe ${result.id}: ok=${result.ok} blocker=${result.blocker}`);
+  }
+  if (!authReport.ok) {
+    emit("claude-live-sandbox: environment-blocked");
     emit("exit: 2");
     return 2;
   }
