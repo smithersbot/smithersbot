@@ -62,8 +62,9 @@ Type=simple
 EnvironmentFile=%h/.smithersbot/.env
 WorkingDirectory=$repo_root
 ExecStart=$node_bin scripts/run-node.mjs gateway
-Restart=on-failure
+Restart=always
 RestartSec=5
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
