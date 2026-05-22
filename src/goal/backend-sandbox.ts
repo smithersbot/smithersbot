@@ -26,6 +26,15 @@ export type CodexNativeSandboxConfig = {
   helperDir: string;
   helperPath: string;
   codexPath: string;
+  /**
+   * Path inside the generated CODEX_HOME where Codex looks for auth.json.
+   * writeCodexNativeSandboxConfig symlinks this to {@link authSourcePath} so the
+   * unsandboxed Codex control plane can authenticate while the sandboxed shell
+   * stays blocked (the symlink resolves to the already-denied real auth path).
+   */
+  authReferencePath: string;
+  /** Real Codex auth.json the auth reference points at ($CODEX_HOME ?? ~/.codex). */
+  authSourcePath: string;
   env: Record<string, string>;
   args: string[];
   configToml: string;
@@ -192,7 +201,17 @@ export function mergeCodexNativeSandboxEnv(
   };
 }
 
-function buildCodexDeniedReadPaths(workingDir: string): string[] {
+/**
+ * Resolve the real Codex auth.json the unsandboxed control plane authenticates
+ * with. Honors an explicit CODEX_HOME override and otherwise falls back to
+ * ~/.codex/auth.json. Never reads or copies the file — only its path is used.
+ */
+function resolveRealCodexAuthSource(): string {
+  const realCodexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  return path.join(realCodexHome, "auth.json");
+}
+
+function buildCodexDeniedReadPaths(workingDir: string, authSourcePath: string): string[] {
   return uniqueValues([
     path.join(workingDir, ".env"),
     path.join(workingDir, ".env.local"),
@@ -205,6 +224,11 @@ function buildCodexDeniedReadPaths(workingDir: string): string[] {
     path.join(os.homedir(), ".clawdbot", "clawdbot.json"),
     path.join(os.homedir(), ".clawdbot-dev", "moltbot.json"),
     path.join(os.homedir(), ".codex", "auth.json"),
+    // Deny the resolved real auth source too. When CODEX_HOME is unset this is the
+    // same path as ~/.codex/auth.json above (deduped); when overridden it ensures
+    // the generated auth symlink still resolves to a denied target for the
+    // sandboxed shell while the unsandboxed control plane reads it directly.
+    authSourcePath,
     path.join(os.homedir(), ".codex", "config.toml"),
     path.join(os.homedir(), ".claude", "settings.json"),
     path.join(os.homedir(), ".ssh", "id_rsa"),
@@ -311,6 +335,8 @@ export function buildCodexNativeSandboxConfig(params: {
   const codexHome = path.join(sandboxRoot, `smithersbot-codex-${safeRunIdSegment(params.runId)}`);
   const helperDir = path.join(codexHome, "bin");
   const helperPath = path.join(helperDir, "codex-linux-sandbox");
+  const authSourcePath = resolveRealCodexAuthSource();
+  const authReferencePath = path.join(codexHome, "auth.json");
   const allowedReadPaths =
     params.purpose === "repo-chat"
       ? uniqueValues([resolveAgentRoot(), params.workingDir])
@@ -319,7 +345,7 @@ export function buildCodexNativeSandboxConfig(params: {
     params.purpose === "repo-chat"
       ? []
       : uniqueValues([params.workingDir, path.join(params.workingDir, ".git")]);
-  const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir);
+  const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir, authSourcePath);
   const configToml = buildCodexPermissionProfileToml({
     executionRoot,
     deniedReadPaths,
@@ -335,6 +361,8 @@ export function buildCodexNativeSandboxConfig(params: {
     helperDir,
     helperPath,
     codexPath,
+    authReferencePath,
+    authSourcePath,
     env: {
       CODEX_HOME: codexHome,
       PATH: `${helperDir}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -374,7 +402,31 @@ export function writeCodexNativeSandboxConfig(params: {
     fs.copyFileSync(nativeCodexPath, config.helperPath);
     fs.chmodSync(config.helperPath, 0o700);
   }
+  linkCodexAuthReference(config);
   return config;
+}
+
+/**
+ * Restore Codex auth continuity for the generated CODEX_HOME by symlinking
+ * <codexHome>/auth.json to the real ~/.codex/auth.json (never a copy, so no auth
+ * contents are duplicated or persisted). The symlink lets the unsandboxed Codex
+ * control plane read $CODEX_HOME/auth.json and authenticate; the sandboxed shell
+ * stays blocked because the link resolves to the already-denied real auth path
+ * (the same symlink-target deny the symlink_escape probe proves). Best-effort:
+ * if the source is missing or the link can't be created, control-plane auth
+ * still resolves via the real CODEX_HOME when present. We never chmod the link
+ * (a Linux chmod follows it and would mutate the real auth file's perms); the
+ * generated CODEX_HOME directory is created mode 0o700 so the link is owner-only.
+ */
+function linkCodexAuthReference(config: CodexNativeSandboxConfig): void {
+  try {
+    if (config.authSourcePath === config.authReferencePath) return;
+    if (!fs.existsSync(config.authSourcePath)) return;
+    fs.rmSync(config.authReferencePath, { force: true });
+    fs.symlinkSync(config.authSourcePath, config.authReferencePath);
+  } catch {
+    // Best-effort auth continuity; do not fail sandbox setup on link errors.
+  }
 }
 
 function safeRunIdSegment(runId: string): string {
@@ -643,6 +695,10 @@ export function codexNativeSandboxStatus(
     "cat ~/.smithersbot/.env >/dev/null; echo home_env=$?",
     "cat ~/.smithersbot/smithersbot.json >/dev/null; echo home_config=$?",
     `cat ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} >/dev/null; echo private_env=$?`,
+    // The generated CODEX_HOME/auth.json symlink must stay unreadable from inside
+    // the sandbox: it resolves to the already-denied real ~/.codex/auth.json, so
+    // only the unsandboxed control plane can follow it to authenticate.
+    `cat ${escapeShellArg(sandboxConfig.authReferencePath)} >/dev/null; echo codex_auth=$?`,
     "rm -f .smithersbot-codex-env-link",
     `ln -s ${escapeShellArg(path.join(resolvePrivateRoot(), "env", path.basename(path.dirname(workingDir)), ".env"))} .smithersbot-codex-env-link`,
     "cat .smithersbot-codex-env-link >/dev/null; echo symlink_escape=$?",
@@ -667,6 +723,7 @@ export function codexNativeSandboxStatus(
     output.includes("home_env=1") &&
     output.includes("home_config=1") &&
     output.includes("private_env=1") &&
+    output.includes("codex_auth=1") &&
     output.includes("symlink_escape=1") &&
     output.includes("ok");
   if (passed) {

@@ -19,6 +19,48 @@ import {
   writeCodexNativeSandboxConfig,
   writeClaudeCodeSandboxSettings,
 } from "./backend-sandbox.js";
+import { isPathInsideAgentRoot } from "../config/managed-paths.js";
+
+function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
+  const previous: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    previous[key] = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function createFakeCodexInstall(): { codexPath: string; cleanup: () => void } {
+  const fakeInstall = fs.mkdtempSync(path.join(os.tmpdir(), "codex-install-"));
+  const binDir = path.join(fakeInstall, "bin");
+  const nativeDir = path.join(
+    fakeInstall,
+    "lib",
+    "node_modules",
+    "@openai",
+    "codex",
+    "node_modules",
+    "@openai",
+    "codex-linux-x64",
+    "vendor",
+    "x86_64-unknown-linux-musl",
+    "bin",
+  );
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(nativeDir, { recursive: true });
+  const codexPath = path.join(binDir, "codex");
+  fs.writeFileSync(codexPath, "#!/bin/sh\n");
+  fs.writeFileSync(path.join(nativeDir, "codex"), "#!/bin/sh\n");
+  return { codexPath, cleanup: () => fs.rmSync(fakeInstall, { recursive: true, force: true }) };
+}
 
 function mockCommandPaths(): void {
   mockExecFileSync.mockImplementation((command: string, args: string[]) => {
@@ -197,7 +239,7 @@ describe("Codex native permission-profile sandbox config", () => {
     mockSpawnSync.mockReturnValue({
       status: 0,
       stdout:
-        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\nsymlink_escape=1\nok",
+        "readme=0\nenv_example=0\nenv_local=1\nenv_production=1\nenv_test=1\nhome_env=1\nhome_config=1\nprivate_env=1\ncodex_auth=1\nsymlink_escape=1\nok",
       stderr: "",
     });
 
@@ -225,6 +267,246 @@ describe("Codex native permission-profile sandbox config", () => {
         }),
       }),
     );
+  });
+});
+
+describe("Codex native sandbox auth continuity", () => {
+  beforeEach(() => {
+    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
+  });
+
+  // (a) Generated CODEX_HOME carries an auth reference to the real ~/.codex/auth.json
+  // and lives outside agent-visible roots.
+  it("carries an auth reference targeting the real ~/.codex/auth.json with codexHome outside agent roots", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot, CODEX_HOME: undefined }, () => {
+        const config = buildCodexNativeSandboxConfig({
+          workingDir,
+          runId: "auth-ref",
+          purpose: "goal-worker",
+          sandboxRoot: os.tmpdir(),
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        expect(config.authReferencePath).toBe(path.join(config.codexHome, "auth.json"));
+        expect(config.authSourcePath).toBe(path.join(os.homedir(), ".codex", "auth.json"));
+        expect(config.codexHome.startsWith(workingDir)).toBe(false);
+        expect(isPathInsideAgentRoot(config.codexHome)).toBe(false);
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  // (b) config.toml still selects the smithersbot permission profile.
+  it('keeps default_permissions = "smithersbot" in the generated config.toml', () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+      runId: "perm",
+      purpose: "goal-worker",
+      sandboxRoot: os.tmpdir(),
+      codexPath: "/usr/local/bin/codex",
+    });
+    expect(config.configToml).toContain('default_permissions = "smithersbot"');
+  });
+
+  // (c) Deny rules still cover private env, repo .env variants, and ~/.codex/auth.json
+  // with no broad recursive deny over /, ~, or ~/.codex.
+  it("denies private env, repo env files, and ~/.codex/auth.json without broad recursive denies", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot, CODEX_HOME: undefined }, () => {
+        const config = buildCodexNativeSandboxConfig({
+          workingDir,
+          runId: "deny",
+          purpose: "goal-worker",
+          sandboxRoot: os.tmpdir(),
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        for (const denied of [
+          path.join(managedRoot, "private", "env", "smithersbot", ".env"),
+          path.join(workingDir, ".env"),
+          path.join(workingDir, ".env.local"),
+          path.join(workingDir, ".env.production"),
+          path.join(workingDir, ".env.test"),
+          path.join(os.homedir(), ".codex", "auth.json"),
+        ]) {
+          expect(config.deniedReadPaths).toContain(denied);
+        }
+        for (const broad of ["/", os.homedir(), path.join(os.homedir(), ".codex")]) {
+          expect(config.deniedReadPaths).not.toContain(broad);
+          expect(config.deniedReadPaths).not.toContain(path.join(broad, "**"));
+        }
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  // (d) README.md and .env.example stay readable through the workspace grant, with
+  // no broad read grant added to reach them.
+  it("keeps README.md and .env.example readable via the workspace grant without broad read grants", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot, CODEX_HOME: undefined }, () => {
+        const config = buildCodexNativeSandboxConfig({
+          workingDir,
+          runId: "allow",
+          purpose: "goal-worker",
+          sandboxRoot: os.tmpdir(),
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        // The workspace executionRoot write grant (write implies read) covers
+        // README.md and .env.example, neither of which carries a deny rule.
+        expect(config.configToml).toContain(`${JSON.stringify(workingDir)} = "write"`);
+        expect(config.deniedReadPaths).not.toContain(path.join(workingDir, "README.md"));
+        expect(config.deniedReadPaths).not.toContain(path.join(workingDir, ".env.example"));
+        for (const root of [
+          "/home",
+          "/home/matt",
+          os.homedir(),
+          path.join(os.homedir(), ".codex"),
+        ]) {
+          expect(config.configToml).not.toContain(`${JSON.stringify(root)} = "read"`);
+        }
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  // (e)+(f) Both the generated CODEX_HOME/auth.json and the real ~/.codex/auth.json
+  // are blocked from the sandboxed shell: the generated reference is a symlink to
+  // the real auth source, and that source is in the deny list.
+  it("blocks both the generated and real auth paths from the sandboxed shell", () => {
+    withEnv({ CODEX_HOME: undefined }, () => {
+      const config = buildCodexNativeSandboxConfig({
+        workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+        runId: "auth-block",
+        purpose: "goal-worker",
+        sandboxRoot: os.tmpdir(),
+        codexPath: "/usr/local/bin/codex",
+      });
+
+      // Real auth path is denied directly (f).
+      expect(config.deniedReadPaths).toContain(path.join(os.homedir(), ".codex", "auth.json"));
+      // Generated reference resolves to the real auth source, which is denied (e).
+      expect(config.authReferencePath).toBe(path.join(config.codexHome, "auth.json"));
+      expect(config.deniedReadPaths).toContain(config.authSourcePath);
+    });
+  });
+
+  // (g) The control plane authenticates via a real symlink (not a copy) at the
+  // generated auth reference, while that reference stays denied to the sandbox.
+  it("symlinks the generated auth.json to the real auth source for control-plane auth", () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const fakeCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-"));
+    const install = createFakeCodexInstall();
+    fs.writeFileSync(path.join(fakeCodexHome, "auth.json"), '{"OPENAI_API_KEY":"placeholder"}\n');
+    try {
+      withEnv({ CODEX_HOME: fakeCodexHome }, () => {
+        const config = writeCodexNativeSandboxConfig({
+          workingDir: process.cwd(),
+          runId: "auth-link",
+          purpose: "goal-worker",
+          sandboxRoot,
+          codexPath: install.codexPath,
+        });
+
+        expect(config.env.CODEX_HOME).toBe(config.codexHome);
+        expect(config.authSourcePath).toBe(path.join(fakeCodexHome, "auth.json"));
+        const linkStat = fs.lstatSync(config.authReferencePath);
+        expect(linkStat.isSymbolicLink()).toBe(true);
+        expect(fs.readlinkSync(config.authReferencePath)).toBe(config.authSourcePath);
+        // The control-plane read resolves through the symlink; the sandboxed shell
+        // is blocked because the resolved target is denied.
+        expect(config.deniedReadPaths).toContain(config.authSourcePath);
+      });
+    } finally {
+      fs.rmSync(sandboxRoot, { recursive: true, force: true });
+      fs.rmSync(fakeCodexHome, { recursive: true, force: true });
+      install.cleanup();
+    }
+  });
+
+  it("skips the auth symlink (no copy) when the real auth source is absent", () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-native-sandbox-"));
+    const emptyCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-empty-"));
+    const install = createFakeCodexInstall();
+    try {
+      withEnv({ CODEX_HOME: emptyCodexHome }, () => {
+        const config = writeCodexNativeSandboxConfig({
+          workingDir: process.cwd(),
+          runId: "auth-missing",
+          purpose: "goal-worker",
+          sandboxRoot,
+          codexPath: install.codexPath,
+        });
+
+        expect(fs.existsSync(config.authReferencePath)).toBe(false);
+      });
+    } finally {
+      fs.rmSync(sandboxRoot, { recursive: true, force: true });
+      fs.rmSync(emptyCodexHome, { recursive: true, force: true });
+      install.cleanup();
+    }
+  });
+
+  // (h) No new broad read grant beyond the single sandbox-bootstrap base read.
+  it("introduces no broad read grant beyond the single sandbox-bootstrap base", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+      runId: "no-broad",
+      purpose: "goal-worker",
+      sandboxRoot: os.tmpdir(),
+      codexPath: "/usr/local/bin/codex",
+    });
+
+    // The lone pre-existing `"/" = "read"` base keeps /bin/sh, shared libs, and the
+    // codex-linux-sandbox helper executable inside bubblewrap; the auth fix adds no
+    // new read grants. Specific deny rules override it by path specificity.
+    const baseReadGrants = config.configToml.match(/^"\/" = "read"$/gm) ?? [];
+    expect(baseReadGrants).toHaveLength(1);
+    for (const root of [
+      "/home",
+      "/home/matt",
+      path.join(os.homedir(), ".codex"),
+      path.join(os.homedir(), ".ssh"),
+      path.join(os.homedir(), ".aws"),
+      path.join(os.homedir(), ".gnupg"),
+      path.join(os.homedir(), ".smithersbot"),
+      path.join(os.homedir(), ".moltbot"),
+      path.join(os.homedir(), ".clawdbot-dev"),
+    ]) {
+      expect(config.configToml).not.toContain(`${JSON.stringify(root)} = "read"`);
+    }
+  });
+
+  // (i) Regression: no danger flags and no --sandbox workspace-write shape.
+  it("emits no danger-full-access / dangerously-bypass / --sandbox workspace-write flags", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+      runId: "regression",
+      purpose: "goal-worker",
+      sandboxRoot: os.tmpdir(),
+      codexPath: "/usr/local/bin/codex",
+    });
+
+    const joined = config.args.join(" ");
+    expect(joined).not.toContain("danger-full-access");
+    expect(joined).not.toContain("dangerously-bypass");
+    expect(config.args).not.toContain("--sandbox");
+    expect(config.args).not.toContain("workspace-write");
   });
 });
 
