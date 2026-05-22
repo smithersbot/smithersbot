@@ -51,6 +51,7 @@ import {
 import { firstDefined } from "./bot-access.js";
 import { CREATE_REPO_COMMAND_SPEC, registerCreateRepoCommand } from "./create-repo-command.js";
 import { GATEWAY_RESTART_COMMAND_SPEC, registerGatewayRestartCommand } from "./gateway-restart.js";
+import { GATEWAY_STATUS_COMMAND_SPEC, registerGatewayStatusCommand } from "./gateway-status.js";
 import { GOAL_COMMAND_SPECS, registerTelegramGoalCommands } from "./goal-commands.js";
 import {
   NIGHTWATCH_COMMAND_SPECS,
@@ -173,6 +174,7 @@ export const registerTelegramNativeCommands = ({
   const goalSpecs = nativeEnabled ? GOAL_COMMAND_SPECS : [];
   const repoChatSpecs = nativeEnabled ? REPO_CHAT_COMMAND_SPECS : [];
   const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
+  const gatewayStatusSpecs = nativeEnabled ? [GATEWAY_STATUS_COMMAND_SPEC] : [];
   const createRepoSpecs = nativeEnabled ? [CREATE_REPO_COMMAND_SPEC] : [];
   const nightwatchSpecs = nativeEnabled ? NIGHTWATCH_COMMAND_SPECS : [];
   const allCommands: Array<{ command: string; description: string }> = [
@@ -183,6 +185,7 @@ export const registerTelegramNativeCommands = ({
     ...pluginCommands,
     ...goalSpecs,
     ...repoChatSpecs,
+    ...gatewayStatusSpecs,
     ...gatewayRestartSpecs,
     ...createRepoSpecs,
     ...nightwatchSpecs,
@@ -559,6 +562,17 @@ export const registerTelegramNativeCommands = ({
           cfg,
           accountId,
           onUpdateProcessed: (updateId) => opts.updateOffset?.onUpdateId?.(updateId),
+          telegramCfg,
+          allowFrom,
+          groupAllowFrom,
+          useAccessGroups,
+          resolveGroupPolicy,
+          resolveTelegramGroupConfig,
+          shouldSkipUpdate,
+        });
+        registerGatewayStatusCommand({
+          bot,
+          cfg,
           telegramCfg,
           allowFrom,
           groupAllowFrom,

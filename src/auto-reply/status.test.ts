@@ -429,6 +429,7 @@ describe("buildCommandsMessage", () => {
     );
     expect(text).toContain("Advanced & admin");
     expect(text).toContain("/nightwatch - Configure scheduled code review.");
+    expect(text).toContain("/gateway_status - Show gateway process and service status.");
     expect(text).toContain("/gateway_restart - Dangerous/admin: restart the gateway service.");
     expect(text).toContain("Help");
     expect(text).toContain("/commands - List the public SmithersBot command surface.");
@@ -484,6 +485,7 @@ describe("buildHelpMessage", () => {
     expect(text).toContain("/goal_github_push is dangerous/admin");
     expect(text).toContain("Advanced & admin");
     expect(text).toContain("/nightwatch");
+    expect(text).toContain("/gateway_status");
     expect(text).toContain("/gateway_restart");
     expect(text).toContain("/gateway_restart is dangerous/admin");
     expect(text).toContain("Help");

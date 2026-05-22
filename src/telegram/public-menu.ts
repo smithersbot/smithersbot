@@ -86,6 +86,11 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     publicDescription: "Configure scheduled code review.",
   },
   {
+    command: "gateway_status",
+    label: "Advanced & admin",
+    publicDescription: "Show gateway process and service status.",
+  },
+  {
     command: "gateway_restart",
     label: "Advanced & admin",
     publicDescription: "Dangerous/admin: restart the gateway service.",
