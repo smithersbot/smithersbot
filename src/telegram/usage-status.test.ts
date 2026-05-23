@@ -7,6 +7,7 @@ import type { RuntimeEnv } from "../runtime.js";
 import {
   buildClaudeStatuslineRefreshCommand,
   buildUsageStatusMessage,
+  clearUsageStatusCachesForTest,
   refreshClaudeStatuslineCache,
   registerUsageStatusCommand,
   resolveClaudeStatuslineCachePath,
@@ -86,8 +87,11 @@ const CLAUDE_CACHE = JSON.stringify({
 });
 
 const CODEX_LIMIT = JSON.stringify({
-  burst: { used_percentage: 30, resets_at: "2026-05-23T16:00:00Z" },
-  weekly: { used_percentage: 5, resets_at: "2026-05-28T00:00:00Z" },
+  primary: { usedPercent: 30, windowDurationMins: 240, resetsAt: 1779552000 },
+  secondary: { usedPercent: 5, windowDurationMins: 10080, resetsAt: "1779926400" },
+  credits: { hasCredits: true, balance: 12.5 },
+  planType: "pro",
+  rateLimitReachedType: null,
 });
 
 const CCUSAGE_CLAUDE = JSON.stringify({
@@ -102,6 +106,10 @@ function cacheReader(entry: StatuslineCacheEntry | undefined) {
 }
 
 describe("buildUsageStatusMessage", () => {
+  beforeEach(() => {
+    clearUsageStatusCachesForTest();
+  });
+
   it("renders Claude live quota from the statusline cache", () => {
     const text = buildUsageStatusMessage({
       env: {},
@@ -216,14 +224,17 @@ describe("buildUsageStatusMessage", () => {
     });
 
     expect(text).toContain("Codex — live subscription quota");
-    expect(text).toContain("Burst: 30% used, resets 2026-05-23T16:00:00Z");
-    expect(text).toContain("Weekly: 5% used, resets 2026-05-28T00:00:00Z");
+    expect(text).toContain("Status: current");
+    expect(text).toContain("Primary (4h): 30% used, resets 2026-05-23T16:00:00.000Z");
+    expect(text).toContain("Secondary (7d): 5% used, resets 2026-05-28T00:00:00.000Z");
+    expect(text).toContain("Details: plan pro; credits available, balance 12.5.");
     // External CLI is invoked with an argv array, never a shell string.
     const call = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
       (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("codex-limit"),
     );
     expect(call?.[0]).toBe("npx");
     expect(call?.[1]).toEqual(["-y", "codex-limit", "--json"]);
+    expect(call?.[2]).toMatchObject({ timeout: 15_000 });
   });
 
   it("shows a concise message when codex-limit is unavailable", () => {
@@ -239,6 +250,59 @@ describe("buildUsageStatusMessage", () => {
     expect(text).toContain("Live quota unavailable (codex-limit command not found)");
   });
 
+  it("uses a stale cached Codex live quota when codex-limit times out", () => {
+    buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({ codexLimit: okResult(CODEX_LIMIT) }),
+      refreshClaudeStatusline: false,
+    });
+
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW + 60_000,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({ codexLimit: errResult("ETIMEDOUT") }),
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).toContain("Codex — live subscription quota");
+    expect(text).toContain("Status: stale");
+    expect(text).toContain("cached 2026-05-23T12:00:00.000Z (1m ago); codex-limit timed out");
+    expect(text).toContain("Primary (4h): 30% used, resets 2026-05-23T16:00:00.000Z");
+  });
+
+  it("shows codex-limit timeout as unavailable when there is no cached live quota", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({ codexLimit: errResult("ETIMEDOUT") }),
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).toContain("Live quota unavailable (codex-limit timed out)");
+  });
+
+  it("renders Codex exhausted state from rateLimitReachedType", () => {
+    const exhausted = JSON.stringify({
+      primary: { usedPercent: 100, windowDurationMins: 240, resetsAt: 1779552000 },
+      secondary: { usedPercent: 84, windowDurationMins: 10080, resetsAt: 1779926400 },
+      rateLimitReachedType: "primary",
+    });
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({ codexLimit: okResult(exhausted) }),
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).toContain("Status: exhausted/rate-limit reached (primary).");
+    expect(text).toContain("Primary (4h): 100% used");
+  });
+
   it("shows historical ccusage separately from live quota", () => {
     const text = buildUsageStatusMessage({
       env: {},
@@ -247,17 +311,61 @@ describe("buildUsageStatusMessage", () => {
       spawnSync: makeSpawnSync({
         codexLimit: okResult(CODEX_LIMIT),
         ccusageClaude: okResult(CCUSAGE_CLAUDE),
+        ccusageCodex: okResult(
+          JSON.stringify({
+            daily: [{ date: "2026-05-23" }],
+            totals: { totalCost: 1.25, totalTokens: 9876 },
+          }),
+        ),
       }),
       refreshClaudeStatusline: false,
     });
 
     expect(text).toContain("Historical usage — local logs, not remaining quota");
     expect(text).toContain("Claude Code: 2 day(s), 123,456 tokens, $12.50");
-    expect(text).toContain("Codex: unavailable");
+    expect(text).toContain("Codex: 1 day(s), 9,876 tokens, $1.25");
     // The historical section is rendered after (separate from) the live sections.
     expect(text.indexOf("live subscription quota")).toBeLessThan(
       text.indexOf("Historical usage — local logs"),
     );
+  });
+
+  it("uses stale cached historical ccusage when later calls time out", () => {
+    buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({
+        ccusageClaude: okResult(CCUSAGE_CLAUDE),
+        ccusageCodex: okResult(
+          JSON.stringify({
+            daily: [{ date: "2026-05-23" }],
+            totals: { totalCost: 1.25, totalTokens: 9876 },
+          }),
+        ),
+      }),
+      refreshClaudeStatusline: false,
+    });
+
+    const spawnSync = makeSpawnSync({
+      ccusageClaude: errResult("ETIMEDOUT"),
+      ccusageCodex: errResult("ETIMEDOUT"),
+    });
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW + 120_000,
+      readCache: cacheReader(undefined),
+      spawnSync,
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).toContain("Claude Code: 2 day(s), 123,456 tokens, $12.50 (stale;");
+    expect(text).toContain("Codex: 1 day(s), 9,876 tokens, $1.25 (stale;");
+    expect(text).toContain("ccusage timed out");
+    const ccusageCall = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
+      (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("ccusage@latest"),
+    );
+    expect(ccusageCall?.[2]).toMatchObject({ timeout: 20_000 });
   });
 
   it("redacts token-like values that would otherwise leak into the output", () => {

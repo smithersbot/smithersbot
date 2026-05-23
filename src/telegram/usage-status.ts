@@ -28,7 +28,8 @@ const CLAUDE_REFRESH_TIMEOUT_MS = 20_000;
 const CLAUDE_REFRESH_POLL_MS = 250;
 // External usage CLIs are invoked synchronously; cap each to keep the command
 // responsive even when offline or when npx must resolve a package.
-const EXTERNAL_CLI_TIMEOUT_MS = 8000;
+const CODEX_LIMIT_TIMEOUT_MS = 15_000;
+const CCUSAGE_TIMEOUT_MS = 20_000;
 const EXTERNAL_CLI_MAX_BUFFER = 4 * 1024 * 1024;
 
 const USAGE_STATUS_TITLE = "SmithersBot usage status";
@@ -73,12 +74,29 @@ export type BuildUsageStatusOptions = {
   sleepMs?: (ms: number) => void;
 };
 
-type UsageWindow = { usedPercentage?: number; resetsAt?: string };
+type UsageWindow = { usedPercentage?: number; resetsAt?: string; windowDurationMins?: number };
 type ClaudeQuota = { fiveHour: UsageWindow; sevenDay: UsageWindow };
-type CodexQuota = { burst?: UsageWindow; weekly?: UsageWindow };
+type CodexQuota = {
+  primary?: UsageWindow;
+  secondary?: UsageWindow;
+  credits?: { hasCredits?: boolean; balance?: number };
+  planType?: string;
+  rateLimitReachedType?: string;
+};
 type HistoricalSummary = { days: number; totalCost?: number; totalTokens?: number };
 
 type CliOutcome = { ok: true; stdout: string } | { ok: false; reason: string };
+type CachedValue<T> = { value: T; cachedAtMs: number };
+
+let codexQuotaCache: CachedValue<CodexQuota> | undefined;
+const historicalUsageCache: Partial<Record<"claude" | "codex", CachedValue<HistoricalSummary>>> =
+  {};
+
+export function clearUsageStatusCachesForTest(): void {
+  codexQuotaCache = undefined;
+  delete historicalUsageCache.claude;
+  delete historicalUsageCache.codex;
+}
 
 export function resolveClaudeStatuslineCachePath(
   homeDir: string = os.homedir(),
@@ -121,12 +139,23 @@ function pickString(obj: Record<string, unknown>, keys: readonly string[]): stri
 function pickWindow(value: unknown): UsageWindow | undefined {
   if (!value || typeof value !== "object") return undefined;
   const obj = value as Record<string, unknown>;
-  const usedPercentage = pickNumber(obj, ["used_percentage", "used_percent", "usedPercentage"]);
+  const usedPercentage = pickNumber(obj, [
+    "used_percentage",
+    "used_percent",
+    "usedPercentage",
+    "usedPercent",
+  ]);
   const resetsAt = pickString(obj, ["resets_at", "reset_at", "resetsAt", "reset"]);
-  if (usedPercentage == null && resetsAt == null) return undefined;
+  const windowDurationMins = pickNumber(obj, [
+    "windowDurationMins",
+    "window_duration_mins",
+    "windowMinutes",
+  ]);
+  if (usedPercentage == null && resetsAt == null && windowDurationMins == null) return undefined;
   return {
     ...(usedPercentage != null ? { usedPercentage } : {}),
     ...(resetsAt != null ? { resetsAt } : {}),
+    ...(windowDurationMins != null ? { windowDurationMins } : {}),
   };
 }
 
@@ -278,6 +307,15 @@ export function refreshClaudeStatuslineCache(
   }
 }
 
+function parseCredits(value: unknown): CodexQuota["credits"] | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const hasCredits = typeof obj.hasCredits === "boolean" ? obj.hasCredits : undefined;
+  const balance = pickNumber(obj, ["balance", "creditBalance"]);
+  if (hasCredits == null && balance == null) return undefined;
+  return { ...(hasCredits != null ? { hasCredits } : {}), ...(balance != null ? { balance } : {}) };
+}
+
 function parseCodexLimit(raw: string): CodexQuota | undefined {
   let parsed: unknown;
   try {
@@ -290,10 +328,22 @@ function parseCodexLimit(raw: string): CodexQuota | undefined {
   const nested = root.rate_limits;
   const container =
     nested && typeof nested === "object" ? (nested as Record<string, unknown>) : root;
-  const burst = firstWindow(container, ["burst", "five_hour", "fiveHour", "primary"]);
-  const weekly = firstWindow(container, ["weekly", "seven_day", "sevenDay", "secondary"]);
-  if (!burst && !weekly) return undefined;
-  return { ...(burst ? { burst } : {}), ...(weekly ? { weekly } : {}) };
+  const primary = firstWindow(container, ["primary", "burst", "five_hour", "fiveHour"]);
+  const secondary = firstWindow(container, ["secondary", "weekly", "seven_day", "sevenDay"]);
+  const credits = parseCredits(root.credits);
+  const planType = pickString(root, ["planType", "plan_type"]);
+  const rateLimitReachedType = pickString(root, [
+    "rateLimitReachedType",
+    "rate_limit_reached_type",
+  ]);
+  if (!primary && !secondary && !credits && !planType && !rateLimitReachedType) return undefined;
+  return {
+    ...(primary ? { primary } : {}),
+    ...(secondary ? { secondary } : {}),
+    ...(credits ? { credits } : {}),
+    ...(planType ? { planType } : {}),
+    ...(rateLimitReachedType ? { rateLimitReachedType } : {}),
+  };
 }
 
 function parseCcusageDaily(raw: string): HistoricalSummary | undefined {
@@ -317,12 +367,17 @@ function parseCcusageDaily(raw: string): HistoricalSummary | undefined {
   };
 }
 
-function runCli(spawnSyncImpl: SpawnSyncLike, command: string, args: string[]): CliOutcome {
+function runCli(
+  spawnSyncImpl: SpawnSyncLike,
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): CliOutcome {
   let result: ReturnType<SpawnSyncLike>;
   try {
     result = spawnSyncImpl(command, args, {
       encoding: "utf8",
-      timeout: EXTERNAL_CLI_TIMEOUT_MS,
+      timeout: timeoutMs,
       maxBuffer: EXTERNAL_CLI_MAX_BUFFER,
     });
   } catch {
@@ -357,7 +412,18 @@ function formatWindowLine(label: string, window: UsageWindow | undefined): strin
   }
   const resetAt = formatResetAt(window.resetsAt);
   const reset = resetAt ? `, resets ${resetAt}` : "";
-  return `  ${label}: ${formatPercent(window.usedPercentage)} used${reset}`;
+  const duration =
+    window.windowDurationMins != null
+      ? ` (${formatWindowDuration(window.windowDurationMins)})`
+      : "";
+  return `  ${label}${duration}: ${formatPercent(window.usedPercentage)} used${reset}`;
+}
+
+function formatWindowDuration(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return `${minutes}m`;
+  if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
 }
 
 function formatAge(ageMs: number): string {
@@ -423,35 +489,96 @@ function buildClaudeSection(
   return lines.join("\n");
 }
 
-function buildCodexSection(outcome: CliOutcome): string {
+function formatCacheAge(cachedAtMs: number, nowMs: number): string {
+  return `cached ${formatUpdatedAt(cachedAtMs)} (${formatAge(nowMs - cachedAtMs)} ago)`;
+}
+
+function buildCodexLines(quota: CodexQuota): string[] {
+  const lines = [
+    formatWindowLine("Primary", quota.primary),
+    formatWindowLine("Secondary", quota.secondary),
+  ];
+  if (quota.rateLimitReachedType) {
+    lines.push(`  Status: exhausted/rate-limit reached (${quota.rateLimitReachedType}).`);
+  }
+  const details: string[] = [];
+  if (quota.planType) details.push(`plan ${quota.planType}`);
+  if (quota.credits) {
+    const creditBits: string[] = [];
+    if (quota.credits.hasCredits != null) {
+      creditBits.push(quota.credits.hasCredits ? "credits available" : "no credits available");
+    }
+    if (quota.credits.balance != null) creditBits.push(`balance ${quota.credits.balance}`);
+    if (creditBits.length > 0) details.push(creditBits.join(", "));
+  }
+  if (details.length > 0) lines.push(`  Details: ${details.join("; ")}.`);
+  return lines;
+}
+
+function buildCodexSection(outcome: CliOutcome, nowMs: number): string {
   const header = "Codex — live subscription quota";
   if (!outcome.ok) {
+    if (codexQuotaCache) {
+      return [
+        header,
+        `  Status: stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; codex-limit ${outcome.reason}).`,
+        ...buildCodexLines(codexQuotaCache.value),
+      ].join("\n");
+    }
     return [header, `  Live quota unavailable (codex-limit ${outcome.reason}).`].join("\n");
   }
   const quota = parseCodexLimit(outcome.stdout);
   if (!quota) {
+    if (codexQuotaCache) {
+      return [
+        header,
+        `  Status: stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; unrecognized codex-limit output).`,
+        ...buildCodexLines(codexQuotaCache.value),
+      ].join("\n");
+    }
     return [header, "  Live quota unavailable (unrecognized codex-limit output)."].join("\n");
   }
-  return [
-    header,
-    formatWindowLine("Burst", quota.burst),
-    formatWindowLine("Weekly", quota.weekly),
-  ].join("\n");
+  codexQuotaCache = { value: quota, cachedAtMs: nowMs };
+  return [header, "  Status: current.", ...buildCodexLines(quota)].join("\n");
 }
 
-function formatHistoricalLine(label: string, outcome: CliOutcome): string {
-  if (!outcome.ok) {
-    return `  ${label}: unavailable (${outcome.reason}).`;
-  }
-  const summary = parseCcusageDaily(outcome.stdout);
-  if (!summary) {
-    return `  ${label}: unavailable (unrecognized ccusage output).`;
-  }
+function formatHistoricalSummary(label: string, summary: HistoricalSummary): string {
   const parts = [`${summary.days} day(s)`];
   if (summary.totalTokens != null)
     parts.push(`${summary.totalTokens.toLocaleString("en-US")} tokens`);
   if (summary.totalCost != null) parts.push(`$${summary.totalCost.toFixed(2)}`);
   return `  ${label}: ${parts.join(", ")}`;
+}
+
+function formatHistoricalLine(
+  label: string,
+  cacheKey: "claude" | "codex",
+  outcome: CliOutcome,
+  nowMs: number,
+): string {
+  if (!outcome.ok) {
+    const cached = historicalUsageCache[cacheKey];
+    if (cached) {
+      return `${formatHistoricalSummary(label, cached.value)} (stale; ${formatCacheAge(
+        cached.cachedAtMs,
+        nowMs,
+      )}; ccusage ${outcome.reason})`;
+    }
+    return `  ${label}: unavailable (${outcome.reason}).`;
+  }
+  const summary = parseCcusageDaily(outcome.stdout);
+  if (!summary) {
+    const cached = historicalUsageCache[cacheKey];
+    if (cached) {
+      return `${formatHistoricalSummary(label, cached.value)} (stale; ${formatCacheAge(
+        cached.cachedAtMs,
+        nowMs,
+      )}; unrecognized ccusage output)`;
+    }
+    return `  ${label}: unavailable (unrecognized ccusage output).`;
+  }
+  historicalUsageCache[cacheKey] = { value: summary, cachedAtMs: nowMs };
+  return formatHistoricalSummary(label, summary);
 }
 
 function collectTokenLikeEnvValues(env: NodeJS.ProcessEnv): string[] {
@@ -493,17 +620,32 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
   const claudeSection = buildClaudeSection(claudeEntry, nowMs, claudeRefreshResult);
   // -y keeps npx non-interactive so it never blocks waiting on an install prompt.
   const codexSection = buildCodexSection(
-    runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"]),
+    runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"], CODEX_LIMIT_TIMEOUT_MS),
+    nowMs,
   );
   const historicalSection = [
     "Historical usage — local logs, not remaining quota",
     formatHistoricalLine(
       "Claude Code",
-      runCli(spawnSyncImpl, "npx", ["-y", "ccusage@latest", "claude", "daily", "--json"]),
+      "claude",
+      runCli(
+        spawnSyncImpl,
+        "npx",
+        ["-y", "ccusage@latest", "claude", "daily", "--json"],
+        CCUSAGE_TIMEOUT_MS,
+      ),
+      nowMs,
     ),
     formatHistoricalLine(
       "Codex",
-      runCli(spawnSyncImpl, "npx", ["-y", "ccusage@latest", "codex", "daily", "--json"]),
+      "codex",
+      runCli(
+        spawnSyncImpl,
+        "npx",
+        ["-y", "ccusage@latest", "codex", "daily", "--json"],
+        CCUSAGE_TIMEOUT_MS,
+      ),
+      nowMs,
     ),
   ].join("\n");
 
