@@ -975,6 +975,53 @@ describe("session serialization", () => {
     expect(restored.stepResults.has("3")).toBe(false);
   });
 
+  it("round-trips executedBackend and usage-limit blockedReason for resume backend recheck", () => {
+    // /goal_resume's backend recheck relies on the sticky executedBackend and the
+    // usage-limit blockedReason surviving serialization; assert both round-trip.
+    const session: GoalSession = {
+      goal: "Usage-limit round-trip",
+      state: "blocked",
+      plan: {
+        goal: "Usage-limit round-trip",
+        workingDir: "/tmp/ws",
+        summary: "Plan",
+        steps: [
+          {
+            id: "codex-step",
+            description: "Hit codex usage limit",
+            dependsOn: [],
+            status: "blocked",
+            blockedReason: "out_of_credits",
+            blockedQuestion: "Codex is out of credits.",
+            executedBackend: "codex",
+          },
+        ],
+      },
+      stepResults: new Map([
+        [
+          "codex-step",
+          { stepId: "codex-step", success: false, output: "", error: "Codex out", durationMs: 5 },
+        ],
+      ]),
+      blockReason: null,
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "usage-limit-rt",
+      workingDir: "/tmp/ws",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    const restored = serializedToSession(serialized);
+    const step = restored.plan?.steps[0];
+    expect(step?.status).toBe("blocked");
+    expect(step?.blockedReason).toBe("out_of_credits");
+    expect(step?.executedBackend).toBe("codex");
+  });
+
   it("handles empty stepResults", () => {
     const serialized: SerializedRun = {
       runId: "empty-id",

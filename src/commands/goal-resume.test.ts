@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JsonExitError, runCommandWithRuntime } from "../cli/cli-utils.js";
 import { saveRun, loadRun } from "../goal/run-store.js";
-import type { Plan, SerializedRun } from "../goal/types.js";
+import { computeDisplayStatuses } from "../goal/execution-status.js";
+import type { BackendAvailability } from "../goal/backend-types.js";
+import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 /** Run an async fn, swallowing JsonExitError (expected in JSON-mode error tests). */
@@ -71,6 +73,23 @@ vi.mock("../goal/agent-executor.js", () => ({
   executeGoalWithAgent: (...args: unknown[]) => mockExecuteGoalWithAgent(...args),
 }));
 
+// Control backend availability without spawning real codex/claude probes.
+// Keep the real isBackendAvailable so the resume recheck + pickFallbackBackend
+// exercise their actual selection logic against the mocked availability table.
+const ALL_BACKENDS_AVAILABLE: BackendAvailability[] = [
+  { id: "pi", available: true },
+  { id: "codex", available: true },
+  { id: "claude_code", available: true },
+];
+let mockAvailability: BackendAvailability[] = [...ALL_BACKENDS_AVAILABLE];
+vi.mock("../goal/backend-availability.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/backend-availability.js")>();
+  return {
+    ...actual,
+    detectBackendAvailability: () => mockAvailability,
+  };
+});
+
 function mockRuntime(): RuntimeEnv & { logs: string[]; errors: string[] } {
   const logs: string[] = [];
   const errors: string[] = [];
@@ -126,6 +145,7 @@ describe("goal-resume command", () => {
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-resume-test-"));
     vi.clearAllMocks();
+    mockAvailability = [...ALL_BACKENDS_AVAILABLE];
     mockRunCliPlanning.mockResolvedValue({
       status: "success",
       plan: {
@@ -1532,6 +1552,370 @@ describe("goal-resume command", () => {
         includeScoutArtifacts: false,
       });
       expect(rt.logs.join("\n")).toContain("Replanning (--no-scout mode)...");
+    });
+  });
+
+  // --- Usage-limit backend recheck on resume ---
+
+  describe("usage-limit backend recheck", () => {
+    it("recheckUsageLimitBackends retargets a usage-limit step to an available alternate", async () => {
+      const { recheckUsageLimitBackends } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "codex-step",
+          description: "Hit codex usage limit",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "out_of_credits",
+          executedBackend: "codex",
+        },
+      ];
+      const result = recheckUsageLimitBackends({
+        steps,
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: false, reason: "codex not found on PATH" },
+          { id: "claude_code", available: true },
+        ],
+        enabledWorkers: ["codex", "claude_code"],
+      });
+
+      expect(result.reassigned).toEqual(["codex-step"]);
+      expect(result.stillBlocked).toEqual([]);
+      expect(steps[0]!.executedBackend).toBe("claude_code");
+      // The block classification is preserved (only the target backend changes).
+      expect(steps[0]!.blockedReason).toBe("out_of_credits");
+      expect(steps[0]!.status).toBe("blocked");
+    });
+
+    it("recheckUsageLimitBackends leaves a step usage-limit blocked when no compatible backend is available", async () => {
+      const { recheckUsageLimitBackends } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "codex-only",
+          description: "No fallback available",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "usage_limit",
+          blockedQuestion: "Codex is out of credits.",
+          executedBackend: "codex",
+        },
+      ];
+      const result = recheckUsageLimitBackends({
+        steps,
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: false, reason: "codex not found on PATH" },
+          { id: "claude_code", available: false, reason: "claude not found on PATH" },
+        ],
+        enabledWorkers: ["codex", "claude_code"],
+      });
+
+      expect(result.reassigned).toEqual([]);
+      expect(result.stillBlocked).toEqual(["codex-only"]);
+      // Stays a usage-limit blocker — never downgraded to "error" or user-input.
+      expect(steps[0]!.status).toBe("blocked");
+      expect(steps[0]!.blockedReason).toBe("usage_limit");
+      expect(steps[0]!.executedBackend).toBe("codex");
+    });
+
+    it("recheckUsageLimitBackends leaves a step alone when its sticky backend is available again", async () => {
+      const { recheckUsageLimitBackends } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "codex-step",
+          description: "Limit may have reset",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "rate_limit",
+          executedBackend: "codex",
+        },
+      ];
+      const result = recheckUsageLimitBackends({
+        steps,
+        availability: [...ALL_BACKENDS_AVAILABLE],
+        enabledWorkers: ["codex", "claude_code"],
+      });
+
+      expect(result.reassigned).toEqual([]);
+      expect(result.stillBlocked).toEqual([]);
+      // Executor will retry on codex (and fall back at runtime if it limits again).
+      expect(steps[0]!.executedBackend).toBe("codex");
+    });
+
+    it("recheckUsageLimitBackends respects an explicit backendOverride lock", async () => {
+      const { recheckUsageLimitBackends } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "locked-step",
+          description: "Pinned to codex",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "usage_limit",
+          executedBackend: "codex",
+        },
+      ];
+      const result = recheckUsageLimitBackends({
+        steps,
+        availability: [
+          { id: "pi", available: true },
+          { id: "codex", available: false, reason: "codex not found on PATH" },
+          { id: "claude_code", available: true },
+        ],
+        enabledWorkers: ["codex", "claude_code"],
+        backendOverride: "codex",
+      });
+
+      expect(result.reassigned).toEqual([]);
+      expect(result.stillBlocked).toEqual(["locked-step"]);
+      expect(steps[0]!.executedBackend).toBe("codex");
+    });
+
+    it("resume after Codex exhausted with Claude available retries the affected step on Claude", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-usage-fallback-ws-"));
+      const runId = "resume-usage-fallback";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: true },
+      ];
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Codex out of credits",
+            steps: [
+              {
+                id: "codex-step",
+                description: "Ran on codex and hit the usage limit",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "out_of_credits",
+                blockedQuestion: "Codex is out of credits.",
+                executedBackend: "codex",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Codex is out of credits.",
+            requiredInputKey: "resume_execution",
+            stepId: "codex-step",
+          },
+          stepResults: {
+            "codex-step": {
+              stepId: "codex-step",
+              success: false,
+              output: "",
+              error: "Codex is out of credits.",
+              durationMs: 1,
+            },
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let capturedBackend: string | undefined;
+      let capturedReason: string | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: {
+          session: {
+            plan: {
+              steps: Array<{
+                id: string;
+                status: string;
+                executedBackend?: string;
+                blockedReason?: string;
+              }>;
+            } | null;
+            state: string;
+          };
+        }) => {
+          const step = params.session.plan?.steps.find((s) => s.id === "codex-step");
+          capturedBackend = step?.executedBackend;
+          capturedReason = step?.blockedReason;
+          for (const s of params.session.plan?.steps ?? []) {
+            if (s.status === "pending" || s.status === "blocked") s.status = "done";
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+      // Step was retargeted to Claude, and its usage-limit reason was preserved
+      // through resume (not overwritten with a generic "error").
+      expect(capturedBackend).toBe("claude_code");
+      expect(capturedReason).toBe("out_of_credits");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("auto-retries a usage-limit block without a fake /goal_answer even with a stale input key", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-usage-autoretry-ws-"));
+      const runId = "resume-usage-autoretry";
+      // codex available again here, so no reassignment — this verifies that a
+      // usage-limit block is treated as auto-retryable even when the persisted
+      // requiredInputKey looks like a user-input key.
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Codex usage limit, stale input key",
+            steps: [
+              {
+                id: "codex-step",
+                description: "Hit codex usage limit",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "usage_limit",
+                blockedQuestion: "Codex usage limit reached.",
+                executedBackend: "codex",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Codex usage limit reached.",
+            requiredInputKey: "task:codex-step:input",
+            stepId: "codex-step",
+          },
+          stepResults: {
+            "codex-step": {
+              stepId: "codex-step",
+              success: false,
+              output: "",
+              error: "Codex usage limit reached.",
+              durationMs: 1,
+            },
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      // No fake answer required: resume runs the executor directly.
+      expect(result?.status).toBe("done");
+      expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+      expect(rt.logs.join("\n")).not.toContain("needs input");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("resume recomputes display state for all nodes, not just the first unblocked task", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-recompute-ws-"));
+      const runId = "resume-recompute-display";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: true },
+      ];
+      // 8cec60ca-shaped: a codex usage-limit blocker, an independent stale
+      // error-blocked step, a downstream dependent, and an independent pending step.
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Mixed-backend interruption",
+            steps: [
+              {
+                id: "codex-step",
+                description: "Codex usage limit",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "out_of_credits",
+                blockedQuestion: "Codex is out of credits.",
+                executedBackend: "codex",
+              },
+              {
+                id: "indep-error",
+                description: "Independent, stale error block",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted.",
+              },
+              {
+                id: "downstream",
+                description: "Depends on codex-step",
+                dependsOn: ["codex-step"],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted (cascade).",
+              },
+              {
+                id: "indep-pending",
+                description: "Independent pending Claude task",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Run interrupted by Codex usage limit.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let capturedDisplay: Map<string, string> | undefined;
+      let capturedCodexBackend: string | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            capturedDisplay = computeDisplayStatuses(params.session.plan.steps);
+            capturedCodexBackend = params.session.plan.steps.find(
+              (s) => s.id === "codex-step",
+            )?.executedBackend;
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(capturedDisplay).toBeDefined();
+      // Usage-limit blocker is visibly usage-limited (not pending, not plain blocked).
+      expect(capturedDisplay!.get("codex-step")).toBe("usage_limited");
+      // Independent stale error block recomputes to runnable (pending), not blocked.
+      expect(capturedDisplay!.get("indep-error")).toBe("pending");
+      // Downstream of the usage-limit blocker waits (soft_blocked), not stale-blocked.
+      expect(capturedDisplay!.get("downstream")).toBe("soft_blocked");
+      // Independent runnable Claude task stays runnable while a sibling is blocked.
+      expect(capturedDisplay!.get("indep-pending")).toBe("pending");
+      // The codex usage-limit step was retargeted to the available Claude backend.
+      expect(capturedCodexBackend).toBe("claude_code");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
     });
   });
 });

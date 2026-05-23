@@ -5,6 +5,18 @@ import fs from "node:fs";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
 import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import {
+  clampBackendForEnabledWorkers,
+  pickFallbackBackend,
+  resolveBackendForStep,
+} from "../goal/agent-executor-helpers.js";
+import { detectBackendAvailability, isBackendAvailable } from "../goal/backend-availability.js";
+import {
+  resolveEnabledWorkers,
+  type BackendAvailability,
+  type GoalBackendId,
+} from "../goal/backend-types.js";
+import { isUsageLimitClassReason } from "../goal/error-patterns.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
@@ -25,7 +37,8 @@ import {
   type ScoutResult,
 } from "../goal/scout.js";
 import type { MoltbotConfig } from "../config/types.clawdbot.js";
-import type { GoalOutcome, OutputFormat, SerializedRun } from "../goal/types.js";
+import type { CliWorkerId } from "../config/types.goal.js";
+import type { GoalOutcome, OutputFormat, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 export type GoalResumeOptions = {
@@ -64,6 +77,79 @@ function requiresExecutionAnswer(run: SerializedRun, requiredKey?: string): bool
   if (blockedSteps.length === 0) return true;
 
   return blockedSteps.some((step) => (step.blockedReason ?? "user_input") === "user_input");
+}
+
+/**
+ * Re-check backend availability for usage-limit-blocked steps before a resume.
+ *
+ * A usage-limit / out-of-credits / rate-limit block is sticky to the backend
+ * that hit it (step.executedBackend). On resume that backend may be gone (e.g.
+ * uninstalled or no longer on PATH). When it is, and a compatible enabled CLI
+ * backend IS available, retarget the step so the executor retries it there
+ * instead of dead-ending on "backend not available" (which would re-block it as
+ * a generic error). When the sticky backend is still available the step is left
+ * untouched — the executor retries it and, if it hits the limit again, performs
+ * its own runtime fallback. When no compatible backend is available the step is
+ * left usage-limit blocked. An explicit backendOverride lock is always honored.
+ *
+ * Fallback-backend selection reuses the executor's pickFallbackBackend so the
+ * resume path never duplicates that logic.
+ */
+export function recheckUsageLimitBackends(params: {
+  steps: PlanStep[];
+  availability: BackendAvailability[];
+  enabledWorkers: CliWorkerId[];
+  backendOverride?: GoalBackendId;
+  onProgress?: (text: string) => void;
+}): { reassigned: string[]; stillBlocked: string[] } {
+  const { steps, availability, enabledWorkers, backendOverride, onProgress } = params;
+  const reassigned: string[] = [];
+  const stillBlocked: string[] = [];
+  const defaultBackend: CliWorkerId =
+    enabledWorkers.length === 1 ? enabledWorkers[0]! : "claude_code";
+
+  for (const step of steps) {
+    if (step.status !== "blocked" || !isUsageLimitClassReason(step.blockedReason)) continue;
+
+    // An explicit backend lock pins the step to one backend; never reassign it.
+    if (backendOverride) {
+      stillBlocked.push(step.id);
+      continue;
+    }
+
+    const sticky = clampBackendForEnabledWorkers(
+      resolveBackendForStep(step, undefined, defaultBackend),
+      enabledWorkers,
+    );
+    if (sticky === "pi") continue; // pi has no usage limits to recover from
+
+    if (isBackendAvailable(sticky, availability).available) {
+      // Sticky backend is available again — let the executor retry on it.
+      continue;
+    }
+
+    const fallback = pickFallbackBackend(
+      sticky,
+      { status: "blocked", blockedReason: step.blockedReason },
+      enabledWorkers,
+      availability,
+      backendOverride,
+    );
+    if (fallback.backend) {
+      step.executedBackend = fallback.backend;
+      reassigned.push(step.id);
+      onProgress?.(
+        `  [usage-limit] Step ${step.id}: ${sticky} unavailable; retrying on ${fallback.backend}.`,
+      );
+    } else {
+      stillBlocked.push(step.id);
+      onProgress?.(
+        `  [usage-limit] Step ${step.id}: ${sticky} unavailable and no compatible backend available; staying usage-limit blocked.`,
+      );
+    }
+  }
+
+  return { reassigned, stillBlocked };
 }
 
 type ScoutArtifactFiles = {
@@ -546,10 +632,32 @@ export async function goalResumeCommand(
       if (result) {
         step.status = result.success ? "done" : "blocked";
         if (!result.success) {
-          step.blockedReason = "error";
-          step.blockedQuestion = result.error ?? "Step failed in a previous run.";
+          // Preserve the persisted block classification (usage_limit / rate_limit /
+          // out_of_credits / user_input / task_failed / ...) so resume can tell a
+          // backend usage-limit blocker apart from a generic failure and recompute
+          // the right display state. Only default to a generic "error" when the
+          // prior run recorded no reason at all.
+          step.blockedReason = step.blockedReason ?? "error";
+          step.blockedQuestion =
+            step.blockedQuestion ?? result.error ?? "Step failed in a previous run.";
         }
       }
+    }
+
+    // Before re-executing, re-check backends for usage-limit-blocked steps so a
+    // step pinned to an exhausted/unavailable backend is retried on a compatible
+    // available one (e.g. Codex out → Claude) instead of staying stale-blocked.
+    const hasUsageLimitBlocked = session.plan.steps.some(
+      (step) => step.status === "blocked" && isUsageLimitClassReason(step.blockedReason),
+    );
+    if (hasUsageLimitBlocked) {
+      recheckUsageLimitBackends({
+        steps: session.plan.steps,
+        availability: detectBackendAvailability(),
+        enabledWorkers: resolveEnabledWorkers(opts.config?.goal),
+        ...(run.backendOverride ? { backendOverride: run.backendOverride } : {}),
+        onProgress: !isJson && !quiet ? (text) => runtime.log(text) : undefined,
+      });
     }
   }
 
