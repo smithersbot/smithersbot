@@ -5,6 +5,7 @@ import { canRunGit, isGitRepo } from "./git-checkpoint.js";
 import { resolveRunDir } from "./run-store.js";
 import type { RalphDetail } from "./types.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import type { AgentBackendUsage } from "./agent-history-events.js";
 
 export type AttemptOutcome =
   | "complete"
@@ -26,6 +27,7 @@ export type AttemptBundle = {
   diffstat?: string;
   changedFiles?: string[];
   durationMs: number;
+  tokenUsage?: AgentBackendUsage;
   toolCalls?: string[];
   ralphDetail?: RalphDetail;
   buildGateFailure?: {

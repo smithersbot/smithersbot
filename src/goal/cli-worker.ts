@@ -42,6 +42,13 @@ import {
   writeCodexNativeSandboxConfig,
   type CodexNativeSandboxConfig,
 } from "./backend-sandbox.js";
+import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 
 // --- Constants ---
 
@@ -145,6 +152,64 @@ function redactTextArtifactIfExists(filePath: string): void {
     fs.writeFileSync(filePath, redactSecretValues(raw), "utf8");
   } catch {
     // Best-effort artifact redaction; don't mask task execution errors.
+  }
+}
+
+function sanitizeWorkerArgvForHistory(args: readonly string[]): string[] {
+  const sanitized = [...args];
+  for (let index = 0; index < sanitized.length; index++) {
+    const arg = sanitized[index];
+    if (arg === "--append-system-prompt" && index + 1 < sanitized.length) {
+      sanitized[index + 1] = "<append-system-prompt redacted; see prompt artifact>";
+      index++;
+      continue;
+    }
+  }
+  if (sanitized.length > 0) {
+    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
+  }
+  return sanitized;
+}
+
+function appendWorkerHistoryBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  stepId: string;
+  attemptNumber: number;
+  backend: GoalBackendId;
+  event: string;
+  status?: string;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  artifactPaths?: readonly string[];
+  extra?: Record<string, unknown>;
+  onProgress?: (text: string) => void;
+}): void {
+  const result = appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: "worker",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      stepId: params.stepId,
+      attemptNumber: params.attemptNumber,
+      status: params.status,
+      tokenUsage: params.tokenUsage,
+      errorClass: params.errorClass,
+      outputSummary: params.outputSummary,
+      artifactPaths: params.artifactPaths,
+      ...params.extra,
+    },
+  );
+  if (!result.ok) {
+    params.onProgress?.(`  [warn] ${result.warning}`);
   }
 }
 
@@ -374,6 +439,26 @@ export async function executeTaskWithCliWorker(
   });
 
   const command = backend === "codex" ? "codex" : "claude";
+  const historyScope = {
+    kind: "goal" as const,
+    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    goalId: runId,
+  };
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: historyScope,
+    phase: "worker",
+    backend,
+    prompt: promptPayload.persistedPrompt,
+    command,
+    argv: sanitizeWorkerArgvForHistory(args),
+    event: {
+      runId,
+      goalId: runId,
+      stepId: step.id,
+      attemptNumber,
+      status: "launching",
+    },
+  });
 
   onProgress?.(
     `  [cli-worker:${backend}] attempt ${attemptNumber} (timeout ${(timeoutMs / 60_000).toFixed(0)}m)`,
@@ -454,16 +539,35 @@ export async function executeTaskWithCliWorker(
   pollTimer = setInterval(pollForEarlyResult, RESULT_POLL_INTERVAL_MS);
   pollTimer.unref();
 
-  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await processPromise.finally(
-    () => {
+  let processResult: Awaited<typeof processPromise>;
+  try {
+    processResult = await processPromise.finally(() => {
       processSettled = true;
       clearPollTimer();
       clearGraceTimer();
       removeAbortForwarding?.();
-    },
-  );
+    });
+  } catch (error) {
+    const errorClass = error instanceof Error ? error.name : "process_error";
+    appendWorkerHistoryBestEffort({
+      workingDir,
+      runId,
+      stepId: step.id,
+      attemptNumber,
+      backend,
+      event: "failure",
+      status: "process_error",
+      errorClass,
+      outputSummary: error instanceof Error ? error.message : String(error),
+      artifactPaths: [stdoutPath, stderrPath, launchHistory.promptArtifactPath],
+      onProgress,
+    });
+    throw error;
+  }
+  const { stdout, stderr, timedOut, exitCode, signal, durationMs } = processResult;
   redactTextArtifactIfExists(stdoutPath);
   redactTextArtifactIfExists(stderrPath);
+  const tokenUsage = parseBackendUsage(`${stdout}\n${stderr}`);
 
   const resultRead: ReturnType<typeof readWorkerResultFile> =
     earlyResult && earlyResultSourcePath
@@ -596,6 +700,12 @@ export async function executeTaskWithCliWorker(
   }
 
   const outcome = classifyAttemptOutcome(output, timedOut, exitCode, signal);
+  const errorClass =
+    output.status === "failed"
+      ? output.errorType
+      : output.status === "blocked"
+        ? blockedClassification
+        : resultRead.error?.kind;
   const { diffstat, changedFiles } = collectGitDiffSummary(workingDir);
   const resultFile = fs.existsSync(canonicalResultPath) ? WORKER_RESULT_FILENAME : null;
 
@@ -611,6 +721,7 @@ export async function executeTaskWithCliWorker(
     logExcerpt: tailText(stdout, LOG_EXCERPT_CHARS),
     diffstat,
     changedFiles,
+    tokenUsage,
     ralphDetail:
       output.status === "ralph"
         ? {
@@ -621,6 +732,36 @@ export async function executeTaskWithCliWorker(
           }
         : undefined,
     durationMs,
+  });
+
+  appendWorkerHistoryBestEffort({
+    workingDir,
+    runId,
+    stepId: step.id,
+    attemptNumber,
+    backend,
+    event: output.status === "complete" ? "result" : "failure",
+    status: output.status,
+    tokenUsage,
+    errorClass,
+    outputSummary:
+      output.status === "complete"
+        ? output.summary
+        : output.status === "failed"
+          ? output.reason
+          : output.status === "blocked"
+            ? output.question
+            : output.approachTried,
+    artifactPaths: [stdoutPath, stderrPath, launchHistory.promptArtifactPath].filter(Boolean),
+    extra: {
+      outcome,
+      exitCode,
+      signal,
+      timedOut,
+      durationMs,
+      resultFile,
+    },
+    onProgress,
   });
 
   return {

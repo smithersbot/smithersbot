@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalLlmClient, GoalSession, Plan, PlanStep, SerializedRun } from "./types.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
@@ -22,6 +27,8 @@ const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
 const executedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
+let testManagedRoot: string | undefined;
+let previousManagedRoot: string | undefined;
 
 class MockCliTaskRunner {
   private readonly backend: Exclude<GoalBackendId, "pi">;
@@ -155,6 +162,20 @@ function getGitResetCalls() {
   });
 }
 
+function readGoalHistoryEvents(workingDir: string, runId: string): Array<Record<string, unknown>> {
+  const eventsPath = resolveAgentHistoryEventsPath({
+    kind: "goal",
+    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    goalId: runId,
+  });
+  return fs
+    .readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe("agent-executor (TaskRunner orchestration)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -194,6 +215,17 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     ];
     constructedCliBackends.length = 0;
     executedCliBackends.length = 0;
+    previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    testManagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-executor-managed-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = testManagedRoot;
+  });
+
+  afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (testManagedRoot) fs.rmSync(testManagedRoot, { recursive: true, force: true });
+    testManagedRoot = undefined;
+    previousManagedRoot = undefined;
   });
 
   it("completes a task via CLI runner and marks run done", async () => {
@@ -675,6 +707,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const plan = makePlan([step]);
     const session = makeSession(plan);
     const progress: string[] = [];
+    const runId = "run-codex-rate-limit-fallback";
+    const workingDir = "/tmp/moltbot-goal-test";
 
     mockCliExecute
       .mockResolvedValueOnce({
@@ -692,8 +726,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
-      runId: "run-codex-rate-limit-fallback",
-      workingDir: "/tmp/moltbot-goal-test",
+      runId,
+      workingDir,
       enabledWorkers: ["codex", "claude_code"],
       retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
       onProgress: (message) => progress.push(message),
@@ -706,6 +740,25 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(progress).toContain(
       "  [usage-limit] Codex hit a rate limit. Falling back to Claude Code.",
     );
+    expect(readGoalHistoryEvents(workingDir, runId)).toEqual([
+      expect.objectContaining({
+        event: "usage_limit",
+        phase: "worker",
+        backend: "codex",
+        stepId: step.id,
+        attemptNumber: 1,
+        status: "blocked",
+        errorClass: "rate_limit",
+      }),
+      expect.objectContaining({
+        event: "usage_limit_fallback",
+        phase: "worker",
+        backend: "claude_code",
+        stepId: step.id,
+        attemptNumber: 2,
+        status: "pending",
+      }),
+    ]);
   });
 
   it("blocks clearly when Codex rate-limits and Claude Code is disabled", async () => {

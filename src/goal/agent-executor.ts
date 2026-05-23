@@ -88,6 +88,8 @@ import type {
 } from "./types.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
+import { appendAgentHistoryEventBestEffort } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
@@ -154,6 +156,44 @@ function formatTechnicalBlockedQuestion(message: string, attempts: AttemptBundle
     return `- Attempt ${attempt.attemptNumber} [${attempt.backend}]: ${attempt.outcome}${classification}`;
   });
   return `${trimmedMessage}\n\nAttempt history:\n${attemptLines.join("\n")}`;
+}
+
+function appendWorkerFallbackHistoryEvent(params: {
+  workingDir: string;
+  runId: string;
+  stepId: string;
+  attemptNumber: number;
+  backend: CliWorkerId;
+  event: string;
+  status: string;
+  errorClass?: string;
+  fallbackBackend?: CliWorkerId;
+  fallbackReason?: string;
+  onProgress?: (text: string) => void;
+}): void {
+  const result = appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: "worker",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      stepId: params.stepId,
+      attemptNumber: params.attemptNumber,
+      status: params.status,
+      errorClass: params.errorClass,
+      fallbackBackend: params.fallbackBackend,
+      fallbackReason: params.fallbackReason,
+    },
+  );
+  if (!result.ok) {
+    params.onProgress?.(`  [warn] ${result.warning}`);
+  }
 }
 
 function isAnthropicPlannerDegraded(
@@ -536,6 +576,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           ...classifyUsageLimit({ backend, text: limitText }),
         };
         usageLimitEvents.push(usageLimitEvent);
+        appendWorkerFallbackHistoryEvent({
+          workingDir,
+          runId,
+          stepId: task.id,
+          attemptNumber: attempt,
+          backend,
+          event: "usage_limit",
+          status: "blocked",
+          errorClass: limitReason,
+          onProgress,
+        });
         const fallback:
           | PickFallbackBackendResult
           | { backend: null; reason: NoFallbackReason; detail?: string } = fallbackAttempted
@@ -581,6 +632,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               fallbackBackend,
             })}`,
           );
+          appendWorkerFallbackHistoryEvent({
+            workingDir,
+            runId,
+            stepId: task.id,
+            attemptNumber: attempt + 1,
+            backend: fallbackBackend,
+            event: "usage_limit_fallback",
+            status: "pending",
+            fallbackReason: usageLimitEvent.limitType,
+            onProgress,
+          });
           await new Promise((r) => setTimeout(r, retryDelayMs));
           continue;
         }

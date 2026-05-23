@@ -28,6 +28,8 @@ import { HARD_DENIES } from "./hard-deny.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -61,6 +63,8 @@ const EARLY_RESULT_PROGRESS_MESSAGE =
 
 let testCodexSandboxRoot: string | undefined;
 let previousCodexSandboxRoot: string | undefined;
+let testManagedRoot: string | undefined;
+let previousManagedRoot: string | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -68,6 +72,9 @@ beforeEach(() => {
   previousCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
   testCodexSandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-codex-sandbox-"));
   process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = testCodexSandboxRoot;
+  previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  testManagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-managed-"));
+  process.env.SMITHERSBOT_GOALS_ROOT = testManagedRoot;
 });
 
 afterEach(() => {
@@ -75,8 +82,13 @@ afterEach(() => {
   if (previousCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
   else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = previousCodexSandboxRoot;
   if (testCodexSandboxRoot) fs.rmSync(testCodexSandboxRoot, { recursive: true, force: true });
+  if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+  else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+  if (testManagedRoot) fs.rmSync(testManagedRoot, { recursive: true, force: true });
   testCodexSandboxRoot = undefined;
   previousCodexSandboxRoot = undefined;
+  testManagedRoot = undefined;
+  previousManagedRoot = undefined;
 });
 
 function makeStep(overrides: Partial<PlanStep> = {}): PlanStep {
@@ -96,6 +108,23 @@ function makePlan(): Plan {
     steps: [makeStep()],
     summary: "Build auth system",
   };
+}
+
+function readWorkerHistoryEvents(
+  workingDir: string,
+  runId: string,
+): Array<Record<string, unknown>> {
+  const eventsPath = resolveAgentHistoryEventsPath({
+    kind: "goal",
+    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    goalId: runId,
+  });
+  return fs
+    .readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
 describe("cli-worker", () => {
@@ -1472,6 +1501,152 @@ describe("cli-worker", () => {
       ).toBe(false);
     });
 
+    it("writes prompt artifact and launch event before spawning the backend", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-history-launch-"));
+      const runId = "run-history-launch";
+      const stepId = "step-history-launch";
+      const step = makeStep({ id: stepId, description: "Do not leak FAKE_HISTORY_SECRET_123" });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      const previousSecret = process.env.TELEGRAM_BOT_TOKEN;
+      process.env.TELEGRAM_BOT_TOKEN = "FAKE_HISTORY_SECRET_123";
+
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        const launchEvents = readWorkerHistoryEvents(dir, runId);
+        expect(launchEvents).toHaveLength(1);
+        const launch = launchEvents[0]!;
+        expect(launch.event).toBe("launch");
+        expect(launch.phase).toBe("worker");
+        expect(launch.backend).toBe("codex");
+        expect(launch.stepId).toBe(stepId);
+        expect(launch.attemptNumber).toBe(1);
+        expect(JSON.stringify(launch.argv)).not.toContain("Do not leak");
+        expect(JSON.stringify(launch.argv)).not.toContain("FAKE_HISTORY_SECRET_123");
+        expect(String(launch.promptArtifactPath)).toContain("/prompts/");
+        const prompt = fs.readFileSync(String(launch.promptArtifactPath), "utf8");
+        expect(prompt).toContain("YOUR TASK:");
+        expect(prompt).toContain("[REDACTED]");
+        expect(prompt).not.toContain("FAKE_HISTORY_SECRET_123");
+
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "History launch captured" }),
+          "utf8",
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 15,
+        };
+      });
+
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step,
+          plan,
+          goal: "Verify launch history",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+      } finally {
+        if (previousSecret === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+        else process.env.TELEGRAM_BOT_TOKEN = previousSecret;
+      }
+
+      const eventsText = JSON.stringify(readWorkerHistoryEvents(dir, runId));
+      expect(eventsText).not.toContain("FAKE_HISTORY_SECRET_123");
+    });
+
+    it("captures token usage from backend output in attempt bundle and result event", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-history-usage-"));
+      const runId = "run-history-usage";
+      const stepId = "step-history-usage";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "Usage captured" }),
+          "utf8",
+        );
+        return {
+          stdout: JSON.stringify({
+            type: "result",
+            usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3 },
+            total_cost_usd: 0.004,
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
+        };
+      });
+
+      await executeTaskWithCliWorker({
+        backend: "claude_code",
+        step,
+        plan,
+        goal: "Verify token usage history",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+      });
+
+      expect(writeAttemptBundleMock).toHaveBeenCalledWith(
+        workerDir,
+        expect.objectContaining({
+          tokenUsage: expect.objectContaining({
+            available: true,
+            inputTokens: 11,
+            outputTokens: 7,
+            cacheReadTokens: 3,
+            totalCostUsd: 0.004,
+          }),
+        }),
+      );
+      const events = readWorkerHistoryEvents(dir, runId);
+      expect(events.at(-1)).toMatchObject({
+        event: "result",
+        tokenUsage: {
+          available: true,
+          inputTokens: 11,
+          outputTokens: 7,
+        },
+      });
+    });
+
     it("classifies missing worker_result.json with no exit code or signal as process loss", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-process-lost-"));
       const runId = "run-process-lost";
@@ -1515,6 +1690,12 @@ describe("cli-worker", () => {
           errorClassification: "missing_result",
         }),
       );
+      expect(readWorkerHistoryEvents(dir, runId).at(-1)).toMatchObject({
+        event: "failure",
+        status: "failed",
+        errorClass: "missing_result",
+        outcome: "process_lost",
+      });
     });
   });
 
