@@ -91,6 +91,11 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     publicDescription: "Show gateway process and service status.",
   },
   {
+    command: "usage_status",
+    label: "Advanced & admin",
+    publicDescription: "Show Claude Code and Codex usage quota and historical usage.",
+  },
+  {
     command: "gateway_restart",
     label: "Advanced & admin",
     publicDescription: "Dangerous/admin: restart the gateway service.",
