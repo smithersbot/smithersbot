@@ -12,6 +12,7 @@ import {
   sessionToSerialized,
   serializedToSession,
 } from "./run-store.js";
+import { computeDisplayStatuses } from "./execution-status.js";
 import type { GoalSession, SerializedRun } from "./types.js";
 
 describe("run-store", () => {
@@ -683,6 +684,198 @@ describe("run-store", () => {
     const loaded = loadRun(runId, tmpDir);
     expect(loaded?.state).toBe("blocked");
     expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
+  });
+});
+
+describe("run-store resume visual state (load → display)", () => {
+  let tmpDir: string;
+  let originalManagedRoot: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-store-vis-"));
+    originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = path.join(tmpDir, "managed");
+  });
+
+  afterEach(() => {
+    if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeRun(runId: string, run: Record<string, unknown>): void {
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify(run), "utf8");
+  }
+
+  it("blocked goal resumed: cascade-blocked downstream/independent steps are not stale blocked", () => {
+    // Mirrors the fatal-error cascade in agent-executor.ts: a failed step plus
+    // downstream + independent steps all marked blocked for a technical reason.
+    writeRun("cascade-blocked", {
+      runId: "cascade-blocked",
+      goal: "Cascade",
+      state: "blocked",
+      plan: {
+        goal: "Cascade",
+        workingDir: "/tmp",
+        summary: "Plan",
+        steps: [
+          {
+            id: "1",
+            description: "Failed",
+            dependsOn: [],
+            status: "blocked",
+            blockedReason: "error",
+          },
+          {
+            id: "2",
+            description: "Downstream",
+            dependsOn: ["1"],
+            status: "blocked",
+            blockedReason: "error",
+          },
+          {
+            id: "3",
+            description: "Independent",
+            dependsOn: [],
+            status: "blocked",
+            blockedReason: "out_of_credits",
+          },
+        ],
+      },
+      stepResults: {},
+      blocked: { blockedAt: "execution", prompt: "stopped", requiredInputKey: "resume_execution" },
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    const loaded = loadRun("cascade-blocked", tmpDir);
+    expect(loaded?.state).toBe("blocked");
+    const display = computeDisplayStatuses(loaded!.plan!.steps);
+    // None of these are hard blockers — resume will re-run all of them.
+    expect(display.get("1")).toBe("pending");
+    expect(display.get("2")).toBe("pending");
+    expect(display.get("3")).toBe("pending");
+  });
+
+  it("legacy failed/skipped steps load as retryable and render runnable, not stale blocked", () => {
+    // Old runs persisted "failed"/"skipped" statuses; migrateRun maps them to
+    // blocked+error (retryable), which must render as pending after the fix.
+    writeRun("legacy-statuses", {
+      runId: "legacy-statuses",
+      goal: "Legacy",
+      state: "blocked",
+      plan: {
+        goal: "Legacy",
+        workingDir: "/tmp",
+        summary: "Plan",
+        steps: [
+          { id: "1", description: "Done", dependsOn: [], status: "done" },
+          { id: "2", description: "Failed", dependsOn: ["1"], status: "failed" },
+          { id: "3", description: "Skipped final", dependsOn: ["2"], status: "skipped" },
+        ],
+      },
+      stepResults: { "1": { stepId: "1", success: true, output: "ok", durationMs: 1 } },
+      blocked: { blockedAt: "execution", prompt: "stopped", requiredInputKey: "resume_execution" },
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    const loaded = loadRun("legacy-statuses", tmpDir);
+    // migrateRun normalizes legacy statuses to the current enum.
+    expect(loaded!.plan!.steps[1]?.status).toBe("blocked");
+    expect(loaded!.plan!.steps[2]?.status).toBe("blocked");
+
+    const display = computeDisplayStatuses(loaded!.plan!.steps);
+    expect(display.get("1")).toBe("done");
+    expect(display.get("2")).toBe("pending");
+    expect(display.get("3")).toBe("pending");
+  });
+
+  it("genuine user-input block stays blocked and keeps downstream waiting after load", () => {
+    writeRun("user-input-block", {
+      runId: "user-input-block",
+      goal: "Needs input",
+      state: "blocked",
+      plan: {
+        goal: "Needs input",
+        workingDir: "/tmp",
+        summary: "Plan",
+        steps: [
+          {
+            id: "1",
+            description: "Ask user",
+            dependsOn: [],
+            status: "blocked",
+            blockedReason: "user_input",
+            blockedQuestion: "Which DB?",
+          },
+          {
+            id: "2",
+            description: "Downstream",
+            dependsOn: ["1"],
+            status: "blocked",
+            blockedReason: "error",
+          },
+          { id: "3", description: "Independent", dependsOn: [], status: "pending" },
+        ],
+      },
+      stepResults: {},
+      blocked: { blockedAt: "execution", prompt: "Which DB?", requiredInputKey: "step:1:input" },
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    const loaded = loadRun("user-input-block", tmpDir);
+    const display = computeDisplayStatuses(loaded!.plan!.steps);
+    expect(display.get("1")).toBe("blocked"); // truly blocked
+    expect(display.get("2")).toBe("soft_blocked"); // waiting on the hard block
+    expect(display.get("3")).toBe("pending"); // independent, not blocked
+  });
+
+  it("crash-recovered run resets in_progress to pending and renders no stale blocked", () => {
+    writeRun("crash-recover-display", {
+      runId: "crash-recover-display",
+      goal: "Crashed",
+      state: "executing",
+      plan: {
+        goal: "Crashed",
+        workingDir: "/tmp",
+        summary: "Plan",
+        steps: [
+          { id: "1", description: "Was running", dependsOn: [], status: "in_progress" },
+          { id: "2", description: "Final", dependsOn: ["1"], status: "pending" },
+        ],
+      },
+      stepResults: {},
+      blocked: null,
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    const loaded = loadRun("crash-recover-display", tmpDir);
+    expect(loaded?.state).toBe("blocked");
+    const display = computeDisplayStatuses(loaded!.plan!.steps);
+    // Final step must show pending/waiting, never stale blocked.
+    expect(display.get("1")).toBe("pending");
+    expect(display.get("2")).toBe("pending");
   });
 });
 

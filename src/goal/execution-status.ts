@@ -8,15 +8,54 @@ export type ExecutionDisplayStatus =
   | "soft_blocked";
 
 /**
+ * A blocked step the scheduler will automatically re-run on resume.
+ *
+ * Mirrors the `retryableBlockedIds` rule in agent-executor.ts
+ * (`findRunnableTasks`): any block whose reason is set and is not `user_input`
+ * is retried once on resume. Such a step is NOT a hard blocker for display —
+ * once its dependencies are satisfied resume will run it, so visually it
+ * behaves like a pending/runnable step rather than a red "blocked" node.
+ *
+ * This is what stops a fatal-error cascade (where every pending step is marked
+ * `blocked`, agent-executor.ts ~L893-901) from leaving downstream and
+ * independent steps looking permanently blocked after a resume.
+ */
+export function isRetryableBlocked(step: PlanStep): boolean {
+  return (
+    step.status === "blocked" && step.blockedReason != null && step.blockedReason !== "user_input"
+  );
+}
+
+/**
+ * True only for a *hard* block: the goal genuinely cannot proceed without the
+ * user (blocked for input) or there is no actionable reason to auto-retry.
+ *
+ * Hard blocks are the only ones that render as `blocked` and the only ones that
+ * propagate the waiting (`soft_blocked`) state to dependents.
+ */
+export function isHardBlocked(step: PlanStep): boolean {
+  return step.status === "blocked" && !isRetryableBlocked(step);
+}
+
+/**
  * Compute per-step display status including the virtual "soft_blocked" state.
  *
- * soft_blocked propagates only from hard `blocked` deps (not from `in_progress`).
- * A pending step waiting on an in_progress dep remains `pending`.
+ * Visual state is recomputed from the actual run state plus dependencies so it
+ * matches what the scheduler will do on resume:
+ *  - Only *hard* blocks (user input / no actionable reason) render `blocked`.
+ *  - Retryable (technical) blocks — error, timeout, turn/usage limits, process
+ *    loss, out-of-credits, etc. — are treated like pending steps because resume
+ *    re-runs them; they no longer show as stale `blocked`.
+ *  - `soft_blocked` propagates only from hard `blocked` deps (not from
+ *    `in_progress` or retryable blocks). A pending step waiting on an
+ *    in_progress or retryable-blocked dep remains `pending`.
  */
 export function computeDisplayStatuses(steps: PlanStep[]): Map<string, ExecutionDisplayStatus> {
   const result = new Map<string, ExecutionDisplayStatus>();
   const stepMap = new Map(steps.map((s) => [s.id, s]));
-  const blockedIds = new Set(steps.filter((s) => s.status === "blocked").map((s) => s.id));
+  // Only hard blocks keep dependents waiting; retryable blocks are re-run on
+  // resume, so they must not cascade a stale "blocked"/"waiting" visual state.
+  const hardBlockedIds = new Set(steps.filter(isHardBlocked).map((s) => s.id));
 
   // Memoized check: does this step have a transitive hard-blocked dep?
   const softBlockedCache = new Map<string, boolean>();
@@ -29,7 +68,7 @@ export function computeDisplayStatuses(steps: PlanStep[]): Map<string, Execution
     if (!step) return false;
 
     for (const depId of step.dependsOn) {
-      if (blockedIds.has(depId)) {
+      if (hardBlockedIds.has(depId)) {
         softBlockedCache.set(stepId, true);
         return true;
       }
@@ -44,14 +83,16 @@ export function computeDisplayStatuses(steps: PlanStep[]): Map<string, Execution
   }
 
   for (const step of steps) {
-    if (step.status === "blocked") {
+    if (isHardBlocked(step)) {
       result.set(step.id, "blocked");
     } else if (step.status === "done") {
       result.set(step.id, "done");
     } else if (step.status === "in_progress") {
       result.set(step.id, "in_progress");
     } else {
-      // pending — check for transitive hard-blocked dependency
+      // pending OR a retryable (technical) block — both will run on resume once
+      // dependencies are satisfied. Render as waiting only when a real
+      // hard-blocked dependency is upstream; otherwise pending/runnable.
       if (hasTransitiveBlockedDep(step.id, new Set())) {
         result.set(step.id, "soft_blocked");
       } else {
