@@ -6,11 +6,14 @@ import type { TelegramAccountConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildClaudeStatuslineRefreshCommand,
+  buildUsageHistoryMessage,
   buildUsageStatusMessage,
   clearUsageStatusCachesForTest,
   refreshClaudeStatuslineCache,
+  registerUsageHistoryCommand,
   registerUsageStatusCommand,
   resolveClaudeStatuslineCachePath,
+  USAGE_HISTORY_COMMAND_SPEC,
   USAGE_STATUS_COMMAND_SPEC,
   type StatuslineCacheEntry,
 } from "./usage-status.js";
@@ -119,12 +122,26 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Claude Code — live subscription quota");
-    expect(text).toContain("Status: current");
-    expect(text).toContain("Updated 2026-05-23T11:59:59.000Z (1s ago)");
-    expect(text).toContain("5-hour: 42% used, resets 2026-05-23T18:00:00Z");
-    expect(text).toContain("7-day: 10% used, resets 2026-05-30T00:00:00Z");
-    expect(text).toContain("only updates while Claude Code is running");
+    expect(text).toContain("**SmithersBot usage status**");
+    expect(text).toContain("**Claude Code:** current");
+    expect(text).toContain("**Updated:** 2026-05-23T11:59:59.000Z (1s ago)");
+    expect(text).toContain("**5-hour:** 42% used, resets 2026-05-23T18:00:00Z");
+    expect(text).toContain("**7-day:** 10% used, resets 2026-05-30T00:00:00Z");
+    expect(text).not.toMatch(/\n{3,}/);
+  });
+
+  it("bolds every compact label before a colon", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 1000 }),
+      spawnSync: makeSpawnSync({ codexLimit: okResult(CODEX_LIMIT) }),
+      refreshClaudeStatusline: false,
+    });
+
+    for (const line of text.split("\n").filter((line) => line.includes(":"))) {
+      expect(line).toMatch(/^\*\*[^*]+:\*\*/);
+    }
   });
 
   it("marks the Claude cache stale only after refresh fails", () => {
@@ -136,10 +153,10 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: () => ({ status: "timeout", reason: "refresh timed out" }),
     });
 
-    expect(text).toContain("Status: stale");
+    expect(text).toContain("**Claude Code:** stale");
     expect(text).toContain("stale values shown");
     expect(text).toContain("Refresh failed: refresh timed out.");
-    expect(text).toContain("5-hour: 42% used");
+    expect(text).toContain("**5-hour:** 42% used");
   });
 
   it("reports gracefully when the Claude cache is missing", () => {
@@ -154,9 +171,9 @@ describe("buildUsageStatusMessage", () => {
       }),
     });
 
-    expect(text).toContain("Status: unavailable (pseudo-TTY refresh unavailable).");
+    expect(text).toContain("**Claude Code:** unavailable");
+    expect(text).toContain("pseudo-TTY refresh unavailable");
     expect(text).toContain("No live quota cache found");
-    expect(text).toContain("only updates while Claude Code is running");
   });
 
   it("refreshes a stale Claude cache and shows reset times from epoch seconds", () => {
@@ -182,9 +199,11 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: () => ({ status: "refreshed" }),
     });
 
-    expect(text).toContain("Status: refreshed/current");
-    expect(text).toContain("5-hour: 90% used, resets 2026-05-23T12:40:00.000Z");
-    expect(text).toContain("7-day: 23% used, resets 2026-05-28T00:00:00.000Z");
+    expect(text).toContain("**Claude Code:** current");
+    expect(text).not.toContain("refreshed/current");
+    expect(text).not.toContain("refreshed now");
+    expect(text).toContain("**5-hour:** 90% used, resets 2026-05-23T12:40:00.000Z");
+    expect(text).toContain("**7-day:** 23% used, resets 2026-05-28T00:00:00.000Z");
     expect(text).not.toContain("stale values shown");
   });
 
@@ -206,7 +225,7 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("5-hour: 12% used");
+    expect(text).toContain("**5-hour:** 12% used");
     expect(text).not.toContain("session_id");
     expect(text).not.toContain("auth");
     expect(text).not.toContain(leakedToken);
@@ -223,11 +242,11 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Codex — live subscription quota");
-    expect(text).toContain("Status: current");
-    expect(text).toContain("Primary (4h): 30% used, resets 2026-05-23T16:00:00.000Z");
-    expect(text).toContain("Secondary (7d): 5% used, resets 2026-05-28T00:00:00.000Z");
-    expect(text).toContain("Details: plan pro; credits available, balance 12.5.");
+    expect(text).toContain("**Codex:** current");
+    expect(text).toContain("**Primary (4h):** 30% used, resets 2026-05-23T16:00:00.000Z");
+    expect(text).toContain("**Secondary (7d):** 5% used, resets 2026-05-28T00:00:00.000Z");
+    expect(text).toContain("**Plan:** pro");
+    expect(text).toContain("**Credits:** available, balance 12.5");
     // External CLI is invoked with an argv array, never a shell string.
     const call = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
       (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("codex-limit"),
@@ -246,7 +265,7 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Codex — live subscription quota");
+    expect(text).toContain("**Codex:** unavailable");
     expect(text).toContain("Live quota unavailable (codex-limit command not found)");
   });
 
@@ -267,10 +286,9 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Codex — live subscription quota");
-    expect(text).toContain("Status: stale");
+    expect(text).toContain("**Codex:** stale");
     expect(text).toContain("cached 2026-05-23T12:00:00.000Z (1m ago); codex-limit timed out");
-    expect(text).toContain("Primary (4h): 30% used, resets 2026-05-23T16:00:00.000Z");
+    expect(text).toContain("**Primary (4h):** 30% used, resets 2026-05-23T16:00:00.000Z");
   });
 
   it("shows codex-limit timeout as unavailable when there is no cached live quota", () => {
@@ -299,17 +317,45 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Status: exhausted/rate-limit reached (primary).");
-    expect(text).toContain("Primary (4h): 100% used");
+    expect(text).toContain("**Codex:** current");
+    expect(text).toContain("**Rate limit:** primary");
+    expect(text).toContain("**Primary (4h):** 100% used");
   });
 
-  it("shows historical ccusage separately from live quota", () => {
+  it("excludes historical ccusage from the default live quota output", () => {
+    const spawnSync = makeSpawnSync({
+      codexLimit: okResult(CODEX_LIMIT),
+      ccusageClaude: okResult(CCUSAGE_CLAUDE),
+      ccusageCodex: okResult(
+        JSON.stringify({
+          daily: [{ date: "2026-05-23" }],
+          totals: { totalCost: 1.25, totalTokens: 9876 },
+        }),
+      ),
+    });
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 1000 }),
+      spawnSync,
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).not.toContain("Historical usage");
+    expect(text).not.toContain("local logs, not remaining quota");
+    expect(text).not.toContain("123,456 tokens");
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "npx",
+      expect.arrayContaining(["ccusage@latest"]),
+      expect.anything(),
+    );
+  });
+
+  it("renders historical ccusage through usage_history", () => {
+    const text = buildUsageHistoryMessage({
+      env: {},
+      nowMs: NOW,
       spawnSync: makeSpawnSync({
-        codexLimit: okResult(CODEX_LIMIT),
         ccusageClaude: okResult(CCUSAGE_CLAUDE),
         ccusageCodex: okResult(
           JSON.stringify({
@@ -318,20 +364,17 @@ describe("buildUsageStatusMessage", () => {
           }),
         ),
       }),
-      refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Historical usage — local logs, not remaining quota");
-    expect(text).toContain("Claude Code: 2 day(s), 123,456 tokens, $12.50");
-    expect(text).toContain("Codex: 1 day(s), 9,876 tokens, $1.25");
-    // The historical section is rendered after (separate from) the live sections.
-    expect(text.indexOf("live subscription quota")).toBeLessThan(
-      text.indexOf("Historical usage — local logs"),
-    );
+    expect(text).toContain("**SmithersBot usage history**");
+    expect(text).toContain("**Source:** local logs, not remaining quota");
+    expect(text).toContain("**Claude Code:** 2 day(s), 123,456 tokens, $12.50");
+    expect(text).toContain("**Codex:** 1 day(s), 9,876 tokens, $1.25");
+    expect(text).not.toMatch(/\n{3,}/);
   });
 
   it("uses stale cached historical ccusage when later calls time out", () => {
-    buildUsageStatusMessage({
+    buildUsageHistoryMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader(undefined),
@@ -351,7 +394,7 @@ describe("buildUsageStatusMessage", () => {
       ccusageClaude: errResult("ETIMEDOUT"),
       ccusageCodex: errResult("ETIMEDOUT"),
     });
-    const text = buildUsageStatusMessage({
+    const text = buildUsageHistoryMessage({
       env: {},
       nowMs: NOW + 120_000,
       readCache: cacheReader(undefined),
@@ -359,8 +402,8 @@ describe("buildUsageStatusMessage", () => {
       refreshClaudeStatusline: false,
     });
 
-    expect(text).toContain("Claude Code: 2 day(s), 123,456 tokens, $12.50 (stale;");
-    expect(text).toContain("Codex: 1 day(s), 9,876 tokens, $1.25 (stale;");
+    expect(text).toContain("**Claude Code:** 2 day(s), 123,456 tokens, $12.50 (stale;");
+    expect(text).toContain("**Codex:** 1 day(s), 9,876 tokens, $1.25 (stale;");
     expect(text).toContain("ccusage timed out");
     const ccusageCall = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
       (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("ccusage@latest"),
@@ -552,7 +595,9 @@ describe("usage_status command registration", () => {
 
   it("appears in the public Telegram menu", () => {
     expect(PUBLIC_TELEGRAM_MENU.map((entry) => entry.command)).toContain("usage_status");
+    expect(PUBLIC_TELEGRAM_MENU.map((entry) => entry.command)).toContain("usage_history");
     expect(USAGE_STATUS_COMMAND_SPEC.command).toBe("usage_status");
+    expect(USAGE_HISTORY_COMMAND_SPEC.command).toBe("usage_history");
   });
 
   it("is published and registered through the native command registry", async () => {
@@ -592,10 +637,12 @@ describe("usage_status command registration", () => {
 
     const published = bot.api.setMyCommands.mock.calls[0]?.[0] as Array<{ command: string }>;
     expect(published.map((entry) => entry.command)).toContain("usage_status");
+    expect(published.map((entry) => entry.command)).toContain("usage_history");
     expect(handlers.usage_status).toBeTypeOf("function");
+    expect(handlers.usage_history).toBeTypeOf("function");
   });
 
-  it("sends the usage status message to the requesting chat", async () => {
+  it("sends the usage status message as Telegram HTML to the requesting chat", async () => {
     const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
     const bot = {
       api: { sendMessage: vi.fn().mockResolvedValue(undefined) },
@@ -614,7 +661,7 @@ describe("usage_status command registration", () => {
       resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }) as ChannelGroupPolicy,
       resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
       shouldSkipUpdate: () => false,
-      buildMessage: () => "USAGE STATUS BODY",
+      buildMessage: () => "**USAGE STATUS:** body",
     });
 
     expect(handlers.usage_status).toBeTypeOf("function");
@@ -628,6 +675,46 @@ describe("usage_status command registration", () => {
       match: "",
     });
 
-    expect(bot.api.sendMessage).toHaveBeenCalledWith(555, "USAGE STATUS BODY");
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(555, "<b>USAGE STATUS:</b> body", {
+      parse_mode: "HTML",
+    });
+  });
+
+  it("sends usage history as Telegram HTML to the requesting chat", async () => {
+    const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+    const bot = {
+      api: { sendMessage: vi.fn().mockResolvedValue(undefined) },
+      command: (name: string, handler: (ctx: unknown) => Promise<void>) => {
+        handlers[name] = handler;
+      },
+    } as const;
+
+    registerUsageHistoryCommand({
+      bot: bot as unknown as Parameters<typeof registerUsageHistoryCommand>[0]["bot"],
+      cfg: {} as MoltbotConfig,
+      telegramCfg: {} as TelegramAccountConfig,
+      allowFrom: [111],
+      groupAllowFrom: [],
+      useAccessGroups: false,
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }) as ChannelGroupPolicy,
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      buildMessage: () => "**USAGE HISTORY:** body",
+    });
+
+    expect(handlers.usage_history).toBeTypeOf("function");
+    await handlers.usage_history?.({
+      message: {
+        chat: { id: 555, type: "private" },
+        from: { id: 111, username: "allowed" },
+        message_id: 1,
+        date: 123,
+      },
+      match: "",
+    });
+
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(555, "<b>USAGE HISTORY:</b> body", {
+      parse_mode: "HTML",
+    });
   });
 });

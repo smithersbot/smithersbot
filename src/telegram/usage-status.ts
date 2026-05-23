@@ -13,9 +13,12 @@ import type {
 } from "../config/types.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { renderTelegramHtmlText } from "./format.js";
+import { boldLabel, formatStatusMessage } from "./status-format.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const USAGE_STATUS_COMMAND = "usage_status";
+const USAGE_HISTORY_COMMAND = "usage_history";
 
 // Claude Code's statusLine command (scripts/claude-statusline.mjs) writes the
 // live rate-limit JSON Claude pipes to it here. The cache only refreshes while
@@ -36,7 +39,12 @@ const USAGE_STATUS_TITLE = "SmithersBot usage status";
 
 export const USAGE_STATUS_COMMAND_SPEC = {
   command: USAGE_STATUS_COMMAND,
-  description: "Show Claude Code and Codex usage quota and historical usage",
+  description: "Show Claude Code and Codex usage quota",
+} as const;
+
+export const USAGE_HISTORY_COMMAND_SPEC = {
+  command: USAGE_HISTORY_COMMAND,
+  description: "Show local historical Claude Code and Codex usage",
 } as const;
 
 type SpawnSyncLike = typeof childProcess.spawnSync;
@@ -408,7 +416,7 @@ function formatResetAt(resetsAt: string | undefined): string | undefined {
 
 function formatWindowLine(label: string, window: UsageWindow | undefined): string {
   if (!window || (window.usedPercentage == null && window.resetsAt == null)) {
-    return `  ${label}: not reported`;
+    return boldLabel(label, "not reported");
   }
   const resetAt = formatResetAt(window.resetsAt);
   const reset = resetAt ? `, resets ${resetAt}` : "";
@@ -416,7 +424,7 @@ function formatWindowLine(label: string, window: UsageWindow | undefined): strin
     window.windowDurationMins != null
       ? ` (${formatWindowDuration(window.windowDurationMins)})`
       : "";
-  return `  ${label}${duration}: ${formatPercent(window.usedPercentage)} used${reset}`;
+  return boldLabel(`${label}${duration}`, `${formatPercent(window.usedPercentage)} used${reset}`);
 }
 
 function formatWindowDuration(minutes: number): string {
@@ -446,47 +454,42 @@ function buildClaudeSection(
   entry: StatuslineCacheEntry | undefined,
   nowMs: number,
   refreshResult?: ClaudeStatuslineRefreshResult,
-): string {
-  const header = "Claude Code — live subscription quota";
+): string[] {
   const refreshFailureReason =
     refreshResult && refreshResult.status !== "refreshed" ? refreshResult.reason : undefined;
   if (!entry) {
     const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
     return [
-      header,
-      `  Status: unavailable${reason}.`,
-      "  No live quota cache found. It only updates while Claude Code is running.",
-    ].join("\n");
+      boldLabel("Claude Code", "unavailable"),
+      boldLabel("Note", `No live quota cache found${reason}.`),
+    ];
   }
   const quota = parseClaudeStatusline(entry.raw);
   if (!quota) {
     const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
     return [
-      header,
-      `  Status: unavailable${reason}.`,
-      "  Live quota cache is present but unreadable. It only updates while Claude Code is running.",
-    ].join("\n");
+      boldLabel("Claude Code", "unavailable"),
+      boldLabel("Note", `Live quota cache is present but unreadable${reason}.`),
+    ];
   }
   const ageMs = nowMs - entry.mtimeMs;
   const freshness =
-    refreshResult?.status === "refreshed"
-      ? "refreshed/current"
+    refreshResult?.status === "refreshed" || ageMs <= STALE_THRESHOLD_MS
+      ? "current"
       : ageMs > STALE_THRESHOLD_MS
         ? "stale"
         : "current";
   const lines = [
-    header,
-    `  Status: ${freshness}. Updated ${formatUpdatedAt(entry.mtimeMs)} (${formatAge(ageMs)} ago).`,
+    boldLabel("Claude Code", freshness),
     formatWindowLine("5-hour", quota.fiveHour),
     formatWindowLine("7-day", quota.sevenDay),
+    boldLabel("Updated", `${formatUpdatedAt(entry.mtimeMs)} (${formatAge(ageMs)} ago)`),
   ];
   if (freshness === "stale") {
     const reason = refreshFailureReason ? ` Refresh failed: ${refreshFailureReason}.` : "";
-    lines.push(`  Note: stale values shown; Claude Code may not be running.${reason}`);
-  } else {
-    lines.push("  Note: this cache only updates while Claude Code is running.");
+    lines.push(boldLabel("Note", `stale values shown; Claude Code may not be running.${reason}`));
   }
-  return lines.join("\n");
+  return lines;
 }
 
 function formatCacheAge(cachedAtMs: number, nowMs: number): string {
@@ -499,47 +502,58 @@ function buildCodexLines(quota: CodexQuota): string[] {
     formatWindowLine("Secondary", quota.secondary),
   ];
   if (quota.rateLimitReachedType) {
-    lines.push(`  Status: exhausted/rate-limit reached (${quota.rateLimitReachedType}).`);
+    lines.push(boldLabel("Rate limit", quota.rateLimitReachedType));
   }
-  const details: string[] = [];
-  if (quota.planType) details.push(`plan ${quota.planType}`);
+  if (quota.planType) lines.push(boldLabel("Plan", quota.planType));
   if (quota.credits) {
     const creditBits: string[] = [];
     if (quota.credits.hasCredits != null) {
-      creditBits.push(quota.credits.hasCredits ? "credits available" : "no credits available");
+      creditBits.push(quota.credits.hasCredits ? "available" : "none available");
     }
     if (quota.credits.balance != null) creditBits.push(`balance ${quota.credits.balance}`);
-    if (creditBits.length > 0) details.push(creditBits.join(", "));
+    if (creditBits.length > 0) lines.push(boldLabel("Credits", creditBits.join(", ")));
+  } else {
+    lines.push(boldLabel("Credits", "none available"));
   }
-  if (details.length > 0) lines.push(`  Details: ${details.join("; ")}.`);
   return lines;
 }
 
-function buildCodexSection(outcome: CliOutcome, nowMs: number): string {
-  const header = "Codex — live subscription quota";
+function buildCodexSection(outcome: CliOutcome, nowMs: number): string[] {
   if (!outcome.ok) {
     if (codexQuotaCache) {
       return [
-        header,
-        `  Status: stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; codex-limit ${outcome.reason}).`,
+        boldLabel(
+          "Codex",
+          `stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; codex-limit ${
+            outcome.reason
+          })`,
+        ),
         ...buildCodexLines(codexQuotaCache.value),
-      ].join("\n");
+      ];
     }
-    return [header, `  Live quota unavailable (codex-limit ${outcome.reason}).`].join("\n");
+    return [
+      boldLabel("Codex", "unavailable"),
+      boldLabel("Note", `Live quota unavailable (codex-limit ${outcome.reason}).`),
+    ];
   }
   const quota = parseCodexLimit(outcome.stdout);
   if (!quota) {
     if (codexQuotaCache) {
       return [
-        header,
-        `  Status: stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; unrecognized codex-limit output).`,
+        boldLabel(
+          "Codex",
+          `stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; unrecognized codex-limit output)`,
+        ),
         ...buildCodexLines(codexQuotaCache.value),
-      ].join("\n");
+      ];
     }
-    return [header, "  Live quota unavailable (unrecognized codex-limit output)."].join("\n");
+    return [
+      boldLabel("Codex", "unavailable"),
+      boldLabel("Note", "Live quota unavailable (unrecognized codex-limit output)."),
+    ];
   }
   codexQuotaCache = { value: quota, cachedAtMs: nowMs };
-  return [header, "  Status: current.", ...buildCodexLines(quota)].join("\n");
+  return [boldLabel("Codex", "current"), ...buildCodexLines(quota)];
 }
 
 function formatHistoricalSummary(label: string, summary: HistoricalSummary): string {
@@ -547,7 +561,7 @@ function formatHistoricalSummary(label: string, summary: HistoricalSummary): str
   if (summary.totalTokens != null)
     parts.push(`${summary.totalTokens.toLocaleString("en-US")} tokens`);
   if (summary.totalCost != null) parts.push(`$${summary.totalCost.toFixed(2)}`);
-  return `  ${label}: ${parts.join(", ")}`;
+  return boldLabel(label, parts.join(", "));
 }
 
 function formatHistoricalLine(
@@ -564,7 +578,7 @@ function formatHistoricalLine(
         nowMs,
       )}; ccusage ${outcome.reason})`;
     }
-    return `  ${label}: unavailable (${outcome.reason}).`;
+    return boldLabel(label, `unavailable (${outcome.reason})`);
   }
   const summary = parseCcusageDaily(outcome.stdout);
   if (!summary) {
@@ -575,7 +589,7 @@ function formatHistoricalLine(
         nowMs,
       )}; unrecognized ccusage output)`;
     }
-    return `  ${label}: unavailable (unrecognized ccusage output).`;
+    return boldLabel(label, "unavailable (unrecognized ccusage output)");
   }
   historicalUsageCache[cacheKey] = { value: summary, cachedAtMs: nowMs };
   return formatHistoricalSummary(label, summary);
@@ -617,50 +631,58 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
     });
     claudeEntry = readCache(cachePath);
   }
-  const claudeSection = buildClaudeSection(claudeEntry, nowMs, claudeRefreshResult);
+  const claudeLines = buildClaudeSection(claudeEntry, nowMs, claudeRefreshResult);
   // -y keeps npx non-interactive so it never blocks waiting on an install prompt.
-  const codexSection = buildCodexSection(
+  const codexLines = buildCodexSection(
     runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"], CODEX_LIMIT_TIMEOUT_MS),
     nowMs,
   );
-  const historicalSection = [
-    "Historical usage — local logs, not remaining quota",
-    formatHistoricalLine(
-      "Claude Code",
-      "claude",
-      runCli(
-        spawnSyncImpl,
-        "npx",
-        ["-y", "ccusage@latest", "claude", "daily", "--json"],
-        CCUSAGE_TIMEOUT_MS,
-      ),
-      nowMs,
-    ),
-    formatHistoricalLine(
-      "Codex",
-      "codex",
-      runCli(
-        spawnSyncImpl,
-        "npx",
-        ["-y", "ccusage@latest", "codex", "daily", "--json"],
-        CCUSAGE_TIMEOUT_MS,
-      ),
-      nowMs,
-    ),
-  ].join("\n");
-
-  const text = [
-    USAGE_STATUS_TITLE,
-    "",
-    claudeSection,
-    "",
-    codexSection,
-    "",
-    historicalSection,
-  ].join("\n");
+  const text = formatStatusMessage({
+    title: USAGE_STATUS_TITLE,
+    lines: [...claudeLines, "", ...codexLines],
+  });
 
   // Defense in depth: the message is built from parsed numeric/time fields only,
   // never raw payloads, but redact any token-like values just in case.
+  return redactSecretValues(text, {
+    includeConfigSecrets: false,
+    secretValues: collectTokenLikeEnvValues(env),
+  });
+}
+
+export function buildUsageHistoryMessage(options: BuildUsageStatusOptions = {}): string {
+  const env = options.env ?? process.env;
+  const nowMs = options.nowMs ?? Date.now();
+  const spawnSyncImpl = options.spawnSync ?? childProcess.spawnSync;
+  const text = formatStatusMessage({
+    title: "SmithersBot usage history",
+    lines: [
+      boldLabel("Source", "local logs, not remaining quota"),
+      formatHistoricalLine(
+        "Claude Code",
+        "claude",
+        runCli(
+          spawnSyncImpl,
+          "npx",
+          ["-y", "ccusage@latest", "claude", "daily", "--json"],
+          CCUSAGE_TIMEOUT_MS,
+        ),
+        nowMs,
+      ),
+      formatHistoricalLine(
+        "Codex",
+        "codex",
+        runCli(
+          spawnSyncImpl,
+          "npx",
+          ["-y", "ccusage@latest", "codex", "daily", "--json"],
+          CCUSAGE_TIMEOUT_MS,
+        ),
+        nowMs,
+      ),
+    ],
+  });
+
   return redactSecretValues(text, {
     includeConfigSecrets: false,
     secretValues: collectTokenLikeEnvValues(env),
@@ -697,9 +719,12 @@ async function sendUsageStatusMessage(
   message: string,
   messageThreadId?: number,
 ): Promise<void> {
-  const options = messageThreadId != null ? { message_thread_id: messageThreadId } : undefined;
-  if (options) await bot.api.sendMessage(chatId, message, options);
-  else await bot.api.sendMessage(chatId, message);
+  const htmlMessage = renderTelegramHtmlText(message);
+  const options =
+    messageThreadId != null
+      ? ({ message_thread_id: messageThreadId, parse_mode: "HTML" } as const)
+      : ({ parse_mode: "HTML" } as const);
+  await bot.api.sendMessage(chatId, htmlMessage, options);
 }
 
 export function registerUsageStatusCommand({
@@ -716,6 +741,48 @@ export function registerUsageStatusCommand({
 }: RegisterUsageStatusCommandParams): void {
   const build = buildMessage ?? (() => buildUsageStatusMessage());
   bot.command(USAGE_STATUS_COMMAND, async (ctx: TelegramUsageStatusContext) => {
+    const msg = ctx.message;
+    if (!msg) return;
+    if (shouldSkipUpdate(ctx)) return;
+
+    const auth = await resolveTelegramCommandAuth({
+      msg,
+      bot,
+      cfg,
+      telegramCfg,
+      allowFrom,
+      groupAllowFrom,
+      useAccessGroups,
+      resolveGroupPolicy,
+      resolveTelegramGroupConfig,
+      requireAuth: true,
+    });
+    if (!auth) return;
+
+    await sendUsageStatusMessage(
+      bot,
+      msg.chat.id,
+      build(),
+      auth.isGroup ? auth.resolvedThreadId : msg.message_thread_id,
+    );
+  });
+}
+
+export function registerUsageHistoryCommand(params: RegisterUsageStatusCommandParams): void {
+  const {
+    bot,
+    cfg,
+    telegramCfg,
+    allowFrom,
+    groupAllowFrom,
+    useAccessGroups,
+    resolveGroupPolicy,
+    resolveTelegramGroupConfig,
+    shouldSkipUpdate,
+    buildMessage,
+  } = params;
+  const build = buildMessage ?? (() => buildUsageHistoryMessage());
+  bot.command(USAGE_HISTORY_COMMAND, async (ctx: TelegramUsageStatusContext) => {
     const msg = ctx.message;
     if (!msg) return;
     if (shouldSkipUpdate(ctx)) return;
