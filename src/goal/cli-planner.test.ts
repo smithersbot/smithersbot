@@ -47,6 +47,8 @@ const FORBIDDEN_AGENT_ENV_KEYS = [
   "CLAWDBOT_GATEWAY_TOKEN",
   "MOLTBOT_GATEWAY_TOKEN",
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY_OLD",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
 ] as const;
@@ -251,6 +253,8 @@ describe("runCliPlanning", () => {
   let goalsDir: string;
   let priorApiKey: string | undefined;
   let priorAuthToken: string | undefined;
+  let priorApiKeyOld: string | undefined;
+  let priorBaseUrl: string | undefined;
 
   beforeEach(() => {
     goalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-test-"));
@@ -263,6 +267,8 @@ describe("runCliPlanning", () => {
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
     priorApiKey = process.env.ANTHROPIC_API_KEY;
     priorAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    priorApiKeyOld = process.env.ANTHROPIC_API_KEY_OLD;
+    priorBaseUrl = process.env.ANTHROPIC_BASE_URL;
   });
 
   afterEach(() => {
@@ -270,12 +276,18 @@ describe("runCliPlanning", () => {
     else process.env.ANTHROPIC_API_KEY = priorApiKey;
     if (priorAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
     else process.env.ANTHROPIC_AUTH_TOKEN = priorAuthToken;
+    if (priorApiKeyOld === undefined) delete process.env.ANTHROPIC_API_KEY_OLD;
+    else process.env.ANTHROPIC_API_KEY_OLD = priorApiKeyOld;
+    if (priorBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = priorBaseUrl;
     fs.rmSync(goalsDir, { recursive: true, force: true });
   });
 
   it("runs a single CLI planning pass and returns a validated plan", async () => {
     process.env.ANTHROPIC_API_KEY = "should-be-stripped";
     process.env.ANTHROPIC_AUTH_TOKEN = "should-be-stripped";
+    process.env.ANTHROPIC_API_KEY_OLD = "should-be-stripped";
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.invalid";
 
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const stdoutPath = String(params.stdoutPath);
@@ -340,10 +352,15 @@ describe("runCliPlanning", () => {
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       env: Record<string, string | undefined>;
       cwd: string;
+      args: string[];
     };
     expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(procCall.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+    expect(procCall.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(procCall.cwd).toBe(process.cwd());
+    expect(procCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
   });
 
   it("uses Codex-only planning when Claude Code is unavailable", async () => {
@@ -1397,6 +1414,8 @@ describe("runCliPlanning", () => {
   it("runs CLI plan revision with subscription auth and parses revised plan", async () => {
     process.env.ANTHROPIC_API_KEY = "should-be-stripped";
     process.env.ANTHROPIC_AUTH_TOKEN = "should-be-stripped";
+    process.env.ANTHROPIC_API_KEY_OLD = "should-be-stripped";
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.invalid";
 
     mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
@@ -1457,8 +1476,12 @@ describe("runCliPlanning", () => {
     };
     expect(procCall.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(procCall.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(procCall.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+    expect(procCall.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
+    expect(procCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(procCall.cwd).toBe(process.cwd());
   });
 

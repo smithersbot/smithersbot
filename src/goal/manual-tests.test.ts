@@ -409,6 +409,64 @@ describe("generateManualTests", () => {
     expect(call.stdin).toContain("Goal: Improve authentication reliability");
   });
 
+  it("strips poisoned Claude subscription auth env from manual-test subprocesses", async () => {
+    const { buildClaudeCodeEnv: realBuildClaudeCodeEnv } =
+      await vi.importActual<typeof import("./claude-code-env.js")>("./claude-code-env.js");
+    buildClaudeCodeEnvMock.mockImplementation(realBuildClaudeCodeEnv);
+
+    const previous = new Map<string, string | undefined>();
+    for (const key of [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_API_KEY_OLD",
+      "ANTHROPIC_BASE_URL",
+      "TELEGRAM_BOT_TOKEN",
+      "SMITHERSBOT_GATEWAY_TOKEN",
+    ]) {
+      previous.set(key, process.env[key]);
+      process.env[key] = `secret-${key}`;
+    }
+
+    try {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: makeCliResultOutput(JSON.stringify({ tests: [] })),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 42,
+      });
+
+      await withNonTestEnv(() =>
+        generateManualTests({
+          goal: "Verify Claude env strip",
+          steps: makeDoneSteps(),
+        }),
+      );
+
+      const call = runCliProcessMock.mock.calls[0]?.[0] as {
+        command: string;
+        args: string[];
+        env: Record<string, string | undefined>;
+      };
+      expect(call.command).toBe("/usr/bin/claude");
+      expect(buildClaudeCodeEnvMock).toHaveBeenCalledWith("subscription");
+      expect(call.env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(call.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(call.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+      expect(call.env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(call.env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+      expect(call.env.SMITHERSBOT_GATEWAY_TOKEN).toBeUndefined();
+      expect(call.args).not.toContain("--dangerously-skip-permissions");
+      expect(call.args).not.toContain("--allow-dangerously-skip-permissions");
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("parses manual test suggestions from Claude CLI JSON output", async () => {
     runCliProcessMock.mockResolvedValueOnce({
       stdout: makeCliResultOutput(

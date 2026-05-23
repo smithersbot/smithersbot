@@ -75,6 +75,8 @@ const FORBIDDEN_AGENT_ENV_KEYS = [
   "CLAWDBOT_GATEWAY_TOKEN",
   "MOLTBOT_GATEWAY_TOKEN",
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY_OLD",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
 ] as const;
@@ -574,18 +576,34 @@ describe("extractRunLessons", () => {
       }),
     );
 
-    const recorded = await extractRunLessons(runId, workingDir, [
-      { pattern: "known-dedup", lesson: "Do not duplicate this existing lesson." },
-    ]);
+    const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.invalid";
+    let recorded: Awaited<ReturnType<typeof extractRunLessons>>;
+    try {
+      recorded = await withForbiddenAgentEnv(() =>
+        extractRunLessons(runId, workingDir, [
+          { pattern: "known-dedup", lesson: "Do not duplicate this existing lesson." },
+        ]),
+      );
+    } finally {
+      if (previousBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
+    }
 
     expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
     const call = mockRunCliProcess.mock.calls[0]?.[0] as {
       command: string;
       cwd: string;
       stdin: string;
+      env: Record<string, string | undefined>;
+      args: string[];
     };
     expect(call.command).toBe("/usr/bin/claude");
     expect(call.cwd).toBe(workingDir);
+    expectForbiddenAgentEnvAbsent(call.env);
+    expect(call.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(call.args).not.toContain("--dangerously-skip-permissions");
+    expect(call.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(call.stdin).toContain("Adjust for monorepo tsconfig lookup");
     expect(call.stdin).toContain("Resolve tsconfig from package root before invoking toolchain.");
     expect(call.stdin).toContain("Cannot resolve workspace tsconfig path");

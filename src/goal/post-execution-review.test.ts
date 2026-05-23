@@ -34,6 +34,8 @@ const FORBIDDEN_AGENT_ENV_KEYS = [
   "CLAWDBOT_GATEWAY_TOKEN",
   "MOLTBOT_GATEWAY_TOKEN",
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY_OLD",
   "OPENAI_API_KEY",
   "GITHUB_TOKEN",
 ] as const;
@@ -416,6 +418,38 @@ describe("runPostExecutionReview", () => {
     };
     expect(call.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(call.env);
+  });
+
+  it("strips poisoned Claude subscription auth env from review subprocesses", async () => {
+    const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = "https://proxy.invalid";
+    mockRunCliProcess.mockResolvedValueOnce(
+      createCliResult({ stdout: createDecisionStdout({ approved: true, issues: [] }) }),
+    );
+
+    try {
+      await withForbiddenAgentEnv(() =>
+        runPostExecutionReview({
+          ...baseParams(),
+          claudeCodeAuth: "subscription",
+          diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+        }),
+      );
+    } finally {
+      if (previousBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+      else process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
+    }
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+      command: string;
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
+    expect(call.command).toBe("/usr/local/bin/claude");
+    expectForbiddenAgentEnvAbsent(call.env);
+    expect(call.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(call.args).not.toContain("--dangerously-skip-permissions");
+    expect(call.args).not.toContain("--allow-dangerously-skip-permissions");
   });
 
   it("returns a clear setup error when no review backend is available", async () => {
