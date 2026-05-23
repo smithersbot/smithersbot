@@ -736,7 +736,13 @@ describe("Claude Code native sandbox settings", () => {
       workingDir: process.cwd(),
       runId: "live-ok",
       settingsRoot: HOST_TEMP_ROOT,
-      env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
+      env: {
+        SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1",
+        ANTHROPIC_API_KEY: "placeholder-api-key",
+        ANTHROPIC_AUTH_TOKEN: "placeholder-auth-token",
+        ANTHROPIC_API_KEY_OLD: "placeholder-old-api-key",
+        ANTHROPIC_BASE_URL: "https://placeholder.invalid",
+      } as NodeJS.ProcessEnv,
     });
 
     expect(status.supported).toBe(true);
@@ -755,7 +761,15 @@ describe("Claude Code native sandbox settings", () => {
         "--allowedTools",
         "Bash",
       ]),
-      expect.objectContaining({ cwd: process.cwd() }),
+      expect.objectContaining({
+        cwd: process.cwd(),
+        env: expect.not.objectContaining({
+          ANTHROPIC_API_KEY: expect.any(String),
+          ANTHROPIC_AUTH_TOKEN: expect.any(String),
+          ANTHROPIC_API_KEY_OLD: expect.any(String),
+          ANTHROPIC_BASE_URL: expect.any(String),
+        }),
+      }),
     );
     const claudeArgs = mockSpawnSync.mock.calls[0][1] as string[];
     expect(claudeArgs.join(" ")).not.toContain("dangerously-skip-permissions");

@@ -766,6 +766,66 @@ describe("cli-worker", () => {
         "  [cli-worker:codex] repairing invalid worker_result.json",
       );
     });
+
+    it("uses the centralized Claude subscription env for result repair", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-repair-claude-env-"));
+      const resultPath = path.join(dir, "worker_result.json");
+      const previousApiKey = process.env.ANTHROPIC_API_KEY;
+      const previousAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+      const previousOldApiKey = process.env.ANTHROPIC_API_KEY_OLD;
+      const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
+      fs.writeFileSync(resultPath, "{not json", "utf8");
+      process.env.ANTHROPIC_API_KEY = "placeholder-api-key";
+      process.env.ANTHROPIC_AUTH_TOKEN = "placeholder-auth-token";
+      process.env.ANTHROPIC_API_KEY_OLD = "placeholder-old-api-key";
+      process.env.ANTHROPIC_BASE_URL = "https://placeholder.invalid";
+
+      try {
+        runCliProcessMock.mockImplementationOnce(async (call) => {
+          expect(call.command).toBe("claude");
+          expect(call.env?.ANTHROPIC_API_KEY).toBeUndefined();
+          expect(call.env?.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+          expect(call.env?.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+          expect(call.env?.ANTHROPIC_BASE_URL).toBeUndefined();
+          expect(call.env?.MOLTBOT_GOAL_TEST_SCOPE).toBe("1");
+          fs.writeFileSync(
+            resultPath,
+            JSON.stringify({ status: "complete", summary: "repaired" }),
+            "utf8",
+          );
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 15,
+          };
+        });
+
+        await repairResultFile({
+          backend: "claude_code",
+          resultFilePath: resultPath,
+          workerDir: dir,
+          attemptNumber: 3,
+          workingDir: dir,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          claudeCodeAuth: "subscription",
+        });
+
+        expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+      } finally {
+        if (previousApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = previousApiKey;
+        if (previousAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+        else process.env.ANTHROPIC_AUTH_TOKEN = previousAuthToken;
+        if (previousOldApiKey === undefined) delete process.env.ANTHROPIC_API_KEY_OLD;
+        else process.env.ANTHROPIC_API_KEY_OLD = previousOldApiKey;
+        if (previousBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+        else process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("executeTaskWithCliWorker", () => {

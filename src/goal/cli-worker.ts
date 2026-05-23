@@ -178,6 +178,7 @@ export async function repairResultFile(params: {
   abortSignal?: AbortSignal;
   workingDir: string;
   hardDenies: HardDeny[];
+  claudeCodeAuth?: ClaudeCodeAuthMode;
 }): Promise<GoalWorkerOutput | null> {
   const {
     backend,
@@ -189,6 +190,7 @@ export async function repairResultFile(params: {
     abortSignal,
     workingDir,
     hardDenies,
+    claudeCodeAuth = "subscription",
   } = params;
 
   const initialRead = readWorkerResultFile({ primaryPath: resultFilePath });
@@ -246,7 +248,7 @@ export async function repairResultFile(params: {
     env:
       backend === "codex"
         ? mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv(), codexNativeSandbox!)
-        : undefined,
+        : buildGoalWorkerEnv("claude_code", claudeCodeAuth),
   });
 
   const repairedRead = readWorkerResultFile({ primaryPath: resultFilePath });
@@ -507,6 +509,7 @@ export async function executeTaskWithCliWorker(
       abortSignal: localAbortController.signal,
       workingDir,
       hardDenies,
+      claudeCodeAuth,
     });
     if (repaired) {
       output = repaired;

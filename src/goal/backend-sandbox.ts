@@ -1382,6 +1382,7 @@ export function claudeCodeNativeSandboxStatus(
     {
       cwd: workingDir,
       input: `Use the Bash tool to run exactly this one command, then reply with only its raw stdout:\n\n${probeCommand}`,
+      env: stripClaudeSubscriptionAuthEnv(env),
       encoding: "utf8",
       timeout: 60000,
       stdio: ["pipe", "pipe", "pipe"],
