@@ -97,6 +97,69 @@ function nodeDurationLabel(
   return "";
 }
 
+/**
+ * Transitive reduction of the dependency graph for diagram clarity.
+ *
+ * Drops an edge `dep --> step` when another dependency of `step` is already
+ * reachable from `dep` (so `dep --> ... --> otherDep --> step` implies it).
+ * For example `a --> b --> c` makes a redundant `a --> c` unnecessary.
+ *
+ * Edges are returned in the same emission order the caller would have used, so
+ * critical-path `linkStyle` indices stay aligned. Reachability uses a visited
+ * set, and an edge is only treated as redundant when the alternate path does
+ * not loop back through `dep` — so a cyclic input (which valid plans never
+ * contain) still terminates and never has a connecting edge silently removed.
+ */
+function reduceDependencyEdges(
+  steps: readonly Plan["steps"][number][],
+): Array<{ dep: string; step: string }> {
+  // Forward adjacency: dependency id -> ids of steps that directly depend on it.
+  const dependents = new Map<string, string[]>();
+  for (const step of steps) {
+    for (const dep of step.dependsOn) {
+      const list = dependents.get(dep);
+      if (list) list.push(step.id);
+      else dependents.set(dep, [step.id]);
+    }
+  }
+
+  const reachableCache = new Map<string, Set<string>>();
+  const reachableFrom = (start: string): Set<string> => {
+    const cached = reachableCache.get(start);
+    if (cached) return cached;
+    const seen = new Set<string>();
+    const stack = [...(dependents.get(start) ?? [])];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (cur === undefined || seen.has(cur)) continue;
+      seen.add(cur);
+      for (const next of dependents.get(cur) ?? []) {
+        if (!seen.has(next)) stack.push(next);
+      }
+    }
+    reachableCache.set(start, seen);
+    return seen;
+  };
+
+  const edges: Array<{ dep: string; step: string }> = [];
+  for (const step of steps) {
+    for (const dep of step.dependsOn) {
+      const reach = reachableFrom(dep);
+      const impliedByChain = step.dependsOn.some(
+        (other) =>
+          other !== dep &&
+          reach.has(other) &&
+          // Guard against cycles: only reduce when the alternate path does not
+          // loop back to `dep` (true for every acyclic plan).
+          !reachableFrom(other).has(dep),
+      );
+      if (impliedByChain) continue;
+      edges.push({ dep, step: step.id });
+    }
+  }
+  return edges;
+}
+
 function truncateLabel(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const keep = Math.max(0, maxChars - 3);
@@ -202,17 +265,17 @@ export function renderMermaid(
     lines.push(`  ${step.id}["${label}"]`);
   }
 
-  // Edge declarations (dependency → step) with critical-path index tracking
+  // Edge declarations (dependency → step) with critical-path index tracking.
+  // Transitively reduced so a redundant `a --> c` implied by `a --> b --> c`
+  // is dropped; necessary and diamond edges are preserved.
   let edgeIndex = 0;
   const criticalEdgeIndices: number[] = [];
-  for (const step of plan.steps) {
-    for (const dep of step.dependsOn) {
-      lines.push(`  ${dep} --> ${step.id}`);
-      if (cpm?.steps[dep]?.isCritical && cpm?.steps[step.id]?.isCritical) {
-        criticalEdgeIndices.push(edgeIndex);
-      }
-      edgeIndex++;
+  for (const { dep, step: stepId } of reduceDependencyEdges(plan.steps)) {
+    lines.push(`  ${dep} --> ${stepId}`);
+    if (cpm?.steps[dep]?.isCritical && cpm?.steps[stepId]?.isCritical) {
+      criticalEdgeIndices.push(edgeIndex);
     }
+    edgeIndex++;
   }
   if (edgeIndex === 0) {
     for (let i = 0; i < order.length - 1; i++) {

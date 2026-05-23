@@ -59,6 +59,13 @@ function invisibleEdges(out: string): string[] {
   return out.split("\n").filter((line) => line.includes("~~~"));
 }
 
+function visibleEdges(out: string): string[] {
+  return out
+    .split("\n")
+    .filter((line) => line.includes("-->"))
+    .map((line) => line.trim());
+}
+
 describe("normalizeLabel", () => {
   it("strips numeric prefix like '1.'", () => {
     expect(normalizeLabel("1. Create directory")).toBe("Create directory");
@@ -937,5 +944,111 @@ describe("renderMermaid", () => {
     ]);
     const out = renderMermaid(plan);
     expect(out).toMatch(/fontFamily.*serif"/);
+  });
+
+  describe("transitive edge reduction", () => {
+    it("drops a redundant a->c edge implied by a->b->c", () => {
+      const plan = makePlan([
+        step({ id: "a", description: "A" }),
+        step({ id: "b", description: "B", dependsOn: ["a"] }),
+        step({ id: "c", description: "C", dependsOn: ["b", "a"] }),
+      ]);
+      const out = renderMermaid(plan);
+      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c"]);
+      expect(out).not.toContain("a --> c");
+    });
+
+    it("drops a redundant edge spanning a longer chain (a->b->c->d, a->d)", () => {
+      const plan = makePlan([
+        step({ id: "a", description: "A" }),
+        step({ id: "b", description: "B", dependsOn: ["a"] }),
+        step({ id: "c", description: "C", dependsOn: ["b"] }),
+        step({ id: "d", description: "D", dependsOn: ["c", "a"] }),
+      ]);
+      const out = renderMermaid(plan);
+      expect(out).not.toContain("a --> d");
+      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c", "c --> d"]);
+    });
+
+    it("keeps all diamond edges (none are transitively implied)", () => {
+      const plan = makePlan([
+        step({ id: "A", description: "Root" }),
+        step({ id: "B", description: "Left", dependsOn: ["A"] }),
+        step({ id: "C", description: "Right", dependsOn: ["A"] }),
+        step({ id: "D", description: "Join", dependsOn: ["B", "C"] }),
+      ]);
+      const out = renderMermaid(plan);
+      const edges = visibleEdges(out);
+      expect(edges).toContain("A --> B");
+      expect(edges).toContain("A --> C");
+      expect(edges).toContain("B --> D");
+      expect(edges).toContain("C --> D");
+      // The diamond has exactly four edges; nothing should be added or removed.
+      expect(edges).toHaveLength(4);
+      expect(out).not.toContain("A --> D");
+    });
+
+    it("keeps independent dependency chains intact", () => {
+      const plan = makePlan([
+        step({ id: "a", description: "A" }),
+        step({ id: "b", description: "B", dependsOn: ["a"] }),
+        step({ id: "x", description: "X" }),
+        step({ id: "y", description: "Y", dependsOn: ["x"] }),
+      ]);
+      const out = renderMermaid(plan);
+      const edges = visibleEdges(out);
+      expect(edges).toContain("a --> b");
+      expect(edges).toContain("x --> y");
+      expect(edges).toHaveLength(2);
+    });
+
+    it("keeps a shortcut edge that is NOT implied by another dependency", () => {
+      // c depends only on a (not on b), so a->c is a genuine edge and stays.
+      const plan = makePlan([
+        step({ id: "a", description: "A" }),
+        step({ id: "b", description: "B", dependsOn: ["a"] }),
+        step({ id: "c", description: "C", dependsOn: ["a"] }),
+      ]);
+      const out = renderMermaid(plan);
+      const edges = visibleEdges(out);
+      expect(edges).toContain("a --> b");
+      expect(edges).toContain("a --> c");
+      expect(edges).toHaveLength(2);
+    });
+
+    it("realigns critical-path linkStyle indices after dropping a redundant edge", () => {
+      // a->b->c->d critical chain plus a redundant a->d. After reduction the
+      // emitted edges are a->b(0), b->c(1), c->d(2); all are on the critical path.
+      const plan = makePlan([
+        step({ id: "a", description: "A", durationMinutes: 1 }),
+        step({ id: "b", description: "B", dependsOn: ["a"], durationMinutes: 1 }),
+        step({ id: "c", description: "C", dependsOn: ["b"], durationMinutes: 1 }),
+        step({ id: "d", description: "D", dependsOn: ["c", "a"], durationMinutes: 1 }),
+      ]);
+      const cpm = computeCpm(plan);
+      const out = renderMermaid(plan, cpm);
+      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c", "c --> d"]);
+      expect(out).toContain("linkStyle 0 stroke:#718096,stroke-width:4px;");
+      expect(out).toContain("linkStyle 1 stroke:#718096,stroke-width:4px;");
+      expect(out).toContain("linkStyle 2 stroke:#718096,stroke-width:4px;");
+      // No index 3 — the redundant fourth edge is gone.
+      expect(out).not.toContain("linkStyle 3 stroke:#718096,stroke-width:4px;");
+    });
+
+    it("does not drop connecting edges on cyclic input (no cycle regression)", () => {
+      // a <-> b mutual cycle, with c depending on both. Neither a->c nor b->c
+      // may be removed: each "alternate path" loops back through the cycle.
+      const plan = makePlan([
+        step({ id: "a", description: "A", dependsOn: ["b"] }),
+        step({ id: "b", description: "B", dependsOn: ["a"] }),
+        step({ id: "c", description: "C", dependsOn: ["a", "b"] }),
+      ]);
+      const out = renderMermaid(plan);
+      const edges = visibleEdges(out);
+      expect(edges).toContain("a --> c");
+      expect(edges).toContain("b --> c");
+      expect(edges).toContain("a --> b");
+      expect(edges).toContain("b --> a");
+    });
   });
 });

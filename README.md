@@ -256,6 +256,20 @@ flowchart LR
 - **Execution** runs one fresh worker per task with one gate it cannot fake: build/test verification outside the worker. On failure, SmithersBot retries from a checkpoint or asks the user a focused Telegram question.
 - **User Review** starts after SmithersBot finishes the work it can run itself. SmithersBot tells the user what it could not test automatically, the user runs those manual checks, passing checks complete the goal, and failed checks can be fed back into planning.
 
+### Reading the goal flowchart
+
+`/goal_status` renders the goal's task DAG. Redundant arrows are removed (if `a → b → c`, the implied `a → c` is not drawn), so each arrow is a real dependency. Each task node is styled by its current state:
+
+| Node style | Meaning |
+| --- | --- |
+| Gray, dashed, no icon | **Pending / runnable** — not started; runs once its dependencies are done. |
+| ⏳ Purple | **Waiting on a dependency** — ready except an upstream task is hard-blocked. |
+| 🛠 Orange | **Running** — a worker is executing this task now. |
+| ✅ Green | **Done** — completed and verified. |
+| ⛔ Red, dashed | **Blocked, needs you** — genuinely stuck (blocked for user input); reply to unblock. |
+
+Technical interruptions — a failed attempt, an interrupted/lost worker (missing `worker_result.json`), a timeout, or a backend **usage limit** — are recovered automatically: on resume SmithersBot retries from a checkpoint or falls back to the other backend, so those tasks show as **pending/waiting** (not red) while the Telegram message explains the cause and any reset time. A node is red only when the goal truly cannot proceed without you. Skipped or cancelled tasks (e.g. after `/goal_stop`) leave active execution rather than getting a distinct node style.
+
 ## Example operator flows
 
 ### Smooth path: approve and let it run
