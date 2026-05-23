@@ -123,6 +123,19 @@ const samplePlan: Plan = {
   ],
 };
 
+/**
+ * Simulate the run lock that the real resume caller (Telegram/CLI handler via
+ * acquireGoalOpLock) holds for the duration of an execution. Without it,
+ * loadRun() treats a persisted "executing" run as a crashed/stale run and
+ * downgrades it to "blocked" for recovery — which is correct production
+ * behaviour but defeats tests that drive goalResumeCommand directly.
+ */
+function createRunLock(runId: string): void {
+  const lockDir = path.join(testGoalsDir, ".locks", "runs");
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, `${runId}.lock`), JSON.stringify({ pid: process.pid }));
+}
+
 function makeRun(overrides: Partial<SerializedRun>): SerializedRun {
   return {
     runId: "test-run-aaa",
@@ -675,6 +688,10 @@ describe("goal-resume command", () => {
         workingDir: workDir,
       }),
     );
+    // Simulate the run lock the real caller holds while execution is in flight,
+    // so loadRun() reports the persisted "executing" state instead of
+    // downgrading it to "blocked" as a crashed run.
+    createRunLock(runId);
 
     mockExecuteGoalWithAgent.mockImplementationOnce(
       async (params: {
@@ -712,6 +729,8 @@ describe("goal-resume command", () => {
         workingDir: workDir,
       }),
     );
+    // Hold the run lock so the in-flight "executing" state is not downgraded.
+    createRunLock(runId);
 
     mockExecuteGoalWithAgent.mockImplementationOnce(
       async (params: { session: { state: string }; onTaskUpdate?: () => void }) => {
