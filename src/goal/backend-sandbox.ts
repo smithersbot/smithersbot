@@ -483,25 +483,127 @@ export function resolveClaudeCodeSandboxSettingsRoot(env: NodeJS.ProcessEnv = pr
   return DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT;
 }
 
-function buildClaudeDenyReadPaths(workingDir: string): string[] {
-  return uniqueValues([
-    path.join(workingDir, ".env"),
-    path.join(workingDir, ".env.local"),
-    path.join(workingDir, ".env.production"),
-    path.join(workingDir, ".env.test"),
-    path.join(workingDir, "**", ".env"),
-    path.join(workingDir, "**", ".env.*"),
-    path.join(resolvePrivateRoot(), "**"),
-    path.join(os.homedir(), ".smithersbot", "**"),
-    path.join(os.homedir(), ".moltbot", "**"),
-    path.join(os.homedir(), ".clawdbot", "**"),
-    path.join(os.homedir(), ".clawdbot-dev", "**"),
-    path.join(os.homedir(), ".codex", "**"),
-    path.join(os.homedir(), ".claude", "**"),
-    path.join(os.homedir(), ".ssh", "**"),
-    path.join(os.homedir(), ".aws", "**"),
-    path.join(os.homedir(), ".gnupg", "**"),
-  ]);
+export type ClaudeDenyReadDeps = {
+  homedir?: () => string;
+  privateRoot?: () => string;
+  pathExists?: (candidate: string) => boolean;
+  realPath?: (candidate: string) => string;
+};
+
+/**
+ * Build the native-sandbox `filesystem.denyRead` entries for sandboxed Bash.
+ *
+ * This is the MINIMAL deny matrix that was proven live (control-plane auth works
+ * while sandboxed Bash is denied every secret below, README.md/.env.example stay
+ * readable, sandbox starts in ~tens of seconds). It was trimmed to this set after
+ * a broader deny list was shown to hang bubblewrap startup in a clean session.
+ *
+ * Claude Code 2.1.x enforces denyRead via bubblewrap mounts, which imposes three
+ * hard constraints learned from live differential probing:
+ *   1. A recursive/large glob (e.g. `<repo>/**` + `/.env`) is expanded by walking
+ *      the matching tree; over `node_modules` that walk hangs sandbox startup. So
+ *      we never emit `**` globs.
+ *   2. bwrap cannot mount over a path that is absent from the sandbox rootfs or is
+ *      a symlink — it fails with "Can't mount tmpfs on /newroot/...: No such file
+ *      or directory" (the same family as the known `/newroot/libx32` blocker). So
+ *      we filter to existing paths and resolve symlinks to their real targets.
+ *   3. Sandbox-startup cost scales with denied DIRECTORY tree size; stacking
+ *      several large trees hangs startup. We deny exactly one required large tree
+ *      (`~/.claude`, the credential/session/config store) plus small targets.
+ *
+ * Deny set (each is a real, mountable, existing path):
+ *   - managed private root (covers the managed private env AND any symlink-escape
+ *     to it, since the link resolves to a denied target);
+ *   - literal top-level repo env files (`.env`, `.env.local`, `.env.production`,
+ *     `.env.test`);
+ *   - `~/.claude` (directory deny transitively covers `~/.claude/.credentials.json`,
+ *     `settings.json`, and session files).
+ *
+ * Defense-in-depth denies for other home credential dirs (`~/.ssh`, `~/.gnupg`,
+ * `~/.codex`, legacy state dirs) are intentionally NOT emitted: stacking them hung
+ * bwrap startup (fail-closed would block every worker), they are outside this
+ * goal's required matrix, and Codex has its own sandbox. They can be revisited if a
+ * non-hanging mechanism is found.
+ */
+function resolveClaudeDenyDeps(deps: ClaudeDenyReadDeps): {
+  homedir: () => string;
+  privateRoot: () => string;
+  pathExists: (candidate: string) => boolean;
+  realPath: (candidate: string) => string;
+} {
+  return {
+    homedir: deps.homedir ?? os.homedir,
+    privateRoot: deps.privateRoot ?? (() => resolvePrivateRoot()),
+    pathExists: deps.pathExists ?? ((candidate) => fs.existsSync(candidate)),
+    realPath:
+      deps.realPath ??
+      ((candidate) => {
+        try {
+          return fs.realpathSync(candidate);
+        } catch {
+          return candidate;
+        }
+      }),
+  };
+}
+
+/**
+ * Keep only candidates that exist and rewrite symlinks to their real targets, so every
+ * emitted path is a real, mountable bubblewrap target (bwrap fails to mount over an
+ * absent path or a symlink — the "Can't mount tmpfs on /newroot/..." family). uniqueValues
+ * dedupes collisions (e.g. a `~/.clawdbot -> ~/.moltbot` symlink collapses onto `~/.moltbot`).
+ */
+function resolveExistingRealPaths(
+  candidates: string[],
+  deps: { pathExists: (candidate: string) => boolean; realPath: (candidate: string) => string },
+): string[] {
+  return uniqueValues(candidates.filter((c) => deps.pathExists(c)).map((c) => deps.realPath(c)));
+}
+
+function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+  const { homedir, privateRoot, pathExists, realPath } = resolveClaudeDenyDeps(deps);
+  const home = homedir();
+  // Minimal proven-safe deny matrix only.
+  const protectedDirs = [privateRoot(), path.join(home, ".claude")];
+  const protectedFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
+    path.join(workingDir, name),
+  );
+  return resolveExistingRealPaths([...protectedFiles, ...protectedDirs], { pathExists, realPath });
+}
+
+/**
+ * Build the `permissions.deny` Read-tool rules. Claude Code enforces these denies via the
+ * SAME bubblewrap mounts as `sandbox.filesystem.denyRead`, so they are subject to the same
+ * constraint: every referenced path must exist and be a real (non-symlink) target, or
+ * bwrap fails to start the sandbox. We therefore filter the home credential dirs to
+ * existing real paths (dropping absent `~/.aws`, resolving the `~/.clawdbot -> ~/.moltbot`
+ * symlink) and deny repo env files by absolute literal path (workspace-relative or
+ * recursive double-star Read forms make Claude scan node_modules at startup and hang).
+ */
+function buildClaudeReadToolDenies(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+  const { homedir, pathExists, realPath } = resolveClaudeDenyDeps(deps);
+  const home = homedir();
+  const repoEnvFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
+    path.join(workingDir, name),
+  );
+  const homeCredentialDirs = [
+    ".smithersbot",
+    ".moltbot",
+    ".clawdbot",
+    ".clawdbot-dev",
+    ".codex",
+    ".claude",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+  ].map((name) => path.join(home, name));
+  const repoEnvDenies = resolveExistingRealPaths(repoEnvFiles, { pathExists, realPath }).map(
+    (p) => `Read(${p})`,
+  );
+  const homeDenies = resolveExistingRealPaths(homeCredentialDirs, { pathExists, realPath }).map(
+    (d) => `Read(${d}/**)`,
+  );
+  return [...repoEnvDenies, ...homeDenies];
 }
 
 export function buildClaudeCodeSandboxSettingsConfig(params: {
@@ -509,6 +611,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   runId: string;
   purpose: ClaudeSandboxPurpose;
   settingsRoot?: string;
+  denyReadDeps?: ClaudeDenyReadDeps;
 }): ClaudeCodeSandboxSettingsConfig {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
@@ -537,25 +640,14 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
         filesystem: {
           allowRead,
           allowWrite,
-          denyRead: buildClaudeDenyReadPaths(params.workingDir),
+          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps),
         },
       },
       permissions: {
-        deny: [
-          "Read(./.env)",
-          "Read(./.env.*)",
-          "Read(**/.env)",
-          "Read(**/.env.*)",
-          "Read(~/.smithersbot/**)",
-          "Read(~/.moltbot/**)",
-          "Read(~/.clawdbot/**)",
-          "Read(~/.clawdbot-dev/**)",
-          "Read(~/.codex/**)",
-          "Read(~/.claude/**)",
-          "Read(~/.ssh/**)",
-          "Read(~/.aws/**)",
-          "Read(~/.gnupg/**)",
-        ],
+        // Read-tool denies, filtered to existing real paths because Claude Code enforces
+        // them via the same bubblewrap mounts as the sandbox filesystem denies (an absent
+        // ~/.aws or a symlinked ~/.clawdbot would fail bwrap startup). See builder doc.
+        deny: buildClaudeReadToolDenies(params.workingDir, params.denyReadDeps),
       },
     },
   };
@@ -566,6 +658,7 @@ export function writeClaudeCodeSandboxSettings(params: {
   runId: string;
   purpose: ClaudeSandboxPurpose;
   settingsRoot?: string;
+  denyReadDeps?: ClaudeDenyReadDeps;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
   if (
@@ -628,7 +721,16 @@ function buildClaudeAuthProbeSettingsConfig(params: {
   includeSandboxClaudeDeny: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
-  const claudeHomePattern = path.join(os.homedir(), ".claude", "**");
+  // The Claude deny is emitted as a resolved real path (buildClaudeDenyReadPaths /
+  // buildClaudeReadToolDenies run realpath), so match that resolved form to drop it for
+  // the differential probe variants that intentionally exclude the Claude auth deny.
+  let claudeHomePattern = path.join(os.homedir(), ".claude");
+  try {
+    claudeHomePattern = fs.realpathSync(claudeHomePattern);
+  } catch {
+    // keep the unresolved path if it does not exist
+  }
+  const claudePermRule = `Read(${claudeHomePattern}/**)`;
   return {
     ...config,
     settings: {
@@ -647,7 +749,7 @@ function buildClaudeAuthProbeSettingsConfig(params: {
       permissions: {
         deny: params.includePermissionClaudeDeny
           ? config.settings.permissions.deny
-          : config.settings.permissions.deny.filter((rule) => rule !== "Read(~/.claude/**)"),
+          : config.settings.permissions.deny.filter((rule) => rule !== claudePermRule),
       },
     },
   };
@@ -784,7 +886,6 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
         id: "settings_without_claude_deny",
         args: [
           "-p",
-          "--bare",
           "--settings",
           settingsWithoutClaudeDeny.settingsPath,
           "--permission-mode",
@@ -800,7 +901,6 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
         id: "setting_sources_empty",
         args: [
           "-p",
-          "--bare",
           "--settings",
           settingSourcesEmpty.settingsPath,
           "--setting-sources",
@@ -818,7 +918,6 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
         id: "permissions_deny_claude_only",
         args: [
           "-p",
-          "--bare",
           "--settings",
           permissionsOnly.settingsPath,
           "--setting-sources",
@@ -836,7 +935,6 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
         id: "sandbox_deny_claude_only",
         args: [
           "-p",
-          "--bare",
           "--settings",
           sandboxOnly.settingsPath,
           "--setting-sources",
@@ -854,7 +952,6 @@ export function runClaudeSubscriptionAuthDifferentialProbes(
         id: "full_generated_settings",
         args: [
           "-p",
-          "--bare",
           "--settings",
           fullGenerated.settingsPath,
           "--setting-sources",
@@ -1107,6 +1204,7 @@ const CLAUDE_PROBE_MARKERS = [
   "private_env",
   "symlink_escape",
   "claude_auth_path",
+  "creds_file",
 ] as const;
 type ClaudeProbeMarker = (typeof CLAUDE_PROBE_MARKERS)[number];
 type ClaudeProbeMatrix = Partial<Record<ClaudeProbeMarker, number>>;
@@ -1137,6 +1235,10 @@ export function buildClaudeSandboxProbeCommand(workingDir: string): string {
     `cat ${linkName} >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_symlink_escape=$?`,
     `rm -f ${linkName}`,
     "cat ~/.claude/settings.json >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_claude_auth_path=$?",
+    // Explicit credential-file deny check. Covered by the ~/.claude directory deny
+    // (a directory deny tmpfs-mounts the whole subtree), proven separately so the
+    // matrix records the credential store specifically as blocked.
+    "cat ~/.claude/.credentials.json >/dev/null 2>&1; echo SMITHERSBOT_CLAUDE_creds_file=$?",
   ].join("; ");
 }
 
@@ -1182,7 +1284,8 @@ function classifyClaudeProbeFailure(
     (matrix.env_local === 0 ||
       matrix.private_env === 0 ||
       matrix.symlink_escape === 0 ||
-      matrix.claude_auth_path === 0)
+      matrix.claude_auth_path === 0 ||
+      matrix.creds_file === 0)
   ) {
     return {
       supported: false,
@@ -1258,7 +1361,7 @@ export function claudeCodeNativeSandboxStatus(
       supported: false,
       blocker: "live-probe-required",
       reason: `Set ${CLAUDE_SANDBOX_LIVE_PROBES_ENV}=1 to prove Claude Code native sandbox enforcement with a live probe.`,
-      command: `claude -p --bare --settings ${settingsConfig.settingsPath} --setting-sources ''`,
+      command: `claude -p --settings ${settingsConfig.settingsPath} --setting-sources ''`,
     };
   }
 
@@ -1267,7 +1370,6 @@ export function claudeCodeNativeSandboxStatus(
     "claude",
     [
       "-p",
-      "--bare",
       "--settings",
       settingsConfig.settingsPath,
       "--setting-sources",
@@ -1294,7 +1396,8 @@ export function claudeCodeNativeSandboxStatus(
     matrix.env_local === 1 &&
     matrix.private_env === 1 &&
     matrix.symlink_escape === 1 &&
-    matrix.claude_auth_path === 1;
+    matrix.claude_auth_path === 1 &&
+    matrix.creds_file === 1;
   const allowSucceeded = matrix.readme === 0 && matrix.env_example === 0;
   if (result.status === 0 && denyBlocked && allowSucceeded) {
     return {

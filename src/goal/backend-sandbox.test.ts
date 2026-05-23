@@ -582,6 +582,9 @@ describe("Claude Code native sandbox settings", () => {
         runId: "run-123",
         purpose: "goal-worker",
         settingsRoot,
+        // Deterministic deny generation: treat every candidate as present and not a
+        // symlink so the asserted shape does not depend on the isolated test HOME.
+        denyReadDeps: { pathExists: () => true, realPath: (candidate) => candidate },
       });
       const parsed = JSON.parse(
         fs.readFileSync(config.settingsPath, "utf8"),
@@ -598,19 +601,97 @@ describe("Claude Code native sandbox settings", () => {
         path.join(managedRoot, "agent", "history"),
       );
       expect(parsed.sandbox.filesystem.allowWrite).toEqual([workingDir]);
+      // Literal repo env file + directory-path denies (no `**` globs, which hang
+      // bubblewrap startup by walking large trees like node_modules).
       expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(workingDir, ".env.local"));
-      expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(managedRoot, "private", "**"));
-      expect(parsed.sandbox.filesystem.denyRead).toContain(
-        path.join(os.homedir(), ".claude", "**"),
-      );
-      expect(parsed.permissions.deny).toContain("Read(./.env.*)");
-      expect(parsed.permissions.deny).toContain("Read(~/.claude/**)");
+      expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(managedRoot, "private"));
+      expect(parsed.sandbox.filesystem.denyRead).toContain(path.join(os.homedir(), ".claude"));
+      // Regression guards: never emit `**` globs or the recursive repo .env walk.
+      expect(parsed.sandbox.filesystem.denyRead.some((entry) => entry.includes("**"))).toBe(false);
+      expect(parsed.sandbox.filesystem.denyRead).not.toContain(path.join(workingDir, "**", ".env"));
+      // Read-tool permission denies: repo env files by ABSOLUTE LITERAL path (the
+      // workspace-relative `Read(./.env)` / `Read(**/.env)` forms make Claude scan
+      // node_modules at sandbox startup and hang — proven by live bisection); home
+      // credential dirs by `~/...` (those do not hang).
+      expect(parsed.permissions.deny).toContain(`Read(${path.join(workingDir, ".env.local")})`);
+      expect(parsed.permissions.deny).toContain(`Read(${path.join(os.homedir(), ".claude")}/**)`);
+      // Regression guards: no workspace-relative / recursive Read-tool patterns (they make
+      // Claude scan node_modules at startup and hang).
+      expect(parsed.permissions.deny.some((rule) => rule.startsWith("Read(./"))).toBe(false);
+      expect(parsed.permissions.deny.some((rule) => rule.includes("Read(**/"))).toBe(false);
     } finally {
       if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
       fs.rmSync(settingsRoot, { recursive: true, force: true });
       fs.rmSync(managedRoot, { recursive: true, force: true });
     }
+  });
+
+  it("emits only the minimal proven-safe deny matrix, filtered to existing real paths", () => {
+    const home = "/home/testuser";
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: "/ws/repo",
+      runId: "deny-filter",
+      purpose: "goal-worker",
+      denyReadDeps: {
+        homedir: () => home,
+        privateRoot: () => "/managed/private",
+        // .env.production and ~/.aws are absent on this host; everything else exists.
+        pathExists: (candidate) =>
+          candidate !== path.join("/ws/repo", ".env.production") &&
+          candidate !== path.join(home, ".aws"),
+        // ~/.claude is a symlink to a relocated config dir and ~/.clawdbot -> ~/.moltbot;
+        // bwrap cannot mount over a symlink, so they must resolve to real targets.
+        realPath: (candidate) => {
+          if (candidate === path.join(home, ".claude")) return "/real/claude-config";
+          if (candidate === path.join(home, ".clawdbot")) return path.join(home, ".moltbot");
+          return candidate;
+        },
+      },
+    });
+    const deny = config.settings.sandbox.filesystem.denyRead;
+
+    // Absent path dropped (bwrap would fail "Can't mount tmpfs ... No such file").
+    expect(deny).not.toContain(path.join("/ws/repo", ".env.production"));
+    // Symlinked protected dir resolved to its real, mountable target.
+    expect(deny).not.toContain(path.join(home, ".claude"));
+    expect(deny).toContain("/real/claude-config");
+    // Required matrix present: private root (covers private env + symlink escape),
+    // repo literal env files, and the Claude credential/config store.
+    expect(deny).toContain("/managed/private");
+    expect(deny).toContain(path.join("/ws/repo", ".env"));
+    expect(deny).toContain(path.join("/ws/repo", ".env.local"));
+    expect(deny).toContain(path.join("/ws/repo", ".env.test"));
+    // Trimmed to the minimal set — no large/extra protected dirs that hung bwrap.
+    for (const dropped of [
+      ".ssh",
+      ".gnupg",
+      ".codex",
+      ".smithersbot",
+      ".moltbot",
+      ".clawdbot-dev",
+    ]) {
+      expect(deny.some((entry) => entry.includes(dropped))).toBe(false);
+    }
+    expect(deny).toHaveLength(5);
+    // Never emit `**` globs in the sandbox filesystem denyRead.
+    expect(deny.some((entry) => entry.includes("**"))).toBe(false);
+
+    // permissions.deny (Read-tool denies) are enforced via the SAME bwrap mounts, so they
+    // must be filtered too: absent dropped, symlinks resolved+deduped, repo env absolute.
+    const perm = config.settings.permissions.deny;
+    expect(perm).toContain(`Read(${path.join("/ws/repo", ".env.local")})`);
+    expect(perm).not.toContain(`Read(${path.join("/ws/repo", ".env.production")})`); // absent
+    expect(perm).toContain("Read(/real/claude-config/**)"); // resolved ~/.claude symlink
+    expect(perm).not.toContain(`Read(${path.join(home, ".claude")}/**)`); // unresolved form gone
+    expect(perm).not.toContain(`Read(${path.join(home, ".aws")}/**)`); // absent dropped
+    expect(perm).not.toContain(`Read(${path.join(home, ".clawdbot")}/**)`); // symlink resolved away
+    expect(perm.filter((rule) => rule === `Read(${path.join(home, ".moltbot")}/**)`)).toHaveLength(
+      1,
+    );
+    // No workspace-relative / recursive Read-tool patterns.
+    expect(perm.some((rule) => rule.startsWith("Read(./"))).toBe(false);
+    expect(perm.some((rule) => rule.includes("Read(**/"))).toBe(false);
   });
 
   it("returns a structured fail-closed blocker until the live probe is explicitly enabled", () => {
@@ -639,6 +720,7 @@ describe("Claude Code native sandbox settings", () => {
     "SMITHERSBOT_CLAUDE_private_env=1",
     "SMITHERSBOT_CLAUDE_symlink_escape=1",
     "SMITHERSBOT_CLAUDE_claude_auth_path=1",
+    "SMITHERSBOT_CLAUDE_creds_file=1",
     "",
   ].join("\n");
 
@@ -677,6 +759,8 @@ describe("Claude Code native sandbox settings", () => {
     );
     const claudeArgs = mockSpawnSync.mock.calls[0][1] as string[];
     expect(claudeArgs.join(" ")).not.toContain("dangerously-skip-permissions");
+    // --bare disables OAuth/subscription auth; the live proof must never use it.
+    expect(claudeArgs).not.toContain("--bare");
   });
 
   it("fails closed (unsupported) when a denied read succeeds inside the sandbox", () => {
@@ -692,6 +776,7 @@ describe("Claude Code native sandbox settings", () => {
         "SMITHERSBOT_CLAUDE_private_env=1",
         "SMITHERSBOT_CLAUDE_symlink_escape=1",
         "SMITHERSBOT_CLAUDE_claude_auth_path=1",
+        "SMITHERSBOT_CLAUDE_creds_file=1",
         "",
       ].join("\n"),
       stderr: "",
@@ -724,6 +809,7 @@ describe("Claude Code native sandbox settings", () => {
         "SMITHERSBOT_CLAUDE_private_env=1",
         "SMITHERSBOT_CLAUDE_symlink_escape=1",
         "SMITHERSBOT_CLAUDE_claude_auth_path=1",
+        "SMITHERSBOT_CLAUDE_creds_file=1",
         "",
       ].join("\n"),
       stderr: "",
@@ -782,6 +868,9 @@ describe("Claude Code native sandbox settings", () => {
       expect(command).toContain("SMITHERSBOT_CLAUDE_symlink_escape=$?");
       expect(command).toContain("SMITHERSBOT_CLAUDE_claude_auth_path=$?");
       expect(command).toContain("cat ~/.claude/settings.json >/dev/null 2>&1");
+      // Credential store is checked explicitly (covered by the ~/.claude dir deny).
+      expect(command).toContain("SMITHERSBOT_CLAUDE_creds_file=$?");
+      expect(command).toContain("cat ~/.claude/.credentials.json >/dev/null 2>&1");
       expect(command).toContain(privateEnvPath);
       // The managed private env is referenced for deny + symlink-escape checks only;
       // it is always piped to /dev/null, never printed.
@@ -934,6 +1023,8 @@ describe("Claude Code native sandbox settings", () => {
         const options = call[2] as { env: Record<string, string | undefined> };
         expect(call[0]).toBe("claude");
         expect(args.join(" ")).not.toContain("dangerously-skip-permissions");
+        // --bare disables OAuth/subscription auth; no probe may use it.
+        expect(args).not.toContain("--bare");
         expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
         expect(options.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
         expect(options.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
