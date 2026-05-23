@@ -6,6 +6,14 @@ import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
 } from "../goal/backend-availability.js";
+import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+  type AgentHistoryScope,
+} from "../goal/agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "../goal/agent-history.js";
 import { runWithBackendFallback } from "../goal/phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import { CLAUDE_READ_ONLY_PROMPT } from "../goal/claude-code-constants.js";
@@ -393,6 +401,75 @@ function readSubstantiveResponseFile(filePath: string): string {
   return isPlaceholderRepoChatReply(responseText) ? "" : responseText;
 }
 
+function sanitizeRepoChatArgvForHistory(args: readonly string[]): string[] {
+  const sanitized = args.map((arg) => redactSecretValues(arg));
+  for (let index = 0; index < sanitized.length; index++) {
+    const arg = sanitized[index];
+    if (arg === "--append-system-prompt" && index + 1 < sanitized.length) {
+      sanitized[index + 1] = "<append-system-prompt redacted; see prompt artifact>";
+      index++;
+    }
+  }
+  if (sanitized.length > 0) {
+    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
+  }
+  return sanitized;
+}
+
+function repoChatHistoryScope(params: {
+  workingDir: string;
+  sessionId: string;
+}): AgentHistoryScope {
+  return {
+    kind: "repo-chat",
+    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    sessionId: params.sessionId,
+  };
+}
+
+function appendRepoChatHistoryBestEffort(params: {
+  scope: AgentHistoryScope;
+  backend: RepoChatWorkerParams["backend"];
+  sessionId: string;
+  event: string;
+  status?: string;
+  cliSessionId?: string;
+  resumeFromCliSessionId?: string;
+  promptArtifactPath?: string;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  durationMs?: number;
+  artifactPaths?: readonly string[];
+  extra?: Record<string, unknown>;
+}): void {
+  const result = appendAgentHistoryEventBestEffort(params.scope, {
+    event: params.event,
+    phase: "repo-chat",
+    backend: params.backend,
+    repoChatId: params.sessionId,
+    sessionId: params.sessionId,
+    status: params.status,
+    cliSessionId: params.cliSessionId,
+    resumeFromCliSessionId: params.resumeFromCliSessionId,
+    promptArtifactPath: params.promptArtifactPath,
+    tokenUsage: params.tokenUsage,
+    errorClass: params.errorClass,
+    outputSummary: params.outputSummary,
+    durationMs: params.durationMs,
+    artifactPaths: params.artifactPaths,
+    ...params.extra,
+  });
+  if (!result.ok) {
+    getLogger().warn(result.warning, { phase: "repo-chat", sessionId: params.sessionId });
+  }
+}
+
+function errorClassFrom(error: unknown): string {
+  if (error instanceof Error && error.name) return error.name;
+  return "repo_chat_error";
+}
+
 function buildResumeArgs(params: {
   backend: RepoChatWorkerParams["backend"];
   args: string[];
@@ -452,6 +529,11 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
   const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const responseFileId = crypto.randomUUID();
+  const historySessionId =
+    params.sessionId ??
+    params.codexSandboxRunId ??
+    params.cliSessionId ??
+    `repo-chat-${responseFileId}`;
   const manualResponseFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}.md`);
   const lastMessageFilePath = path.join(os.tmpdir(), `moltbot-rc-${responseFileId}-last.md`);
   const responseFileInstruction = buildResponseFileInstruction({
@@ -491,7 +573,51 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
     params.backend === "claude_code"
       ? buildClaudeCodeEnv(params.claudeCodeAuth ?? "subscription")
       : mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv(), codexNativeSandbox!);
+  const persistedPrompt = params.backend === "claude_code" ? augmentedPrompt : codexPrompt;
+  const historyScope = repoChatHistoryScope({
+    workingDir: params.workingDir,
+    sessionId: historySessionId,
+  });
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: historyScope,
+    phase: "repo-chat",
+    backend: params.backend,
+    prompt: persistedPrompt,
+    command,
+    argv: sanitizeRepoChatArgvForHistory(args),
+    event: {
+      repoChatId: historySessionId,
+      sessionId: historySessionId,
+      status: "launching",
+      cliSessionId: params.cliSessionId,
+      resumeFromCliSessionId: params.cliSessionId,
+      codexSandboxRunId: params.codexSandboxRunId,
+    },
+  });
+  appendRepoChatHistoryBestEffort({
+    scope: historyScope,
+    backend: params.backend,
+    sessionId: historySessionId,
+    event: "turn_start",
+    status: "running",
+    cliSessionId: params.cliSessionId,
+    resumeFromCliSessionId: params.cliSessionId,
+    promptArtifactPath: launchHistory.promptArtifactPath,
+    artifactPaths: [launchHistory.promptArtifactPath],
+    extra: {
+      workingDir: params.workingDir,
+      executionRoot,
+    },
+  });
 
+  let tokenUsage: AgentBackendUsage = {
+    available: false,
+    reason: "backend process did not produce output before failure",
+  };
+  let failureStatus = "error";
+  let failureSummary: string | undefined;
+  let durationMsForHistory: number | undefined;
+  let cliSessionIdForHistory = params.cliSessionId;
   try {
     const { stdout, stderr, timedOut, exitCode, signal, durationMs } = await runCliProcess({
       command,
@@ -501,8 +627,12 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
       abortSignal: params.abortSignal,
       env,
     });
+    durationMsForHistory = durationMs;
+    tokenUsage = parseBackendUsage(`${stdout}\n${stderr}`);
 
     if (timedOut) {
+      failureStatus = "timeout";
+      failureSummary = `Repo chat worker timed out after ${timeoutMs}ms.`;
       throw new Error(`Repo chat worker timed out after ${timeoutMs}ms.`);
     }
 
@@ -515,6 +645,8 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
           stderr,
         })
       ) {
+        failureStatus = "missing_resume_state";
+        failureSummary = CODEX_RESUME_STATE_MISSING_MESSAGE;
         throw new Error(CODEX_RESUME_STATE_MISSING_MESSAGE);
       }
       const stderrTrimmed = stderr.trim();
@@ -531,6 +663,8 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
         !stderrTrimmed && params.backend === "claude_code" && isInitOnlyClaudeStdout(stdout)
           ? ` ${CLAUDE_STARTUP_HINT}`
           : "";
+      failureStatus = "process_failed";
+      failureSummary = detailBody || `exit=${exitCode ?? "unknown"} signal=${signal ?? "none"}`;
       throw new Error(
         `Repo chat worker failed (${command} exit ${exitCode ?? "unknown"})${detailSegment} (${meta})${hintSegment}`,
       );
@@ -540,6 +674,7 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
       extractSessionIdFromStdout(stdout) ??
       extractSessionIdFromStdout(stderr) ??
       (params.cliSessionId?.trim() || undefined);
+    cliSessionIdForHistory = cliSessionId;
     let rejectedPlaceholderFallback = false;
     let responseText = extractResponseFromCliStdout(params.backend, stdout);
     if (isPlaceholderRepoChatReply(responseText)) {
@@ -599,6 +734,9 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
     }
 
     if (!responseText) {
+      failureStatus = "missing_result";
+      failureSummary =
+        "Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair.";
       throw new Error(
         `Repo chat worker completed without a deliverable response after CLI extraction, legacy response-file check, and sandbox-safe repair.${
           rejectedPlaceholderFallback ? " (placeholder stdout reply rejected)" : ""
@@ -614,6 +752,21 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
       responseText = `${responseText}\n\n${CODEX_NO_SESSION_ID_FOOTER}`;
     }
 
+    appendRepoChatHistoryBestEffort({
+      scope: historyScope,
+      backend: params.backend,
+      sessionId: historySessionId,
+      event: "success",
+      status: "completed",
+      cliSessionId,
+      resumeFromCliSessionId: params.cliSessionId,
+      promptArtifactPath: launchHistory.promptArtifactPath,
+      tokenUsage,
+      durationMs,
+      outputSummary: responseText.slice(0, 2_000),
+      artifactPaths: [launchHistory.promptArtifactPath],
+    });
+
     return {
       backend: params.backend,
       text: responseText,
@@ -622,6 +775,23 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
       stdout: redactSecretValues(stdout),
       stderr: redactSecretValues(stderr),
     };
+  } catch (error) {
+    appendRepoChatHistoryBestEffort({
+      scope: historyScope,
+      backend: params.backend,
+      sessionId: historySessionId,
+      event: "failure",
+      status: failureStatus,
+      cliSessionId: cliSessionIdForHistory,
+      resumeFromCliSessionId: params.cliSessionId,
+      promptArtifactPath: launchHistory.promptArtifactPath,
+      tokenUsage,
+      durationMs: durationMsForHistory,
+      errorClass: errorClassFrom(error),
+      outputSummary: failureSummary ?? (error instanceof Error ? error.message : String(error)),
+      artifactPaths: [launchHistory.promptArtifactPath],
+    });
+    throw error;
   } finally {
     cleanupResponseFile(manualResponseFilePath);
     cleanupResponseFile(lastMessageFilePath);

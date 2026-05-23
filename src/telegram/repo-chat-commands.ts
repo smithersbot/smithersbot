@@ -248,6 +248,7 @@ function runRepoChatInBackground(params: {
         fn: async () =>
           runRepoChatWorker({
             backend: params.backend,
+            sessionId,
             prompt: params.prompt,
             workingDir,
             cliSessionId: params.existingSession?.cliSessionId,

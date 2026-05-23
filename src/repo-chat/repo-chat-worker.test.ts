@@ -54,6 +54,7 @@ import {
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import { EMPTY_MCP_CONFIG_PATH } from "../goal/claude-code-mcp-isolation.js";
 import { buildCodexNativeSandboxConfig } from "../goal/backend-sandbox.js";
+import { resolveAgentRepoChatHistoryDir } from "../config/managed-paths.js";
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
@@ -63,14 +64,19 @@ describe("repo-chat-worker", () => {
   let testSandboxRoot: string;
   let originalCodexSandboxRoot: string | undefined;
   let originalClaudeSettingsRoot: string | undefined;
+  let originalManagedRoot: string | undefined;
+  let managedRoot: string;
 
   beforeEach(() => {
     fs.mkdirSync(path.join(process.cwd(), ".tmp"), { recursive: true });
     testSandboxRoot = fs.mkdtempSync(path.join(process.cwd(), ".tmp", "repo-chat-sandbox-"));
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-history-"));
     originalCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
     originalClaudeSettingsRoot = process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+    originalManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = testSandboxRoot;
     process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = testSandboxRoot;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     runCliProcessMock.mockReset();
     getCodexAskForApprovalPlacementMock.mockReset();
     buildClaudeCodeEnvMock.mockReset();
@@ -91,10 +97,29 @@ describe("repo-chat-worker", () => {
     } else {
       process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = originalClaudeSettingsRoot;
     }
+    if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
     fs.rmSync(RESPONSE_FILE_PATH, { force: true });
     fs.rmSync(LAST_MESSAGE_FILE_PATH, { force: true });
     fs.rmSync(testSandboxRoot, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
   });
+
+  function repoChatEventsPath(sessionId: string, workspace = "repo"): string {
+    return path.join(resolveAgentRepoChatHistoryDir(workspace), sessionId, "events.jsonl");
+  }
+
+  function readRepoChatEvents(
+    sessionId: string,
+    workspace = "repo",
+  ): Array<Record<string, unknown>> {
+    return fs
+      .readFileSync(repoChatEventsPath(sessionId, workspace), "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
 
   describe("args", () => {
     it("builds Claude resume args with read-only restrictions re-applied", () => {
@@ -499,6 +524,139 @@ describe("repo-chat-worker", () => {
       }
     });
 
+    it("writes a redacted prompt artifact and launch event before backend spawn", async () => {
+      vi.stubEnv("SMITHERSBOT_GATEWAY_TOKEN", "FAKE_REPO_CHAT_PROMPT_SECRET_123");
+      const sessionId = "repo-chat-pre-spawn";
+      let promptArtifactPath = "";
+      runCliProcessMock.mockImplementationOnce(async () => {
+        const events = readRepoChatEvents(sessionId);
+        expect(events[0]).toMatchObject({
+          event: "launch",
+          phase: "repo-chat",
+          backend: "codex",
+          repoChatId: sessionId,
+          sessionId,
+          status: "launching",
+        });
+        expect(events[0]?.argv).toContain("<prompt redacted; see prompt artifact>");
+        expect(typeof events[0]?.promptArtifactPath).toBe("string");
+        promptArtifactPath = events[0]?.promptArtifactPath as string;
+        expect(promptArtifactPath).toBeTruthy();
+        expect(fs.existsSync(promptArtifactPath)).toBe(true);
+        const promptArtifact = fs.readFileSync(promptArtifactPath, "utf8");
+        expect(promptArtifact).toContain("[REDACTED]");
+        expect(promptArtifact).not.toContain("FAKE_REPO_CHAT_PROMPT_SECRET_123");
+        expect(fs.readFileSync(repoChatEventsPath(sessionId), "utf8")).not.toContain(
+          "FAKE_REPO_CHAT_PROMPT_SECRET_123",
+        );
+        return {
+          stdout: JSON.stringify({
+            type: "result",
+            is_error: false,
+            result: "Codex answer from stdout",
+            thread_id: "codex-history-thread",
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 31,
+        };
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        sessionId,
+        prompt: "Please keep FAKE_REPO_CHAT_PROMPT_SECRET_123 private.",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toBe("Codex answer from stdout");
+      const events = readRepoChatEvents(sessionId);
+      expect(events.map((event) => event.event)).toEqual(["launch", "turn_start", "success"]);
+      expect(events[1]).toMatchObject({ event: "turn_start", status: "running" });
+      expect(events[2]).toMatchObject({
+        event: "success",
+        status: "completed",
+        cliSessionId: "codex-history-thread",
+        promptArtifactPath,
+      });
+    });
+
+    it("captures token usage from mocked backend output in repo-chat history", async () => {
+      const sessionId = "repo-chat-token-usage";
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: [
+          JSON.stringify({ type: "thread.started", thread_id: "codex-token-thread" }),
+          JSON.stringify({
+            type: "result",
+            is_error: false,
+            result: "Tokenized answer",
+            token_count: {
+              input_tokens: 123,
+              output_tokens: 45,
+              cached_input_tokens: 67,
+              total_tokens: 235,
+            },
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 50,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        sessionId,
+        prompt: "Capture token usage.",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toBe("Tokenized answer");
+      const success = readRepoChatEvents(sessionId).find((event) => event.event === "success");
+      expect(success?.tokenUsage).toMatchObject({
+        available: true,
+        inputTokens: 123,
+        outputTokens: 45,
+        cacheReadTokens: 67,
+        totalTokens: 235,
+        source: "codex-json",
+      });
+    });
+
+    it("writes a repo-chat failure event before propagating backend errors", async () => {
+      const sessionId = "repo-chat-failure-event";
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "codex failed",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 5,
+      });
+
+      await expect(
+        runRepoChatWorker({
+          backend: "codex",
+          sessionId,
+          prompt: "fail this turn",
+          workingDir: "/repo",
+        }),
+      ).rejects.toThrow("Repo chat worker failed (codex exit 1)");
+
+      const failure = readRepoChatEvents(sessionId).find((event) => event.event === "failure");
+      expect(failure).toMatchObject({
+        phase: "repo-chat",
+        backend: "codex",
+        repoChatId: sessionId,
+        status: "process_failed",
+        errorClass: "Error",
+      });
+      expect(String(failure?.outputSummary)).toContain("codex failed");
+    });
+
     it("reads Codex manual response file for initial sessions", async () => {
       const prevTelegram = process.env.TELEGRAM_BOT_TOKEN;
       const prevGateway = process.env.CLAWDBOT_GATEWAY_TOKEN;
@@ -796,6 +954,7 @@ describe("repo-chat-worker", () => {
     });
 
     it("falls back to Claude Code when Codex hits a usage limit", async () => {
+      const sessionId = "repo-chat-usage-limit-fallback";
       runCliProcessMock
         .mockResolvedValueOnce({
           stdout: "",
@@ -831,6 +990,7 @@ describe("repo-chat-worker", () => {
 
       const result = await runRepoChatWorker({
         backend: "codex",
+        sessionId,
         prompt: "How does config load?",
         workingDir: "/repo",
       });
@@ -840,6 +1000,19 @@ describe("repo-chat-worker", () => {
       expect(runCliProcessMock).toHaveBeenCalledTimes(2);
       expect(runCliProcessMock.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
       expect(runCliProcessMock.mock.calls[1]?.[0]).toMatchObject({ command: "claude" });
+      const events = readRepoChatEvents(sessionId);
+      expect(
+        events.map((event) =>
+          [event.backend, event.event, event.status].map((value) => String(value)).join(":"),
+        ),
+      ).toEqual([
+        "codex:launch:launching",
+        "codex:turn_start:running",
+        "codex:failure:process_failed",
+        "claude_code:launch:launching",
+        "claude_code:turn_start:running",
+        "claude_code:success:completed",
+      ]);
     });
 
     it("falls back to Codex when Claude Code hits a usage limit", async () => {

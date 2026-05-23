@@ -33,6 +33,7 @@ export type RepoChatSession = {
 
 export type RepoChatWorkerParams = {
   backend: RepoChatBackend;
+  sessionId?: string;
   prompt: string;
   workingDir: string;
   cliSessionId?: string;

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RepoChatSession } from "./types.js";
+import { resolveAgentRepoChatHistoryDir } from "../config/managed-paths.js";
 import {
   findRepoChatSessionByMessageId,
   loadRepoChatSession,
@@ -190,5 +191,43 @@ describe("repo-chat-store", () => {
     const indexLines = fs.readFileSync(indexPath, "utf8").trim().split("\n");
     expect(indexLines).toHaveLength(1);
     expect(indexLines[0]).toContain("repo-chat-history");
+  });
+
+  it("keeps incremental repo-chat history visible to follow-up session lookup", () => {
+    const session = makeSession({
+      id: "repo-chat-incremental",
+      workingDir: path.join(
+        process.env.SMITHERSBOT_GOALS_ROOT!,
+        "agent",
+        "workspaces",
+        "smithersbot",
+        "repo",
+      ),
+    });
+    const historyDir = path.join(resolveAgentRepoChatHistoryDir("smithersbot"), session.id);
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(historyDir, "events.jsonl"),
+      `${JSON.stringify({
+        event: "launch",
+        phase: "repo-chat",
+        sessionId: session.id,
+        promptArtifactPath: path.join(historyDir, "prompts", "turn-1.txt"),
+      })}\n`,
+      "utf8",
+    );
+
+    saveRepoChatSession(session, tmpDir);
+    resetRepoChatStoreIndexForTests();
+    const found = findRepoChatSessionByMessageId({
+      chatId: 101,
+      messageId: 202,
+      repoChatsDir: tmpDir,
+    });
+
+    expect(found?.id).toBe(session.id);
+    const eventsRaw = fs.readFileSync(path.join(historyDir, "events.jsonl"), "utf8");
+    expect(eventsRaw).toContain('"event":"launch"');
+    expect(fs.existsSync(path.join(historyDir, "summary.json"))).toBe(true);
   });
 });
