@@ -703,7 +703,9 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.status).toBe("done");
     expect(step.executedBackend).toBe("claude_code");
     expect(executedCliBackends).toEqual(["codex", "claude_code"]);
-    expect(progress).toContain("  [retry] codex hit rate_limit; retrying task with claude_code");
+    expect(progress).toContain(
+      "  [usage-limit] Codex hit a rate limit. Falling back to Claude Code.",
+    );
   });
 
   it("blocks clearly when Codex rate-limits and Claude Code is disabled", async () => {
@@ -731,7 +733,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.status).toBe("blocked");
     expect(step.executedBackend).toBe("codex");
     expect(executedCliBackends).toEqual(["codex"]);
-    expect(step.blockedQuestion).toContain("codex hit a rate limit");
+    expect(step.blockedQuestion).toContain("Codex hit a rate limit");
     expect(step.blockedQuestion).toContain("single enabled worker");
   });
 
@@ -766,6 +768,114 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.status).toBe("done");
     expect(step.executedBackend).toBe("codex");
     expect(executedCliBackends).toEqual(["claude_code", "codex"]);
+  });
+
+  it("preserves usage-limit failure history with reset time after a successful fallback", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const progress: string[] = [];
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Claude Code usage limit reached. Resets at 3pm.",
+        blockedReason: "usage_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered with Codex",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-claude-usage-fallback-history",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("codex");
+    expect(progress).toContain(
+      "  [usage-limit] Claude Code hit a usage limit (resets at 3pm). Falling back to Codex.",
+    );
+    expect(progress).toContain(
+      "  [usage-limit] Claude Code hit a usage limit (resets at 3pm). Fell back to Codex. Codex succeeded.",
+    );
+  });
+
+  it("renders reset times in the final message when both backends are exhausted", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Codex hit its usage limit. Resets at 3pm.",
+        blockedReason: "usage_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Claude Code weekly usage limit reached. Resets Monday.",
+        blockedReason: "usage_limit",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-both-backends-exhausted",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 3, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(executedCliBackends).toEqual(["codex", "claude_code"]);
+    const blockedQuestion = step.blockedQuestion ?? "";
+    expect(blockedQuestion).toContain("Codex hit a usage limit (resets at 3pm).");
+    expect(blockedQuestion).toContain(
+      "Claude Code hit a usage limit (weekly limit, resets Monday).",
+    );
+    expect(blockedQuestion).toContain("the fallback backend already hit a usage or rate limit");
+    expect(blockedQuestion).toContain(
+      "Reset times: Codex resets at 3pm; Claude Code resets Monday.",
+    );
+    expect(blockedQuestion).not.toContain("org's monthly usage limit");
+  });
+
+  it("classifies a Claude Code monthly limit as Claude Code, not a generic org message", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "API 429: You've hit your org's monthly usage limit",
+      blockedReason: "usage_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-claude-monthly-classification",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.blockedQuestion).toContain(
+      "Claude Code hit a usage limit (monthly extra-usage limit)",
+    );
   });
 
   it("surfaces Codex usage limit plus Claude missing result as technical resume-needed block", async () => {

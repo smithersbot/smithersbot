@@ -42,3 +42,70 @@ export function classifyProviderError(params: {
   }
   return undefined;
 }
+
+// --- Backend-attributed usage-limit classification ---------------------------
+// A usage/rate limit always originates from a specific backend (the CLI that ran
+// the task), so the backend is supplied by the caller rather than inferred from
+// text. The limit *type* and reset hint, however, are recovered from the error
+// message when the provider includes them.
+
+/** The CLI backend that produced a usage/rate limit. */
+export type UsageLimitBackend = "claude_code" | "codex";
+
+/**
+ * Best-effort classification of the usage-limit window the provider reported.
+ * `unknown` is used when the message gives no recognizable hint.
+ */
+export type UsageLimitType = "five_hour" | "weekly" | "burst" | "monthly_extra" | "unknown";
+
+export interface UsageLimitClassification {
+  backend: UsageLimitBackend;
+  limitType: UsageLimitType;
+  /** Human-readable reset phrase extracted from the error (e.g. "resets at 3pm"). */
+  resetHint?: string;
+}
+
+const USAGE_LIMIT_BURST_RE = /\bburst\b/i;
+const USAGE_LIMIT_FIVE_HOUR_RE = /\b(?:5|five)[\s-]?hour\b|\bhourly\b/i;
+const USAGE_LIMIT_WEEKLY_RE = /\bweekly\b|\b(?:7|seven)[\s-]?day\b|\bthis week\b|\bper week\b/i;
+const USAGE_LIMIT_MONTHLY_RE =
+  /\bmonthly\b|\bper month\b|\bthis month\b|extra[\s-]?usage|monthly extra/i;
+
+/**
+ * Extract a reset-time phrase from a usage-limit error message, if present.
+ * Returns the matched phrase (e.g. "resets at 3:00pm") trimmed of trailing
+ * punctuation, or undefined when no reset hint is found.
+ */
+export function extractUsageLimitResetHint(text: string): string | undefined {
+  if (!text) return undefined;
+  for (const line of text.split(/\r?\n/)) {
+    const match = /\b(resets?(?:\s+(?:at|in|on|by))?\s+[^.;,\n\r]+)/i.exec(line);
+    if (match?.[1]) {
+      const cleaned = match[1].trim().replace(/[).,;:\s]+$/, "");
+      if (cleaned) return cleaned;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Classify a usage/rate limit for a known backend, recovering the limit window
+ * type and reset hint from the error text where possible.
+ */
+export function classifyUsageLimit(params: {
+  backend: UsageLimitBackend;
+  text: string;
+}): UsageLimitClassification {
+  const text = params.text ?? "";
+  const limitType: UsageLimitType = USAGE_LIMIT_BURST_RE.test(text)
+    ? "burst"
+    : USAGE_LIMIT_FIVE_HOUR_RE.test(text)
+      ? "five_hour"
+      : USAGE_LIMIT_WEEKLY_RE.test(text)
+        ? "weekly"
+        : USAGE_LIMIT_MONTHLY_RE.test(text)
+          ? "monthly_extra"
+          : "unknown";
+  const resetHint = extractUsageLimitResetHint(text);
+  return { backend: params.backend, limitType, ...(resetHint ? { resetHint } : {}) };
+}

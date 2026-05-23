@@ -23,6 +23,13 @@ import {
   type PickFallbackBackendResult,
 } from "./agent-executor-helpers.js";
 import { aggregateBlockedDetails } from "./blocked.js";
+import { classifyUsageLimit } from "./error-patterns.js";
+import {
+  formatUsageLimitExhaustedMessage,
+  formatUsageLimitFallbackMessage,
+  formatUsageLimitRecoveryMessage,
+  type UsageLimitEvent,
+} from "./usage-limit-message.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
 import { resolveDefaultSemgrepMode } from "./effective-workers.js";
@@ -99,35 +106,43 @@ const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
 type RateLimitBlockedReason = "rate_limit" | "usage_limit";
 type NoFallbackReason = FallbackBackendReason | "fallback_already_attempted";
 
+function describeNoFallbackReason(
+  backend: CliWorkerId,
+  reason: NoFallbackReason | undefined,
+  detail: string | undefined,
+  maxAttemptsReached: boolean,
+): string {
+  if (maxAttemptsReached) return "the retry attempt budget is exhausted";
+  switch (reason) {
+    case "backend_override":
+      return `the run is constrained to backend '${detail ?? backend}'`;
+    case "single_backend_constraint":
+      return "the run is constrained to a single enabled worker";
+    case "fallback_not_enabled":
+      return `fallback backend '${detail ?? "the alternate worker"}' is not enabled`;
+    case "fallback_unavailable":
+      return detail ?? "the fallback backend is not available on PATH";
+    case "fallback_already_attempted":
+      return "the fallback backend already hit a usage or rate limit";
+    case "not_usage_or_rate_limit":
+    case undefined:
+      return "no eligible fallback backend is available";
+  }
+}
+
 function formatNoFallbackBlockedMessage(
   backend: CliWorkerId,
-  blockedReason: RateLimitBlockedReason,
+  events: UsageLimitEvent[],
   reason: NoFallbackReason | undefined,
   detail: string | undefined,
   maxAttemptsReached: boolean,
   originalQuestion: string,
 ): string {
-  const limitLabel = blockedReason === "usage_limit" ? "usage limit" : "rate limit";
-  const fallbackReason = (() => {
-    if (maxAttemptsReached) return "the retry attempt budget is exhausted";
-    switch (reason) {
-      case "backend_override":
-        return `the run is constrained to backend '${detail ?? backend}'`;
-      case "single_backend_constraint":
-        return "the run is constrained to a single enabled worker";
-      case "fallback_not_enabled":
-        return `fallback backend '${detail ?? "the alternate worker"}' is not enabled`;
-      case "fallback_unavailable":
-        return detail ?? "the fallback backend is not available on PATH";
-      case "fallback_already_attempted":
-        return "the fallback backend already hit a usage or rate limit";
-      case "not_usage_or_rate_limit":
-      case undefined:
-        return "no eligible fallback backend is available";
-    }
-  })();
-
-  return `${backend} hit a ${limitLabel}. No fallback backend was used because ${fallbackReason}. ${originalQuestion}`;
+  return formatUsageLimitExhaustedMessage({
+    events,
+    noFallbackReason: describeNoFallbackReason(backend, reason, detail, maxAttemptsReached),
+    originalQuestion,
+  });
 }
 
 function formatTechnicalBlockedQuestion(message: string, attempts: AttemptBundle[]): string {
@@ -473,6 +488,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const workerDir = resolveWorkerDir(runId, task.id);
     let latestResult: TaskRunnerResult | null = null;
     let fallbackAttempted = false;
+    const usageLimitEvents: UsageLimitEvent[] = [];
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const attemptBundles = loadAttemptBundles(workerDir);
@@ -514,6 +530,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       if (isUsageOrRateLimit && backend !== "pi") {
         const limitReason = result.blockedReason as RateLimitBlockedReason;
+        const limitText = task.blockedQuestion ?? result.question ?? "";
+        const usageLimitEvent: UsageLimitEvent = {
+          kind: limitReason,
+          ...classifyUsageLimit({ backend, text: limitText }),
+        };
+        usageLimitEvents.push(usageLimitEvent);
         const fallback:
           | PickFallbackBackendResult
           | { backend: null; reason: NoFallbackReason; detail?: string } = fallbackAttempted
@@ -537,7 +559,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             );
           }
           fallbackAttempted = true;
-          const previousBackend = backend;
           const fallbackBackend = fallback.backend;
           runner = cliRunners[fallbackBackend];
           if (!runner) {
@@ -555,7 +576,10 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           task.blockedQuestion = undefined;
           task.failedDetail = undefined;
           onProgress?.(
-            `  [retry] ${previousBackend} hit ${limitReason}; retrying task with ${backend}`,
+            `  [usage-limit] ${formatUsageLimitFallbackMessage({
+              event: usageLimitEvent,
+              fallbackBackend,
+            })}`,
           );
           await new Promise((r) => setTimeout(r, retryDelayMs));
           continue;
@@ -564,7 +588,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         const originalQuestion = task.blockedQuestion ?? result.question ?? "Task blocked.";
         task.blockedQuestion = formatNoFallbackBlockedMessage(
           backend,
-          limitReason,
+          usageLimitEvents,
           fallback.reason,
           fallback.detail,
           attempt >= maxAttempts,
@@ -592,6 +616,18 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         continue;
       }
       break;
+    }
+
+    // Preserve usage-limit failure history when a fallback backend recovered the
+    // task, e.g. "Claude Code hit a usage limit (resets at 3pm). Fell back to
+    // Codex. Codex succeeded."
+    if (usageLimitEvents.length > 0 && latestResult?.status === "complete" && backend !== "pi") {
+      onProgress?.(
+        `  [usage-limit] ${formatUsageLimitRecoveryMessage({
+          events: usageLimitEvents,
+          succeededBackend: backend,
+        })}`,
+      );
     }
 
     // Commit task changes
