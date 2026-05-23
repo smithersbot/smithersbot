@@ -100,6 +100,37 @@ describe("aggregateBlockedDetails", () => {
     });
   });
 
+  it("deduplicates attempt history shared across cascaded blocked steps", () => {
+    const history =
+      "Attempt history:\n- Attempt 1 [codex]: failed (error)\n- Attempt 2 [claude_code]: failed (error)";
+    const blockedQuestion = `Worker failed/interrupted; resume needed.\n\n${history}`;
+    const detail = aggregateBlockedDetails([
+      makeStep({
+        id: "A",
+        description: "Build",
+        status: "blocked",
+        blockedReason: "error",
+        blockedQuestion,
+      }),
+      makeStep({
+        id: "B",
+        description: "Test",
+        status: "blocked",
+        blockedReason: "error",
+        blockedQuestion,
+      }),
+    ]);
+
+    expect(detail).not.toBeNull();
+    const prompt = detail!.prompt;
+    // Attempt history appears once, not under every step.
+    expect(prompt.match(/Attempt history:/g)?.length).toBe(1);
+    // Per-step reason lines no longer carry the verbose history.
+    expect(prompt).toContain("- Task A (Build): Worker failed/interrupted; resume needed.");
+    expect(prompt).toContain("- Task B (Test): Worker failed/interrupted; resume needed.");
+    expect(detail!.requiredInputKey).toBe("resume_execution");
+  });
+
   it("returns null when all steps are done", () => {
     const detail = aggregateBlockedDetails([
       makeStep({ id: "1", status: "done" }),

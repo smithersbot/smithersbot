@@ -244,6 +244,128 @@ describe("goal-commands telegram adapter", () => {
     expect(buildBlockedCaption([step])).not.toContain("needs input");
   });
 
+  it("renders missing worker_result.json (process loss) as interrupted, not needs input", () => {
+    const step = {
+      id: "run",
+      description: "Run worker",
+      shortSummary: "Run worker",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "process_lost",
+      blockedQuestion: "Worker exited without writing worker_result.json.",
+    } as const;
+
+    const rendered = describeBlockedStep(step);
+    expect(rendered).toContain("worker process lost/interrupted; resume needed");
+    expect(rendered).not.toContain("needs input");
+  });
+
+  it("renders needs input only for true user_input blockers", () => {
+    const generic = {
+      id: "ask",
+      description: "Ask user",
+      shortSummary: "Ask user",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "user_input",
+    } as const;
+    expect(describeBlockedStep(generic)).toBe("needs input");
+
+    const withQuestion = { ...generic, blockedQuestion: "Which database should I use?" } as const;
+    expect(describeBlockedStep(withQuestion)).toBe("Which database should I use?");
+  });
+
+  it("attributes usage-limit blockers to the backend with reset time (from the classifier)", () => {
+    const step = {
+      id: "build",
+      description: "Build feature",
+      shortSummary: "Build feature",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "usage_limit",
+      executedBackend: "claude_code",
+      blockedQuestion: "API 429: usage limit reached. Resets at 3pm.",
+    } as const;
+
+    const rendered = describeBlockedStep(step);
+    expect(rendered).toContain("Claude Code");
+    expect(rendered).toContain("resets at 3pm");
+    expect(rendered).not.toContain("needs input");
+  });
+
+  it("classifies the limit window for usage-limit blockers", () => {
+    const step = {
+      id: "build",
+      description: "Build feature",
+      shortSummary: "Build feature",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "usage_limit",
+      executedBackend: "codex",
+      blockedQuestion: "429 weekly limit exceeded. resets on Monday.",
+    } as const;
+
+    const rendered = describeBlockedStep(step);
+    expect(rendered).toContain("Codex");
+    expect(rendered).toContain("weekly limit");
+    expect(rendered).toContain("resets on Monday");
+  });
+
+  it("preserves backend fallback history in an exhausted usage-limit blocker", () => {
+    const exhausted =
+      "Claude Code hit a usage limit (resets at 3pm). " +
+      "Codex hit a usage limit (resets at 5pm). " +
+      "No fallback backend was used because both backends hit usage limits. " +
+      "Reset times: Claude Code resets at 3pm; Codex resets at 5pm.";
+    const step = {
+      id: "build",
+      description: "Build feature",
+      shortSummary: "Build feature",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "usage_limit",
+      executedBackend: "codex",
+      blockedQuestion: exhausted,
+    } as const;
+
+    const rendered = describeBlockedStep(step);
+    expect(rendered).toContain("Claude Code hit a usage limit");
+    expect(rendered).toContain("Codex hit a usage limit");
+    expect(rendered).toContain("Reset times:");
+    expect(rendered).not.toContain("needs input");
+  });
+
+  it("shows attempt history once across cascaded blocked steps", () => {
+    const history =
+      "Attempt history:\n- Attempt 1 [codex]: failed (error)\n- Attempt 2 [claude_code]: failed (error)";
+    const blockedQuestion = `Worker failed/interrupted; resume needed.\n\n${history}`;
+    const steps = [
+      {
+        id: "a",
+        description: "Step A",
+        shortSummary: "Step A",
+        dependsOn: [],
+        status: "blocked",
+        blockedReason: "error",
+        blockedQuestion,
+      },
+      {
+        id: "b",
+        description: "Step B",
+        shortSummary: "Step B",
+        dependsOn: [],
+        status: "blocked",
+        blockedReason: "error",
+        blockedQuestion,
+      },
+    ] as const;
+
+    const caption = buildBlockedCaption([...steps]);
+    expect(caption.match(/Attempt history:/g)?.length).toBe(1);
+    expect(caption).toContain("Step a:");
+    expect(caption).toContain("Step b:");
+  });
+
   beforeEach(() => {
     testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-test-"));
     vi.clearAllMocks();
@@ -458,7 +580,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result.runId).toBeDefined();
     });
 
-    it("returns stopped message when planning run is externally cancelled", async () => {
+    it("flags externally cancelled planning runs so the stop response is not duplicated", async () => {
       let createdRunId = "";
       const runStoreModule = await import("../goal/run-store.js");
       const saveRunSpy = vi.spyOn(runStoreModule, "saveRun");
@@ -478,6 +600,7 @@ describe("goal-commands telegram adapter", () => {
       } as never);
 
       expect(result.text).toBe("Goal was stopped.");
+      expect(result.cancelled).toBe(true);
       expect(result.runId).toBe(createdRunId);
       expect(result.plan).toBeUndefined();
       expect(result.stepResults).toBeUndefined();
@@ -502,6 +625,36 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toMatch(/Planning failed:/);
       expect(result.text).toContain("API key missing");
       expect(result.runId).toBeUndefined();
+    });
+  });
+
+  describe("handleGoalStop", () => {
+    it("returns a single clean response preserving goal id and status", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "executing" }));
+      mockGoalStopCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Goal abcdef12 stopped.");
+          runtime.log("Progress: 2/5 tasks completed.");
+          runtime.log("**Goal ID:** abcdef12");
+        },
+      );
+
+      const { handleGoalStop } = await import("./goal-commands.js");
+      const reply = await handleGoalStop(runId);
+
+      expect(reply).toContain("Goal abcdef12 stopped.");
+      expect(reply).toContain("Progress: 2/5");
+      expect(reply).toContain("**Goal ID:** abcdef12");
+      // The legacy second "Goal was stopped." duplicate must be gone, and the
+      // stop summary must appear exactly once.
+      expect(reply).not.toContain("Goal was stopped.");
+      expect(reply.match(/stopped\./g)?.length).toBe(1);
+    });
+
+    it("returns usage on empty input", async () => {
+      const { handleGoalStop } = await import("./goal-commands.js");
+      expect(await handleGoalStop("")).toContain("Usage:");
     });
   });
 
@@ -1553,6 +1706,23 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("sendGoalPlanResult", () => {
+    it("suppresses a cancelled result so /goal_stop is the single response", async () => {
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 88 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 89 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalPlanResult } = await import("./goal-commands.js");
+
+      await sendGoalPlanResult({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        result: { text: "Goal was stopped.", runId: "test-run-id-1234", cancelled: true },
+      });
+
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(sendPhoto).not.toHaveBeenCalled();
+    });
+
     it("uses bold caption labels and plan short summary when available", async () => {
       const plan = {
         goal: "Test goal",

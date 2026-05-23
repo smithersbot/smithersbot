@@ -192,6 +192,12 @@ export type GoalPlanResult = {
   runId?: string;
   revision?: number;
   blocked?: boolean;
+  /**
+   * Set when the run was cancelled externally (e.g. via /goal_stop) while this
+   * plan flow was still running. The stop flow already sends the single
+   * authoritative response, so senders suppress this result to avoid a duplicate.
+   */
+  cancelled?: boolean;
   /** Plan object for PNG rendering (when available, sendGoalPlanResult renders a DAG photo). */
   plan?: Plan;
   /** Runtime results used to show actual elapsed durations for completed steps. */
@@ -554,7 +560,9 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
 
     const latestRun = loadRun(runId);
     if (outcome?.status === "cancelled" || latestRun?.state === "cancelled") {
-      return { text: "Goal was stopped.", runId };
+      // /goal_stop already sent the single authoritative "Goal <id> stopped."
+      // response; flag this so the sender suppresses the duplicate notice.
+      return { text: "Goal was stopped.", runId, cancelled: true };
     }
 
     if (outcome?.status === "blocked") {

@@ -506,6 +506,9 @@ export async function sendGoalPlanResult(params: {
   replyToMessageId?: number;
 }): Promise<void> {
   const { bot, chatId, runtime, result, threadId, replyToMessageId } = params;
+  // A run cancelled by /goal_stop is already reported by the stop flow's single
+  // authoritative response; suppress the redundant "Goal was stopped." notice.
+  if (result.cancelled) return;
   if (result.runId && result.revision) {
     const runIdPrefix = result.runId.slice(0, 8);
     const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);

@@ -1,5 +1,32 @@
 import type { BlockedDetail, PlanStep } from "./types.js";
 
+/** Marker that {@link formatTechnicalBlockedQuestion} uses to append attempt history. */
+const ATTEMPT_HISTORY_MARKER = "Attempt history:";
+
+/**
+ * Split a blocked-step message into its human-readable reason and any appended
+ * attempt-history block. Technical blockers carry the same attempt history on
+ * every cascaded step, so callers separate it out to deduplicate it and render
+ * it once per report instead of under every step.
+ */
+export function splitAttemptHistory(text: string | undefined | null): {
+  message: string;
+  attemptHistory?: string;
+} {
+  if (!text) return { message: "" };
+  const idx = text.indexOf(ATTEMPT_HISTORY_MARKER);
+  if (idx === -1) return { message: text.trim() };
+  const message = text.slice(0, idx).trim();
+  const attemptHistory = text.slice(idx).trim();
+  return attemptHistory ? { message, attemptHistory } : { message };
+}
+
+/** Append deduplicated attempt-history blocks once after the report body. */
+function appendAttemptHistories(body: string, histories: string[]): string {
+  if (histories.length === 0) return body;
+  return `${body}\n\n${histories.join("\n\n")}`;
+}
+
 function buildStuckPrompt(step: PlanStep): string {
   return `Step ${step.id} stuck at in_progress — needs re-execution`;
 }
@@ -30,13 +57,19 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
       };
     }
 
+    const histories: string[] = [];
     const lines = blocked.map((task) => {
-      const reason = task.blockedQuestion ?? task.blockedReason ?? "unknown";
+      const { message, attemptHistory } = splitAttemptHistory(task.blockedQuestion);
+      if (attemptHistory && !histories.includes(attemptHistory)) histories.push(attemptHistory);
+      const reason = message || task.blockedReason || "unknown";
       return `- Task ${task.id} (${task.description}): ${reason}`;
     });
     return {
       blockedAt: "execution",
-      prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
+      prompt: appendAttemptHistories(
+        `Multiple tasks need attention:\n${lines.join("\n")}`,
+        histories,
+      ),
       requiredInputKey: blocked.every(isUserInputBlocked)
         ? `tasks:${blocked.map((t) => t.id).join(",")}:input`
         : "resume_execution",
@@ -51,8 +84,11 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
     };
   }
 
+  const histories: string[] = [];
   const blockedLines = blocked.map((task) => {
-    const reason = task.blockedQuestion ?? task.blockedReason ?? "unknown";
+    const { message, attemptHistory } = splitAttemptHistory(task.blockedQuestion);
+    if (attemptHistory && !histories.includes(attemptHistory)) histories.push(attemptHistory);
+    const reason = message || task.blockedReason || "unknown";
     return `- Task ${task.id} (${task.description}): ${reason}`;
   });
   const stuckLines = stuckInProgress.map(
@@ -61,7 +97,10 @@ export function aggregateBlockedDetails(steps: PlanStep[]): BlockedDetail | null
   const lines = [...blockedLines, ...stuckLines];
   return {
     blockedAt: "execution",
-    prompt: `Multiple tasks need attention:\n${lines.join("\n")}`,
+    prompt: appendAttemptHistories(
+      `Multiple tasks need attention:\n${lines.join("\n")}`,
+      histories,
+    ),
     requiredInputKey: "resume_execution",
   };
 }
