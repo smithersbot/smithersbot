@@ -573,7 +573,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.blocked?.requiredInputKey).toBe("task:1:input");
   });
 
-  it("blocks all pending steps when a fatal task error triggers global block", async () => {
+  it("blocks all pending steps when a fatal auth error triggers global block", async () => {
     const step1 = makeStep({ id: "1", backend: "codex" });
     const step2 = makeStep({ id: "2", backend: "codex", dependsOn: ["1"] });
     const step3 = makeStep({ id: "3", backend: "codex", dependsOn: ["2"] });
@@ -582,8 +582,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     mockCliExecute.mockResolvedValueOnce({
       status: "blocked",
-      question: "Out of credits",
-      blockedReason: "out_of_credits",
+      question: "Authentication failed",
+      blockedReason: "auth",
       turnsUsed: 1,
     });
 
@@ -599,10 +599,10 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step1.status).toBe("blocked");
     expect(step2.status).toBe("blocked");
     expect(step3.status).toBe("blocked");
-    expect(step2.blockedReason).toBe("out_of_credits");
-    expect(step3.blockedReason).toBe("out_of_credits");
-    expect(step2.blockedQuestion).toBe("Out of credits");
-    expect(step3.blockedQuestion).toBe("Out of credits");
+    expect(step2.blockedReason).toBe("auth");
+    expect(step3.blockedReason).toBe("auth");
+    expect(step2.blockedQuestion).toBe("Authentication failed");
+    expect(step3.blockedQuestion).toBe("Authentication failed");
     expect(mockCliExecute).toHaveBeenCalledTimes(1);
   });
 
@@ -2271,5 +2271,291 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step2.status).toBe("pending");
     // Only one task should have been executed
     expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
+  describe("usage-limit fallback and drain (executor-fallback-and-drain)", () => {
+    it("(a) Codex out_of_credits falls back to Claude and an independent Claude task still runs", async () => {
+      const step1 = makeStep({ id: "1", backend: "codex", description: "Codex work" });
+      const step2 = makeStep({
+        id: "2",
+        backend: "claude_code",
+        description: "Independent Claude",
+      });
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+
+      mockCliExecute
+        .mockResolvedValueOnce({
+          status: "blocked",
+          question: "Codex is out of credits",
+          blockedReason: "out_of_credits",
+          turnsUsed: 1,
+        })
+        .mockResolvedValueOnce({
+          status: "complete",
+          summary: "Claude recovered step 1",
+          turnsUsed: 1,
+        })
+        .mockResolvedValueOnce({
+          status: "complete",
+          summary: "Independent Claude task done",
+          turnsUsed: 1,
+        });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-a",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      });
+
+      expect(outcome.status).toBe("done");
+      expect(step1.status).toBe("done");
+      expect(step1.executedBackend).toBe("claude_code");
+      expect(step2.status).toBe("done");
+      expect(executedCliBackends).toEqual(["codex", "claude_code", "claude_code"]);
+    });
+
+    it("(b) Codex out_of_credits falls back to Claude on the same task and completes", async () => {
+      const step = makeStep({ backend: "codex" });
+      const plan = makePlan([step]);
+      const session = makeSession(plan);
+      const progress: string[] = [];
+
+      mockCliExecute
+        .mockResolvedValueOnce({
+          status: "blocked",
+          question: "Codex out of credits",
+          blockedReason: "out_of_credits",
+          turnsUsed: 1,
+        })
+        .mockResolvedValueOnce({
+          status: "complete",
+          summary: "Recovered with Claude Code",
+          turnsUsed: 1,
+        });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-b",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+        onProgress: (message) => progress.push(message),
+      });
+
+      expect(outcome.status).toBe("done");
+      expect(step.status).toBe("done");
+      expect(step.executedBackend).toBe("claude_code");
+      expect(executedCliBackends).toEqual(["codex", "claude_code"]);
+      expect(progress).toContain(
+        "  [usage-limit] Codex hit a usage limit. Falling back to Claude Code.",
+      );
+    });
+
+    it("(c) Codex out_of_credits with fallback unavailable becomes usage-limit blocked while an unrelated task runs", async () => {
+      availability = [
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude_code not found on PATH" },
+      ];
+
+      const step1 = makeStep({ id: "1", backend: "codex", description: "Exhausted Codex work" });
+      const step2 = makeStep({ id: "2", backend: "codex", description: "Unrelated Codex work" });
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+
+      mockCliExecute.mockImplementation(async (context) => {
+        if (context.task.id === "1") {
+          return {
+            status: "blocked",
+            question: "Codex out of credits",
+            blockedReason: "out_of_credits",
+            turnsUsed: 1,
+          };
+        }
+        return { status: "complete", summary: "Unrelated work done", turnsUsed: 1 };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-c",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      });
+
+      expect(outcome.status).toBe("blocked");
+      expect(step1.status).toBe("blocked");
+      // Non-fatal, retryable usage-limit block — not fatal out_of_credits/error.
+      expect(step1.blockedReason).toBe("usage_limit");
+      expect(step1.blockedQuestion).toContain("claude_code not found on PATH");
+      // The unrelated runnable task still ran and completed.
+      expect(step2.status).toBe("done");
+      expect(executedCliBackends).toEqual(["codex", "codex"]);
+    });
+
+    it("(d) the goal blocks only after every runnable task is drained", async () => {
+      availability = [
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude_code not found on PATH" },
+      ];
+
+      const step1 = makeStep({ id: "1", backend: "codex" });
+      const step2 = makeStep({ id: "2", backend: "codex" });
+      const plan = makePlan([step1, step2]);
+      const session = makeSession(plan);
+
+      mockCliExecute.mockResolvedValue({
+        status: "blocked",
+        question: "Codex out of credits",
+        blockedReason: "out_of_credits",
+        turnsUsed: 1,
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-d",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      });
+
+      expect(outcome.status).toBe("blocked");
+      expect(step1.status).toBe("blocked");
+      expect(step2.status).toBe("blocked");
+      expect(step1.blockedReason).toBe("usage_limit");
+      expect(step2.blockedReason).toBe("usage_limit");
+      // Both independent tasks were attempted before the goal reported blocked —
+      // the first usage-limit block did not short-circuit the runnable queue.
+      expect(mockCliExecute).toHaveBeenCalledTimes(2);
+    });
+
+    it("(e) a mixed dependency graph is not prematurely interrupted by one usage-limited branch", async () => {
+      const step1 = makeStep({ id: "1", backend: "codex", description: "Blocked branch root" });
+      const step2 = makeStep({ id: "2", backend: "claude_code", description: "Runnable branch" });
+      const step3 = makeStep({
+        id: "3",
+        backend: "claude_code",
+        description: "Depends on runnable branch",
+        dependsOn: ["2"],
+      });
+      const step4 = makeStep({
+        id: "4",
+        backend: "codex",
+        description: "Depends on blocked branch",
+        dependsOn: ["1"],
+      });
+      const plan = makePlan([step1, step2, step3, step4]);
+      const session = makeSession(plan);
+
+      mockCliExecute.mockImplementation(async (context) => {
+        if (context.task.id === "1") {
+          return {
+            status: "blocked",
+            question: "Codex out of credits",
+            blockedReason: "out_of_credits",
+            turnsUsed: 1,
+          };
+        }
+        return { status: "complete", summary: `Done ${context.task.id}`, turnsUsed: 1 };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-e",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      });
+
+      expect(outcome.status).toBe("blocked");
+      // Blocked branch: step1 usage-limited (codex -> claude fallback both exhausted),
+      // step4 waits because its dependency never completed.
+      expect(step1.status).toBe("blocked");
+      expect(step1.blockedReason).toBe("usage_limit");
+      expect(step1.executedBackend).toBe("claude_code");
+      expect(step4.status).toBe("pending");
+      // Runnable branch drained to completion regardless of the blocked sibling.
+      expect(step2.status).toBe("done");
+      expect(step3.status).toBe("done");
+    });
+
+    it("(f) reproduces the 8cec60ca shape: Task8 runs, Codex falls back to Claude, no premature global block", async () => {
+      const independentClaude = ["1", "2", "3", "4", "5", "6"].map((id) =>
+        makeStep({ id, backend: "claude_code", description: `Prep ${id}` }),
+      );
+      const task7 = makeStep({ id: "7", backend: "codex", description: "Codex exhausted task" });
+      const task8 = makeStep({
+        id: "8",
+        backend: "claude_code",
+        description: "Independent Claude task",
+      });
+      const task9 = makeStep({
+        id: "9",
+        backend: "claude_code",
+        description: "Depends on several prior tasks",
+        dependsOn: ["1", "2", "3", "7", "8"],
+      });
+      const task10 = makeStep({
+        id: "10",
+        backend: "claude_code",
+        description: "Depends on task 9",
+        dependsOn: ["9"],
+      });
+      const plan = makePlan([...independentClaude, task7, task8, task9, task10]);
+      const session = makeSession(plan);
+
+      // Codex is exhausted; Task 7 hits out_of_credits on Codex and again on the
+      // Claude fallback, leaving it usage-limit blocked. Every other task runs.
+      mockCliExecute.mockImplementation(async (context) => {
+        if (context.task.id === "7") {
+          return {
+            status: "blocked",
+            question: "Codex out of credits",
+            blockedReason: "out_of_credits",
+            turnsUsed: 1,
+          };
+        }
+        return { status: "complete", summary: `Done ${context.task.id}`, turnsUsed: 1 };
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-fallback-drain-8cec60ca",
+        workingDir: "/tmp/moltbot-goal-test",
+        enabledWorkers: ["codex", "claude_code"],
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      });
+
+      // Task 8 (independent Claude) still runs even though Codex is exhausted.
+      expect(task8.status).toBe("done");
+      // Task 7 attempted Codex then fell back to Claude where compatible.
+      expect(task7.executedBackend).toBe("claude_code");
+      const sevenBackends = executedCliBackends;
+      expect(sevenBackends).toContain("codex");
+      expect(sevenBackends).toContain("claude_code");
+      // Usage-limited task is visibly usage-limited, not fatal/needs-input.
+      expect(task7.status).toBe("blocked");
+      expect(task7.blockedReason).toBe("usage_limit");
+      expect(task7.blockedQuestion).not.toContain("needs input");
+      // Dependents of the blocked branch wait rather than globally interrupting.
+      expect(task9.status).toBe("pending");
+      expect(task10.status).toBe("pending");
+      // Prep tasks all completed (no global cascade onto independent work).
+      for (const prep of independentClaude) {
+        expect(prep.status).toBe("done");
+      }
+      // Final global state after draining all runnable work: blocked (Task 7 + deps).
+      expect(outcome.status).toBe("blocked");
+    });
   });
 });

@@ -3,6 +3,7 @@ import {
   classifyProviderError,
   classifyUsageLimit,
   extractUsageLimitResetHint,
+  isUsageLimitClassReason,
 } from "./error-patterns.js";
 import {
   describeUsageLimitEvent,
@@ -71,6 +72,24 @@ describe("classifyUsageLimit (backend attribution)", () => {
     const result = classifyUsageLimit({ backend: "codex", text: "Rate limited." });
     expect(result.limitType).toBe("unknown");
     expect(result.resetHint).toBeUndefined();
+  });
+});
+
+describe("isUsageLimitClassReason", () => {
+  it("treats out_of_credits, usage_limit, and rate_limit uniformly as usage-limit-class", () => {
+    expect(isUsageLimitClassReason("out_of_credits")).toBe(true);
+    expect(isUsageLimitClassReason("usage_limit")).toBe(true);
+    expect(isUsageLimitClassReason("rate_limit")).toBe(true);
+  });
+
+  it("excludes auth and other non-usage-limit reasons", () => {
+    expect(isUsageLimitClassReason("auth")).toBe(false);
+    expect(isUsageLimitClassReason("user_input")).toBe(false);
+    expect(isUsageLimitClassReason("process_lost")).toBe(false);
+    expect(isUsageLimitClassReason("task_failed")).toBe(false);
+    expect(isUsageLimitClassReason("error")).toBe(false);
+    expect(isUsageLimitClassReason(undefined)).toBe(false);
+    expect(isUsageLimitClassReason(null)).toBe(false);
   });
 });
 

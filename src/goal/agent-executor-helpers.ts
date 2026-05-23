@@ -2,6 +2,7 @@ import type { CliWorkerId } from "../config/types.goal.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { isBackendAvailable } from "./backend-availability.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
+import { isUsageLimitClassReason } from "./error-patterns.js";
 import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
 import type { CriticalPathScores } from "./plan-order.js";
 import type { GoalSession, ManualTestSuggestion, PlanStep, TaskExecutionResult } from "./types.js";
@@ -115,7 +116,7 @@ export function pickFallbackBackend(
   availability: BackendAvailability[],
   backendOverride?: GoalBackendId,
 ): PickFallbackBackendResult {
-  if (result.blockedReason !== "rate_limit" && result.blockedReason !== "usage_limit") {
+  if (!isUsageLimitClassReason(result.blockedReason)) {
     return { backend: null, reason: "not_usage_or_rate_limit" };
   }
 

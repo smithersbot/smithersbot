@@ -637,18 +637,33 @@ describe("goal workflow integration tests", () => {
   // 6. Fatal error propagation
   // =========================================================================
   describe("fatal error propagation", () => {
-    it("out_of_credits blocks all remaining tasks immediately", async () => {
+    it("out_of_credits does not globally block; it drains independent runnable work", async () => {
+      // Codex is exhausted and Claude Code is unavailable for fallback. The Codex
+      // task becomes usage-limit blocked (non-fatal, retryable), but an independent
+      // runnable task still runs, and a dependent of the blocked task waits — the
+      // goal must NOT globally interrupt while runnable work remains.
+      availability = [
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude_code not found on PATH" },
+      ];
+
       const step1 = makeStep({ id: "1", backend: "codex" });
       const step2 = makeStep({ id: "2", backend: "codex" });
       const step3 = makeStep({ id: "3", dependsOn: ["1"], backend: "codex" });
       const plan = makePlan([step1, step2, step3]);
       const session = makeSession(plan);
 
-      mockCliExecute.mockResolvedValueOnce({
-        status: "blocked",
-        question: "Out of credits",
-        blockedReason: "out_of_credits",
-        turnsUsed: 1,
+      mockCliExecute.mockImplementation(async (context) => {
+        if (context.task.id === "1") {
+          return {
+            status: "blocked",
+            question: "Out of credits",
+            blockedReason: "out_of_credits",
+            turnsUsed: 1,
+          };
+        }
+        return { status: "complete", summary: `Done ${context.task.id}`, turnsUsed: 1 };
       });
 
       const { executeGoalWithAgent } = await import("./agent-executor.js");
@@ -656,22 +671,24 @@ describe("goal workflow integration tests", () => {
         session,
         runId: "fatal-credits",
         workingDir: "/tmp/moltbot-goal-integration-test",
+        retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
       });
 
       expect(outcome.status).toBe("blocked");
+
+      // step1 is usage-limit blocked (NOT fatal out_of_credits, NOT a global cascade).
       expect(step1.status).toBe("blocked");
-      expect(step1.blockedReason).toBe("out_of_credits");
+      expect(step1.blockedReason).toBe("usage_limit");
 
-      // The runnable task (step2) should have been marked blocked with the fatal error
-      expect(step2.status).toBe("blocked");
-      expect(step2.blockedReason).toBe("out_of_credits");
+      // The independent runnable task still ran to completion.
+      expect(step2.status).toBe("done");
 
-      // Global fatal block marks all remaining pending tasks blocked.
-      expect(step3.status).toBe("blocked");
-      expect(step3.blockedReason).toBe("out_of_credits");
+      // The dependent of the blocked task waits (no global fatal cascade).
+      expect(step3.status).toBe("pending");
+      expect(step3.blockedReason).toBeUndefined();
 
-      // Only one task should have been executed
-      expect(mockCliExecute).toHaveBeenCalledOnce();
+      // Both runnable tasks were attempted before the goal reported blocked.
+      expect(mockCliExecute).toHaveBeenCalledTimes(2);
     });
 
     it("auth error blocks all runnable tasks", async () => {

@@ -23,12 +23,17 @@ import {
   type PickFallbackBackendResult,
 } from "./agent-executor-helpers.js";
 import { aggregateBlockedDetails } from "./blocked.js";
-import { classifyUsageLimit } from "./error-patterns.js";
+import {
+  classifyUsageLimit,
+  isUsageLimitClassReason,
+  type UsageLimitClassReason,
+} from "./error-patterns.js";
 import {
   formatUsageLimitExhaustedMessage,
   formatUsageLimitFallbackMessage,
   formatUsageLimitRecoveryMessage,
   type UsageLimitEvent,
+  type UsageLimitKind,
 } from "./usage-limit-message.js";
 import { detectBackendAvailability, isBackendAvailable } from "./backend-availability.js";
 import { resolveEnabledWorkers, type GoalBackendId } from "./backend-types.js";
@@ -103,9 +108,11 @@ const MIN_TASK_TIMEOUT_MS = 10 * 60_000;
 const MAX_TASK_TIMEOUT_MS = 2 * 60 * 60_000;
 
 const PI_RETRYABLE: PlanStep["blockedReason"][] = ["timeout", "network", "rate_limit"];
-const FATAL_ERRORS: PlanStep["blockedReason"][] = ["out_of_credits", "auth"];
+// Only auth is fatal/global-stop. Usage-limit-class reasons (out_of_credits,
+// usage_limit, rate_limit) fall back per-task and never globally interrupt the
+// goal while other runnable work remains; they stay retryable on resume.
+const FATAL_ERRORS: PlanStep["blockedReason"][] = ["auth"];
 
-type RateLimitBlockedReason = "rate_limit" | "usage_limit";
 type NoFallbackReason = FallbackBackendReason | "fallback_already_attempted";
 
 function describeNoFallbackReason(
@@ -565,14 +572,17 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       const latestBundles = loadAttemptBundles(workerDir);
       const isUsageOrRateLimit =
-        result.status === "blocked" &&
-        (result.blockedReason === "rate_limit" || result.blockedReason === "usage_limit");
+        result.status === "blocked" && isUsageLimitClassReason(result.blockedReason);
 
       if (isUsageOrRateLimit && backend !== "pi") {
-        const limitReason = result.blockedReason as RateLimitBlockedReason;
+        const limitReason = result.blockedReason as UsageLimitClassReason;
+        // out_of_credits is quota exhaustion; surface it as a usage limit (not a
+        // transient rate limit) in user-facing messaging.
+        const eventKind: UsageLimitKind =
+          limitReason === "rate_limit" ? "rate_limit" : "usage_limit";
         const limitText = task.blockedQuestion ?? result.question ?? "";
         const usageLimitEvent: UsageLimitEvent = {
-          kind: limitReason,
+          kind: eventKind,
           ...classifyUsageLimit({ backend, text: limitText }),
         };
         usageLimitEvents.push(usageLimitEvent);
@@ -648,6 +658,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         }
 
         const originalQuestion = task.blockedQuestion ?? result.question ?? "Task blocked.";
+        // No compatible fallback backend could run this task. Keep it as a
+        // non-fatal, retryable usage-limit block (never fatal out_of_credits/error)
+        // so resume can retry it on an available backend and the scheduler keeps
+        // draining other runnable work instead of globally interrupting.
+        task.status = "blocked";
+        task.blockedReason = "usage_limit";
         task.blockedQuestion = formatNoFallbackBlockedMessage(
           backend,
           usageLimitEvents,

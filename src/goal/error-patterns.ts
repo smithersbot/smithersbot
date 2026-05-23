@@ -11,6 +11,25 @@ export const NETWORK_RE =
 
 export type ProviderErrorKind = "rate_limit" | "out_of_credits" | "auth" | "network";
 
+/**
+ * Block reasons that all represent a backend usage/quota/rate limit. These three
+ * are treated uniformly: out-of-credits, a usage (quota) limit, and a transient
+ * rate limit are all eligible for cross-backend fallback and render as
+ * "usage-limited" rather than as a fatal/global-stop or a user-input blocker.
+ */
+export type UsageLimitClassReason = "out_of_credits" | "usage_limit" | "rate_limit";
+
+/**
+ * True when a blocked-step reason represents a backend usage limit of any kind.
+ * Used by the scheduler fallback gate, fallback-backend selection, usage-limited
+ * display, and resume so the three reasons stay in lockstep.
+ */
+export function isUsageLimitClassReason(
+  reason: string | null | undefined,
+): reason is UsageLimitClassReason {
+  return reason === "out_of_credits" || reason === "usage_limit" || reason === "rate_limit";
+}
+
 function matchesErrorKind(kind: ProviderErrorKind, text: string): boolean {
   switch (kind) {
     case "rate_limit":
