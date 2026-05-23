@@ -21,10 +21,11 @@ describe("gateway status", () => {
     vi.unstubAllEnvs();
   });
 
-  it("renders PID, start time, uptime, unit, cwd, and port", () => {
-    const cwd = "/tmp/smithersbot/repo";
+  it("renders compact bold PID, start time, uptime, unit, cwd summary, port, profile, version, and systemd", () => {
+    const cwd = "/home/test/smithersbot-goals/agent/workspaces/smithersbot/repo";
     const env = {
       ...process.env,
+      SMITHERSBOT_GOALS_ROOT: "/home/test/smithersbot-goals",
       CLAWDBOT_SYSTEMD_UNIT: "moltbot-gateway-dev.service",
       CLAWDBOT_GATEWAY_PORT: "19001",
       CLAWDBOT_PROFILE: "dev",
@@ -44,18 +45,21 @@ describe("gateway status", () => {
       spawnSync: okSystemd,
     });
 
-    expect(text).toContain("Gateway status");
-    expect(text).toContain("Unit: moltbot-gateway-dev.service");
-    expect(text).toContain("PID: 12345");
-    expect(text).toContain("Host: test-host");
-    expect(text).toContain("Started: 2026-05-22T11:58:55.000Z");
-    expect(text).toContain("Uptime: 1m 5s");
-    expect(text).toContain(`CWD: ${cwd}`);
-    expect(text).toContain("Port: 19001");
-    expect(text).toContain("Service marker: profile=dev, marker=moltbot, kind=gateway");
-    expect(text).toContain("Version:");
+    expect(text).toContain("**Gateway status**");
+    expect(text).toMatch(/^\*\*Unit:\*\* moltbot-gateway-dev\.service$/m);
+    expect(text).toMatch(/^\*\*PID:\*\* 12345$/m);
+    expect(text).not.toContain("Host:");
+    expect(text).toMatch(/^\*\*Started:\*\* 2026-05-22T11:58:55\.000Z$/m);
+    expect(text).toMatch(/^\*\*Uptime:\*\* 1m 5s$/m);
+    expect(text).toMatch(/^\*\*CWD:\*\* managed workspace repo$/m);
+    expect(text).toMatch(/^\*\*Port:\*\* 19001$/m);
+    expect(text).toMatch(/^\*\*Profile:\*\* dev$/m);
+    expect(text).not.toContain("Managed workspace:");
+    expect(text).not.toContain("Service marker:");
+    expect(text).toContain("**Version:**");
     expect(text).toContain("abcdef1");
-    expect(text).toContain("Systemd: active=active, sub=running, mainPid=4242");
+    expect(text).toMatch(/^\*\*Systemd:\*\* active\/running$/m);
+    expect(text).not.toMatch(/\n\n/);
   });
 
   it("displays the legacy moltbot-gateway-dev.service unit", () => {
@@ -114,11 +118,12 @@ describe("gateway status", () => {
       spawnSync,
     });
 
-    expect(text).toContain("Unit: moltbot-gateway-dev.service");
-    expect(text).toContain("PID: 987");
-    expect(text).toContain("Host: fallback-host");
-    expect(text).toContain("Port: 19001");
-    expect(text).toContain("Systemd: unavailable; using process fallback");
+    expect(text).toContain("**Unit:** moltbot-gateway-dev.service");
+    expect(text).toContain("**PID:** 987");
+    expect(text).not.toContain("Host:");
+    expect(text).toContain("**Port:** 19001");
+    expect(text).toContain("**Systemd:** unavailable; using process fallback");
+    expect(text).not.toMatch(/\n\n/);
   });
 
   it("does not include token-like env values", () => {

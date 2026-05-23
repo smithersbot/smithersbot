@@ -104,10 +104,12 @@ describe("registerTelegramNativeCommands gateway_status", () => {
 
     expect(bot.api.sendMessage).toHaveBeenCalledWith(
       123,
-      expect.stringContaining("Gateway status"),
+      expect.stringContaining("<b>Gateway status</b>"),
+      { parse_mode: "HTML" },
     );
-    expect(bot.api.sendMessage.mock.calls[0]?.[1]).toContain("PID:");
+    expect(bot.api.sendMessage.mock.calls[0]?.[1]).toContain("<b>PID:</b>");
     expect(bot.api.sendMessage.mock.calls[0]?.[1]).not.toContain("test-telegram-token");
+    expect(bot.api.sendMessage.mock.calls[0]?.[2]).toEqual({ parse_mode: "HTML" });
     expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
     expect(deliverReplies).not.toHaveBeenCalledWith(
       expect.objectContaining({

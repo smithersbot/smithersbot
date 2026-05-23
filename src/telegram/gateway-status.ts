@@ -15,6 +15,8 @@ import type { ChannelGroupPolicy } from "../config/group-policy.js";
 import { resolveCommitHash } from "../infra/git-commit.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { VERSION } from "../version.js";
+import { renderTelegramHtmlText } from "./format.js";
+import { boldLabel, formatStatusMessage } from "./status-format.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const GATEWAY_STATUS_COMMAND = "gateway_status";
@@ -205,38 +207,27 @@ export function buildGatewayStatusSnapshot(
 }
 
 export function formatGatewayStatus(snapshot: GatewayStatusSnapshot): string {
-  const markerParts = [
-    snapshot.profile ? `profile=${snapshot.profile}` : null,
-    snapshot.serviceMarker ? `marker=${snapshot.serviceMarker}` : null,
-    snapshot.serviceKind ? `kind=${snapshot.serviceKind}` : null,
-  ].filter((part): part is string => Boolean(part));
   const systemdLine = snapshot.systemd.available
-    ? [
-        snapshot.systemd.activeState ? `active=${snapshot.systemd.activeState}` : null,
-        snapshot.systemd.subState ? `sub=${snapshot.systemd.subState}` : null,
-        snapshot.systemd.mainPid ? `mainPid=${snapshot.systemd.mainPid}` : null,
-      ]
-        .filter(Boolean)
-        .join(", ") || "available"
+    ? [snapshot.systemd.activeState, snapshot.systemd.subState].filter(Boolean).join("/") ||
+      "available"
     : "unavailable; using process fallback";
   const version = snapshot.commit ? `${snapshot.version} (${snapshot.commit})` : snapshot.version;
+  const cwdSummary = snapshot.managedWorkspace ? "managed workspace repo" : snapshot.cwd;
 
-  return [
-    "Gateway status",
-    `Unit: ${snapshot.unit}`,
-    `PID: ${snapshot.pid}`,
-    `Host: ${snapshot.hostname}`,
-    `Started: ${snapshot.startTime}`,
-    `Uptime: ${snapshot.uptime}`,
-    `CWD: ${snapshot.cwd}`,
-    `Port: ${snapshot.port}`,
-    `Managed workspace: ${snapshot.managedWorkspace ? "yes" : "no"}`,
-    markerParts.length ? `Service marker: ${markerParts.join(", ")}` : null,
-    `Version: ${version}`,
-    `Systemd: ${systemdLine}`,
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
+  return formatStatusMessage({
+    title: "Gateway status",
+    lines: [
+      boldLabel("Unit", snapshot.unit),
+      boldLabel("PID", String(snapshot.pid)),
+      boldLabel("Started", snapshot.startTime),
+      boldLabel("Uptime", snapshot.uptime),
+      boldLabel("CWD", cwdSummary),
+      boldLabel("Port", String(snapshot.port)),
+      snapshot.profile ? boldLabel("Profile", snapshot.profile) : "",
+      boldLabel("Version", version),
+      boldLabel("Systemd", systemdLine),
+    ].filter(Boolean),
+  });
 }
 
 export function buildGatewayStatusMessage(options: BuildGatewayStatusOptions = {}): string {
@@ -254,9 +245,12 @@ async function sendGatewayStatusMessage(
   message: string,
   messageThreadId?: number,
 ): Promise<void> {
-  const options = messageThreadId != null ? { message_thread_id: messageThreadId } : undefined;
-  if (options) await bot.api.sendMessage(chatId, message, options);
-  else await bot.api.sendMessage(chatId, message);
+  const htmlMessage = renderTelegramHtmlText(message);
+  const options =
+    messageThreadId != null
+      ? ({ message_thread_id: messageThreadId, parse_mode: "HTML" } as const)
+      : ({ parse_mode: "HTML" } as const);
+  await bot.api.sendMessage(chatId, htmlMessage, options);
 }
 
 export function registerGatewayStatusCommand({
