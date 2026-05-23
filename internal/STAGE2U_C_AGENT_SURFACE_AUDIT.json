@@ -1,0 +1,309 @@
+{
+  "stage": "2U-C",
+  "task": "final-audit-report-and-resume",
+  "date": "2026-05-23",
+  "head": "claw/run/20260523-163427Z-8cec60ca",
+  "sources": {
+    "flowMap": "internal/STAGE2U_C_AGENT_FLOW_MAP.md",
+    "flowMapJson": "internal/STAGE2U_C_AGENT_FLOW_MAP.json",
+    "sandboxClassificationSourceOfTruth": "src/goal/agent-surface-audit.ts",
+    "instrumentationPrimitives": "src/goal/agent-history-events.ts",
+    "crashResumeProofs": "src/goal/agent-history-events.crash-resume.test.ts",
+    "report": "internal/STAGE2U_C_AGENT_SURFACE_SECURITY_TOKEN_PROMPT_AUDIT.md"
+  },
+  "classifications": [
+    "native-sandbox-proven",
+    "shared-native-sandbox-helper-proven",
+    "credential-stripped-native-sandbox-opt-out",
+    "read-only-non-agent-local",
+    "not-safe-needs-fix"
+  ],
+  "surfaces": [
+    {
+      "surface": "scout-planner",
+      "inScope": true,
+      "sourceFile": "src/goal/cli-planner.ts",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "security": {
+        "privateEnvDenied": false,
+        "repoEnvDenied": false,
+        "symlinkEscapeDenied": false,
+        "authSessionDenied": false,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildPlanningPrompt", "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true, "inAttemptBundle": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false }
+    },
+    {
+      "surface": "plan-autocheck",
+      "inScope": true,
+      "sourceFile": "src/goal/plan-autocheck.ts",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "security": {
+        "privateEnvDenied": false,
+        "repoEnvDenied": false,
+        "symlinkEscapeDenied": false,
+        "authSessionDenied": false,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildAutocheckPrompt", "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true, "perRound": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false }
+    },
+    {
+      "surface": "worker",
+      "inScope": true,
+      "sourceFile": "src/goal/cli-worker.ts",
+      "backends": {
+        "codex": "shared-native-sandbox-helper-proven",
+        "claude_code": "shared-native-sandbox-helper-proven"
+      },
+      "security": {
+        "privateEnvDenied": true,
+        "repoEnvDenied": true,
+        "symlinkEscapeDenied": true,
+        "authSessionDenied": true,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildCliWorkerPrompt/buildCliPromptPayload", "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true, "inAttemptBundle": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false, "missingResultErrorClass": ["process_lost", "missing_result"] }
+    },
+    {
+      "surface": "repo-chat",
+      "inScope": true,
+      "sourceFile": "src/repo-chat/repo-chat-worker.ts",
+      "backends": {
+        "codex": "shared-native-sandbox-helper-proven",
+        "claude_code": "shared-native-sandbox-helper-proven"
+      },
+      "security": {
+        "privateEnvDenied": true,
+        "repoEnvDenied": true,
+        "symlinkEscapeDenied": true,
+        "authSessionDenied": true,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildClaudeRepoChatArgs/buildCodexRepoChatArgs", "capturedBeforeSpawn": true, "redacted": true, "sessionKeyed": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false, "sessionKeyed": true }
+    },
+    {
+      "surface": "post-execution-review",
+      "inScope": true,
+      "sourceFile": "src/goal/post-execution-review.ts",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "security": {
+        "privateEnvDenied": false,
+        "repoEnvDenied": false,
+        "symlinkEscapeDenied": false,
+        "authSessionDenied": false,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildPostExecutionReviewPrompt", "capturedBeforeSpawn": true, "redacted": true, "perChunk": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true, "perChunk": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false }
+    },
+    {
+      "surface": "manual-tests",
+      "inScope": true,
+      "sourceFile": "src/goal/manual-tests.ts",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "security": {
+        "privateEnvDenied": false,
+        "repoEnvDenied": false,
+        "symlinkEscapeDenied": false,
+        "authSessionDenied": false,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildCombinedManualTestsPrompt/buildManualTestsUserPrompt", "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage (CLI) / usageFromGoalLlmClient (client)", "perPhaseBackend": true, "clientUsagePath": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false }
+    },
+    {
+      "surface": "lessons",
+      "inScope": true,
+      "sourceFile": "src/goal/lessons.ts",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "security": {
+        "privateEnvDenied": false,
+        "repoEnvDenied": false,
+        "symlinkEscapeDenied": false,
+        "authSessionDenied": false,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "builder": "buildLessonExtractionPrompt", "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false, "note": "lessons persisted to durable lessons store, not agent history" }
+    },
+    {
+      "surface": "repair",
+      "inScope": true,
+      "sourceFile": "src/goal/agent-executor.ts, src/repo-chat/repo-chat-worker.ts",
+      "reusesSurfaces": ["worker", "repo-chat"],
+      "backends": {
+        "codex": "shared-native-sandbox-helper-proven",
+        "claude_code": "shared-native-sandbox-helper-proven"
+      },
+      "security": {
+        "privateEnvDenied": true,
+        "repoEnvDenied": true,
+        "symlinkEscapeDenied": true,
+        "authSessionDenied": true,
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "reusesWorkerRepoChat": true, "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false }
+    },
+    {
+      "surface": "resume-replan",
+      "inScope": true,
+      "sourceFile": "src/goal/goal.ts, src/goal/goal-resume.ts",
+      "reusesSurfaces": ["worker", "scout-planner"],
+      "backends": {
+        "codex": "shared-native-sandbox-helper-proven",
+        "claude_code": "shared-native-sandbox-helper-proven"
+      },
+      "security": {
+        "privateEnvDenied": "resume:true,replan:false",
+        "repoEnvDenied": "resume:true,replan:false",
+        "symlinkEscapeDenied": "resume:true,replan:false",
+        "authSessionDenied": "resume:true,replan:false",
+        "credentialStripped": true,
+        "subscriptionAuthStripped": true,
+        "apiKeyPoisoningStripped": true,
+        "noDangerousSkipFlags": true
+      },
+      "prompt": { "reusesWorkerPlanner": true, "capturedBeforeSpawn": true, "redacted": true },
+      "token": { "method": "parseBackendUsage", "perPhaseBackend": true },
+      "history": { "agentVisibleEvents": true, "promptArtifact": true, "incremental": true, "terminalSummaryOnly": false, "resumeReadsPartialHistory": true }
+    },
+    {
+      "surface": "goal-sending",
+      "inScope": false,
+      "sourceFile": "src/telegram/goal-sending.ts",
+      "exclusionReason": "Codex/Claude Mermaid-diagram repair utility for the Telegram DAG PNG, not an agent task surface. Classified for documentation only as credential-stripped opt-out.",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "instrumented": false
+    },
+    {
+      "surface": "nightwatch",
+      "inScope": false,
+      "sourceFile": "src/cron/nightwatch.ts",
+      "exclusionReason": "Cron lesson/goal maintenance job, not a per-goal agent surface. Uses Codex --sandbox read-only with the benign --skip-git-repo-check (NOT a sandbox bypass) and Claude read-only tools, both credential-stripped. Documentation-only opt-out.",
+      "backends": {
+        "codex": "credential-stripped-native-sandbox-opt-out",
+        "claude_code": "credential-stripped-native-sandbox-opt-out"
+      },
+      "instrumented": false
+    },
+    {
+      "surface": "pi-runner",
+      "inScope": false,
+      "sourceFile": "src/goal/pi-runner.ts",
+      "exclusionReason": "In-process pi coding-agent backend (@mariozechner/pi-ai). Boundary is capability-enforcement (createEnforcedCodingTools + hard-deny), not the OS-level native sandbox this audit covers; uses provider API keys directly. Recommend a separate capability-enforcement review.",
+      "backends": { "codex": null, "claude_code": null },
+      "instrumented": false,
+      "gap": "When selected as a worker backend, pi-runner does not write agent-visible launch/prompt/token events (no agent-history-events import). Durability/observability gap; recommend wiring the primitives + normalizing pi-ai usage in 2U-E."
+    }
+  ],
+  "liveSandboxProof": {
+    "envGated": true,
+    "envFlag": "SMITHERSBOT_SANDBOX_LIVE_PROBES",
+    "enableCommand": "SMITHERSBOT_SANDBOX_LIVE_PROBES=1 pnpm vitest run src/goal/sandbox-probes.test.ts",
+    "blocker": "Worker subprocess: flag unset and /var/tmp outside command-sandbox write-allowlist; cannot create bubblewrap namespaces. Mocked deny-matrix proofs (backend-sandbox.test.ts) pass with CODEX_HOME set outside the agent root.",
+    "source": "src/goal/agent-surface-audit.ts captureLiveSandboxProofStatus"
+  },
+  "crashResumeFindings": {
+    "plannerLaunchBeforeDeath": "proven",
+    "workerProcessLostBeforeUserMessage": "proven",
+    "usageLimitRecordsBothBackends": "proven",
+    "resumeDiscoversPartialHistory": "proven",
+    "crossContextVisibility": "proven (goal->scout/planner, repo-chat->follow-up)",
+    "test": "src/goal/agent-history-events.crash-resume.test.ts",
+    "testCount": 5,
+    "liveGatewayKilled": false
+  },
+  "fixesMade": [
+    "src/goal/agent-history-events.ts (primitives)",
+    "src/goal/cli-worker.ts + agent-executor.ts + attempt-bundle.ts (worker instrumentation + fallback both-backends)",
+    "src/goal/cli-planner.ts + plan-autocheck.ts (planning/autocheck instrumentation)",
+    "src/goal/post-execution-review.ts + lessons.ts + manual-tests.ts (review/lessons/manual-tests instrumentation)",
+    "src/repo-chat/repo-chat-worker.ts (repo-chat session-keyed instrumentation)",
+    "src/goal/agent-surface-audit.ts + test (sandbox classification + secret-free proof)",
+    "src/goal/agent-history-events.crash-resume.test.ts (crash/restart/resume proofs)",
+    "internal docs (this report + JSON + flow map)"
+  ],
+  "remainingGaps": [
+    "pi in-process worker backend uninstrumented (no agent-visible launch/prompt/token events)",
+    "summary.json/index mirrors terminal-only by design (in-flight durability via events.jsonl)",
+    "credential-stripped opt-out surfaces do not enforce proven .env/auth file-read deny matrix (2U-E hardening)",
+    "live OS bubblewrap proof env-gated in worker subprocess",
+    "static-vs-dynamic prompt ordering not yet optimized (2U-E)"
+  ],
+  "tokenReductionTargets2UE": [
+    "worker prompt (buildCliWorkerPrompt): stabilize static capability/sandbox prefix for cache hits",
+    "scout+planner prompt (buildPlanningPrompt): stabilize prefix, trim repeated repo context",
+    "plan-autocheck (buildAutocheckPrompt): cache static REVIEW_INSTRUCTION, send round-delta only",
+    "post-execution-review: cache-stable static review instruction across chunks",
+    "lessons/manual-tests: reorder static instruction before dynamic run summary",
+    "pi backend: instrument first, then measure before optimizing"
+  ],
+  "recommendedDocUpdates": {
+    "README.md": "Add Agent history & observability note: agent-visible history under <SMITHERSBOT_GOALS_ROOT>/agent/history/goals/<ws>/<goalId>/ (events.jsonl + prompts/), incremental, secret-redacted, survives crash/restart; repo-chat session-keyed.",
+    "SETUP.md": "Document summary.json/index terminal-only vs events.jsonl incremental; live OS sandbox proof opt-in via SMITHERSBOT_SANDBOX_LIVE_PROBES=1; sandbox posture per surface; cross-link STAGE2U_C_AGENT_FLOW_MAP.md."
+  },
+  "verdict": {
+    "agentVisibleHistoryDurable": "yes",
+    "allPromptsCaptured": "yes",
+    "tokenUsageCapturedByPhase": "yes",
+    "allAgentSurfacesSandboxAudited": "yes",
+    "securityBlockersRemaining": "no",
+    "readyFor2UETokenOptimization": "yes",
+    "notes": "pi in-process worker backend is the one uninstrumented exception (out of scope for this CLI audit; tracked as a gap)."
+  }
+}
