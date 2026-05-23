@@ -5,7 +5,9 @@ import type { MoltbotConfig } from "../config/config.js";
 import type { TelegramAccountConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
+  buildClaudeStatuslineRefreshCommand,
   buildUsageStatusMessage,
+  refreshClaudeStatuslineCache,
   registerUsageStatusCommand,
   resolveClaudeStatuslineCachePath,
   USAGE_STATUS_COMMAND_SPEC,
@@ -106,23 +108,29 @@ describe("buildUsageStatusMessage", () => {
       nowMs: NOW,
       readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 1000 }),
       spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: false,
     });
 
     expect(text).toContain("Claude Code — live subscription quota");
+    expect(text).toContain("Status: current");
+    expect(text).toContain("Updated 2026-05-23T11:59:59.000Z (1s ago)");
     expect(text).toContain("5-hour: 42% used, resets 2026-05-23T18:00:00Z");
     expect(text).toContain("7-day: 10% used, resets 2026-05-30T00:00:00Z");
     expect(text).toContain("only updates while Claude Code is running");
   });
 
-  it("marks the Claude cache stale when it has not refreshed recently", () => {
+  it("marks the Claude cache stale only after refresh fails", () => {
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 }),
       spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({ status: "timeout", reason: "refresh timed out" }),
     });
 
-    expect(text).toContain("stale");
+    expect(text).toContain("Status: stale");
+    expect(text).toContain("stale values shown");
+    expect(text).toContain("Refresh failed: refresh timed out.");
     expect(text).toContain("5-hour: 42% used");
   });
 
@@ -132,10 +140,69 @@ describe("buildUsageStatusMessage", () => {
       nowMs: NOW,
       readCache: cacheReader(undefined),
       spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({
+        status: "unavailable",
+        reason: "pseudo-TTY refresh unavailable",
+      }),
     });
 
+    expect(text).toContain("Status: unavailable (pseudo-TTY refresh unavailable).");
     expect(text).toContain("No live quota cache found");
     expect(text).toContain("only updates while Claude Code is running");
+  });
+
+  it("refreshes a stale Claude cache and shows reset times from epoch seconds", () => {
+    const stale = {
+      raw: CLAUDE_CACHE,
+      mtimeMs: NOW - 60 * 60 * 1000,
+    };
+    const refreshed = {
+      raw: JSON.stringify({
+        rate_limits: {
+          five_hour: { used_percentage: 90, resets_at: 1779540000 },
+          seven_day: { used_percentage: 23, resets_at: "1779926400" },
+        },
+      }),
+      mtimeMs: NOW - 2000,
+    };
+    let calls = 0;
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: () => (calls++ === 0 ? stale : refreshed),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({ status: "refreshed" }),
+    });
+
+    expect(text).toContain("Status: refreshed/current");
+    expect(text).toContain("5-hour: 90% used, resets 2026-05-23T12:40:00.000Z");
+    expect(text).toContain("7-day: 23% used, resets 2026-05-28T00:00:00.000Z");
+    expect(text).not.toContain("stale values shown");
+  });
+
+  it("does not print raw Claude statusline payload fields or token-like values", () => {
+    const leakedToken = "topsecrettokenvalue1234";
+    const raw = JSON.stringify({
+      session_id: leakedToken,
+      auth: "sk-ant-abcdef0123456789",
+      rate_limits: {
+        five_hour: { used_percentage: 12, resets_at: "2026-05-23T18:00:00Z" },
+        seven_day: { used_percentage: 34, resets_at: "2026-05-30T00:00:00Z" },
+      },
+    });
+    const text = buildUsageStatusMessage({
+      env: { ANTHROPIC_API_KEY: leakedToken },
+      nowMs: NOW,
+      readCache: cacheReader({ raw, mtimeMs: NOW - 1000 }),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: false,
+    });
+
+    expect(text).toContain("5-hour: 12% used");
+    expect(text).not.toContain("session_id");
+    expect(text).not.toContain("auth");
+    expect(text).not.toContain(leakedToken);
+    expect(text).not.toContain("sk-ant-abcdef0123456789");
   });
 
   it("parses Codex live quota from codex-limit --json", () => {
@@ -145,6 +212,7 @@ describe("buildUsageStatusMessage", () => {
       nowMs: NOW,
       readCache: cacheReader(undefined),
       spawnSync,
+      refreshClaudeStatusline: false,
     });
 
     expect(text).toContain("Codex — live subscription quota");
@@ -164,6 +232,7 @@ describe("buildUsageStatusMessage", () => {
       nowMs: NOW,
       readCache: cacheReader(undefined),
       spawnSync: makeSpawnSync({ codexLimit: errResult("ENOENT") }),
+      refreshClaudeStatusline: false,
     });
 
     expect(text).toContain("Codex — live subscription quota");
@@ -179,6 +248,7 @@ describe("buildUsageStatusMessage", () => {
         codexLimit: okResult(CODEX_LIMIT),
         ccusageClaude: okResult(CCUSAGE_CLAUDE),
       }),
+      refreshClaudeStatusline: false,
     });
 
     expect(text).toContain("Historical usage — local logs, not remaining quota");
@@ -201,6 +271,7 @@ describe("buildUsageStatusMessage", () => {
       nowMs: NOW,
       readCache: cacheReader(undefined),
       spawnSync: makeSpawnSync({ codexLimit: okResult(codexWithLeak) }),
+      refreshClaudeStatusline: false,
     });
 
     expect(text).not.toContain(leakedToken);
@@ -215,6 +286,146 @@ describe("buildUsageStatusMessage", () => {
     expect(resolveClaudeStatuslineCachePath("/home/u", {})).toBe(
       "/home/u/.cache/claude-code/statusline.json",
     );
+  });
+});
+
+describe("Claude statusline active refresh", () => {
+  function makeChild(pid = 1234) {
+    const listeners: Record<string, Array<(err: Error) => void>> = {};
+    return {
+      pid,
+      kill: vi.fn(),
+      unref: vi.fn(),
+      once: vi.fn((event: string, handler: (err: Error) => void) => {
+        listeners[event] = [...(listeners[event] ?? []), handler];
+        return undefined;
+      }),
+      emitError: (err: Error) => {
+        for (const handler of listeners.error ?? []) handler(err);
+      },
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("uses a pseudo-TTY Claude command without -p or --bare", () => {
+    const command = buildClaudeStatuslineRefreshCommand();
+    const rendered = [command.command, ...command.args].join(" ");
+
+    expect(command.command).toBe("script");
+    expect(rendered).toContain('claude "respond with only a period"');
+    expect(rendered).not.toContain("claude -p");
+    expect(rendered).not.toContain("--bare");
+  });
+
+  it("waits for mtime change and all four rate_limit fields before succeeding", () => {
+    const child = makeChild();
+    const spawn = vi.fn(() => child);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (signal === 0) throw new Error(`not alive: ${String(pid)}`);
+      return true;
+    });
+    const entries: Array<StatuslineCacheEntry | undefined> = [
+      {
+        raw: JSON.stringify({
+          rate_limits: {
+            five_hour: { used_percentage: 70 },
+            seven_day: { used_percentage: 20, resets_at: 1779926400 },
+          },
+        }),
+        mtimeMs: NOW + 1,
+      },
+      {
+        raw: JSON.stringify({
+          rate_limits: {
+            five_hour: { used_percentage: 71, resets_at: 1779540000 },
+            seven_day: { used_percentage: 21, resets_at: 1779926400 },
+          },
+        }),
+        mtimeMs: NOW + 2,
+      },
+    ];
+    let reads = 0;
+
+    const result = refreshClaudeStatuslineCache({
+      cachePath: "/tmp/statusline.json",
+      beforeMtimeMs: NOW,
+      env: {},
+      nowMs: NOW,
+      readCache: () => entries[Math.min(reads++, entries.length - 1)],
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      sleepMs: vi.fn(),
+      timeoutMs: 1000,
+      pollMs: 100,
+    });
+
+    expect(result).toEqual({ status: "refreshed" });
+    expect(reads).toBe(2);
+    expect(kill).toHaveBeenCalledWith(-1234, "SIGTERM");
+  });
+
+  it("cleans up the process group on timeout", () => {
+    const child = makeChild(4321);
+    const spawn = vi.fn(() => child);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+    const result = refreshClaudeStatuslineCache({
+      cachePath: "/tmp/statusline.json",
+      beforeMtimeMs: NOW,
+      env: {},
+      nowMs: NOW,
+      readCache: () => undefined,
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      sleepMs: vi.fn(),
+      timeoutMs: 200,
+      pollMs: 100,
+    });
+
+    expect(result).toEqual({ status: "timeout", reason: "refresh timed out" });
+    expect(kill).toHaveBeenCalledWith(-4321, "SIGTERM");
+    expect(kill).toHaveBeenCalledWith(-4321, "SIGKILL");
+  });
+
+  it("unsets Anthropic API credential env vars for the refresh process", () => {
+    const child = makeChild();
+    const spawn = vi.fn(() => child);
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (signal === 0) throw new Error(`not alive: ${String(pid)}`);
+      return true;
+    });
+
+    refreshClaudeStatuslineCache({
+      cachePath: "/tmp/statusline.json",
+      beforeMtimeMs: NOW,
+      env: {
+        ANTHROPIC_API_KEY: "secret-key",
+        ANTHROPIC_AUTH_TOKEN: "secret-token",
+        ANTHROPIC_BASE_URL: "https://example.invalid",
+        ANTHROPIC_API_KEY_OLD: "old-secret",
+        SAFE_VALUE: "kept",
+      },
+      nowMs: NOW,
+      readCache: () => ({
+        raw: JSON.stringify({
+          rate_limits: {
+            five_hour: { used_percentage: 1, resets_at: 1779540000 },
+            seven_day: { used_percentage: 2, resets_at: 1779926400 },
+          },
+        }),
+        mtimeMs: NOW + 1,
+      }),
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      sleepMs: vi.fn(),
+    });
+
+    const options = spawn.mock.calls[0]?.[2] as { env: Record<string, string | undefined> };
+    expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(options.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(options.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
+    expect(options.env.SAFE_VALUE).toBe("kept");
   });
 });
 

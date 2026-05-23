@@ -1,4 +1,5 @@
 import * as childProcess from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,8 @@ const CLAUDE_STATUSLINE_CACHE_REL = path.join("claude-code", "statusline.json");
 // After this long without a refresh we treat the cache as stale, since the
 // numbers no longer reflect current quota.
 const STALE_THRESHOLD_MS = 15 * 60 * 1000;
+const CLAUDE_REFRESH_TIMEOUT_MS = 20_000;
+const CLAUDE_REFRESH_POLL_MS = 250;
 // External usage CLIs are invoked synchronously; cap each to keep the command
 // responsive even when offline or when npx must resolve a package.
 const EXTERNAL_CLI_TIMEOUT_MS = 8000;
@@ -36,17 +39,38 @@ export const USAGE_STATUS_COMMAND_SPEC = {
 } as const;
 
 type SpawnSyncLike = typeof childProcess.spawnSync;
+type SpawnLike = typeof childProcess.spawn;
 
 export type StatuslineCacheEntry = { raw: string; mtimeMs: number };
 export type StatuslineCacheReader = (cachePath: string) => StatuslineCacheEntry | undefined;
+export type ClaudeStatuslineRefreshResult =
+  | { status: "refreshed" }
+  | { status: "timeout"; reason: string }
+  | { status: "unavailable"; reason: string }
+  | { status: "failed"; reason: string };
+
+export type ClaudeStatuslineRefreshParams = {
+  cachePath: string;
+  beforeMtimeMs?: number;
+  env: NodeJS.ProcessEnv;
+  nowMs: number;
+  readCache: StatuslineCacheReader;
+};
+
+export type ClaudeStatuslineRefresher = (
+  params: ClaudeStatuslineRefreshParams,
+) => ClaudeStatuslineRefreshResult;
 
 export type BuildUsageStatusOptions = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   nowMs?: number;
   spawnSync?: SpawnSyncLike;
+  spawn?: SpawnLike;
   readCache?: StatuslineCacheReader;
   cachePath?: string;
+  refreshClaudeStatusline?: ClaudeStatuslineRefresher | false;
+  sleepMs?: (ms: number) => void;
 };
 
 type UsageWindow = { usedPercentage?: number; resetsAt?: string };
@@ -89,6 +113,7 @@ function pickString(obj: Record<string, unknown>, keys: readonly string[]): stri
   for (const key of keys) {
     const value = obj[key];
     if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
   return undefined;
 }
@@ -133,6 +158,124 @@ function parseClaudeStatusline(raw: string): ClaudeQuota | undefined {
   const sevenDay = firstWindow(container, ["seven_day", "sevenDay"]);
   if (!fiveHour && !sevenDay) return undefined;
   return { fiveHour: fiveHour ?? {}, sevenDay: sevenDay ?? {} };
+}
+
+function isCompleteClaudeQuota(quota: ClaudeQuota | undefined): quota is ClaudeQuota {
+  return Boolean(
+    quota?.fiveHour.usedPercentage != null &&
+    quota.fiveHour.resetsAt &&
+    quota.sevenDay.usedPercentage != null &&
+    quota.sevenDay.resetsAt,
+  );
+}
+
+function hasCompleteClaudeStatusline(entry: StatuslineCacheEntry | undefined): boolean {
+  return isCompleteClaudeQuota(entry ? parseClaudeStatusline(entry.raw) : undefined);
+}
+
+export function buildClaudeStatuslineRefreshCommand(): { command: string; args: string[] } {
+  return {
+    command: "script",
+    args: ["-q", "-e", "-c", 'claude "respond with only a period"', "/dev/null"],
+  };
+}
+
+function buildClaudeRefreshEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  delete next.ANTHROPIC_API_KEY;
+  delete next.ANTHROPIC_AUTH_TOKEN;
+  delete next.ANTHROPIC_BASE_URL;
+  delete next.ANTHROPIC_API_KEY_OLD;
+  return next;
+}
+
+function defaultSleepMs(ms: number): void {
+  const shared = new SharedArrayBuffer(4);
+  const view = new Int32Array(shared);
+  Atomics.wait(view, 0, 0, ms);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function terminateProcessGroup(proc: ChildProcess): void {
+  if (!proc.pid) return;
+  const target = -proc.pid;
+  try {
+    process.kill(target, "SIGTERM");
+  } catch {
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // Best effort cleanup.
+    }
+  }
+  if (isProcessAlive(proc.pid)) {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Best effort cleanup.
+      }
+    }
+  }
+}
+
+export function refreshClaudeStatuslineCache(
+  params: ClaudeStatuslineRefreshParams & {
+    spawn?: SpawnLike;
+    sleepMs?: (ms: number) => void;
+    timeoutMs?: number;
+    pollMs?: number;
+  },
+): ClaudeStatuslineRefreshResult {
+  const spawnImpl = params.spawn ?? childProcess.spawn;
+  const sleep = params.sleepMs ?? defaultSleepMs;
+  const timeoutMs = params.timeoutMs ?? CLAUDE_REFRESH_TIMEOUT_MS;
+  const pollMs = params.pollMs ?? CLAUDE_REFRESH_POLL_MS;
+  const { command, args } = buildClaudeStatuslineRefreshCommand();
+  let proc: ChildProcess;
+  try {
+    proc = spawnImpl(command, args, {
+      detached: true,
+      stdio: "ignore",
+      env: buildClaudeRefreshEnv(params.env),
+    });
+    proc.unref?.();
+  } catch {
+    return { status: "unavailable", reason: "pseudo-TTY refresh unavailable" };
+  }
+
+  const beforeMtimeMs = params.beforeMtimeMs ?? 0;
+  const deadline = params.nowMs + timeoutMs;
+  let nowMs = params.nowMs;
+  let spawnFailed: string | undefined;
+  proc.once?.("error", (err: Error) => {
+    spawnFailed = err.message || "spawn failed";
+  });
+
+  try {
+    while (nowMs <= deadline) {
+      const current = params.readCache(params.cachePath);
+      if (current && current.mtimeMs > beforeMtimeMs && hasCompleteClaudeStatusline(current)) {
+        return { status: "refreshed" };
+      }
+      if (spawnFailed) return { status: "unavailable", reason: "pseudo-TTY refresh unavailable" };
+      sleep(pollMs);
+      nowMs += pollMs;
+    }
+    return { status: "timeout", reason: "refresh timed out" };
+  } finally {
+    terminateProcessGroup(proc);
+  }
 }
 
 function parseCodexLimit(raw: string): CodexQuota | undefined {
@@ -199,39 +342,81 @@ function formatPercent(value: number | undefined): string {
   return value == null ? "?" : `${Math.round(value)}%`;
 }
 
+function formatResetAt(resetsAt: string | undefined): string | undefined {
+  if (!resetsAt) return undefined;
+  if (/^\d+(\.\d+)?$/.test(resetsAt)) {
+    const epochSeconds = Number(resetsAt);
+    if (Number.isFinite(epochSeconds)) return new Date(epochSeconds * 1000).toISOString();
+  }
+  return resetsAt;
+}
+
 function formatWindowLine(label: string, window: UsageWindow | undefined): string {
   if (!window || (window.usedPercentage == null && window.resetsAt == null)) {
     return `  ${label}: not reported`;
   }
-  const reset = window.resetsAt ? `, resets ${window.resetsAt}` : "";
+  const resetAt = formatResetAt(window.resetsAt);
+  const reset = resetAt ? `, resets ${resetAt}` : "";
   return `  ${label}: ${formatPercent(window.usedPercentage)} used${reset}`;
 }
 
-function buildClaudeSection(entry: StatuslineCacheEntry | undefined, nowMs: number): string {
+function formatAge(ageMs: number): string {
+  if (ageMs < 0) return "0s";
+  const seconds = Math.round(ageMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${days}d`;
+}
+
+function formatUpdatedAt(mtimeMs: number): string {
+  return new Date(mtimeMs).toISOString();
+}
+
+function buildClaudeSection(
+  entry: StatuslineCacheEntry | undefined,
+  nowMs: number,
+  refreshResult?: ClaudeStatuslineRefreshResult,
+): string {
   const header = "Claude Code — live subscription quota";
+  const refreshFailureReason =
+    refreshResult && refreshResult.status !== "refreshed" ? refreshResult.reason : undefined;
   if (!entry) {
+    const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
     return [
       header,
+      `  Status: unavailable${reason}.`,
       "  No live quota cache found. It only updates while Claude Code is running.",
     ].join("\n");
   }
   const quota = parseClaudeStatusline(entry.raw);
   if (!quota) {
+    const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
     return [
       header,
+      `  Status: unavailable${reason}.`,
       "  Live quota cache is present but unreadable. It only updates while Claude Code is running.",
     ].join("\n");
   }
+  const ageMs = nowMs - entry.mtimeMs;
+  const freshness =
+    refreshResult?.status === "refreshed"
+      ? "refreshed/current"
+      : ageMs > STALE_THRESHOLD_MS
+        ? "stale"
+        : "current";
   const lines = [
     header,
+    `  Status: ${freshness}. Updated ${formatUpdatedAt(entry.mtimeMs)} (${formatAge(ageMs)} ago).`,
     formatWindowLine("5-hour", quota.fiveHour),
     formatWindowLine("7-day", quota.sevenDay),
   ];
-  const ageMs = nowMs - entry.mtimeMs;
-  if (ageMs > STALE_THRESHOLD_MS) {
-    lines.push(
-      "  Note: this cache is stale (Claude Code may not be running); values may be outdated.",
-    );
+  if (freshness === "stale") {
+    const reason = refreshFailureReason ? ` Refresh failed: ${refreshFailureReason}.` : "";
+    lines.push(`  Note: stale values shown; Claude Code may not be running.${reason}`);
   } else {
     lines.push("  Note: this cache only updates while Claude Code is running.");
   }
@@ -284,7 +469,28 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
   const readCache = options.readCache ?? defaultReadCache;
   const cachePath = options.cachePath ?? resolveClaudeStatuslineCachePath(homeDir, env);
 
-  const claudeSection = buildClaudeSection(readCache(cachePath), nowMs);
+  let claudeEntry = readCache(cachePath);
+  const cacheIsStale = !claudeEntry || nowMs - claudeEntry.mtimeMs > STALE_THRESHOLD_MS;
+  let claudeRefreshResult: ClaudeStatuslineRefreshResult | undefined;
+  if (cacheIsStale && options.refreshClaudeStatusline !== false) {
+    const refresher =
+      options.refreshClaudeStatusline ??
+      ((params: ClaudeStatuslineRefreshParams) =>
+        refreshClaudeStatuslineCache({
+          ...params,
+          spawn: options.spawn ?? childProcess.spawn,
+          sleepMs: options.sleepMs,
+        }));
+    claudeRefreshResult = refresher({
+      cachePath,
+      beforeMtimeMs: claudeEntry?.mtimeMs,
+      env,
+      nowMs,
+      readCache,
+    });
+    claudeEntry = readCache(cachePath);
+  }
+  const claudeSection = buildClaudeSection(claudeEntry, nowMs, claudeRefreshResult);
   // -y keeps npx non-interactive so it never blocks waiting on an install prompt.
   const codexSection = buildCodexSection(
     runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"]),
