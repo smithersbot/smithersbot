@@ -3,6 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { writeAttemptBundle, tailText } from "./attempt-bundle.js";
 import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import {
   buildClaudeCodeEnv,
   buildCredentialStrippedEnv,
   writeAuthModeArtifact,
@@ -185,6 +192,51 @@ function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
     "net.allowed=true",
     prompt,
   ];
+}
+
+function sanitizePlannerArgvForHistory(args: readonly string[]): string[] {
+  const sanitized = [...args];
+  if (sanitized.length > 0) {
+    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
+  }
+  return sanitized;
+}
+
+function appendPlannerHistoryBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  phase: "planner" | "plan-revision";
+  backend: PlannerBackendId;
+  event: string;
+  status?: string;
+  attemptNumber?: number;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  artifactPaths?: readonly string[];
+  extra?: Record<string, unknown>;
+}): void {
+  appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: params.phase,
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      status: params.status,
+      attemptNumber: params.attemptNumber,
+      tokenUsage: params.tokenUsage,
+      errorClass: params.errorClass,
+      outputSummary: params.outputSummary,
+      artifactPaths: params.artifactPaths,
+      ...params.extra,
+    },
+  );
 }
 
 function resolvePlannerBackends(enabledWorkers?: CliWorkerId[]): CliWorkerId[] {
@@ -576,16 +628,38 @@ export async function runCliPlanRevision(
   let plannerDegradedResetHint: string | undefined;
   let attemptIndex = 0;
   let claudeOverloadRetryCount = 0;
+  let processAttemptNumber = 0;
   let procResult: Awaited<ReturnType<typeof runCliProcess>> | null = null;
 
   while (attemptIndex < plannerBackends.length) {
     const backend = plannerBackends[attemptIndex];
     if (!backend) break;
+    processAttemptNumber += 1;
+    const attemptNumber = processAttemptNumber;
     const command = backend === "claude_code" ? claudeCommand : "codex";
     const args =
       backend === "claude_code"
         ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS, ...(model ? ["--model", model] : [])]
         : buildCodexPlanningArgs(plannerCwd, prompt);
+    const launchHistory = writeCriticalAgentLaunchEvent({
+      scope: {
+        kind: "goal",
+        workspaceName: workspaceNameFromWorkingDir(plannerCwd),
+        goalId: runId,
+      },
+      phase: "plan-revision",
+      backend,
+      prompt,
+      command,
+      argv: sanitizePlannerArgvForHistory(args),
+      event: {
+        runId,
+        goalId: runId,
+        attemptNumber,
+        status: "launching",
+        revisionRound,
+      },
+    });
 
     procResult = await runCliProcess({
       command,
@@ -603,8 +677,27 @@ export async function runCliPlanRevision(
     });
     redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDOUT_FILE));
     redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDERR_FILE));
+    const tokenUsage = parseBackendUsage(`${procResult.stdout}\n${procResult.stderr}`);
 
     if (procResult.timedOut) {
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "plan-revision",
+        backend,
+        event: "failure",
+        status: "timeout",
+        attemptNumber,
+        tokenUsage,
+        errorClass: "timeout",
+        outputSummary: tailText(procResult.stdout || procResult.stderr, LOG_EXCERPT_CHARS),
+        artifactPaths: [
+          path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
+          path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
+          launchHistory.promptArtifactPath,
+        ],
+        extra: { revisionRound },
+      });
       throw new Error(`Plan revision timed out after ${(timeout / 60_000).toFixed(0)} minutes.`);
     }
 
@@ -615,6 +708,24 @@ export async function runCliPlanRevision(
         (procResult.signal
           ? `Plan revision process terminated by ${procResult.signal}.`
           : "Plan revision process failed.");
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "plan-revision",
+        backend,
+        event: "failure",
+        status: "crash",
+        attemptNumber,
+        tokenUsage,
+        errorClass: procResult.signal ? "signal" : "exit_code",
+        outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+        artifactPaths: [
+          path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
+          path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
+          launchHistory.promptArtifactPath,
+        ],
+        extra: { revisionRound, exitCode: procResult.exitCode, signal: procResult.signal },
+      });
 
       if (backend === "claude_code") {
         const degradedReason = detectAnthropicDegradedReason(errMsg);
@@ -634,9 +745,33 @@ export async function runCliPlanRevision(
               abortSignal: params.abortSignal,
               context: "Plan revision",
             });
+            appendPlannerHistoryBestEffort({
+              workingDir: plannerCwd,
+              runId,
+              phase: "plan-revision",
+              backend,
+              event: "retry",
+              status: degradedReason,
+              attemptNumber,
+              errorClass: degradedReason,
+              outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+              extra: { revisionRound, delayMs },
+            });
             continue;
           }
           if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
+            appendPlannerHistoryBestEffort({
+              workingDir: plannerCwd,
+              runId,
+              phase: "plan-revision",
+              backend,
+              event: "fallback",
+              status: degradedReason,
+              attemptNumber,
+              errorClass: degradedReason,
+              outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+              extra: { revisionRound, fallbackBackend: "codex" },
+            });
             attemptIndex += 1;
             continue;
           }
@@ -675,11 +810,44 @@ export async function runCliPlanRevision(
     // Best-effort diagnostics.
   }
 
-  const parsedPlan = parsePlanResultFromText(procResult.stdout, goalText);
+  let parsedPlan: PlanResult;
+  try {
+    parsedPlan = parsePlanResultFromText(procResult.stdout, goalText);
+  } catch (err) {
+    appendPlannerHistoryBestEffort({
+      workingDir: plannerCwd,
+      runId,
+      phase: "plan-revision",
+      backend: plannerBackendUsed ?? plannerBackends[0] ?? "claude_code",
+      event: "failure",
+      status: "parse_failed",
+      tokenUsage: parseBackendUsage(procResult.stdout),
+      errorClass: err instanceof PlanParseError ? "parse" : "validation",
+      outputSummary: err instanceof Error ? err.message : String(err),
+      artifactPaths: [path.join(revisionDir, PLAN_REVISION_RAW_OUTPUT_FILE)],
+      extra: { revisionRound },
+    });
+    throw err;
+  }
   const plan =
     plannerDegradedReason && !("blocked" in parsedPlan)
       ? rewritePlanForDegradedPlanner(parsedPlan, params.enabledWorkers)
       : parsedPlan;
+  appendPlannerHistoryBestEffort({
+    workingDir: plannerCwd,
+    runId,
+    phase: "plan-revision",
+    backend: plannerBackendUsed ?? plannerBackends[0] ?? "claude_code",
+    event: "result",
+    status: "blocked" in plan ? "blocked" : "success",
+    tokenUsage: parseBackendUsage(procResult.stdout),
+    outputSummary:
+      "blocked" in plan
+        ? tailText(plan.question, LOG_EXCERPT_CHARS)
+        : tailText(plan.summary, LOG_EXCERPT_CHARS),
+    artifactPaths: [path.join(revisionDir, PLAN_REVISION_RAW_OUTPUT_FILE)],
+    extra: { revisionRound },
+  });
 
   return {
     plan,
@@ -757,6 +925,25 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       backend === "claude_code"
         ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS]
         : buildCodexPlanningArgs(plannerCwd, prompt);
+    const launchHistory = writeCriticalAgentLaunchEvent({
+      scope: {
+        kind: "goal",
+        workspaceName: workspaceNameFromWorkingDir(plannerCwd),
+        goalId: runId,
+      },
+      phase: "planner",
+      backend,
+      prompt,
+      command,
+      argv: sanitizePlannerArgvForHistory(args),
+      event: {
+        runId,
+        goalId: runId,
+        attemptNumber,
+        status: "launching",
+        includeScoutArtifacts,
+      },
+    });
 
     procResult = await runCliProcess({
       command,
@@ -776,6 +963,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     redactTextArtifactIfExists(path.join(scoutDir, PLANNER_STDERR_FILE));
 
     writePlannerRawOutput(scoutDir, procResult.stdout);
+    const tokenUsage = parseBackendUsage(`${procResult.stdout}\n${procResult.stderr}`);
 
     if (procResult.timedOut) {
       const message = `Planning timed out after ${(timeout / 60_000).toFixed(0)} minutes.`;
@@ -786,6 +974,25 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         errorClassification: "timeout",
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
+        tokenUsage,
+      });
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "planner",
+        backend,
+        event: "failure",
+        status: "timeout",
+        attemptNumber,
+        tokenUsage,
+        errorClass: "timeout",
+        outputSummary: tailText(procResult.stdout || procResult.stderr, LOG_EXCERPT_CHARS),
+        artifactPaths: [
+          path.join(scoutDir, PLANNER_STDOUT_FILE),
+          path.join(scoutDir, PLANNER_STDERR_FILE),
+          launchHistory.promptArtifactPath,
+        ],
+        extra: { includeScoutArtifacts },
       });
       throw new Error(message);
     }
@@ -805,6 +1012,25 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         errorClassification: errorKind,
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
+        tokenUsage,
+      });
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "planner",
+        backend,
+        event: "failure",
+        status: "crash",
+        attemptNumber,
+        tokenUsage,
+        errorClass: errorKind,
+        outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+        artifactPaths: [
+          path.join(scoutDir, PLANNER_STDOUT_FILE),
+          path.join(scoutDir, PLANNER_STDERR_FILE),
+          launchHistory.promptArtifactPath,
+        ],
+        extra: { includeScoutArtifacts, exitCode: procResult.exitCode, signal: procResult.signal },
       });
 
       if (backend === "claude_code") {
@@ -825,9 +1051,33 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
               abortSignal: params.abortSignal,
               context: "Planning",
             });
+            appendPlannerHistoryBestEffort({
+              workingDir: plannerCwd,
+              runId,
+              phase: "planner",
+              backend,
+              event: "retry",
+              status: degradedReason,
+              attemptNumber,
+              errorClass: degradedReason,
+              outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+              extra: { includeScoutArtifacts, delayMs },
+            });
             continue;
           }
           if (plannerBackends.slice(attemptIndex + 1).includes("codex")) {
+            appendPlannerHistoryBestEffort({
+              workingDir: plannerCwd,
+              runId,
+              phase: "planner",
+              backend,
+              event: "fallback",
+              status: degradedReason,
+              attemptNumber,
+              errorClass: degradedReason,
+              outputSummary: tailText(errMsg, LOG_EXCERPT_CHARS),
+              extra: { includeScoutArtifacts, fallbackBackend: "codex" },
+            });
             attemptIndex += 1;
             continue;
           }
@@ -884,6 +1134,20 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         resultFile: SCOUT_REPORT_FILE,
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
+        tokenUsage: parseBackendUsage(procResult.stdout),
+      });
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "planner",
+        backend: plannerBackendUsed ?? defaultPlannerBackend,
+        event: "failure",
+        status: "invalid_scout_artifacts",
+        attemptNumber: finalAttemptNumber,
+        tokenUsage: parseBackendUsage(procResult.stdout),
+        errorClass: scoutResult.errorKind,
+        outputSummary: scoutResult.error,
+        artifactPaths: [SCOUT_REPORT_FILE],
       });
       throw new Error(`Planning scout artifacts invalid: ${scoutResult.error}`);
     }
@@ -897,6 +1161,19 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
         logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
         durationMs: procResult.durationMs,
+        tokenUsage: parseBackendUsage(procResult.stdout),
+      });
+      appendPlannerHistoryBestEffort({
+        workingDir: plannerCwd,
+        runId,
+        phase: "planner",
+        backend: plannerBackendUsed ?? defaultPlannerBackend,
+        event: "result",
+        status: "needs_clarification",
+        attemptNumber: finalAttemptNumber,
+        tokenUsage: parseBackendUsage(procResult.stdout),
+        outputSummary: tailText(scoutResult.question, LOG_EXCERPT_CHARS),
+        artifactPaths: [SCOUT_NEEDS_CLARIFICATION_FILE],
       });
       return {
         status: "blocked",
@@ -932,6 +1209,24 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         : PLANNER_STDOUT_FILE,
       logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
       durationMs: procResult.durationMs,
+      tokenUsage: parseBackendUsage(procResult.stdout),
+    });
+    appendPlannerHistoryBestEffort({
+      workingDir: plannerCwd,
+      runId,
+      phase: "planner",
+      backend: plannerBackendUsed ?? defaultPlannerBackend,
+      event: "failure",
+      status: "parse_failed",
+      attemptNumber: finalAttemptNumber,
+      tokenUsage: parseBackendUsage(procResult.stdout),
+      errorClass: err instanceof PlanParseError ? "parse" : "validation",
+      outputSummary: err instanceof Error ? err.message : String(err),
+      artifactPaths: [
+        fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
+          ? EXECUTION_PLAN_FILE
+          : PLANNER_STDOUT_FILE,
+      ],
     });
     throw err;
   }
@@ -947,6 +1242,23 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
         : PLANNER_STDOUT_FILE,
       logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
       durationMs: procResult.durationMs,
+      tokenUsage: parseBackendUsage(procResult.stdout),
+    });
+    appendPlannerHistoryBestEffort({
+      workingDir: plannerCwd,
+      runId,
+      phase: "planner",
+      backend: plannerBackendUsed ?? defaultPlannerBackend,
+      event: "result",
+      status: "blocked",
+      attemptNumber: finalAttemptNumber,
+      tokenUsage: parseBackendUsage(procResult.stdout),
+      outputSummary: tailText(parsedPlan.question, LOG_EXCERPT_CHARS),
+      artifactPaths: [
+        fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
+          ? EXECUTION_PLAN_FILE
+          : PLANNER_STDOUT_FILE,
+      ],
     });
     return {
       status: "blocked",
@@ -970,6 +1282,19 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     resultFile: EXECUTION_PLAN_FILE,
     logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
     durationMs: procResult.durationMs,
+    tokenUsage: parseBackendUsage(procResult.stdout),
+  });
+  appendPlannerHistoryBestEffort({
+    workingDir: plannerCwd,
+    runId,
+    phase: "planner",
+    backend: plannerBackendUsed ?? defaultPlannerBackend,
+    event: "result",
+    status: "success",
+    attemptNumber: finalAttemptNumber,
+    tokenUsage: parseBackendUsage(procResult.stdout),
+    outputSummary: tailText(effectivePlan.summary, LOG_EXCERPT_CHARS),
+    artifactPaths: [EXECUTION_PLAN_FILE],
   });
 
   return {

@@ -9,6 +9,8 @@ import {
   runCliPlanRevision,
   EXECUTION_PLAN_FILE,
 } from "./cli-planner.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
@@ -249,12 +251,31 @@ function writeScoutArtifacts(scoutDir: string, goalId: string): void {
   );
 }
 
+function readPlannerHistoryEvents(
+  runId: string,
+  workingDir = process.cwd(),
+): Record<string, unknown>[] {
+  const eventsPath = resolveAgentHistoryEventsPath({
+    kind: "goal",
+    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    goalId: runId,
+  });
+  return fs
+    .readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe("runCliPlanning", () => {
   let goalsDir: string;
   let priorApiKey: string | undefined;
   let priorAuthToken: string | undefined;
   let priorApiKeyOld: string | undefined;
   let priorBaseUrl: string | undefined;
+  let priorManagedRoot: string | undefined;
+  let managedRoot: string;
 
   beforeEach(() => {
     goalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-test-"));
@@ -269,6 +290,9 @@ describe("runCliPlanning", () => {
     priorAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
     priorApiKeyOld = process.env.ANTHROPIC_API_KEY_OLD;
     priorBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    priorManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-managed-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
   });
 
   afterEach(() => {
@@ -280,6 +304,9 @@ describe("runCliPlanning", () => {
     else process.env.ANTHROPIC_API_KEY_OLD = priorApiKeyOld;
     if (priorBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
     else process.env.ANTHROPIC_BASE_URL = priorBaseUrl;
+    if (priorManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = priorManagedRoot;
+    fs.rmSync(managedRoot, { recursive: true, force: true });
     fs.rmSync(goalsDir, { recursive: true, force: true });
   });
 
@@ -361,6 +388,96 @@ describe("runCliPlanning", () => {
     expect(procCall.cwd).toBe(process.cwd());
     expect(procCall.args).not.toContain("--dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+  });
+
+  it("writes agent-visible launch and prompt history before planner spawn and captures tokens", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_PLANNER_HISTORY_SECRET";
+    try {
+      mockDetectBackendAvailability.mockReturnValue([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "not found" },
+      ]);
+      mockResolveClaudeBinary.mockReturnValue(null);
+      mockRunCliProcess.mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const events = readPlannerHistoryEvents("run-history-pre-spawn");
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          event: "launch",
+          phase: "planner",
+          backend: "codex",
+          runId: "run-history-pre-spawn",
+          status: "launching",
+        });
+        const promptArtifactPath = String(events[0]?.promptArtifactPath);
+        expect(fs.existsSync(promptArtifactPath)).toBe(true);
+        const promptArtifact = fs.readFileSync(promptArtifactPath, "utf8");
+        expect(promptArtifact).toContain("[REDACTED]");
+        expect(promptArtifact).not.toContain("FAKE_PLANNER_HISTORY_SECRET");
+        expect(JSON.stringify(events[0])).not.toContain("FAKE_PLANNER_HISTORY_SECRET");
+        expect(JSON.stringify(events[0])).not.toContain("Goal has FAKE_PLANNER_HISTORY_SECRET");
+
+        const scoutDir = path.dirname(String(params.stdoutPath));
+        fs.writeFileSync(
+          path.join(scoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify({
+            summary: "History plan",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "history-step",
+                description: "Inspect history",
+                dependsOn: [],
+                durationMinutes: 5,
+                backend: "codex",
+              },
+            ],
+          }),
+          "utf8",
+        );
+        return {
+          stdout: JSON.stringify({
+            type: "token_count",
+            token_count: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      const result = await runCliPlanning({
+        runId: "run-history-pre-spawn",
+        goalText: "Goal has FAKE_PLANNER_HISTORY_SECRET",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["codex"],
+      });
+
+      expect(result.status).toBe("success");
+      const events = readPlannerHistoryEvents("run-history-pre-spawn");
+      expect(events.map((event) => event.event)).toEqual(["launch", "result"]);
+      expect(events[1]).toMatchObject({
+        event: "result",
+        phase: "planner",
+        backend: "codex",
+        status: "success",
+        tokenUsage: {
+          available: true,
+          inputTokens: 11,
+          outputTokens: 7,
+          totalTokens: 18,
+          source: "codex-json",
+        },
+      });
+      expect(JSON.stringify(events)).not.toContain("FAKE_PLANNER_HISTORY_SECRET");
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
   });
 
   it("uses Codex-only planning when Claude Code is unavailable", async () => {
@@ -1345,6 +1462,32 @@ describe("runCliPlanning", () => {
     const secondCall = mockRunCliProcess.mock.calls[1]?.[0] as { command: string };
     expect(firstCall.command).toBe("/usr/bin/claude");
     expect(secondCall.command).toBe("codex");
+
+    const events = readPlannerHistoryEvents("run-fallback");
+    expect(events.map((event) => event.event)).toEqual([
+      "launch",
+      "failure",
+      "fallback",
+      "launch",
+      "result",
+    ]);
+    expect(events[1]).toMatchObject({
+      event: "failure",
+      backend: "claude_code",
+      status: "crash",
+      errorClass: "rate_limit",
+    });
+    expect(events[2]).toMatchObject({
+      event: "fallback",
+      backend: "claude_code",
+      status: "anthropic_usage_limit",
+      fallbackBackend: "codex",
+    });
+    expect(events[3]).toMatchObject({
+      event: "launch",
+      backend: "codex",
+      status: "launching",
+    });
   });
 
   it("copies codex fallback scout artifacts from writable temp dir into canonical scout dir", async () => {

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
 import { runPlanAutocheck } from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 
 const mockRunCliProcess = vi.hoisted(() => vi.fn());
 vi.mock("./cli-process.js", () => ({
@@ -130,17 +132,39 @@ function runPath(rootDir: string, runId: string): string {
   return runDir;
 }
 
+function readAutocheckHistoryEvents(runId: string, workingDir: string): Record<string, unknown>[] {
+  const eventsPath = resolveAgentHistoryEventsPath({
+    kind: "goal",
+    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    goalId: runId,
+  });
+  return fs
+    .readFileSync(eventsPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe("runPlanAutocheck", () => {
   let tmpDir: string;
+  let managedRoot: string;
+  let previousManagedRoot: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plan-autocheck-test-"));
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "plan-autocheck-managed-"));
+    previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     vi.clearAllMocks();
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
     mockGetCodexAskForApprovalPlacement.mockReturnValue("unsupported");
   });
 
   afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    fs.rmSync(managedRoot, { recursive: true, force: true });
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -186,6 +210,73 @@ describe("runPlanAutocheck", () => {
     expect(firstCall.command).toBe("/usr/bin/claude");
     expect(firstCall.args).toContain("--output-format");
     expect(firstCall.args).toContain("stream-json");
+  });
+
+  it("writes agent-visible launch and prompt history before reviewer spawn and captures tokens", async () => {
+    const previousToken = process.env.TELEGRAM_BOT_TOKEN;
+    process.env.TELEGRAM_BOT_TOKEN = "FAKE_AUTOCHECK_HISTORY_SECRET";
+    try {
+      const runId = "run-autocheck-history";
+      const workingDir = tmpDir;
+      mockRunCliProcess.mockImplementationOnce(async () => {
+        const events = readAutocheckHistoryEvents(runId, workingDir);
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          event: "launch",
+          phase: "autocheck",
+          backend: "codex",
+          runId,
+          status: "launching",
+          round: 1,
+          attemptLabel: "fresh",
+        });
+        const promptArtifactPath = String(events[0]?.promptArtifactPath);
+        expect(fs.existsSync(promptArtifactPath)).toBe(true);
+        const promptArtifact = fs.readFileSync(promptArtifactPath, "utf8");
+        expect(promptArtifact).toContain("[REDACTED]");
+        expect(promptArtifact).not.toContain("FAKE_AUTOCHECK_HISTORY_SECRET");
+        expect(JSON.stringify(events[0])).not.toContain("FAKE_AUTOCHECK_HISTORY_SECRET");
+        return cliResult({
+          stdout: [
+            JSON.stringify({
+              type: "token_count",
+              token_count: { input_tokens: 13, output_tokens: 5, total_tokens: 18 },
+            }),
+            JSON.stringify({ approved: true }),
+          ].join("\n"),
+        });
+      });
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("Secret FAKE_AUTOCHECK_HISTORY_SECRET", "1", "codex"),
+        goalText: "Ship feature with FAKE_AUTOCHECK_HISTORY_SECRET",
+        mode: "codex",
+        workingDir,
+        runDir: runPath(tmpDir, runId),
+        commitRevision: vi.fn(),
+      });
+
+      expect(result.approved).toBe(true);
+      const events = readAutocheckHistoryEvents(runId, workingDir);
+      expect(events.map((event) => event.event)).toEqual(["launch", "result", "round"]);
+      expect(events[1]).toMatchObject({
+        event: "result",
+        phase: "autocheck",
+        backend: "codex",
+        status: "approved",
+        tokenUsage: {
+          available: true,
+          inputTokens: 13,
+          outputTokens: 5,
+          totalTokens: 18,
+          source: "codex-json",
+        },
+      });
+      expect(JSON.stringify(events)).not.toContain("FAKE_AUTOCHECK_HISTORY_SECRET");
+    } finally {
+      if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = previousToken;
+    }
   });
 
   it("revises then approves, calling commitRevision and resuming the same checker session", async () => {
@@ -511,6 +602,7 @@ describe("runPlanAutocheck", () => {
   });
 
   it("falls back to Codex when the Claude reviewer hits a usage limit", async () => {
+    const runId = "run-claude-usage-fallback";
     mockRunCliProcess
       .mockResolvedValueOnce(
         cliResult({
@@ -530,7 +622,7 @@ describe("runPlanAutocheck", () => {
       goalText: "Ship feature",
       mode: "claude_code",
       workingDir: tmpDir,
-      runDir: runPath(tmpDir, "run-claude-usage-fallback"),
+      runDir: runPath(tmpDir, runId),
       commitRevision: vi.fn(),
     });
 
@@ -538,6 +630,30 @@ describe("runPlanAutocheck", () => {
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
     expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
     expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+    const events = readAutocheckHistoryEvents(runId, tmpDir);
+    expect(events.map((event) => event.event)).toEqual([
+      "launch",
+      "failure",
+      "fallback",
+      "launch",
+      "result",
+      "round",
+    ]);
+    expect(events[1]).toMatchObject({
+      event: "failure",
+      backend: "claude_code",
+      status: "crash",
+    });
+    expect(events[2]).toMatchObject({
+      event: "fallback",
+      backend: "claude_code",
+      status: "backend_failed",
+    });
+    expect(events[3]).toMatchObject({
+      event: "launch",
+      backend: "codex",
+      status: "launching",
+    });
   });
 
   it("falls back to Claude when the Codex reviewer hits a usage limit", async () => {

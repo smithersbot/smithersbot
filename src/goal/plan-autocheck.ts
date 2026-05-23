@@ -3,6 +3,13 @@ import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
 } from "./backend-availability.js";
@@ -356,6 +363,60 @@ function buildCodexReviewerArgs(params: {
   return args;
 }
 
+function sanitizeReviewerArgvForHistory(args: readonly string[]): string[] {
+  const sanitized = [...args];
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const arg = sanitized[index];
+    if (arg === "--append-system-prompt" && index + 1 < sanitized.length) {
+      sanitized[index + 1] = "<append-system-prompt redacted; see prompt artifact>";
+      index += 1;
+    }
+  }
+  if (sanitized.length > 0) {
+    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
+  }
+  return sanitized;
+}
+
+function appendAutocheckHistoryBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  backend: PlanAutocheckBackend;
+  event: string;
+  status?: string;
+  round: number;
+  attemptLabel: string;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  artifactPaths?: readonly string[];
+  extra?: Record<string, unknown>;
+}): void {
+  appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: "autocheck",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      status: params.status,
+      attemptNumber: params.round,
+      tokenUsage: params.tokenUsage,
+      errorClass: params.errorClass,
+      outputSummary: params.outputSummary,
+      artifactPaths: params.artifactPaths,
+      round: params.round,
+      attemptLabel: params.attemptLabel,
+      ...params.extra,
+    },
+  );
+}
+
 function resolveRunIdentity(runDir: string): { runId: string; goalsDir: string } {
   const absoluteRunDir = path.resolve(runDir);
   const runId = path.basename(absoluteRunDir);
@@ -521,6 +582,9 @@ async function runReviewerAttempt(params: {
   backend: PlanAutocheckBackend;
   prompt: string;
   workingDir: string;
+  runId: string;
+  round: number;
+  attemptLabel: string;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
   sessionId?: string;
@@ -547,6 +611,28 @@ async function runReviewerAttempt(params: {
           model: params.model,
         });
 
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    phase: "autocheck",
+    backend: params.backend,
+    prompt: params.prompt,
+    command,
+    argv: sanitizeReviewerArgvForHistory(args),
+    event: {
+      runId: params.runId,
+      goalId: params.runId,
+      attemptNumber: params.round,
+      status: "launching",
+      round: params.round,
+      attemptLabel: params.attemptLabel,
+      sessionId: params.sessionId,
+    },
+  });
+
   const procResult = await runCliProcess({
     command,
     args,
@@ -562,8 +648,22 @@ async function runReviewerAttempt(params: {
   });
   redactTextArtifactIfExists(params.stdoutPath);
   redactTextArtifactIfExists(params.stderrPath);
+  const tokenUsage = parseBackendUsage(`${procResult.stdout}\n${procResult.stderr}`);
 
   if (procResult.timedOut) {
+    appendAutocheckHistoryBestEffort({
+      workingDir: params.workingDir,
+      runId: params.runId,
+      backend: params.backend,
+      event: "failure",
+      status: "timeout",
+      round: params.round,
+      attemptLabel: params.attemptLabel,
+      tokenUsage,
+      errorClass: "timeout",
+      outputSummary: describeCliFailure(procResult),
+      artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
+    });
     throw new ReviewerCliError(
       `Plan autocheck worker timed out after ${(params.timeoutMs / 60_000).toFixed(0)} minutes.`,
       procResult,
@@ -571,6 +671,20 @@ async function runReviewerAttempt(params: {
   }
 
   if ((procResult.exitCode && procResult.exitCode !== 0) || procResult.signal) {
+    appendAutocheckHistoryBestEffort({
+      workingDir: params.workingDir,
+      runId: params.runId,
+      backend: params.backend,
+      event: "failure",
+      status: "crash",
+      round: params.round,
+      attemptLabel: params.attemptLabel,
+      tokenUsage,
+      errorClass: procResult.signal ? "signal" : "exit_code",
+      outputSummary: describeCliFailure(procResult),
+      artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
+      extra: { exitCode: procResult.exitCode, signal: procResult.signal },
+    });
     throw new ReviewerCliError(
       `Plan autocheck worker failed: ${describeCliFailure(procResult)}`,
       procResult,
@@ -578,6 +692,19 @@ async function runReviewerAttempt(params: {
   }
 
   if (params.sessionId && SESSION_NOT_FOUND_RE.test(`${procResult.stderr}\n${procResult.stdout}`)) {
+    appendAutocheckHistoryBestEffort({
+      workingDir: params.workingDir,
+      runId: params.runId,
+      backend: params.backend,
+      event: "failure",
+      status: "session_not_found",
+      round: params.round,
+      attemptLabel: params.attemptLabel,
+      tokenUsage,
+      errorClass: "session_not_found",
+      outputSummary: `reviewer session "${params.sessionId}" was not found`,
+      artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
+    });
     throw new ReviewerCliError(
       `Plan autocheck resume failed: reviewer session "${params.sessionId}" was not found.`,
       procResult,
@@ -598,6 +725,22 @@ async function runReviewerAttempt(params: {
         parsed.text || procResult.stdout,
       ),
     } satisfies AutocheckDecision);
+  appendAutocheckHistoryBestEffort({
+    workingDir: params.workingDir,
+    runId: params.runId,
+    backend: params.backend,
+    event: "result",
+    status: decision.approved ? "approved" : "rejected",
+    round: params.round,
+    attemptLabel: params.attemptLabel,
+    tokenUsage,
+    outputSummary: truncateDetail(parsed.text || procResult.stdout),
+    artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
+    extra: {
+      sessionId,
+      durationMs: procResult.durationMs,
+    },
+  });
 
   return {
     stdout: redactSecretValues(procResult.stdout),
@@ -628,6 +771,8 @@ async function runFreshReviewerAttempt(params: {
   backend: PlanAutocheckBackend;
   prompt: string;
   workingDir: string;
+  runId: string;
+  round: number;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
   model?: string;
@@ -656,6 +801,9 @@ async function runFreshReviewerAttempt(params: {
           backend,
           prompt: params.prompt,
           workingDir: params.workingDir,
+          runId: params.runId,
+          round: params.round,
+          attemptLabel: labelSuffix,
           timeoutMs: params.timeoutMs,
           claudeCodeAuth: params.claudeCodeAuth,
           model: params.model,
@@ -665,6 +813,17 @@ async function runFreshReviewerAttempt(params: {
         return { ok: true, value: { result, usedBackend: backend } };
       } catch (err) {
         lastError = err;
+        appendAutocheckHistoryBestEffort({
+          workingDir: params.workingDir,
+          runId: params.runId,
+          backend,
+          event: "fallback",
+          status: "backend_failed",
+          round: params.round,
+          attemptLabel: labelSuffix,
+          errorClass: err instanceof Error ? err.name : "error",
+          outputSummary: describeError(err),
+        });
         return { ok: false, errorText: describeError(err) };
       }
     },
@@ -694,6 +853,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
   const maxRounds = clampMaxRounds(params.maxRounds);
   const timeoutMs = params.timeoutMs ?? DEFAULT_AUTOCHECK_TIMEOUT_MS;
   const backend = params.mode;
+  const { runId, goalsDir } = resolveRunIdentity(params.runDir);
   const autocheckRoot = path.join(params.runDir, "autocheck");
   fs.mkdirSync(autocheckRoot, { recursive: true });
 
@@ -743,6 +903,9 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           backend,
           prompt,
           workingDir: params.workingDir,
+          runId,
+          round: roundNumber,
+          attemptLabel,
           timeoutMs,
           claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
           sessionId,
@@ -773,6 +936,8 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
             backend,
             prompt,
             workingDir: params.workingDir,
+            runId,
+            round: roundNumber,
             timeoutMs,
             claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
             model: params.model,
@@ -813,6 +978,8 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         backend,
         prompt,
         workingDir: params.workingDir,
+        runId,
+        round: roundNumber,
         timeoutMs,
         claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
         model: params.model,
@@ -844,6 +1011,17 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     });
 
     if (result.decision.approved) {
+      appendAutocheckHistoryBestEffort({
+        workingDir: params.workingDir,
+        runId,
+        backend,
+        event: "round",
+        status: "approved",
+        round: roundNumber,
+        attemptLabel,
+        outputSummary: "Plan autocheck approved the plan.",
+        extra: { sessionId, autocheckRounds },
+      });
       return {
         plan: currentPlan,
         autocheckRounds,
@@ -858,6 +1036,17 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     feedbackHistory.push(result.decision.editInstructions);
 
     if (autocheckRounds >= maxRounds) {
+      appendAutocheckHistoryBestEffort({
+        workingDir: params.workingDir,
+        runId,
+        backend,
+        event: "round",
+        status: "exhausted",
+        round: roundNumber,
+        attemptLabel,
+        outputSummary: result.decision.editInstructions,
+        extra: { sessionId, autocheckRounds, autocheckMaxRounds: maxRounds },
+      });
       return {
         plan: currentPlan,
         autocheckRounds,
@@ -869,7 +1058,6 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
       };
     }
 
-    const { runId, goalsDir } = resolveRunIdentity(params.runDir);
     let revision: Awaited<ReturnType<typeof runCliPlanRevision>>;
     try {
       revision = await runCliPlanRevision({
@@ -887,6 +1075,18 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     } catch (err) {
       const revisionError = `Autocheck revision failed: ${describeError(err)}`;
       writeTextArtifact(path.join(roundDir, "revision_error.txt"), `${revisionError}\n`);
+      appendAutocheckHistoryBestEffort({
+        workingDir: params.workingDir,
+        runId,
+        backend,
+        event: "round",
+        status: "revision_failed",
+        round: roundNumber,
+        attemptLabel,
+        errorClass: err instanceof Error ? err.name : "error",
+        outputSummary: revisionError,
+        extra: { sessionId, autocheckRounds },
+      });
       return {
         plan: currentPlan,
         autocheckRounds,
@@ -903,6 +1103,17 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         path.join(roundDir, "revision_blocked.txt"),
         `Autocheck revision blocked: ${revision.plan.question}\n`,
       );
+      appendAutocheckHistoryBestEffort({
+        workingDir: params.workingDir,
+        runId,
+        backend,
+        event: "round",
+        status: "revision_blocked",
+        round: roundNumber,
+        attemptLabel,
+        outputSummary: revision.plan.question,
+        extra: { sessionId, autocheckRounds },
+      });
       return {
         plan: currentPlan,
         autocheckRounds,
@@ -922,6 +1133,17 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
       editInstructions: result.decision.editInstructions,
       previousPlan,
       revisedPlan: currentPlan,
+    });
+    appendAutocheckHistoryBestEffort({
+      workingDir: params.workingDir,
+      runId,
+      backend,
+      event: "round",
+      status: "revision_committed",
+      round: roundNumber,
+      attemptLabel,
+      outputSummary: result.decision.editInstructions,
+      extra: { sessionId, autocheckRounds },
     });
 
     roundNumber += 1;
