@@ -676,6 +676,85 @@ describe("extractRunLessons", () => {
     }
   });
 
+  it("falls back to Codex when Claude Code hits a usage limit", async () => {
+    const runId = "extract-run-usage-fallback";
+    const workingDir = "/repo/project-usage-fallback";
+    saveExtractionRun({
+      runId,
+      workingDir,
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "pnpm build failed",
+          error: "Parser emitted malformed JSON",
+          durationMs: 22,
+        },
+      },
+    });
+
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        makeCliResult({
+          stdout: "",
+          stderr: "API 429: You've hit your org's monthly usage limit. Resets at 3pm.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeCliResult({
+          stdout: JSON.stringify({
+            lessons: [
+              {
+                pattern: "fallback-works",
+                lesson: "Codex recovered the extraction.",
+                stepId: "step-alpha",
+              },
+            ],
+          }),
+        }),
+      );
+
+    const recorded = await extractRunLessons(runId, workingDir, []);
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.pattern).toBe("fallback-works");
+  });
+
+  it("returns [] (fail-open) when both backends are usage-limited, trying each once", async () => {
+    const runId = "extract-run-usage-exhausted";
+    const workingDir = "/repo/project-usage-exhausted";
+    saveExtractionRun({
+      runId,
+      workingDir,
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "pnpm build failed",
+          error: "Parser emitted malformed JSON",
+          durationMs: 22,
+        },
+      },
+    });
+
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        makeCliResult({ stdout: "", stderr: "monthly usage limit reached", exitCode: 1 }),
+      )
+      .mockResolvedValueOnce(
+        makeCliResult({ stdout: "", stderr: "Codex weekly usage limit hit", exitCode: 1 }),
+      );
+
+    const recorded = await extractRunLessons(runId, workingDir, []);
+
+    expect(recorded).toEqual([]);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+  });
+
   it("includes hardened worker-only extraction instructions and scope schema in prompts", async () => {
     const runId = "extract-run-prompt-contract";
     const workingDir = "/repo/project-prompts";

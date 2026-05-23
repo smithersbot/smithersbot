@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getCodexAskForApprovalPlacement } from "../goal/backend-availability.js";
+import {
+  detectBackendAvailability,
+  getCodexAskForApprovalPlacement,
+} from "../goal/backend-availability.js";
+import { runWithBackendFallback } from "../goal/phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import { CLAUDE_READ_ONLY_PROMPT } from "../goal/claude-code-constants.js";
 import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-mcp-isolation.js";
@@ -16,7 +20,7 @@ import {
 } from "../prompts/repo-chat/response-file-instruction.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
-import type { RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
+import type { RepoChatBackend, RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 import {
   isPathInsideAgentRoot,
   isPathInsidePrivateRoot,
@@ -444,9 +448,7 @@ async function runSandboxSafeRepair(params: {
   });
 }
 
-export async function runRepoChatWorker(
-  params: RepoChatWorkerParams,
-): Promise<RepoChatWorkerResult> {
+async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<RepoChatWorkerResult> {
   const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const responseFileId = crypto.randomUUID();
@@ -624,6 +626,40 @@ export async function runRepoChatWorker(
     cleanupResponseFile(manualResponseFilePath);
     cleanupResponseFile(lastMessageFilePath);
   }
+}
+
+/**
+ * Run repo-chat against the requested backend, falling back once to the other
+ * backend on a usage/rate limit when it is available on PATH. The fallback
+ * starts a fresh session (no cliSessionId) because sessions are backend-bound.
+ * Each backend is tried at most once, so there is no fallback loop.
+ */
+export async function runRepoChatWorker(
+  params: RepoChatWorkerParams,
+): Promise<RepoChatWorkerResult> {
+  const primary = params.backend;
+  const other: RepoChatBackend = primary === "claude_code" ? "codex" : "claude_code";
+  const otherAvailable =
+    detectBackendAvailability().find((entry) => entry.id === other)?.available === true;
+  const backends: RepoChatBackend[] = otherAvailable ? [primary, other] : [primary];
+
+  const outcome = await runWithBackendFallback<RepoChatWorkerResult>({
+    backends,
+    attempt: async (backend) => {
+      try {
+        const attemptParams: RepoChatWorkerParams =
+          backend === primary
+            ? params
+            : { ...params, backend: backend as RepoChatBackend, cliSessionId: undefined };
+        return { ok: true, value: await runRepoChatWorkerOnce(attemptParams) };
+      } catch (error) {
+        return { ok: false, errorText: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  });
+
+  if (outcome.status === "success") return outcome.value;
+  throw new Error(outcome.message);
 }
 
 export const REPO_CHAT_READ_ONLY_PROMPT = CLAUDE_READ_ONLY_PROMPT;

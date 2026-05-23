@@ -8,6 +8,11 @@ const runCliProcessMock = vi.fn();
 const getCodexAskForApprovalPlacementMock = vi.fn();
 const buildClaudeCodeEnvMock = vi.fn();
 const loggerWarnMock = vi.fn();
+const detectBackendAvailabilityMock = vi.fn(() => [
+  { id: "pi", available: true },
+  { id: "codex", available: true },
+  { id: "claude_code", available: true },
+]);
 
 vi.mock("../goal/cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
@@ -16,6 +21,7 @@ vi.mock("../goal/cli-process.js", () => ({
 vi.mock("../goal/backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: (...args: unknown[]) =>
     getCodexAskForApprovalPlacementMock(...args),
+  detectBackendAvailability: (...args: unknown[]) => detectBackendAvailabilityMock(...args),
 }));
 
 vi.mock("../goal/claude-code-env.js", async () => {
@@ -787,6 +793,136 @@ describe("repo-chat-worker", () => {
       expect(call.args.at(-1)).not.toContain("cat <<");
       expect(result.text).toBe("Final Claude answer from stdout");
       expect(result.cliSessionId).toBe("claude-json-session");
+    });
+
+    it("falls back to Claude Code when Codex hits a usage limit", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "stream error: You've hit your usage limit. Resets at 3pm.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 10,
+        })
+        .mockResolvedValueOnce({
+          stdout: [
+            JSON.stringify({
+              type: "assistant",
+              message: {
+                role: "assistant",
+                content: [{ type: "text", text: "Claude fallback answer" }],
+              },
+              session_id: "claude-fb",
+            }),
+            JSON.stringify({
+              type: "result",
+              subtype: "success",
+              result: "Claude fallback answer",
+              session_id: "claude-fb",
+            }),
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "codex",
+        prompt: "How does config load?",
+        workingDir: "/repo",
+      });
+
+      expect(result.backend).toBe("claude_code");
+      expect(result.text).toBe("Claude fallback answer");
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(runCliProcessMock.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+      expect(runCliProcessMock.mock.calls[1]?.[0]).toMatchObject({ command: "claude" });
+    });
+
+    it("falls back to Codex when Claude Code hits a usage limit", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "API 429: monthly usage limit reached. Resets at 3pm.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 10,
+        })
+        .mockResolvedValueOnce({
+          stdout: JSON.stringify({
+            type: "result",
+            is_error: false,
+            result: "Codex fallback answer",
+            thread_id: "codex-fb",
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "How does config load?",
+        workingDir: "/repo",
+      });
+
+      expect(result.backend).toBe("codex");
+      expect(result.text).toBe("Codex fallback answer");
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+      expect(runCliProcessMock.mock.calls[0]?.[0]).toMatchObject({ command: "claude" });
+      expect(runCliProcessMock.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+    });
+
+    it("throws one clear message when both backends are usage-limited", async () => {
+      runCliProcessMock
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "monthly usage limit reached. Resets at 3pm.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 10,
+        })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "weekly usage limit reached. Resets on Monday.",
+          timedOut: false,
+          exitCode: 1,
+          signal: null,
+          durationMs: 10,
+        });
+
+      await expect(
+        runRepoChatWorker({ backend: "codex", prompt: "q", workingDir: "/repo" }),
+      ).rejects.toThrow(/Codex hit a usage limit[\s\S]*Claude Code hit a usage limit/);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not fall back when the other backend is unavailable", async () => {
+      detectBackendAvailabilityMock.mockReturnValueOnce([
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "not on PATH" },
+      ]);
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "monthly usage limit reached.",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 10,
+      });
+
+      await expect(
+        runRepoChatWorker({ backend: "codex", prompt: "q", workingDir: "/repo" }),
+      ).rejects.toThrow(/usage limit/);
+      expect(runCliProcessMock).toHaveBeenCalledTimes(1);
     });
 
     it("regression: answers the launch-kit readiness prompt from Claude stdout without writing a response file", async () => {

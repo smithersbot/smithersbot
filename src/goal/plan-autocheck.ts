@@ -2,7 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
-import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import {
+  detectBackendAvailability,
+  getCodexAskForApprovalPlacement,
+} from "./backend-availability.js";
+import { runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
@@ -613,6 +617,73 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
+/**
+ * Run a fresh (no-session) reviewer attempt for the configured backend, falling
+ * back once to the other backend on a usage/rate limit when it is available on
+ * PATH. The fallback always starts fresh; if it is used, the returned sessionId
+ * is cleared so later rounds do not try to resume a session bound to a backend
+ * the caller is not tracking. Each backend is tried at most once.
+ */
+async function runFreshReviewerAttempt(params: {
+  backend: PlanAutocheckBackend;
+  prompt: string;
+  workingDir: string;
+  timeoutMs: number;
+  claudeCodeAuth: ClaudeCodeAuthMode;
+  model?: string;
+  roundDir: string;
+  attemptLabel: string;
+  onProgress?: (text: string) => void;
+}): Promise<ReviewerAttemptResult> {
+  const primary = params.backend;
+  const other: PlanAutocheckBackend = primary === "claude_code" ? "codex" : "claude_code";
+  const otherAvailable =
+    detectBackendAvailability().find((entry) => entry.id === other)?.available === true;
+  const backends: PlanAutocheckBackend[] = otherAvailable ? [primary, other] : [primary];
+
+  let lastError: unknown;
+  const outcome = await runWithBackendFallback<{
+    result: ReviewerAttemptResult;
+    usedBackend: PlanAutocheckBackend;
+  }>({
+    backends,
+    onProgress: params.onProgress,
+    attempt: async (backend) => {
+      const labelSuffix =
+        backend === primary ? params.attemptLabel : `${params.attemptLabel}.fallback-${backend}`;
+      try {
+        const result = await runReviewerAttempt({
+          backend,
+          prompt: params.prompt,
+          workingDir: params.workingDir,
+          timeoutMs: params.timeoutMs,
+          claudeCodeAuth: params.claudeCodeAuth,
+          model: params.model,
+          stdoutPath: path.join(params.roundDir, `${labelSuffix}.stdout.txt`),
+          stderrPath: path.join(params.roundDir, `${labelSuffix}.stderr.txt`),
+        });
+        return { ok: true, value: { result, usedBackend: backend } };
+      } catch (err) {
+        lastError = err;
+        return { ok: false, errorText: describeError(err) };
+      }
+    },
+  });
+
+  if (outcome.status === "success") {
+    const { result, usedBackend } = outcome.value;
+    // Clear the session id on cross-backend fallback so resume stays consistent.
+    return usedBackend === primary ? result : { ...result, sessionId: undefined };
+  }
+
+  // Preserve the original error type for non-usage failures; otherwise surface
+  // the consolidated usage-limit history.
+  if (outcome.usageLimitEvents.length > 0) {
+    throw new Error(outcome.message);
+  }
+  throw lastError ?? new Error("Plan autocheck reviewer attempt failed.");
+}
+
 function clampMaxRounds(value: number | undefined): number {
   if (value == null || Number.isNaN(value)) return DEFAULT_AUTOCHECK_MAX_ROUNDS;
   if (value <= 0) return 0;
@@ -698,15 +769,15 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           userEditInstructions: params.userEditInstructions,
         });
         try {
-          result = await runReviewerAttempt({
+          result = await runFreshReviewerAttempt({
             backend,
             prompt,
             workingDir: params.workingDir,
             timeoutMs,
             claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
             model: params.model,
-            stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
-            stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+            roundDir,
+            attemptLabel,
           });
         } catch (freshErr) {
           const freshFallbackFailure = describeError(freshErr);
@@ -738,15 +809,15 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         contextNotes,
         userEditInstructions: params.userEditInstructions,
       });
-      result = await runReviewerAttempt({
+      result = await runFreshReviewerAttempt({
         backend,
         prompt,
         workingDir: params.workingDir,
         timeoutMs,
         claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
         model: params.model,
-        stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
-        stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+        roundDir,
+        attemptLabel,
       });
     }
 

@@ -4,10 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   _resetClaudeBinaryCache,
+  classifyScoutError,
   renderScoutTemplate,
   resolveScoutDir,
   validateScoutOutput,
 } from "./scout.js";
+import { detectUsageLimitKind } from "./phase-fallback.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -375,5 +377,31 @@ describe("resolveClaudeBinary cache", () => {
     // Just verify reset doesn't throw — actual binary detection depends on env
     _resetClaudeBinaryCache();
     expect(true).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scout/planner error classification (drives the planner's claude->codex
+// usage-limit fallback, which is exercised end-to-end in cli-planner.test.ts).
+// ---------------------------------------------------------------------------
+
+describe("classifyScoutError + usage-limit detection", () => {
+  it("classifies an Anthropic usage-limit message as rate_limit and usage_limit", () => {
+    const text = "Planning execution failed: You've hit your usage limit · resets 6pm";
+    expect(classifyScoutError(text)).toBe("rate_limit");
+    expect(detectUsageLimitKind(text)).toBe("usage_limit");
+  });
+
+  it("classifies a bare 429 as rate_limit and a transient rate limit", () => {
+    const text = "HTTP 429 too many requests";
+    expect(classifyScoutError(text)).toBe("rate_limit");
+    expect(detectUsageLimitKind(text)).toBe("rate_limit");
+  });
+
+  it("classifies timeouts and unrelated errors away from usage limits", () => {
+    expect(classifyScoutError("planner timed out")).toBe("timeout");
+    expect(detectUsageLimitKind("planner timed out")).toBeUndefined();
+    expect(classifyScoutError("some other failure")).toBe("other");
+    expect(detectUsageLimitKind("some other failure")).toBeUndefined();
   });
 });

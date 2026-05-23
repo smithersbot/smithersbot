@@ -9,8 +9,10 @@ import {
 } from "./backend-availability.js";
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
+import { runWithBackendFallback, type PhaseAttempt } from "./phase-fallback.js";
 import { extractJson, PlanParseError } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
+import type { CliWorkerId } from "../config/types.goal.js";
 import type { GoalLlmClient, ManualTestSuggestion, PlanStep } from "./types.js";
 
 const DEFAULT_MIN_TESTS = 0;
@@ -216,28 +218,15 @@ function buildCodexManualTestsArgs(prompt: string): string[] {
   ];
 }
 
-async function generateManualTestsViaCli(userMessage: string, runDir?: string): Promise<string> {
-  const claudeBin = resolveClaudeBinary();
-  const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
-  const codexAvailable =
-    detectBackendAvailability().find((entry) => entry.id === "codex")?.available === true;
-  if (!claudeBin && !codexAvailable) {
-    throw new Error(NO_BACKEND_MANUAL_TESTS_ERROR);
-  }
-  const useCodex = !claudeBin && codexAvailable;
-
-  let artifacts: ManualTestsArtifactPaths | undefined;
-  if (runDir) {
-    try {
-      artifacts = ensureManualTestsArtifactDir(runDir);
-    } catch {
-      // Best-effort: continue without persisted artifacts if mkdir fails.
-      artifacts = undefined;
-    }
-  }
-  const artifactHint = artifacts
-    ? ` (stdout: ${artifacts.stdoutPath}, stderr: ${artifacts.stderrPath})`
-    : "";
+async function runManualTestsForBackend(params: {
+  backend: CliWorkerId;
+  claudeBin: string | null;
+  combinedPrompt: string;
+  artifacts?: ManualTestsArtifactPaths;
+  artifactHint: string;
+}): Promise<PhaseAttempt<string>> {
+  const { backend, claudeBin, combinedPrompt, artifacts, artifactHint } = params;
+  const useCodex = backend === "codex";
 
   const procResult = await runCliProcess({
     command: useCodex ? "codex" : claudeBin!,
@@ -261,9 +250,10 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
   };
 
   if (redactedProcResult.timedOut) {
-    throw new Error(
-      `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.${artifactHint}`,
-    );
+    return {
+      ok: false,
+      errorText: `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.${artifactHint}`,
+    };
   }
 
   if (
@@ -276,15 +266,55 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
       (redactedProcResult.signal
         ? `Manual test generation process terminated by ${redactedProcResult.signal}.`
         : "Manual test generation process failed.");
-    throw new Error(`Manual test generation failed: ${detail}${artifactHint}`);
+    return { ok: false, errorText: `Manual test generation failed: ${detail}${artifactHint}` };
   }
 
   try {
-    return redactSecretValues(extractAssistantTextFromCliResult(redactedProcResult.stdout));
+    return {
+      ok: true,
+      value: redactSecretValues(extractAssistantTextFromCliResult(redactedProcResult.stdout)),
+    };
   } catch (error) {
     const baseMessage = error instanceof Error ? error.message : String(error);
-    throw new Error(`${baseMessage}${artifactHint}`);
+    return { ok: false, errorText: `${baseMessage}${artifactHint}` };
   }
+}
+
+async function generateManualTestsViaCli(userMessage: string, runDir?: string): Promise<string> {
+  const claudeBin = resolveClaudeBinary();
+  const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
+  const codexAvailable =
+    detectBackendAvailability().find((entry) => entry.id === "codex")?.available === true;
+  if (!claudeBin && !codexAvailable) {
+    throw new Error(NO_BACKEND_MANUAL_TESTS_ERROR);
+  }
+
+  // Prefer Claude Code, then fall back to Codex once on a usage/rate limit.
+  const backends: CliWorkerId[] = [];
+  if (claudeBin) backends.push("claude_code");
+  if (codexAvailable) backends.push("codex");
+
+  let artifacts: ManualTestsArtifactPaths | undefined;
+  if (runDir) {
+    try {
+      artifacts = ensureManualTestsArtifactDir(runDir);
+    } catch {
+      // Best-effort: continue without persisted artifacts if mkdir fails.
+      artifacts = undefined;
+    }
+  }
+  const artifactHint = artifacts
+    ? ` (stdout: ${artifacts.stdoutPath}, stderr: ${artifacts.stderrPath})`
+    : "";
+
+  const outcome = await runWithBackendFallback<string>({
+    backends,
+    attempt: (backend) =>
+      runManualTestsForBackend({ backend, claudeBin, combinedPrompt, artifacts, artifactHint }),
+  });
+
+  if (outcome.status === "success") return outcome.value;
+  throw new Error(outcome.message);
 }
 
 export function clampCriticality(raw: unknown): number {

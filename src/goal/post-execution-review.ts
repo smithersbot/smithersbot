@@ -1,7 +1,8 @@
-import type { ClaudeCodeAuthMode } from "../config/types.goal.js";
+import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 import { buildPostExecutionReviewPrompt as buildPostExecutionReviewPromptFromPrompts } from "../prompts/post-execution-review/build-prompt.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { formatExecError } from "./build-gate.js";
+import { detectUsageLimitKind, runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   detectBackendAvailability,
@@ -386,29 +387,26 @@ async function runSingleReviewPass(params: {
   return decision.approved ? { status: "approved", issues } : { status: "rejected", issues };
 }
 
-export async function runPostExecutionReview(params: {
+type ReviewBackendSpec = { id: "claude_code"; command: string } | { id: "codex"; command: "codex" };
+
+export type RunPostExecutionReviewParams = {
   goal: string;
   steps: PlanStep[];
   diff: string;
   workingDir: string;
   claudeCodeAuth: ClaudeCodeAuthMode;
   abortSignal: AbortSignal;
-}): Promise<PostExecutionReviewResult> {
-  const claudeBinary = resolveClaudeBinary();
-  const availability = detectBackendAvailability();
-  const codexAvailable = availability.find((entry) => entry.id === "codex")?.available === true;
-  const backend:
-    | { id: "claude_code"; command: string }
-    | { id: "codex"; command: "codex" }
-    | undefined = claudeBinary
-    ? { id: "claude_code", command: claudeBinary }
-    : codexAvailable
-      ? { id: "codex", command: "codex" }
-      : undefined;
-  if (!backend) {
-    return { status: "error", reason: NO_WORKER_BACKEND_REASON };
-  }
+};
 
+/**
+ * Run the full (single-pass or chunked) review for one backend. On a usage/rate
+ * limit this surfaces an `error` result whose reason classifies as a usage
+ * limit, which `runPostExecutionReview` uses to drive a single-attempt fallback.
+ */
+async function runReviewForBackend(
+  params: RunPostExecutionReviewParams,
+  backend: ReviewBackendSpec,
+): Promise<PostExecutionReviewResult> {
   const bounded = buildBoundedDiffOrChunks(params.diff, POST_EXECUTION_REVIEW_DIFF_MAX_CHARS);
 
   if (bounded.kind === "single") {
@@ -482,4 +480,40 @@ export async function runPostExecutionReview(params: {
   return anyRejected
     ? { status: "rejected", issues: mergedIssues }
     : { status: "approved", issues: mergedIssues };
+}
+
+export async function runPostExecutionReview(
+  params: RunPostExecutionReviewParams,
+): Promise<PostExecutionReviewResult> {
+  const claudeBinary = resolveClaudeBinary();
+  const availability = detectBackendAvailability();
+  const codexAvailable = availability.find((entry) => entry.id === "codex")?.available === true;
+
+  const specs: ReviewBackendSpec[] = [];
+  if (claudeBinary) specs.push({ id: "claude_code", command: claudeBinary });
+  if (codexAvailable) specs.push({ id: "codex", command: "codex" });
+  if (specs.length === 0) {
+    return { status: "error", reason: NO_WORKER_BACKEND_REASON };
+  }
+
+  const specByBackend = new Map<CliWorkerId, ReviewBackendSpec>(
+    specs.map((spec) => [spec.id, spec]),
+  );
+
+  const outcome = await runWithBackendFallback<PostExecutionReviewResult>({
+    backends: specs.map((spec) => spec.id),
+    attempt: async (backend) => {
+      const spec = specByBackend.get(backend)!;
+      const review = await runReviewForBackend(params, spec);
+      // Only a usage/rate limit triggers cross-backend fallback; any other
+      // error (e.g. "Prompt is too long") is terminal for this phase.
+      if (review.status === "error" && detectUsageLimitKind(review.reason)) {
+        return { ok: false, errorText: review.reason };
+      }
+      return { ok: true, value: review };
+    },
+  });
+
+  if (outcome.status === "success") return outcome.value;
+  return { status: "error", reason: outcome.message };
 }

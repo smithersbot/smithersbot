@@ -22,9 +22,11 @@ import {
   parseJsonLines,
 } from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
+import { runWithBackendFallback } from "./phase-fallback.js";
 import { extractJson } from "./planner.js";
 import { loadRun } from "./run-store.js";
 import { resolveClaudeBinary } from "./scout.js";
+import type { CliWorkerId } from "../config/types.goal.js";
 import type { SerializedRun } from "./types.js";
 
 const LESSONS_FILENAME = "goal-lessons.json";
@@ -538,31 +540,32 @@ export async function extractRunLessons(
       correctionSummary: correction.summary,
     });
 
-    let candidates: LessonCandidate[] | undefined;
+    // Prefer Claude Code, then fall back to Codex. Lesson extraction is
+    // fail-open (returns [] when both backends are exhausted), so the
+    // usage-limit history is classified for diagnostics but never surfaced as a
+    // blocker. Each backend is tried at most once.
     const claudeBinary = resolveClaudeBinary();
-    if (claudeBinary) {
-      try {
-        candidates = await runClaudeLessonExtraction({
-          claudeBinary,
-          workingDir,
-          prompt,
-        });
-      } catch {
-        candidates = undefined;
-      }
-    }
+    const backends: CliWorkerId[] = [];
+    if (claudeBinary) backends.push("claude_code");
+    backends.push("codex");
 
-    if (!candidates) {
-      try {
-        candidates = await runCodexLessonExtraction({
-          workingDir,
-          prompt,
-        });
-      } catch {
-        return [];
-      }
-    }
+    const outcome = await runWithBackendFallback<LessonCandidate[]>({
+      backends,
+      fallbackOnAnyError: true,
+      attempt: async (backend) => {
+        try {
+          const result =
+            backend === "claude_code"
+              ? await runClaudeLessonExtraction({ claudeBinary: claudeBinary!, workingDir, prompt })
+              : await runCodexLessonExtraction({ workingDir, prompt });
+          return { ok: true, value: result };
+        } catch (error) {
+          return { ok: false, errorText: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    });
 
+    const candidates = outcome.status === "success" ? outcome.value : [];
     if (candidates.length === 0) return [];
 
     const recorded: Lesson[] = [];

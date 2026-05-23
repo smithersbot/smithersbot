@@ -562,6 +562,79 @@ describe("runPostExecutionReview", () => {
     // Should NOT have called the third chunk.
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
   });
+
+  it("falls back to Codex when Claude Code hits a usage limit", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        createCliResult({
+          stdout: "",
+          stderr: "API 429: You've hit your org's monthly usage limit. Resets at 3pm.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createCliResult({ stdout: createDecisionStdout({ approved: true, issues: [] }) }),
+      );
+
+    const result = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(result).toEqual({ status: "approved", issues: [] });
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    const first = mockRunCliProcess.mock.calls[0]?.[0] as { command: string };
+    const second = mockRunCliProcess.mock.calls[1]?.[0] as { command: string };
+    expect(first.command).toBe("/usr/local/bin/claude");
+    expect(second.command).toBe("codex");
+  });
+
+  it("returns one clear error with reset times when both backends are usage-limited", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        createCliResult({
+          stdout: "",
+          stderr: "API 429: monthly usage limit reached. Resets at 3pm.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        createCliResult({
+          stdout: "",
+          stderr: "Codex usage limit hit (weekly). Resets on Monday.",
+          exitCode: 1,
+        }),
+      );
+
+    const result = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected error");
+    expect(result.reason).toContain("Claude Code hit a usage limit");
+    expect(result.reason).toContain("Codex hit a usage limit");
+    expect(result.reason).toContain("All compatible backends are exhausted");
+    expect(result.reason).toContain("Reset times:");
+    // Each backend tried at most once.
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back for a non-usage error", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(
+      createCliResult({ stdout: "", stderr: "boom: unexpected crash", exitCode: 1 }),
+    );
+
+    const result = await runPostExecutionReview({
+      ...baseParams(),
+      diff: "diff --git a/foo b/foo\n-foo\n+bar\n",
+    });
+
+    expect(result.status).toBe("error");
+    // Only the primary (claude) backend is attempted; no usage-limit fallback.
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("buildPostExecutionReviewPrompt", () => {

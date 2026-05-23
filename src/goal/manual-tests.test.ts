@@ -409,6 +409,87 @@ describe("generateManualTests", () => {
     expect(call.stdin).toContain("Goal: Improve authentication reliability");
   });
 
+  it("falls back to Codex when Claude Code hits a usage limit", async () => {
+    runCliProcessMock
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "API 429: You've hit your org's monthly usage limit. Resets at 3pm.",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 10,
+      })
+      .mockResolvedValueOnce({
+        stdout: makeCliResultOutput(
+          JSON.stringify({
+            tests: [{ description: "Verify fallback path", criticality: 5, detail: "Do X" }],
+          }),
+        ),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      });
+
+    const tests = await withNonTestEnv(() =>
+      generateManualTests({ goal: "Improve reliability", steps: makeDoneSteps() }),
+    );
+
+    expect(tests).toHaveLength(1);
+    expect(tests[0]?.description).toBe("Verify fallback path");
+    expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+    const first = runCliProcessMock.mock.calls[0]?.[0] as { command: string };
+    const second = runCliProcessMock.mock.calls[1]?.[0] as { command: string };
+    expect(first.command).toBe("/usr/bin/claude");
+    expect(second.command).toBe("codex");
+  });
+
+  it("throws one clear message when both backends are usage-limited", async () => {
+    runCliProcessMock
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "API 429: monthly usage limit reached. Resets at 3pm.",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 10,
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Codex weekly usage limit hit. Resets on Monday.",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 10,
+      });
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({ goal: "Improve reliability", steps: makeDoneSteps() }),
+      ),
+    ).rejects.toThrow(/Claude Code hit a usage limit[\s\S]*Codex hit a usage limit/);
+    expect(runCliProcessMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back to Codex for a non-usage Claude failure", async () => {
+    runCliProcessMock.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "boom: claude crashed",
+      timedOut: false,
+      exitCode: 1,
+      signal: null,
+      durationMs: 10,
+    });
+
+    await expect(
+      withNonTestEnv(() =>
+        generateManualTests({ goal: "Improve reliability", steps: makeDoneSteps() }),
+      ),
+    ).rejects.toThrow(/boom: claude crashed/);
+    expect(runCliProcessMock).toHaveBeenCalledTimes(1);
+  });
+
   it("strips poisoned Claude subscription auth env from manual-test subprocesses", async () => {
     const { buildClaudeCodeEnv: realBuildClaudeCodeEnv } =
       await vi.importActual<typeof import("./claude-code-env.js")>("./claude-code-env.js");

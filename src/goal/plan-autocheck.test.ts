@@ -26,8 +26,16 @@ vi.mock("./scout.js", async (importOriginal) => {
 });
 
 const mockGetCodexAskForApprovalPlacement = vi.hoisted(() => vi.fn());
+const mockDetectBackendAvailability = vi.hoisted(() =>
+  vi.fn(() => [
+    { id: "pi", available: true },
+    { id: "codex", available: true },
+    { id: "claude_code", available: true },
+  ]),
+);
 vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
+  detectBackendAvailability: () => mockDetectBackendAvailability(),
 }));
 
 const FORBIDDEN_AGENT_ENV_KEYS = [
@@ -500,6 +508,92 @@ describe("runPlanAutocheck", () => {
     ).rejects.toThrow(/Plan autocheck worker failed: boom/);
 
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Codex when the Claude reviewer hits a usage limit", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "API 429: monthly usage limit reached. Resets at 3pm.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: `${JSON.stringify({ type: "result", result: JSON.stringify({ approved: true }) })}\n`,
+        }),
+      );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Usage limit fallback"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-usage-fallback"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+  });
+
+  it("falls back to Claude when the Codex reviewer hits a usage limit", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "Codex weekly usage limit hit. Resets on Monday.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }));
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Usage limit fallback codex"),
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-codex-usage-fallback"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+  });
+
+  it("throws one clear message when both reviewer backends are usage-limited", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "monthly usage limit reached. Resets at 3pm.",
+          exitCode: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "weekly usage limit reached. Resets on Monday.",
+          exitCode: 1,
+        }),
+      );
+
+    await expect(
+      runPlanAutocheck({
+        plan: makePlan("Both exhausted"),
+        goalText: "Ship feature",
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-both-usage-exhausted"),
+        commitRevision: vi.fn(),
+      }),
+    ).rejects.toThrow(/Claude Code hit a usage limit[\s\S]*Codex hit a usage limit/);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
   });
 
   it("uses workingDir as reviewer cwd so the checker can inspect repo files", async () => {
