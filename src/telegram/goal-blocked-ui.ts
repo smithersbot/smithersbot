@@ -1,6 +1,10 @@
 import type { GoalBackendId } from "../goal/backend-types.js";
 import { splitAttemptHistory } from "../goal/blocked.js";
-import { classifyUsageLimit, type UsageLimitBackend } from "../goal/error-patterns.js";
+import {
+  classifyUsageLimit,
+  isUsageLimitClassReason,
+  type UsageLimitBackend,
+} from "../goal/error-patterns.js";
 import type { PlanStep } from "../goal/types.js";
 import { describeUsageLimitEvent, type UsageLimitEvent } from "../goal/usage-limit-message.js";
 import { buildInlineKeyboard } from "./send.js";
@@ -61,7 +65,9 @@ function describeUsageLimitBlocked(step: PlanStep): string {
   const classification = classifyUsageLimit({ backend, text });
   const event: UsageLimitEvent = {
     backend,
-    kind: step.blockedReason === "usage_limit" ? "usage_limit" : "rate_limit",
+    // A transient rate limit reads as "rate limit"; a quota/credit exhaustion
+    // (usage_limit or out_of_credits) reads as "usage limit".
+    kind: step.blockedReason === "rate_limit" ? "rate_limit" : "usage_limit",
     limitType: classification.limitType,
     ...(classification.resetHint ? { resetHint: classification.resetHint } : {}),
   };
@@ -69,8 +75,9 @@ function describeUsageLimitBlocked(step: PlanStep): string {
 }
 
 export function describeBlockedStep(step: PlanStep): string {
-  // Usage/rate limits get backend + reset-time attribution from the classifier.
-  if (step.blockedReason === "usage_limit" || step.blockedReason === "rate_limit") {
+  // Usage/rate limits — including out-of-credits — get backend + reset-time
+  // attribution from the classifier and never read as "needs input".
+  if (isUsageLimitClassReason(step.blockedReason)) {
     return describeUsageLimitBlocked(step);
   }
 
@@ -93,8 +100,6 @@ export function describeBlockedStep(step: PlanStep): string {
       return "worker hit a network error; resume needed";
     case "auth":
       return "worker authentication failed";
-    case "out_of_credits":
-      return "worker is out of credits";
     case "task_failed":
       return message || "worker failed";
     case "error":

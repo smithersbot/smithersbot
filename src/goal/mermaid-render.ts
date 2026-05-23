@@ -26,6 +26,7 @@ const CLASS_DEFS = [
   `classDef waiting fill:#4C1D95,stroke:#FCD34D,stroke-width:3px,color:#FFF,rx:4,ry:4;`,
   `classDef done fill:#3F4F3A,stroke:#84CC16,stroke-width:3px,color:#ECFCCB,rx:4,ry:4;`,
   `classDef blocked fill:#450a0a,stroke:#EF4444,stroke-width:4px,color:#FECACA,stroke-dasharray: 8 4,rx:4,ry:4;`,
+  `classDef usagelimited fill:#713F12,stroke:#FBBF24,stroke-width:4px,color:#FEF9C3,stroke-dasharray: 8 4,rx:4,ry:4;`,
   `classDef inprog fill:#C2410C,stroke:#F97316,color:#FFF,stroke-width:2px,rx:4,ry:4;`,
 ].join("\n");
 
@@ -35,6 +36,7 @@ const LINK_STYLE_DEFAULT = `linkStyle default stroke:#718096,stroke-width:2px,fi
 const STATUS_CLASS: Record<ExecutionDisplayStatus, string> = {
   done: "done",
   blocked: "blocked",
+  usage_limited: "usagelimited",
   in_progress: "inprog",
   soft_blocked: "waiting",
   pending: "pending",
@@ -43,6 +45,7 @@ const STATUS_CLASS: Record<ExecutionDisplayStatus, string> = {
 const STATUS_EMOJI: Record<ExecutionDisplayStatus, string> = {
   done: "✅",
   blocked: "⛔",
+  usage_limited: "🪫",
   in_progress: "🛠",
   soft_blocked: "⏳",
   pending: "",

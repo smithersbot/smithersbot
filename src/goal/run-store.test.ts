@@ -757,10 +757,13 @@ describe("run-store resume visual state (load → display)", () => {
     const loaded = loadRun("cascade-blocked", tmpDir);
     expect(loaded?.state).toBe("blocked");
     const display = computeDisplayStatuses(loaded!.plan!.steps);
-    // None of these are hard blockers — resume will re-run all of them.
+    // None are hard (user-input) blockers. The error-blocked steps (1, 2) are
+    // re-run on resume so they render pending. Step 3 is a real backend
+    // usage-limit blocker: visibly usage_limited (never hidden as pending), yet
+    // still retryable on resume once a compatible backend is available.
     expect(display.get("1")).toBe("pending");
     expect(display.get("2")).toBe("pending");
-    expect(display.get("3")).toBe("pending");
+    expect(display.get("3")).toBe("usage_limited");
   });
 
   it("legacy failed/skipped steps load as retryable and render runnable, not stale blocked", () => {

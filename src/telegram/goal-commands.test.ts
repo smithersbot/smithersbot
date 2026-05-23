@@ -293,6 +293,25 @@ describe("goal-commands telegram adapter", () => {
     expect(rendered).not.toContain("needs input");
   });
 
+  it("renders out-of-credits as a backend usage limit (usage-limited), not 'needs input'", () => {
+    const step = {
+      id: "build",
+      description: "Build feature",
+      shortSummary: "Build feature",
+      dependsOn: [],
+      status: "blocked",
+      blockedReason: "out_of_credits",
+      executedBackend: "codex",
+      blockedQuestion: "Quota exceeded. resets at 5pm.",
+    } as const;
+
+    const rendered = describeBlockedStep(step);
+    expect(rendered).toContain("Codex");
+    expect(rendered).toContain("usage limit");
+    expect(rendered).toContain("resets at 5pm");
+    expect(rendered).not.toContain("needs input");
+  });
+
   it("classifies the limit window for usage-limit blockers", () => {
     const step = {
       id: "build",
@@ -1560,6 +1579,46 @@ describe("goal-commands telegram adapter", () => {
       const buttonTexts =
         options.reply_markup?.inline_keyboard?.flat().map((button) => button.text) ?? [];
       expect(buttonTexts).not.toContain("▶️ Resume Goal");
+    });
+
+    it("sends step_blocked update for a usage-limit block as interrupted, never 'needs input'", async () => {
+      saveRunFixture(makeRun());
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 40 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 41 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "step_blocked",
+        stepId: "1",
+        question: "Codex hit a usage limit. resets at 5pm.",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "blocked",
+            blockedReason: "out_of_credits",
+            executedBackend: "codex",
+            blockedQuestion: "Quota exceeded. resets at 5pm.",
+          },
+        ],
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
+      // A backend usage limit is a resume-needed interruption, NOT a user-input block.
+      expect(options.caption).toContain("<b>TASK INTERRUPTED</b> (test-run): Step 1 needs resume");
+      expect(options.caption).not.toContain("needs input");
+      expect(options.caption).toContain("Codex");
+      expect(options.caption).toContain("resets at 5pm");
     });
 
     it("sends fully_blocked updates with bold caption and add-details+resume+stop keyboard", async () => {

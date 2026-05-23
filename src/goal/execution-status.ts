@@ -1,3 +1,4 @@
+import { isUsageLimitClassReason } from "./error-patterns.js";
 import type { PlanStep } from "./types.js";
 
 export type ExecutionDisplayStatus =
@@ -5,6 +6,7 @@ export type ExecutionDisplayStatus =
   | "in_progress"
   | "done"
   | "blocked"
+  | "usage_limited"
   | "soft_blocked";
 
 /**
@@ -30,11 +32,22 @@ export function isRetryableBlocked(step: PlanStep): boolean {
  * True only for a *hard* block: the goal genuinely cannot proceed without the
  * user (blocked for input) or there is no actionable reason to auto-retry.
  *
- * Hard blocks are the only ones that render as `blocked` and the only ones that
- * propagate the waiting (`soft_blocked`) state to dependents.
+ * Hard blocks render as `blocked` and propagate the waiting (`soft_blocked`)
+ * state to dependents.
  */
 export function isHardBlocked(step: PlanStep): boolean {
   return step.status === "blocked" && !isRetryableBlocked(step);
+}
+
+/**
+ * True for a backend usage-limit block (out_of_credits / usage_limit /
+ * rate_limit). These stay retryable on resume (see {@link isRetryableBlocked})
+ * so the scheduler re-runs them on a compatible available backend, but they get
+ * a distinct `usage_limited` display state — visibly blocked rather than plain
+ * pending — and, like hard blocks, hold up their dependents until they clear.
+ */
+export function isUsageLimitedBlocked(step: PlanStep): boolean {
+  return step.status === "blocked" && isUsageLimitClassReason(step.blockedReason);
 }
 
 /**
@@ -42,22 +55,29 @@ export function isHardBlocked(step: PlanStep): boolean {
  *
  * Visual state is recomputed from the actual run state plus dependencies so it
  * matches what the scheduler will do on resume:
- *  - Only *hard* blocks (user input / no actionable reason) render `blocked`.
- *  - Retryable (technical) blocks — error, timeout, turn/usage limits, process
- *    loss, out-of-credits, etc. — are treated like pending steps because resume
- *    re-runs them; they no longer show as stale `blocked`.
- *  - `soft_blocked` propagates only from hard `blocked` deps (not from
- *    `in_progress` or retryable blocks). A pending step waiting on an
- *    in_progress or retryable-blocked dep remains `pending`.
+ *  - *Hard* blocks (user input / no actionable reason) render `blocked`.
+ *  - Backend usage-limit blocks (out_of_credits / usage_limit / rate_limit)
+ *    render `usage_limited` — visibly blocked, never plain pending — so a real
+ *    out-of-credits blocker is never disguised as runnable.
+ *  - Other retryable (technical) blocks — error, timeout, turn limit, process
+ *    loss, network, etc. — are treated like pending steps because resume re-runs
+ *    them; they no longer show as stale `blocked`.
+ *  - `soft_blocked` propagates from hard `blocked` AND `usage_limited` deps (not
+ *    from `in_progress` or other retryable blocks). An INDEPENDENT pending step
+ *    stays `pending` even when a sibling is usage-limited; only a step waiting on
+ *    a blocking dep becomes `soft_blocked`.
  */
 export function computeDisplayStatuses(steps: PlanStep[]): Map<string, ExecutionDisplayStatus> {
   const result = new Map<string, ExecutionDisplayStatus>();
   const stepMap = new Map(steps.map((s) => [s.id, s]));
-  // Only hard blocks keep dependents waiting; retryable blocks are re-run on
-  // resume, so they must not cascade a stale "blocked"/"waiting" visual state.
-  const hardBlockedIds = new Set(steps.filter(isHardBlocked).map((s) => s.id));
+  // Hard blocks and usage-limit blocks keep dependents waiting; other retryable
+  // blocks are re-run on resume, so they must not cascade a stale "waiting"
+  // visual state. Independent runnable steps are unaffected by either.
+  const blockingIds = new Set(
+    steps.filter((s) => isHardBlocked(s) || isUsageLimitedBlocked(s)).map((s) => s.id),
+  );
 
-  // Memoized check: does this step have a transitive hard-blocked dep?
+  // Memoized check: does this step have a transitive blocking dep?
   const softBlockedCache = new Map<string, boolean>();
   function hasTransitiveBlockedDep(stepId: string, visited: Set<string>): boolean {
     if (softBlockedCache.has(stepId)) return softBlockedCache.get(stepId)!;
@@ -68,7 +88,7 @@ export function computeDisplayStatuses(steps: PlanStep[]): Map<string, Execution
     if (!step) return false;
 
     for (const depId of step.dependsOn) {
-      if (hardBlockedIds.has(depId)) {
+      if (blockingIds.has(depId)) {
         softBlockedCache.set(stepId, true);
         return true;
       }
@@ -83,7 +103,11 @@ export function computeDisplayStatuses(steps: PlanStep[]): Map<string, Execution
   }
 
   for (const step of steps) {
-    if (isHardBlocked(step)) {
+    if (isUsageLimitedBlocked(step)) {
+      // A backend usage limit is a real, visible blocker (not pending) but stays
+      // retryable on resume once a compatible backend is available again.
+      result.set(step.id, "usage_limited");
+    } else if (isHardBlocked(step)) {
       result.set(step.id, "blocked");
     } else if (step.status === "done") {
       result.set(step.id, "done");
@@ -91,8 +115,8 @@ export function computeDisplayStatuses(steps: PlanStep[]): Map<string, Execution
       result.set(step.id, "in_progress");
     } else {
       // pending OR a retryable (technical) block — both will run on resume once
-      // dependencies are satisfied. Render as waiting only when a real
-      // hard-blocked dependency is upstream; otherwise pending/runnable.
+      // dependencies are satisfied. Render as waiting only when a real blocking
+      // dependency is upstream; otherwise pending/runnable.
       if (hasTransitiveBlockedDep(step.id, new Set())) {
         result.set(step.id, "soft_blocked");
       } else {

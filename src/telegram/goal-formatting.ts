@@ -486,10 +486,17 @@ export function buildOnStatusChange(params: {
     };
 
     if (event.type === "step_blocked") {
+      // Only a genuine user-input block routes the reply back into the task
+      // (task:<id>:input → "needs input"). Backend usage-limit and other
+      // technical blocks are auto-retryable, so they use resume_execution and
+      // never render as "needs input".
+      const blockedStep = event.steps.find((s) => s.id === event.stepId);
+      const reason = blockedStep?.blockedReason;
+      const isUserInputBlock = reason === "user_input" || reason === undefined;
       const blockedDetail = {
         blockedAt: "execution",
         prompt: event.question,
-        requiredInputKey: `task:${event.stepId}:input`,
+        requiredInputKey: isUserInputBlock ? `task:${event.stepId}:input` : "resume_execution",
         stepId: event.stepId,
       } as const;
       try {

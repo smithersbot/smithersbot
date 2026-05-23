@@ -624,6 +624,15 @@ describe("renderMermaid", () => {
       expect(out).toContain("class C waiting;");
     });
 
+    it("usage_limited maps to 🪫 emoji and a distinct usagelimited class", () => {
+      const statuses = new Map<string, ExecutionDisplayStatus>([["C", "usage_limited"]]);
+      const out = renderMermaid(statusPlan, undefined, statuses);
+      // Distinct emoji + class — not the plain pending node, not the red blocked node.
+      expect(out).toContain("🪫 3.");
+      expect(out).toContain("class C usagelimited;");
+      expect(out).toContain("classDef usagelimited fill:#713F12");
+    });
+
     it("pending status has no emoji prefix", () => {
       const statuses = new Map<string, ExecutionDisplayStatus>([["C", "pending"]]);
       const out = renderMermaid(statusPlan, undefined, statuses);

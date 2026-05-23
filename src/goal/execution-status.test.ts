@@ -5,6 +5,7 @@ import {
   isFullyBlocked,
   isHardBlocked,
   isRetryableBlocked,
+  isUsageLimitedBlocked,
 } from "./execution-status.js";
 import type { PlanStep } from "./types.js";
 
@@ -118,21 +119,34 @@ describe("computeDisplayStatuses — resume visual state", () => {
     expect(m.get("C")).toBe("pending");
   });
 
-  it("cascade-blocked downstream steps (same technical reason) are not stale blocked", () => {
-    // Mirrors the fatal-error cascade in agent-executor.ts where every pending
-    // step is marked blocked with the same reason.
+  it("cascade-blocked downstream steps (usage-limit reason) render usage_limited", () => {
+    // Mirrors the cascade in agent-executor.ts where every pending step is
+    // marked blocked with the same usage-limit reason. These are real, visible
+    // backend limits — not plain pending — but stay retryable on resume.
     const steps = [
       step({ id: "A", status: "blocked", blockedReason: "out_of_credits", blockedQuestion: "q" }),
       step({ id: "B", status: "blocked", blockedReason: "out_of_credits", dependsOn: ["A"] }),
+    ];
+    const m = computeDisplayStatuses(steps);
+    expect(m.get("A")).toBe("usage_limited");
+    expect(m.get("B")).toBe("usage_limited");
+  });
+
+  it("retryable technical block still renders pending during resume (not usage_limited)", () => {
+    // error/timeout/etc. are re-run on resume and must render as runnable.
+    const steps = [
+      step({ id: "A", status: "blocked", blockedReason: "error", blockedQuestion: "boom" }),
+      step({ id: "B", status: "blocked", blockedReason: "timeout" }),
     ];
     const m = computeDisplayStatuses(steps);
     expect(m.get("A")).toBe("pending");
     expect(m.get("B")).toBe("pending");
   });
 
-  it("independent steps are not visually blocked after an unrelated step resumes", () => {
-    // A is a real user-input blocker; B is independent and was cascade-blocked
-    // for a technical reason. B must not look blocked just because A is.
+  it("independent runnable sibling stays pending while a usage_limited sibling is blocked", () => {
+    // A is a real user-input blocker; B is independent and usage-limit blocked;
+    // C is independent and runnable. B is visibly usage_limited, but C (and the
+    // scheduler) must not be held back just because a sibling is exhausted.
     const steps = [
       step({ id: "A", status: "blocked", blockedReason: "user_input", blockedQuestion: "q" }),
       step({ id: "B", status: "blocked", blockedReason: "usage_limit" }),
@@ -140,8 +154,36 @@ describe("computeDisplayStatuses — resume visual state", () => {
     ];
     const m = computeDisplayStatuses(steps);
     expect(m.get("A")).toBe("blocked");
-    expect(m.get("B")).toBe("pending");
+    expect(m.get("B")).toBe("usage_limited");
     expect(m.get("C")).toBe("pending");
+  });
+
+  it("each usage-limit reason renders usage_limited", () => {
+    for (const reason of ["usage_limit", "rate_limit", "out_of_credits"] as const) {
+      const steps = [step({ id: reason, status: "blocked", blockedReason: reason })];
+      const m = computeDisplayStatuses(steps);
+      expect(m.get(reason)).toBe("usage_limited");
+    }
+  });
+
+  it("usage_limited dep propagates waiting (soft_blocked) to its dependent", () => {
+    const steps = [
+      step({ id: "A", status: "blocked", blockedReason: "usage_limit" }),
+      step({ id: "B", status: "pending", dependsOn: ["A"] }),
+    ];
+    const m = computeDisplayStatuses(steps);
+    expect(m.get("A")).toBe("usage_limited");
+    expect(m.get("B")).toBe("soft_blocked");
+  });
+
+  it("graph state matches scheduler: usage_limited stays retryable on resume", () => {
+    // The display distinguishes usage_limited, but the scheduler must still
+    // treat it as a retryable block (re-run on a compatible available backend).
+    const s = step({ id: "A", status: "blocked", blockedReason: "out_of_credits" });
+    expect(isUsageLimitedBlocked(s)).toBe(true);
+    expect(isRetryableBlocked(s)).toBe(true);
+    expect(isHardBlocked(s)).toBe(false);
+    expect(computeDisplayStatuses([s]).get("A")).toBe("usage_limited");
   });
 
   it("final step shows waiting (not blocked) when waiting on a true hard blocker", () => {
@@ -223,6 +265,31 @@ describe("isHardBlocked / isRetryableBlocked", () => {
     expect(isHardBlocked(step({ id: "A", status: "pending" }))).toBe(false);
     expect(isRetryableBlocked(step({ id: "A", status: "in_progress" }))).toBe(false);
     expect(isHardBlocked(step({ id: "A", status: "done" }))).toBe(false);
+  });
+});
+
+describe("isUsageLimitedBlocked", () => {
+  it("is true only for usage-limit-class blocked steps", () => {
+    for (const reason of ["usage_limit", "rate_limit", "out_of_credits"] as const) {
+      expect(
+        isUsageLimitedBlocked(step({ id: reason, status: "blocked", blockedReason: reason })),
+      ).toBe(true);
+    }
+  });
+
+  it("is false for non-usage-limit reasons and non-blocked steps", () => {
+    for (const reason of ["user_input", "error", "timeout", "process_lost", "auth"] as const) {
+      expect(
+        isUsageLimitedBlocked(step({ id: reason, status: "blocked", blockedReason: reason })),
+      ).toBe(false);
+    }
+    expect(isUsageLimitedBlocked(step({ id: "p", status: "pending" }))).toBe(false);
+    // A non-blocked step with a usage-limit reason set is not "usage limited".
+    expect(
+      isUsageLimitedBlocked(
+        step({ id: "ip", status: "in_progress", blockedReason: "usage_limit" }),
+      ),
+    ).toBe(false);
   });
 });
 
