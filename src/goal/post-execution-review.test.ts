@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RunCliProcessResult } from "./cli-process.js";
 
@@ -71,6 +74,8 @@ import {
   runPostExecutionReview,
   splitDiffByFile,
 } from "./post-execution-review.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import type { PlanStep } from "./types.js";
 
 function createPlanStep(overrides: Partial<PlanStep> = {}): PlanStep {
@@ -259,7 +264,11 @@ describe("describeApiErrorEnvelope", () => {
 });
 
 describe("runPostExecutionReview", () => {
+  let managedRoot: string;
+  let previousManagedRoot: string | undefined;
+
   const baseParams = () => ({
+    runId: "review-run-1",
     goal: "Refactor module",
     steps: [
       {
@@ -280,6 +289,9 @@ describe("runPostExecutionReview", () => {
     mockResolveClaudeBinary.mockReset();
     mockDetectBackendAvailability.mockReset();
     mockResolveClaudeBinary.mockReturnValue("/usr/local/bin/claude");
+    previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "post-review-managed-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     mockDetectBackendAvailability.mockReturnValue([
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -287,9 +299,37 @@ describe("runPostExecutionReview", () => {
     ]);
   });
 
+  afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+  });
+
+  function readReviewHistoryEvents(runId = "review-run-1"): Array<Record<string, unknown>> {
+    const eventsPath = resolveAgentHistoryEventsPath({
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir("/tmp/repo"),
+      goalId: runId,
+    });
+    return fs
+      .readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
   it("returns approved unchanged for a small single-pass diff", async () => {
     mockRunCliProcess.mockResolvedValue(
-      createCliResult({ stdout: createDecisionStdout({ approved: true, issues: [] }) }),
+      createCliResult({
+        stdout: [
+          createDecisionStdout({ approved: true, issues: [] }),
+          JSON.stringify({
+            type: "token_count",
+            usage: { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 2 },
+          }),
+        ].join("\n"),
+      }),
     );
 
     const result = await runPostExecutionReview({
@@ -299,6 +339,28 @@ describe("runPostExecutionReview", () => {
 
     expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: "approved", issues: [] });
+    const events = readReviewHistoryEvents();
+    expect(events[0]).toMatchObject({
+      event: "launch",
+      phase: "post-execution-review",
+      backend: "claude_code",
+      runId: "review-run-1",
+      status: "started",
+    });
+    expect(events[0]?.promptArtifactPath).toEqual(expect.any(String));
+    expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
+      "Refactor module",
+    );
+    expect(events[1]).toMatchObject({
+      event: "result",
+      status: "approved",
+      tokenUsage: {
+        available: true,
+        inputTokens: 12,
+        outputTokens: 3,
+        cacheReadTokens: 2,
+      },
+    });
   });
 
   it("returns rejected with issues unchanged for a small single-pass diff", async () => {
@@ -339,6 +401,15 @@ describe("runPostExecutionReview", () => {
       if (result.status !== "rejected") throw new Error("expected rejected");
       expect(result.issues[0]).toContain("[REDACTED]");
       expect(result.issues[0]).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      const historyText = fs.readFileSync(
+        resolveAgentHistoryEventsPath({
+          kind: "goal",
+          workspaceName: workspaceNameFromWorkingDir("/tmp/repo"),
+          goalId: "review-run-1",
+        }),
+        "utf8",
+      );
+      expect(historyText).not.toContain("FAKE_TELEGRAM_SECRET_123");
     } finally {
       if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = previousToken;
@@ -587,6 +658,11 @@ describe("runPostExecutionReview", () => {
     const second = mockRunCliProcess.mock.calls[1]?.[0] as { command: string };
     expect(first.command).toBe("/usr/local/bin/claude");
     expect(second.command).toBe("codex");
+    const events = readReviewHistoryEvents();
+    expect(events.map((event) => event.event)).toContain("fallback");
+    expect(
+      events.filter((event) => event.event === "launch").map((event) => event.backend),
+    ).toEqual(["claude_code", "codex"]);
   });
 
   it("returns one clear error with reset times when both backends are usage-limited", async () => {

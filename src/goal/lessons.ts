@@ -7,6 +7,13 @@ import {
   buildLessonExtractionPrompt,
 } from "../prompts/lessons/extraction-prompt.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
@@ -67,6 +74,11 @@ type LessonCandidate = {
 type ParsedLessonCandidates = {
   parsed: boolean;
   lessons: LessonCandidate[];
+};
+
+type LessonExtractionResult = {
+  lessons: LessonCandidate[];
+  tokenUsage: AgentBackendUsage;
 };
 
 function resolveLessonsPath(stateDir: string = resolveStateDir()): string {
@@ -334,72 +346,251 @@ function buildCodexExtractionArgs(params: { workingDir: string; prompt: string }
   return args;
 }
 
+function appendLessonHistory(params: {
+  runId: string;
+  workingDir: string;
+  backend: CliWorkerId;
+  event: string;
+  status?: string;
+  attemptNumber?: number;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  promptArtifactPath?: string;
+}): void {
+  appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: "lessons",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      status: params.status,
+      attemptNumber: params.attemptNumber,
+      tokenUsage: params.tokenUsage,
+      errorClass: params.errorClass,
+      outputSummary: params.outputSummary,
+      promptArtifactPath: params.promptArtifactPath,
+    },
+  );
+}
+
 async function runClaudeLessonExtraction(params: {
+  runId: string;
   claudeBinary: string;
   workingDir: string;
   prompt: string;
-}): Promise<LessonCandidate[]> {
+  attemptNumber: number;
+}): Promise<LessonExtractionResult> {
+  const stdin = buildClaudeExtractionPrompt(params.prompt);
+  const args = [
+    "-p",
+    "--output-format",
+    "json",
+    "--max-turns",
+    "1",
+    "--allowedTools",
+    CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+    "--append-system-prompt",
+    CLAUDE_READ_ONLY_PROMPT,
+  ];
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    phase: "lessons",
+    backend: "claude_code",
+    prompt: stdin,
+    command: params.claudeBinary,
+    argv: args,
+    event: {
+      runId: params.runId,
+      goalId: params.runId,
+      attemptNumber: params.attemptNumber,
+      status: "started",
+    },
+  });
   const result = await runCliProcess({
     command: params.claudeBinary,
-    args: [
-      "-p",
-      "--output-format",
-      "json",
-      "--max-turns",
-      "1",
-      "--allowedTools",
-      CLAUDE_ALLOWED_TOOLS_READ_ONLY,
-      "--append-system-prompt",
-      CLAUDE_READ_ONLY_PROMPT,
-    ],
+    args,
     cwd: params.workingDir,
     timeoutMs: LESSON_EXTRACTION_TIMEOUT_MS,
-    stdin: buildClaudeExtractionPrompt(params.prompt),
+    stdin,
     env: buildClaudeCodeEnv("subscription"),
   });
+  const tokenUsage = parseBackendUsage(`${result.stdout}\n${result.stderr}`);
 
   if (result.timedOut) {
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "claude_code",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "timeout",
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
     throw new Error("lesson extraction via claude timed out");
   }
   if ((result.exitCode && result.exitCode !== 0) || result.signal) {
-    throw new Error(
-      `lesson extraction via claude failed: ${formatCliFailure(redactSecretValues(result.stdout), redactSecretValues(result.stderr), result.signal)}`,
+    const failure = formatCliFailure(
+      redactSecretValues(result.stdout),
+      redactSecretValues(result.stderr),
+      result.signal,
     );
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "claude_code",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "nonzero_exit",
+      outputSummary: failure,
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
+    throw new Error(`lesson extraction via claude failed: ${failure}`);
   }
 
   const parsed = parseCandidatesFromCliOutput(redactSecretValues(result.stdout));
   if (!parsed.parsed) {
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "claude_code",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "invalid_result",
+      outputSummary: "lesson extraction via claude returned unparseable output",
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
     throw new Error("lesson extraction via claude returned unparseable output");
   }
-  return parsed.lessons;
+  appendLessonHistory({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    backend: "claude_code",
+    event: "result",
+    status: "success",
+    attemptNumber: params.attemptNumber,
+    tokenUsage,
+    outputSummary: `extracted ${parsed.lessons.length} lesson candidate(s)`,
+    promptArtifactPath: launchHistory.promptArtifactPath,
+  });
+  return { lessons: parsed.lessons, tokenUsage };
 }
 
 async function runCodexLessonExtraction(params: {
+  runId: string;
   workingDir: string;
   prompt: string;
-}): Promise<LessonCandidate[]> {
+  attemptNumber: number;
+}): Promise<LessonExtractionResult> {
+  const args = buildCodexExtractionArgs(params);
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    phase: "lessons",
+    backend: "codex",
+    prompt: params.prompt,
+    command: "codex",
+    argv: args.map((arg, index) =>
+      index === args.length - 1 ? "<prompt redacted; see prompt artifact>" : arg,
+    ),
+    event: {
+      runId: params.runId,
+      goalId: params.runId,
+      attemptNumber: params.attemptNumber,
+      status: "started",
+    },
+  });
   const result = await runCliProcess({
     command: "codex",
-    args: buildCodexExtractionArgs(params),
+    args,
     cwd: params.workingDir,
     timeoutMs: LESSON_EXTRACTION_TIMEOUT_MS,
     env: buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
   });
+  const tokenUsage = parseBackendUsage(`${result.stdout}\n${result.stderr}`);
 
   if (result.timedOut) {
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "codex",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "timeout",
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
     throw new Error("lesson extraction via codex timed out");
   }
   if ((result.exitCode && result.exitCode !== 0) || result.signal) {
-    throw new Error(
-      `lesson extraction via codex failed: ${formatCliFailure(redactSecretValues(result.stdout), redactSecretValues(result.stderr), result.signal)}`,
+    const failure = formatCliFailure(
+      redactSecretValues(result.stdout),
+      redactSecretValues(result.stderr),
+      result.signal,
     );
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "codex",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "nonzero_exit",
+      outputSummary: failure,
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
+    throw new Error(`lesson extraction via codex failed: ${failure}`);
   }
 
   const parsed = parseCandidatesFromCliOutput(redactSecretValues(result.stdout));
   if (!parsed.parsed) {
+    appendLessonHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "codex",
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "invalid_result",
+      outputSummary: "lesson extraction via codex returned unparseable output",
+      promptArtifactPath: launchHistory.promptArtifactPath,
+    });
     throw new Error("lesson extraction via codex returned unparseable output");
   }
-  return parsed.lessons;
+  appendLessonHistory({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    backend: "codex",
+    event: "result",
+    status: "success",
+    attemptNumber: params.attemptNumber,
+    tokenUsage,
+    outputSummary: `extracted ${parsed.lessons.length} lesson candidate(s)`,
+    promptArtifactPath: launchHistory.promptArtifactPath,
+  });
+  return { lessons: parsed.lessons, tokenUsage };
 }
 
 function collectStepIds(run: SerializedRun): string[] {
@@ -556,11 +747,33 @@ export async function extractRunLessons(
         try {
           const result =
             backend === "claude_code"
-              ? await runClaudeLessonExtraction({ claudeBinary: claudeBinary!, workingDir, prompt })
-              : await runCodexLessonExtraction({ workingDir, prompt });
-          return { ok: true, value: result };
+              ? await runClaudeLessonExtraction({
+                  runId,
+                  claudeBinary: claudeBinary!,
+                  workingDir,
+                  prompt,
+                  attemptNumber: backends.indexOf(backend) + 1,
+                })
+              : await runCodexLessonExtraction({
+                  runId,
+                  workingDir,
+                  prompt,
+                  attemptNumber: backends.indexOf(backend) + 1,
+                });
+          return { ok: true, value: result.lessons };
         } catch (error) {
-          return { ok: false, errorText: error instanceof Error ? error.message : String(error) };
+          const errorText = error instanceof Error ? error.message : String(error);
+          appendLessonHistory({
+            runId,
+            workingDir,
+            backend,
+            event: "fallback",
+            status: "failed",
+            attemptNumber: backends.indexOf(backend) + 1,
+            errorClass: "backend_failed",
+            outputSummary: errorText,
+          });
+          return { ok: false, errorText };
         }
       },
     });

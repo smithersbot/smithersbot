@@ -1,6 +1,13 @@
 import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 import { buildPostExecutionReviewPrompt as buildPostExecutionReviewPromptFromPrompts } from "../prompts/post-execution-review/build-prompt.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { formatExecError } from "./build-gate.js";
 import { detectUsageLimitKind, runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
@@ -313,39 +320,92 @@ async function runSingleReviewPass(params: {
   claudeCodeAuth: ClaudeCodeAuthMode;
   abortSignal: AbortSignal;
   backend: { id: "claude_code"; command: string } | { id: "codex"; command: "codex" };
+  runId: string;
+  attemptNumber: number;
+  chunkPath?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
 }): Promise<PostExecutionReviewResult> {
   let result: RunCliProcessResult;
   const codexAskForApproval =
     params.backend.id === "codex" ? getCodexAskForApprovalPlacement() : "unsupported";
+  const args =
+    params.backend.id === "claude_code"
+      ? [
+          "-p",
+          "--output-format",
+          "json",
+          "--max-turns",
+          "1",
+          "--allowedTools",
+          CLAUDE_ALLOWED_TOOLS_READ_ONLY,
+          "--append-system-prompt",
+          CLAUDE_READ_ONLY_PROMPT,
+        ]
+      : [
+          ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+          "exec",
+          "--json",
+          ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
+          "--sandbox",
+          "workspace-write",
+          "--cd",
+          params.workingDir,
+          "-c",
+          "net.allowed=true",
+          params.prompt,
+        ];
+  const historyScope = {
+    kind: "goal" as const,
+    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    goalId: params.runId,
+  };
+  const launchHistory = writeCriticalAgentLaunchEvent({
+    scope: historyScope,
+    phase: "post-execution-review",
+    backend: params.backend.id,
+    prompt: params.prompt,
+    command: params.backend.command,
+    argv:
+      params.backend.id === "codex"
+        ? args.map((arg, index) =>
+            index === args.length - 1 ? "<prompt redacted; see prompt artifact>" : arg,
+          )
+        : args,
+    event: {
+      runId: params.runId,
+      goalId: params.runId,
+      attemptNumber: params.attemptNumber,
+      status: "started",
+      chunkPath: params.chunkPath,
+      chunkIndex: params.chunkIndex,
+      chunkCount: params.chunkCount,
+    },
+  });
+  const writeReviewEvent = (event: {
+    event: string;
+    status: string;
+    tokenUsage?: AgentBackendUsage;
+    errorClass?: string;
+    outputSummary?: string;
+  }) => {
+    appendAgentHistoryEventBestEffort(historyScope, {
+      ...event,
+      phase: "post-execution-review",
+      backend: params.backend.id,
+      runId: params.runId,
+      goalId: params.runId,
+      attemptNumber: params.attemptNumber,
+      promptArtifactPath: launchHistory.promptArtifactPath,
+      chunkPath: params.chunkPath,
+      chunkIndex: params.chunkIndex,
+      chunkCount: params.chunkCount,
+    });
+  };
   try {
     result = await runCliProcess({
       command: params.backend.command,
-      args:
-        params.backend.id === "claude_code"
-          ? [
-              "-p",
-              "--output-format",
-              "json",
-              "--max-turns",
-              "1",
-              "--allowedTools",
-              CLAUDE_ALLOWED_TOOLS_READ_ONLY,
-              "--append-system-prompt",
-              CLAUDE_READ_ONLY_PROMPT,
-            ]
-          : [
-              ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
-              "exec",
-              "--json",
-              ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
-              "--sandbox",
-              "workspace-write",
-              "--cd",
-              params.workingDir,
-              "-c",
-              "net.allowed=true",
-              params.prompt,
-            ],
+      args,
       cwd: params.workingDir,
       timeoutMs: POST_EXECUTION_REVIEW_TIMEOUT_MS,
       ...(params.backend.id === "claude_code" ? { stdin: params.prompt } : {}),
@@ -356,13 +416,27 @@ async function runSingleReviewPass(params: {
           : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
     });
   } catch (error) {
+    writeReviewEvent({
+      event: "failure",
+      status: "error",
+      errorClass: "process_exception",
+      outputSummary: formatExecError(error),
+      tokenUsage: { available: false, reason: "backend process did not return usage metadata" },
+    });
     return {
       status: "error",
       reason: `review process failed: ${truncateSingleLine(formatExecError(error)) || "unknown error"}`,
     };
   }
 
+  const tokenUsage = parseBackendUsage(`${result.stdout}\n${result.stderr}`);
   if (result.timedOut) {
+    writeReviewEvent({
+      event: "failure",
+      status: "error",
+      errorClass: "timeout",
+      tokenUsage,
+    });
     return {
       status: "error",
       reason: `review timed out after ${(POST_EXECUTION_REVIEW_TIMEOUT_MS / 1000).toFixed(0)}s`,
@@ -375,21 +449,43 @@ async function runSingleReviewPass(params: {
   };
 
   if ((redactedResult.exitCode && redactedResult.exitCode !== 0) || redactedResult.signal) {
-    return { status: "error", reason: describeCliFailure(redactedResult) };
+    const reason = describeCliFailure(redactedResult);
+    writeReviewEvent({
+      event: "failure",
+      status: "error",
+      errorClass: detectUsageLimitKind(reason) ? "usage_limit" : "nonzero_exit",
+      outputSummary: reason,
+      tokenUsage,
+    });
+    return { status: "error", reason };
   }
 
   const decision = parsePostExecutionReviewDecision(redactedResult.stdout);
   if (!decision) {
+    writeReviewEvent({
+      event: "failure",
+      status: "error",
+      errorClass: "invalid_result",
+      outputSummary: "review response was not valid JSON decision output",
+      tokenUsage,
+    });
     return { status: "error", reason: "review response was not valid JSON decision output" };
   }
 
   const issues = decision.issues.map((issue) => redactSecretValues(issue));
+  writeReviewEvent({
+    event: "result",
+    status: decision.approved ? "approved" : "rejected",
+    outputSummary: decision.approved ? "approved" : `rejected with ${issues.length} issue(s)`,
+    tokenUsage,
+  });
   return decision.approved ? { status: "approved", issues } : { status: "rejected", issues };
 }
 
 type ReviewBackendSpec = { id: "claude_code"; command: string } | { id: "codex"; command: "codex" };
 
 export type RunPostExecutionReviewParams = {
+  runId: string;
   goal: string;
   steps: PlanStep[];
   diff: string;
@@ -421,6 +517,8 @@ async function runReviewForBackend(
       claudeCodeAuth: params.claudeCodeAuth,
       abortSignal: params.abortSignal,
       backend,
+      runId: params.runId,
+      attemptNumber: 1,
     });
   }
 
@@ -451,6 +549,11 @@ async function runReviewForBackend(
       claudeCodeAuth: params.claudeCodeAuth,
       abortSignal: params.abortSignal,
       backend,
+      runId: params.runId,
+      attemptNumber: i + 1,
+      chunkPath: chunk.path,
+      chunkIndex: i + 1,
+      chunkCount: totalChunks,
     });
 
     if (chunkResult.status === "error") {
@@ -508,6 +611,23 @@ export async function runPostExecutionReview(
       // Only a usage/rate limit triggers cross-backend fallback; any other
       // error (e.g. "Prompt is too long") is terminal for this phase.
       if (review.status === "error" && detectUsageLimitKind(review.reason)) {
+        appendAgentHistoryEventBestEffort(
+          {
+            kind: "goal",
+            workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+            goalId: params.runId,
+          },
+          {
+            event: "fallback",
+            phase: "post-execution-review",
+            backend,
+            runId: params.runId,
+            goalId: params.runId,
+            status: "usage_limit",
+            errorClass: "usage_limit",
+            outputSummary: review.reason,
+          },
+        );
         return { ok: false, errorText: review.reason };
       }
       return { ok: true, value: review };

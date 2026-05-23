@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalLlmClient, PlanStep } from "./types.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 
 const runCliProcessMock = vi.fn();
 const resolveClaudeBinaryMock = vi.fn();
@@ -71,6 +73,7 @@ function makeDoneSteps(): PlanStep[] {
 
 function makeCliResultOutput(text: string): string {
   return JSON.stringify({
+    usage: { input_tokens: 21, output_tokens: 8 },
     result: [
       {
         type: "assistant",
@@ -167,6 +170,54 @@ describe("generateManualTests", () => {
     expect(tests[1]?.criticality).toBe(8);
     expect(tests[1]?.reason).toBe("Needs a real browser idle session");
     expect(tests[2]?.criticality).toBe(7);
+  });
+
+  it("records injected client prompt and usage in agent-visible history", async () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "manual-tests-client-managed-"));
+    const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    const complete = vi.fn().mockResolvedValue({
+      text: JSON.stringify({ tests: [] }),
+      usage: { inputTokens: 33, outputTokens: 7 },
+    });
+    const client: GoalLlmClient = { complete };
+
+    try {
+      await generateManualTests({
+        goal: "Improve authentication reliability",
+        steps: makeDoneSteps(),
+        client,
+        runId: "manual-client-run",
+        workingDir: process.cwd(),
+      });
+
+      const eventsPath = resolveAgentHistoryEventsPath({
+        kind: "goal",
+        workspaceName: workspaceNameFromWorkingDir(process.cwd()),
+        goalId: "manual-client-run",
+      });
+      const events = fs
+        .readFileSync(eventsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(events[0]).toMatchObject({
+        event: "launch",
+        backend: "goal-llm-client",
+        phase: "manual-tests",
+      });
+      expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
+        "Goal: Improve authentication reliability",
+      );
+      expect(events[1]).toMatchObject({
+        event: "result",
+        tokenUsage: { available: true, inputTokens: 33, outputTokens: 7, totalTokens: 40 },
+      });
+    } finally {
+      if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
   });
 
   it("throws when model call fails with auth error", async () => {
@@ -809,6 +860,8 @@ describe("generateManualTests", () => {
 
 describe("generateManualTests diagnostics artifacts", () => {
   let tmpRunDir: string;
+  let managedRoot: string;
+  let previousManagedRoot: string | undefined;
   const createdRoots: string[] = [];
 
   beforeEach(() => {
@@ -825,10 +878,16 @@ describe("generateManualTests diagnostics artifacts", () => {
       { id: "claude_code", available: true },
     ]);
     tmpRunDir = fs.mkdtempSync(path.join(os.tmpdir(), "manual-tests-artifacts-"));
+    previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "manual-tests-managed-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     createdRoots.push(tmpRunDir);
+    createdRoots.push(managedRoot);
   });
 
   afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
     while (createdRoots.length > 0) {
       const root = createdRoots.pop();
       if (root && fs.existsSync(root)) {
@@ -836,6 +895,22 @@ describe("generateManualTests diagnostics artifacts", () => {
       }
     }
   });
+
+  function readManualTestsHistory(
+    runId = path.basename(tmpRunDir),
+  ): Array<Record<string, unknown>> {
+    const eventsPath = resolveAgentHistoryEventsPath({
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(process.cwd()),
+      goalId: runId,
+    });
+    return fs
+      .readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
 
   it("writes stdout/stderr artifact files when runDir is provided (Claude success path)", async () => {
     resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
@@ -871,6 +946,26 @@ describe("generateManualTests diagnostics artifacts", () => {
     expect(fs.existsSync(expectedStdoutPath)).toBe(true);
     expect(fs.existsSync(expectedStderrPath)).toBe(true);
     expect(fs.readFileSync(expectedStdoutPath, "utf8")).toBe(claudeStdout);
+    const events = readManualTestsHistory();
+    expect(events[0]).toMatchObject({
+      event: "launch",
+      phase: "manual-tests",
+      backend: "claude_code",
+      status: "started",
+    });
+    expect(events[0]?.promptArtifactPath).toEqual(expect.any(String));
+    expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
+      "Goal: Improve reliability",
+    );
+    expect(events[1]).toMatchObject({
+      event: "result",
+      status: "success",
+      tokenUsage: {
+        available: true,
+        inputTokens: 21,
+        outputTokens: 8,
+      },
+    });
   });
 
   it("writes artifact files and references them in the error on non-zero exit", async () => {
@@ -1076,6 +1171,15 @@ describe("generateManualTests diagnostics artifacts", () => {
         expect(persisted).toContain("[REDACTED]");
         expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
       }
+      const historyText = fs.readFileSync(
+        resolveAgentHistoryEventsPath({
+          kind: "goal",
+          workspaceName: workspaceNameFromWorkingDir(process.cwd()),
+          goalId: path.basename(tmpRunDir),
+        }),
+        "utf8",
+      );
+      expect(historyText).not.toContain("FAKE_TELEGRAM_SECRET_123");
     } finally {
       if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = previousToken;

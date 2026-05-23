@@ -1128,6 +1128,8 @@ export async function handleGoalFeedback(
           goal: run.goal,
           steps: mergedPlan.steps,
           runDir: resolveRunDir(run.runId),
+          runId: run.runId,
+          workingDir: run.workingDir,
         });
         delete run.manualTestsError;
       } catch (err) {

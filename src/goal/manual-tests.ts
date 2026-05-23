@@ -2,6 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { MANUAL_TESTS_SYSTEM_PROMPT } from "../prompts/manual-tests/system-prompt.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import {
+  appendAgentHistoryEventBestEffort,
+  parseBackendUsage,
+  writeCriticalAgentLaunchEvent,
+  type AgentBackendUsage,
+} from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   detectBackendAvailability,
@@ -43,6 +50,8 @@ export type GenerateManualTestsParams = {
   maxTests?: number;
   /** Goal run directory. When provided, CLI stdout/stderr are persisted under <runDir>/manual-tests/. */
   runDir?: string;
+  runId?: string;
+  workingDir?: string;
 };
 
 const MANUAL_TESTS_ARTIFACT_DIR = "manual-tests";
@@ -54,6 +63,62 @@ type ManualTestsArtifactPaths = {
   stdoutPath: string;
   stderrPath: string;
 };
+
+function resolveManualTestsRunId(params: { runId?: string; runDir?: string }): string | undefined {
+  return params.runId ?? (params.runDir ? path.basename(params.runDir) : undefined);
+}
+
+function appendManualTestsHistory(params: {
+  runId?: string;
+  workingDir: string;
+  backend: string;
+  event: string;
+  status?: string;
+  attemptNumber?: number;
+  tokenUsage?: AgentBackendUsage;
+  errorClass?: string;
+  outputSummary?: string;
+  promptArtifactPath?: string;
+  artifactPaths?: readonly string[];
+}): void {
+  if (!params.runId) return;
+  appendAgentHistoryEventBestEffort(
+    {
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    },
+    {
+      event: params.event,
+      phase: "manual-tests",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      status: params.status,
+      attemptNumber: params.attemptNumber,
+      tokenUsage: params.tokenUsage,
+      errorClass: params.errorClass,
+      outputSummary: params.outputSummary,
+      promptArtifactPath: params.promptArtifactPath,
+      artifactPaths: params.artifactPaths,
+    },
+  );
+}
+
+function usageFromGoalLlmClient(response: {
+  usage?: { inputTokens: number; outputTokens: number };
+}): AgentBackendUsage {
+  if (!response.usage) {
+    return { available: false, reason: "GoalLlmClient response did not include usage metadata" };
+  }
+  return {
+    available: true,
+    inputTokens: response.usage.inputTokens,
+    outputTokens: response.usage.outputTokens,
+    totalTokens: response.usage.inputTokens + response.usage.outputTokens,
+    source: "codex-json",
+  };
+}
 
 function ensureManualTestsArtifactDir(runDir: string): ManualTestsArtifactPaths {
   const dir = path.join(runDir, MANUAL_TESTS_ARTIFACT_DIR);
@@ -224,16 +289,47 @@ async function runManualTestsForBackend(params: {
   combinedPrompt: string;
   artifacts?: ManualTestsArtifactPaths;
   artifactHint: string;
+  runId?: string;
+  workingDir: string;
+  attemptNumber: number;
 }): Promise<PhaseAttempt<string>> {
   const { backend, claudeBin, combinedPrompt, artifacts, artifactHint } = params;
   const useCodex = backend === "codex";
+  const args = useCodex
+    ? buildCodexManualTestsArgs(combinedPrompt)
+    : ["-p", "--output-format", "json", "--max-turns", "1"];
+  let promptArtifactPath: string | undefined;
+  if (params.runId) {
+    const launchHistory = writeCriticalAgentLaunchEvent({
+      scope: {
+        kind: "goal",
+        workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+        goalId: params.runId,
+      },
+      phase: "manual-tests",
+      backend,
+      prompt: combinedPrompt,
+      command: useCodex ? "codex" : claudeBin!,
+      argv: useCodex
+        ? args.map((arg, index) =>
+            index === args.length - 1 ? "<prompt redacted; see prompt artifact>" : arg,
+          )
+        : args,
+      event: {
+        runId: params.runId,
+        goalId: params.runId,
+        attemptNumber: params.attemptNumber,
+        status: "started",
+        artifactPaths: artifacts ? [artifacts.stdoutPath, artifacts.stderrPath] : undefined,
+      },
+    });
+    promptArtifactPath = launchHistory.promptArtifactPath;
+  }
 
   const procResult = await runCliProcess({
     command: useCodex ? "codex" : claudeBin!,
-    args: useCodex
-      ? buildCodexManualTestsArgs(combinedPrompt)
-      : ["-p", "--output-format", "json", "--max-turns", "1"],
-    cwd: process.cwd(),
+    args,
+    cwd: params.workingDir,
     timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
     ...(useCodex ? {} : { stdin: combinedPrompt }),
     env: useCodex ? buildCredentialStrippedEnv() : buildClaudeCodeEnv("subscription"),
@@ -248,8 +344,21 @@ async function runManualTestsForBackend(params: {
     stdout: redactSecretValues(procResult.stdout),
     stderr: redactSecretValues(procResult.stderr),
   };
+  const tokenUsage = parseBackendUsage(`${procResult.stdout}\n${procResult.stderr}`);
 
   if (redactedProcResult.timedOut) {
+    appendManualTestsHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend,
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "timeout",
+      promptArtifactPath,
+      artifactPaths: artifacts ? [artifacts.stdoutPath, artifacts.stderrPath] : undefined,
+    });
     return {
       ok: false,
       errorText: `Manual test generation timed out after ${(MANUAL_TESTS_TIMEOUT_MS / 1000).toFixed(0)} seconds.${artifactHint}`,
@@ -266,26 +375,78 @@ async function runManualTestsForBackend(params: {
       (redactedProcResult.signal
         ? `Manual test generation process terminated by ${redactedProcResult.signal}.`
         : "Manual test generation process failed.");
-    return { ok: false, errorText: `Manual test generation failed: ${detail}${artifactHint}` };
+    const errorText = `Manual test generation failed: ${detail}${artifactHint}`;
+    appendManualTestsHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend,
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "nonzero_exit",
+      outputSummary: errorText,
+      promptArtifactPath,
+      artifactPaths: artifacts ? [artifacts.stdoutPath, artifacts.stderrPath] : undefined,
+    });
+    return { ok: false, errorText };
   }
 
   try {
-    return {
-      ok: true,
-      value: redactSecretValues(extractAssistantTextFromCliResult(redactedProcResult.stdout)),
-    };
+    const value = redactSecretValues(extractAssistantTextFromCliResult(redactedProcResult.stdout));
+    appendManualTestsHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend,
+      event: "result",
+      status: "success",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      outputSummary: "manual test suggestions generated",
+      promptArtifactPath,
+      artifactPaths: artifacts ? [artifacts.stdoutPath, artifacts.stderrPath] : undefined,
+    });
+    return { ok: true, value };
   } catch (error) {
     const baseMessage = error instanceof Error ? error.message : String(error);
+    appendManualTestsHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend,
+      event: "failure",
+      status: "error",
+      attemptNumber: params.attemptNumber,
+      tokenUsage,
+      errorClass: "invalid_result",
+      outputSummary: baseMessage,
+      promptArtifactPath,
+      artifactPaths: artifacts ? [artifacts.stdoutPath, artifacts.stderrPath] : undefined,
+    });
     return { ok: false, errorText: `${baseMessage}${artifactHint}` };
   }
 }
 
-async function generateManualTestsViaCli(userMessage: string, runDir?: string): Promise<string> {
+async function generateManualTestsViaCli(params: {
+  userMessage: string;
+  runDir?: string;
+  runId?: string;
+  workingDir: string;
+}): Promise<string> {
   const claudeBin = resolveClaudeBinary();
-  const combinedPrompt = buildCombinedManualTestsPrompt(userMessage);
+  const combinedPrompt = buildCombinedManualTestsPrompt(params.userMessage);
   const codexAvailable =
     detectBackendAvailability().find((entry) => entry.id === "codex")?.available === true;
   if (!claudeBin && !codexAvailable) {
+    appendManualTestsHistory({
+      runId: params.runId,
+      workingDir: params.workingDir,
+      backend: "none",
+      event: "failure",
+      status: "error",
+      errorClass: "no_backend",
+      outputSummary: NO_BACKEND_MANUAL_TESTS_ERROR,
+      tokenUsage: { available: false, reason: "no backend was available" },
+    });
     throw new Error(NO_BACKEND_MANUAL_TESTS_ERROR);
   }
 
@@ -295,9 +456,9 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
   if (codexAvailable) backends.push("codex");
 
   let artifacts: ManualTestsArtifactPaths | undefined;
-  if (runDir) {
+  if (params.runDir) {
     try {
-      artifacts = ensureManualTestsArtifactDir(runDir);
+      artifacts = ensureManualTestsArtifactDir(params.runDir);
     } catch {
       // Best-effort: continue without persisted artifacts if mkdir fails.
       artifacts = undefined;
@@ -309,8 +470,32 @@ async function generateManualTestsViaCli(userMessage: string, runDir?: string): 
 
   const outcome = await runWithBackendFallback<string>({
     backends,
-    attempt: (backend) =>
-      runManualTestsForBackend({ backend, claudeBin, combinedPrompt, artifacts, artifactHint }),
+    attempt: async (backend) => {
+      const attemptNumber = backends.indexOf(backend) + 1;
+      const result = await runManualTestsForBackend({
+        backend,
+        claudeBin,
+        combinedPrompt,
+        artifacts,
+        artifactHint,
+        runId: params.runId,
+        workingDir: params.workingDir,
+        attemptNumber,
+      });
+      if (!result.ok) {
+        appendManualTestsHistory({
+          runId: params.runId,
+          workingDir: params.workingDir,
+          backend,
+          event: "fallback",
+          status: "failed",
+          attemptNumber,
+          errorClass: "backend_failed",
+          outputSummary: result.errorText,
+        });
+      }
+      return result;
+    },
   });
 
   if (outcome.status === "success") return outcome.value;
@@ -485,15 +670,69 @@ export async function generateManualTests(
   if (doneSteps.length === 0) return [];
 
   const userMessage = buildManualTestsUserPrompt(params.goal, doneSteps);
+  const runId = resolveManualTestsRunId(params);
+  const workingDir = params.workingDir ?? process.cwd();
   let parsed: Record<string, unknown> | undefined;
 
   for (let attempt = 1; attempt <= MANUAL_TESTS_PARSE_MAX_ATTEMPTS; attempt += 1) {
     let modelResponseText: string;
     if (params.client) {
-      const response = await params.client.complete({
-        systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
-        userMessage,
-        maxTokens: 900,
+      let promptArtifactPath: string | undefined;
+      if (runId) {
+        const launchHistory = writeCriticalAgentLaunchEvent({
+          scope: {
+            kind: "goal",
+            workspaceName: workspaceNameFromWorkingDir(workingDir),
+            goalId: runId,
+          },
+          phase: "manual-tests",
+          backend: "goal-llm-client",
+          prompt: buildCombinedManualTestsPrompt(userMessage),
+          command: "GoalLlmClient.complete",
+          event: {
+            runId,
+            goalId: runId,
+            attemptNumber: attempt,
+            status: "started",
+          },
+        });
+        promptArtifactPath = launchHistory.promptArtifactPath;
+      }
+      let response: Awaited<ReturnType<GoalLlmClient["complete"]>>;
+      try {
+        response = await params.client.complete({
+          systemPrompt: MANUAL_TESTS_SYSTEM_PROMPT,
+          userMessage,
+          maxTokens: 900,
+        });
+      } catch (error) {
+        appendManualTestsHistory({
+          runId,
+          workingDir,
+          backend: "goal-llm-client",
+          event: "failure",
+          status: "error",
+          attemptNumber: attempt,
+          tokenUsage: {
+            available: false,
+            reason: "GoalLlmClient call failed before usage metadata",
+          },
+          errorClass: "client_error",
+          outputSummary: error instanceof Error ? error.message : String(error),
+          promptArtifactPath,
+        });
+        throw error;
+      }
+      appendManualTestsHistory({
+        runId,
+        workingDir,
+        backend: "goal-llm-client",
+        event: "result",
+        status: "success",
+        attemptNumber: attempt,
+        tokenUsage: usageFromGoalLlmClient(response),
+        outputSummary: "manual test suggestions generated",
+        promptArtifactPath,
       });
       modelResponseText = redactSecretValues(response.text);
     } else {
@@ -501,7 +740,12 @@ export async function generateManualTests(
         throw new Error("Manual test generation requires an injected client in tests.");
       }
       modelResponseText = redactSecretValues(
-        await generateManualTestsViaCli(userMessage, params.runDir),
+        await generateManualTestsViaCli({
+          userMessage,
+          runDir: params.runDir,
+          runId,
+          workingDir,
+        }),
       );
     }
 

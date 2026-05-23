@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeAttemptBundle, resolveWorkerDir } from "./attempt-bundle.js";
+import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { saveRun } from "./run-store.js";
 import {
   addLesson,
@@ -497,12 +499,17 @@ describe("extractRunLessons", () => {
   let tmpDir: string;
   let prevMoltbotStateDir: string | undefined;
   let prevClawdbotStateDir: string | undefined;
+  let managedRoot: string;
+  let prevManagedRoot: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-extract-lessons-test-"));
     prevMoltbotStateDir = process.env.MOLTBOT_STATE_DIR;
     prevClawdbotStateDir = process.env.CLAWDBOT_STATE_DIR;
+    prevManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     process.env.MOLTBOT_STATE_DIR = tmpDir;
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goal-extract-lessons-managed-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     delete process.env.CLAWDBOT_STATE_DIR;
     mockRunCliProcess.mockReset();
     mockResolveClaudeBinary.mockReset();
@@ -514,9 +521,29 @@ describe("extractRunLessons", () => {
     else process.env.MOLTBOT_STATE_DIR = prevMoltbotStateDir;
     if (prevClawdbotStateDir === undefined) delete process.env.CLAWDBOT_STATE_DIR;
     else process.env.CLAWDBOT_STATE_DIR = prevClawdbotStateDir;
+    if (prevManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = prevManagedRoot;
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
   });
+
+  function readLessonHistoryEvents(
+    runId: string,
+    workingDir: string,
+  ): Array<Record<string, unknown>> {
+    const eventsPath = resolveAgentHistoryEventsPath({
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(workingDir),
+      goalId: runId,
+    });
+    return fs
+      .readFileSync(eventsPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
 
   it("loads artifacts from temp run directories, includes existing lessons, and records extracted lessons", async () => {
     const runId = "extract-run-success";
@@ -564,6 +591,7 @@ describe("extractRunLessons", () => {
     mockRunCliProcess.mockResolvedValueOnce(
       makeCliResult({
         stdout: JSON.stringify({
+          usage: { input_tokens: 44, output_tokens: 11 },
           lessons: [
             {
               pattern: "workspace-tsconfig",
@@ -626,6 +654,22 @@ describe("extractRunLessons", () => {
     const stored = loadLessons();
     expect(stored).toHaveLength(1);
     expect(stored[0]).toEqual(recorded[0]);
+    const events = readLessonHistoryEvents(runId, workingDir);
+    expect(events[0]).toMatchObject({
+      event: "launch",
+      phase: "lessons",
+      backend: "claude_code",
+      status: "started",
+    });
+    expect(events[0]?.promptArtifactPath).toEqual(expect.any(String));
+    expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
+      "Improve extraction reliability",
+    );
+    expect(events[1]).toMatchObject({
+      event: "result",
+      status: "success",
+      tokenUsage: { available: true, inputTokens: 44, outputTokens: 11 },
+    });
   });
 
   it("redacts known secret values from extracted lessons before storing them", async () => {
@@ -670,6 +714,15 @@ describe("extractRunLessons", () => {
       const persisted = fs.readFileSync(path.join(tmpDir, "goal-lessons.json"), "utf8");
       expect(persisted).toContain("[REDACTED]");
       expect(persisted).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      const historyText = fs.readFileSync(
+        resolveAgentHistoryEventsPath({
+          kind: "goal",
+          workspaceName: workspaceNameFromWorkingDir(workingDir),
+          goalId: runId,
+        }),
+        "utf8",
+      );
+      expect(historyText).not.toContain("FAKE_TELEGRAM_SECRET_123");
     } finally {
       if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = previousToken;
@@ -722,6 +775,11 @@ describe("extractRunLessons", () => {
     expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.pattern).toBe("fallback-works");
+    const events = readLessonHistoryEvents(runId, workingDir);
+    expect(events.map((event) => event.event)).toContain("fallback");
+    expect(
+      events.filter((event) => event.event === "launch").map((event) => event.backend),
+    ).toEqual(["claude_code", "codex"]);
   });
 
   it("returns [] (fail-open) when both backends are usage-limited, trying each once", async () => {

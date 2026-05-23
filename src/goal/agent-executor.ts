@@ -1022,6 +1022,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       if (reviewDiff !== undefined) {
         onProgress?.("  [review] Running post-execution code review...");
         const initialReview = await runPostExecutionReview({
+          runId,
           goal: session.goal,
           steps: orderedSteps,
           diff: reviewDiff,
@@ -1187,6 +1188,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               }
 
               const postPolishReview = await runPostExecutionReview({
+                runId,
                 goal: session.goal,
                 steps: orderedSteps,
                 diff: postPolishDiff,
@@ -1284,6 +1286,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         steps: orderedSteps,
         client: params.manualTestsClient,
         runDir: resolveRunDir(runId),
+        runId,
+        workingDir,
       });
     } catch (err) {
       // Fail-open: completion should still emit even when manual test generation fails.
