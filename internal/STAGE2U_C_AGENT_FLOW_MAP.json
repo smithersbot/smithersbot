@@ -1,0 +1,235 @@
+{
+  "stage": "2U-C",
+  "artifact": "agent-flow-map",
+  "generatedFor": "Stage 2U-C agent flow, history durability, sandbox, prompt, and token audit",
+  "date": "2026-05-23",
+  "managedRoot": {
+    "default": "~/smithersbot-goals",
+    "override": "SMITHERSBOT_GOALS_ROOT",
+    "resolver": "src/config/managed-paths.ts",
+    "zones": {
+      "agentVisible": "<root>/agent",
+      "private": "<root>/private",
+      "scratch": "<root>/scratch"
+    }
+  },
+  "agentVisibleHistory": {
+    "goalDir": "<root>/agent/history/goals/<workspace>/<goalId>/",
+    "repoChatDir": "<root>/agent/history/repo-chats/<workspace>/<sessionId>/",
+    "indexDir": "<root>/agent/history/index/",
+    "files": {
+      "events.jsonl": "incremental JSONL via appendAgentHistoryEvent (redacted, fs.appendFileSync)",
+      "prompts/<ts>-<phase>-<backend>-<uuid>.txt": "exact prompt after redactSecretValues (atomic tmp+rename)",
+      "summary.json": "TERMINAL-ONLY via mirrorGoalRunToAgentHistory / mirrorRepoChatSessionToAgentHistory",
+      "index/all-goals.jsonl": "TERMINAL-ONLY appendJsonlOnce",
+      "index/repo-chats.jsonl": "TERMINAL-ONLY appendJsonlOnce"
+    }
+  },
+  "runtimeStore": {
+    "goals": "~/.smithersbot/goals/<runId>/ (run.json, scout/, autocheck/round-*/, workers/<stepId>/, sessions/) — NOT agent-visible",
+    "lessons": "<stateDir>/goal-lessons.json — NOT agent-visible",
+    "repoChatSessions": "~/.moltbot/repo-chats/<id>/session.json — NOT agent-visible",
+    "workerScratchResult": "<workingDir>/.moltbot-goal-worker-results/<runId>/<stepId>/attempt-<N>/worker_result.json"
+  },
+  "primitives": {
+    "file": "src/goal/agent-history-events.ts",
+    "writeCriticalAgentLaunchEvent": "fail-closed prompt artifact + launch event; THROWS on failure; called BEFORE spawn",
+    "writeAgentPromptArtifact": "atomic redacted prompt write",
+    "appendAgentHistoryEvent": "atomic single-line JSONL append, recursively redacted",
+    "appendAgentHistoryEventBestEffort": "returns warning instead of throwing; AFTER return",
+    "parseBackendUsage": "normalizes Claude stream-json usage + Codex token_count/usage; {available:false,reason} when not derivable"
+  },
+  "phases": [
+    {
+      "phase": "new_goal-intake",
+      "callerChain": "telegram /new_goal -> goal-commands.runGoalInBackground -> commands/goal.ts goalCommand",
+      "backends": [],
+      "reads": ["config", ".claude/CLAUDE.md", "prior run.json on resume"],
+      "writesRuntime": ["~/.smithersbot/goals/<runId>/run.json"],
+      "agentVisibleArtifacts": [],
+      "writeTiming": "n/a",
+      "promptSite": null,
+      "tokenCapture": null
+    },
+    {
+      "phase": "scout+planner",
+      "callerChain": "goalCommand -> cli-planner.runCliPlanning -> buildPlanningPrompt -> writeCriticalAgentLaunchEvent -> runCliProcess -> validateScoutOutput/parsePlanWithFallback",
+      "backends": ["claude_code (preferred)", "codex (fallback)"],
+      "reads": ["scout template", "repo (read-only tools)", "prior scout artifacts"],
+      "writesRuntime": ["<runDir>/scout/PLANNING_BRIEF.md", "planner stdout/stderr", "execution_plan.json"],
+      "agentVisibleArtifacts": ["events.jsonl (launch/failure/retry/fallback/result)", "prompts/...planner....txt"],
+      "writeTiming": "launch event + prompt artifact BEFORE spawn; result/failure best-effort AFTER",
+      "promptSite": "buildPlanningPrompt (cli-planner.ts)",
+      "tokenCapture": "parseBackendUsage(stdout+stderr) + planner attempt bundle"
+    },
+    {
+      "phase": "plan-autocheck",
+      "callerChain": "goalCommand/goalResumeCommand -> plan-autocheck.runPlanAutocheck -> runReviewerAttempt/runFreshReviewerAttempt -> writeCriticalAgentLaunchEvent -> runCliProcess -> parseDecisionFromText",
+      "backends": ["codex or claude_code (params.mode)", "two-backend fallback"],
+      "reads": ["plan", "prior feedback"],
+      "writesRuntime": ["<runDir>/autocheck/round-*/ (prompt.txt, response.txt, session_id.txt, backend.txt, metadata.json)"],
+      "agentVisibleArtifacts": ["events.jsonl (launch/result/round)", "prompts/...autocheck....txt"],
+      "writeTiming": "launch event + prompt BEFORE each round spawn; result AFTER",
+      "promptSite": "buildAutocheckPrompt (embeds REVIEW_INSTRUCTION)",
+      "tokenCapture": "parseBackendUsage per round",
+      "resume": "reviewer session resumable (--resume / resume <id>), backend-bound"
+    },
+    {
+      "phase": "plan-revision",
+      "callerChain": "runPlanAutocheck (on rejection) -> cli-planner.runCliPlanRevision -> buildPlanRevisionPrompt -> writeCriticalAgentLaunchEvent -> runCliProcess -> commitRevision callback",
+      "backends": ["claude_code (preferred)", "codex (fallback)"],
+      "reads": ["current plan", "reviewer edit instructions"],
+      "writesRuntime": ["<runDir>/revision*/ stdout/stderr", "updated plan"],
+      "agentVisibleArtifacts": ["events.jsonl (launch/result/failure, phase=plan-revision)", "prompts/...plan-revision....txt"],
+      "writeTiming": "launch BEFORE spawn; result/failure AFTER",
+      "promptSite": "buildPlanRevisionPrompt (cli-planner.ts)",
+      "tokenCapture": "parseBackendUsage"
+    },
+    {
+      "phase": "execution-worker",
+      "callerChain": "agent-executor.executeGoalWithAgent -> runner.execute -> cli-runner.CliTaskRunner.execute -> cli-worker.executeTaskWithCliWorker -> writeCriticalAgentLaunchEvent -> cli-process.runCliProcess",
+      "backends": ["per-step backend (clamped)", "claude_code default", "codex", "pi (in-process)"],
+      "reads": ["repo (sandboxed)"],
+      "writesRuntime": ["<runDir>/workers/<stepId>/ (worker_result.json, attempt-<N>.json bundles incl tokenUsage, stdout/stderr, worker-prompt-N.txt, capability-bounds.txt, auth-mode.txt)"],
+      "writesWorkspaceScratch": ["<workingDir>/.moltbot-goal-worker-results/.../worker_result.json"],
+      "agentVisibleArtifacts": ["events.jsonl (launch->result/failure)", "prompts/...worker....txt"],
+      "writeTiming": "writeCriticalAgentLaunchEvent BEFORE runCliProcess (~cli-worker.ts:447, spawn ~500); appendWorkerHistoryBestEffort AFTER incl .catch process-error path before returning",
+      "promptSite": "buildCliWorkerPrompt / buildCliPromptPayload (cli-worker.ts)",
+      "tokenCapture": "parseBackendUsage(stdout+stderr) -> AttemptBundle.tokenUsage + result event",
+      "missingResult": "absent worker_result.json -> process_lost (no exit/signal) or missing_result; invalid JSON/schema -> repairResultFile (60s); classifyAttemptOutcome; failure event recorded BEFORE user-facing message"
+    },
+    {
+      "phase": "repair-retry",
+      "callerChain": "cli-worker.repairResultFile (re-spawn 60s); agent-executor retry loop (maxAttempts=2, shouldRetry); build-gate fix cycles (2); ralph retry (2)",
+      "backends": ["same as worker"],
+      "agentVisibleArtifacts": ["new launch per attempt then result/failure"],
+      "writeTiming": "per attempt"
+    },
+    {
+      "phase": "repo-chat",
+      "callerChain": "telegram repo-chat -> repo-chat-worker.runRepoChatWorker -> runWithBackendFallback -> runRepoChatWorkerOnce -> writeCriticalAgentLaunchEvent -> runCliProcess (~622)",
+      "backends": ["claude_code", "codex (fallback clears cliSessionId)"],
+      "reads": ["state via cliSessionId"],
+      "writesRuntime": ["~/.moltbot/repo-chats/<id>/session.json (saveRepoChatSession)"],
+      "agentVisibleArtifacts": ["events.jsonl (launch->turn_start->success/failure)", "prompts/...repo-chat....txt", "summary.json terminal-only"],
+      "writeTiming": "launch+prompt+turn_start BEFORE spawn (~581); success/failure AFTER, before error propagates",
+      "promptSite": "buildClaudeRepoChatArgs/buildCodexRepoChatArgs (system=CLAUDE_READ_ONLY_PROMPT+REPO_CHAT_CONTEXT)",
+      "tokenCapture": "parseBackendUsage",
+      "resume": "cliSessionId (--resume / exec resume) + Codex codexSandboxRunId; session-keyed history dir"
+    },
+    {
+      "phase": "post-execution-review",
+      "callerChain": "post-exec orchestration -> post-execution-review.runPostExecutionReview -> runWithBackendFallback -> runReviewForBackend -> runSingleReviewPass (per chunk) -> writeCriticalAgentLaunchEvent -> runCliProcess (~406)",
+      "backends": ["claude_code (preferred)", "codex (fallback on usage/rate-limit)"],
+      "reads": ["bounded diff (buildBoundedDiffOrChunks)"],
+      "writesRuntime": [],
+      "agentVisibleArtifacts": ["events.jsonl (launch/result/failure)", "prompts/...post-execution-review....txt"],
+      "writeTiming": "launch+prompt BEFORE each chunk spawn (~363); result/failure AFTER",
+      "promptSite": "buildPostExecutionReviewPrompt",
+      "tokenCapture": "parseBackendUsage",
+      "resume": "single-shot, no session"
+    },
+    {
+      "phase": "manual-tests",
+      "callerChain": "post-exec -> manual-tests.generateManualTests; (A) GoalLlmClient.complete (llm-client.ts) or (B) generateManualTestsViaCli -> runManualTestsForBackend -> runCliProcess (~329)",
+      "backends": ["GoalLlmClient (Anthropic SDK via pi-ai)", "claude_code", "codex (fallback)"],
+      "reads": ["goal/steps"],
+      "writesRuntime": ["<runDir>/manual-tests/stdout.txt/stderr.txt (redacted)"],
+      "agentVisibleArtifacts": ["events.jsonl (launch/result/failure)", "prompts/...manual-tests....txt"],
+      "writeTiming": "launch+prompt BEFORE call (client ~682, CLI ~303); result/failure AFTER",
+      "promptSite": "buildCombinedManualTestsPrompt/buildManualTestsUserPrompt",
+      "tokenCapture": "usageFromGoalLlmClient (client; GoalLlmClient returns usage but does not self-persist) or parseBackendUsage (CLI)"
+    },
+    {
+      "phase": "lessons",
+      "callerChain": "post-exec -> lessons.extractRunLessons -> runWithBackendFallback(fallbackOnAnyError) -> runClaudeLessonExtraction(runCliProcess ~420)/runCodexLessonExtraction(runCliProcess ~522)",
+      "backends": ["claude_code", "codex"],
+      "reads": ["loadRun(runId)", "attempt bundles", "existing lessons"],
+      "writesRuntime": ["<stateDir>/goal-lessons.json (saveLessons, atomic)"],
+      "agentVisibleArtifacts": ["events.jsonl (launch/result/failure/fallback)", "prompts/...lessons....txt"],
+      "writeTiming": "launch+prompt BEFORE spawn (~402/502); result/failure/fallback AFTER",
+      "promptSite": "buildLessonExtractionPrompt + buildCorrectionSummary",
+      "tokenCapture": "parseBackendUsage",
+      "note": "fail-open returns [] if both backends fail; lessons stay in durable lessons store, not agent history"
+    },
+    {
+      "phase": "goal-resume",
+      "callerChain": "/goal_approve|/goal_resume -> goal-resume.goalResumeCommand -> loadRun(migrateRun) -> recheckUsageLimitBackends -> executeGoalWithAgent",
+      "resume": "reloads SerializedRun + prior agent-visible events.jsonl (durable after restart); requiresExecutionAnswer distinguishes auto-retry vs user input"
+    },
+    {
+      "phase": "goal-stop-cancel",
+      "callerChain": "/goal_stop|cancellation -> saveRun(state=cancelled) -> mirrorGoalRunToAgentHistory (terminal summary.json + index)",
+      "note": "cancellation is a race boundary; persisted state reloaded before applying outputs; terminal cancellation not transitioned out of"
+    },
+    {
+      "phase": "usage-limit-fallback",
+      "worker": "agent-executor loop detects usage/rate-limit (isUsageLimitClassReason, parseClaudeCodeStreamError, classifyProviderError) -> pickFallbackBackend (Claude<->Codex) -> writes agent-visible event for BOTH failed and fallback backend (appendWorkerFallbackHistoryEvent usage_limit/usage_limit_fallback) before retry; final exhaustion -> blocked reason usage_limit",
+      "planner_autocheck_review_lessons_manualtests": "detectAnthropicDegradedReason/detectUsageLimitKind (anthropic_usage_limit/overloaded/rate_limit) -> Claude->Codex fallback with incremental fallback events; planner auto-retries transient overload (5s,10s) before fallback",
+      "repochat": "fallback to other backend, clears cliSessionId, both attempts recorded"
+    }
+  ],
+  "backendSelection": {
+    "scout+planner": {"prefer": "claude_code", "fallback": "codex", "sandbox": "credential-stripped, native-sandbox opt-out"},
+    "plan-autocheck": {"prefer": "params.mode", "fallback": "other", "sandbox": "credential-stripped opt-out"},
+    "plan-revision": {"prefer": "claude_code", "fallback": "codex", "sandbox": "credential-stripped opt-out"},
+    "execution-worker": {"prefer": "per-step / DEFAULT_BACKEND=claude_code (or single enabled) + pi", "fallback": "claude_code<->codex", "sandbox": "shared native sandbox helper"},
+    "repo-chat": {"prefer": "params.backend", "fallback": "other (clears session)", "sandbox": "shared native sandbox helper"},
+    "post-exec-review": {"prefer": "claude_code", "fallback": "codex", "sandbox": "credential-stripped opt-out"},
+    "manual-tests": {"prefer": "GoalLlmClient else claude_code", "fallback": "codex", "sandbox": "client / credential-stripped opt-out"},
+    "lessons": {"prefer": "claude_code", "fallback": "codex", "sandbox": "credential-stripped opt-out"},
+    "availabilityProbe": "detectBackendAvailability (codex exec --help, claude --help); clampBackendForEnabledWorkers forces single worker"
+  },
+  "runCliProcessCallers": [
+    {"file": "src/goal/cli-worker.ts", "surface": "execution worker", "scope": "in", "reason": "core agent task surface, instrumented + sandboxed"},
+    {"file": "src/goal/cli-planner.ts", "surface": "scout+planner & plan-revision", "scope": "in", "reason": "agent planning surface, instrumented"},
+    {"file": "src/goal/plan-autocheck.ts", "surface": "plan autocheck/checker", "scope": "in", "reason": "agent review surface, instrumented"},
+    {"file": "src/goal/post-execution-review.ts", "surface": "post-execution review", "scope": "in", "reason": "agent review surface, instrumented"},
+    {"file": "src/goal/manual-tests.ts", "surface": "manual-tests (CLI fallback)", "scope": "in", "reason": "agent generation surface, instrumented"},
+    {"file": "src/goal/lessons.ts", "surface": "lessons extraction", "scope": "in", "reason": "agent extraction surface, instrumented"},
+    {"file": "src/repo-chat/repo-chat-worker.ts", "surface": "repo-chat", "scope": "in", "reason": "agent chat surface, instrumented + session-keyed history"},
+    {"file": "src/telegram/goal-sending.ts", "surface": "Codex Mermaid-diagram repair", "scope": "out", "reason": "utility repairing malformed Mermaid for Telegram DAG PNG (buildCodexMermaidRepairArgs, 60s); not an agent task surface, output is a diagram string"},
+    {"file": "src/cron/nightwatch.ts", "surface": "cron lesson-condense maintenance", "scope": "out", "reason": "daily maintenance job condensing global lessons (120s); not interactive; --skip-git-repo-check is benign, NOT a sandbox bypass"}
+  ],
+  "piRunner": {
+    "file": "src/goal/pi-runner.ts",
+    "callsRunCliProcess": false,
+    "scope": "in (as a backend)",
+    "reason": "in-process pi backend via @mariozechner/pi-ai getModel (backend=pi, runtime API key); never spawns a CLI; security boundary is capability-enforcement/hard-deny, not OS native sandbox; token usage available from pi-ai but not yet normalized into parseBackendUsage record"
+  },
+  "promptConstructionSites": {
+    "scout+planner": "buildPlanningPrompt (cli-planner.ts)",
+    "plan-revision": "buildPlanRevisionPrompt (cli-planner.ts)",
+    "plan-autocheck": "buildAutocheckPrompt (plan-autocheck.ts)",
+    "worker": "buildCliWorkerPrompt/buildCliPromptPayload (cli-worker.ts)",
+    "repo-chat": "buildClaudeRepoChatArgs/buildCodexRepoChatArgs (repo-chat-worker.ts)",
+    "post-exec-review": "buildPostExecutionReviewPrompt (src/prompts/post-execution-review)",
+    "manual-tests": "buildCombinedManualTestsPrompt/buildManualTestsUserPrompt",
+    "lessons": "buildLessonExtractionPrompt + buildCorrectionSummary",
+    "allRedacted": "redactSecretValues before writing to <...>/prompts/"
+  },
+  "tokenCaptureSites": {
+    "parseBackendUsage": ["cli-planner (planner+revision)", "plan-autocheck", "cli-worker", "repo-chat-worker", "post-execution-review", "manual-tests (CLI)", "lessons"],
+    "goalLlmClient": "manual-tests client path uses usageFromGoalLlmClient over GoalLlmClient.complete().usage",
+    "storedInto": ["agent-visible result event", "AttemptBundle.tokenUsage (worker)"],
+    "gap": "pi backend usage not normalized into parseBackendUsage record"
+  },
+  "crashRestartResume": {
+    "terminalMirrors": {
+      "mirrorGoalRunToAgentHistory": "agent-history.ts:95; gated in run-store.ts:50-52 by state in {done,blocked,cancelled}; writes summary.json + all-goals.jsonl",
+      "mirrorRepoChatSessionToAgentHistory": "agent-history.ts:147; only inside saveRepoChatSession (repo-chat-store.ts:174); writes summary.json + index",
+      "consequence": "summary/index NOT incremental; in-flight durability comes from events.jsonl + prompts/ written before/during each phase"
+    },
+    "migrateRun": "run-store.ts ~72; called from loadRun; migrates legacy formats; stale-execution recovery: state=executing && no active lock -> done (all steps done) or blocked ('Run was interrupted...')",
+    "hasActiveRunLock": "run-store.ts ~188; checks <goals>/.locks/runs/<runId>.lock PID liveness; deletes stale locks",
+    "reconcileStaleRuns": "run-store.ts ~229; startup scan of ~/.smithersbot/goals; reloads stale executing runs",
+    "resume": "goalResumeCommand reloads SerializedRun + prior agent-visible history; recheckUsageLimitBackends re-targets usage-limited steps",
+    "repoChatResume": "rediscovers session via session store + cliSessionId resume linkage + session-keyed history dir"
+  },
+  "gaps": [
+    "Summary/index mirrors are terminal-only by design; in-flight durability relies on incremental events.jsonl/prompts/",
+    "pi backend token usage not yet normalized into agent-history token record",
+    "Credential-stripped native-sandbox-opt-out surfaces (planner/autocheck/review/manual-tests/lessons) are 2U-E hardening candidates",
+    "Static-vs-dynamic prompt ordering for cache efficiency deferred to 2U-E"
+  ]
+}
