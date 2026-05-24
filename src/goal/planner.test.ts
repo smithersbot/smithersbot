@@ -26,13 +26,13 @@ describe("planner", () => {
   describe("buildPlanSystemPrompt", () => {
     it("omits claude_code instructions for Codex-only planning", () => {
       const prompt = buildPlanSystemPrompt(["codex"]);
-      expect(prompt).toContain('Use "codex" for every non-Pi step');
+      expect(prompt).toContain('Use "codex" for every step');
       expect(prompt).not.toContain("claude_code");
     });
 
     it("omits codex instructions for Claude-only planning", () => {
       const prompt = buildPlanSystemPrompt(["claude_code"]);
-      expect(prompt).toContain('Use "claude_code" for every non-Pi step');
+      expect(prompt).toContain('Use "claude_code" for every step');
       expect(prompt.toLowerCase()).not.toContain("codex");
     });
 
@@ -40,6 +40,18 @@ describe("planner", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
       expect(prompt).toContain('Use "codex" for coding tasks');
       expect(prompt).toContain('Use "claude_code" for testing tasks');
+    });
+
+    it("does not offer pi as an assignable backend (disabled for launch)", () => {
+      // Pi is disabled for launch: the planner/scout must not be told it can
+      // assign pi. Check the backend union and selection rules across modes.
+      for (const workers of [["claude_code", "codex"], ["codex"], ["claude_code"]] as const) {
+        const prompt = buildPlanSystemPrompt([...workers]);
+        expect(prompt).toContain("- Every step MUST include a backend:");
+        expect(prompt).not.toContain('"pi"');
+        expect(prompt).not.toContain("non-Pi");
+        expect(prompt).not.toContain('Only use "pi"');
+      }
     });
 
     it("throws the canonical setup error when no worker backend is available", () => {

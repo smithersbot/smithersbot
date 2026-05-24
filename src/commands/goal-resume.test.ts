@@ -1937,4 +1937,185 @@ describe("goal-resume command", () => {
       fs.rmSync(workDir, { recursive: true, force: true });
     });
   });
+
+  // --- Pi backend disabled for launch ---
+
+  describe("pi backend disabled for launch", () => {
+    it("remapDisabledPiSteps remaps not-yet-done pi steps to a supported backend", async () => {
+      const { remapDisabledPiSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "pi-pending",
+          description: "pi step",
+          dependsOn: [],
+          status: "pending",
+          backend: "pi",
+        },
+        {
+          id: "pi-sticky",
+          description: "pi sticky",
+          dependsOn: [],
+          status: "blocked",
+          backend: "pi",
+          executedBackend: "pi",
+        },
+        { id: "pi-done", description: "pi done", dependsOn: [], status: "done", backend: "pi" },
+        {
+          id: "codex-step",
+          description: "codex step",
+          dependsOn: [],
+          status: "pending",
+          backend: "codex",
+        },
+      ];
+
+      const result = remapDisabledPiSteps({
+        steps,
+        supportedWorkers: ["claude_code", "codex"],
+      });
+
+      expect(result.reassigned).toEqual(["pi-pending", "pi-sticky"]);
+      expect(result.rejected).toEqual([]);
+      expect(result.target).toBe("claude_code");
+      expect(steps[0]!.backend).toBe("claude_code");
+      expect(steps[1]!.backend).toBe("claude_code");
+      expect(steps[1]!.executedBackend).toBe("claude_code");
+      // Completed pi steps are historical and left untouched.
+      expect(steps[2]!.backend).toBe("pi");
+      // Non-pi steps are not touched.
+      expect(steps[3]!.backend).toBe("codex");
+    });
+
+    it("remapDisabledPiSteps rejects pi steps when no supported backend is available", async () => {
+      const { remapDisabledPiSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "pi-pending",
+          description: "pi step",
+          dependsOn: [],
+          status: "pending",
+          backend: "pi",
+        },
+      ];
+
+      const result = remapDisabledPiSteps({ steps, supportedWorkers: [] });
+
+      expect(result.reassigned).toEqual([]);
+      expect(result.rejected).toEqual(["pi-pending"]);
+      expect(result.target).toBeUndefined();
+      // Backend is left as pi so the caller can reject the resume cleanly.
+      expect(steps[0]!.backend).toBe("pi");
+    });
+
+    it("supported worker list excludes pi while Codex and Claude remain available", async () => {
+      const { resolveEffectiveEnabledWorkers } = await import("../goal/effective-workers.js");
+      const workers = resolveEffectiveEnabledWorkers({
+        availability: [
+          { id: "pi", available: false, reason: "Pi backend disabled for launch" },
+          { id: "codex", available: true },
+          { id: "claude_code", available: true },
+        ],
+      });
+      expect(workers).not.toContain("pi");
+      expect(workers).toContain("codex");
+      expect(workers).toContain("claude_code");
+    });
+
+    it("resumes an old run with a pi step by remapping it to a supported backend", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-pi-remap-ws-"));
+      const runId = "resume-pi-remap";
+      saveRun(
+        makeRun({
+          runId,
+          state: "cancelled",
+          plan: {
+            goal: "Test goal",
+            summary: "Old run with a pi step",
+            steps: [
+              {
+                id: "pi-step",
+                description: "Was assigned to pi",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+                backend: "pi",
+              },
+            ],
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let capturedBackend: string | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: {
+          session: {
+            plan: { steps: Array<{ id: string; status: string; backend?: string }> } | null;
+            state: string;
+          };
+        }) => {
+          capturedBackend = params.session.plan?.steps.find((s) => s.id === "pi-step")?.backend;
+          for (const s of params.session.plan?.steps ?? []) {
+            if (s.status === "pending" || s.status === "blocked") s.status = "done";
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      // The pi step was remapped to a supported backend before execution.
+      expect(capturedBackend).toBe("claude_code");
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.plan?.steps.find((s) => s.id === "pi-step")?.backend).toBe("claude_code");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("rejects resuming a pi-step run when no supported backend is available", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-pi-reject-ws-"));
+      const runId = "resume-pi-reject";
+      mockAvailability = [
+        { id: "pi", available: false, reason: "Pi backend disabled for launch" },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ];
+      saveRun(
+        makeRun({
+          runId,
+          state: "cancelled",
+          plan: {
+            goal: "Test goal",
+            summary: "Old run with a pi step and no fallback",
+            steps: [
+              {
+                id: "pi-step",
+                description: "Was assigned to pi",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+                backend: "pi",
+              },
+            ],
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result).toBeUndefined();
+      expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+      expect(rt.errors.join("\n")).toContain("pi backend");
+      expect(rt.errors.join("\n")).toContain("disabled for launch");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+  });
 });

@@ -4530,6 +4530,20 @@ describe("goal-commands telegram adapter", () => {
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
     });
 
+    it("rejects pi with a clear disabled-for-launch message", async () => {
+      const harness = makeCommandHarness({ goal: { enabledWorkers: ["codex"] } });
+      await harness.register();
+
+      await harness.handlers.goal_workers?.(makeCommandCtx("pi"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("is disabled for launch");
+      expect(sentText).not.toContain("Invalid workers");
+      expect(sentText).toContain("goal_workers");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
     it("blocks worker changes when config writes are disabled", async () => {
       mockResolveChannelConfigWrites.mockReturnValue(false);
       const harness = makeCommandHarness({ goal: { enabledWorkers: ["codex"] } });

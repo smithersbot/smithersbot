@@ -11,6 +11,7 @@ import {
   resolveBackendForStep,
 } from "../goal/agent-executor-helpers.js";
 import { detectBackendAvailability, isBackendAvailable } from "../goal/backend-availability.js";
+import { resolveEffectiveEnabledWorkers } from "../goal/effective-workers.js";
 import {
   resolveEnabledWorkers,
   type BackendAvailability,
@@ -150,6 +151,48 @@ export function recheckUsageLimitBackends(params: {
   }
 
   return { reassigned, stillBlocked };
+}
+
+/**
+ * Pi is disabled for launch. Older runs may have steps assigned to the pi
+ * backend (step.backend === "pi", or a sticky step.executedBackend === "pi").
+ * On resume, remap any not-yet-completed pi step onto a supported, currently
+ * available backend (Codex / Claude Code) so the run can continue. Completed
+ * steps are left untouched — their backend assignment is historical and they
+ * will not re-run.
+ *
+ * Returns the list of remapped step ids and the list that could not be remapped
+ * because no supported backend is available (rejected). The two lists are
+ * mutually exclusive: when a target backend exists, every pi step is remapped;
+ * when none exists, every pi step is rejected.
+ */
+export function remapDisabledPiSteps(params: {
+  steps: PlanStep[];
+  supportedWorkers: CliWorkerId[];
+}): { reassigned: string[]; rejected: string[]; target?: CliWorkerId } {
+  const { steps, supportedWorkers } = params;
+  // Deterministic target preference: Claude Code, then Codex.
+  const target = (["claude_code", "codex"] as CliWorkerId[]).find((worker) =>
+    supportedWorkers.includes(worker),
+  );
+
+  const reassigned: string[] = [];
+  const rejected: string[] = [];
+  for (const step of steps) {
+    if (step.status === "done") continue;
+    const usesPi = step.backend === "pi" || step.executedBackend === "pi";
+    if (!usesPi) continue;
+
+    if (!target) {
+      rejected.push(step.id);
+      continue;
+    }
+    step.backend = target;
+    if (step.executedBackend === "pi") step.executedBackend = target;
+    reassigned.push(step.id);
+  }
+
+  return { reassigned, rejected, ...(target ? { target } : {}) };
 }
 
 type ScoutArtifactFiles = {
@@ -644,6 +687,35 @@ export async function goalResumeCommand(
       }
     }
 
+    const availability = detectBackendAvailability();
+
+    // Pi is disabled for launch. Remap any not-yet-completed pi step onto a
+    // supported, available backend so an old run with pi steps can resume. If
+    // none is available, reject the resume with a clear message rather than
+    // dead-ending on an unavailable backend at execution time.
+    const supportedWorkers = resolveEffectiveEnabledWorkers({
+      ...(opts.config?.goal ? { config: opts.config.goal } : {}),
+      availability,
+    });
+    const piRemap = remapDisabledPiSteps({ steps: session.plan.steps, supportedWorkers });
+    if (piRemap.rejected.length > 0) {
+      const msg =
+        `Cannot resume: step(s) ${piRemap.rejected.join(", ")} use the pi backend, which is ` +
+        "disabled for launch, and no supported backend (Codex or Claude Code) is available to " +
+        "take over. Install Codex or Claude Code and resume again.";
+      if (isJson) {
+        runtime.log(JSON.stringify({ error: msg }));
+        throw new JsonExitError(1);
+      }
+      runtime.error(msg);
+      return undefined;
+    }
+    if (piRemap.reassigned.length > 0 && !isJson && !quiet) {
+      runtime.log(
+        `  [pi-disabled] Remapped step(s) ${piRemap.reassigned.join(", ")} from pi to ${piRemap.target}.`,
+      );
+    }
+
     // Before re-executing, re-check backends for usage-limit-blocked steps so a
     // step pinned to an exhausted/unavailable backend is retried on a compatible
     // available one (e.g. Codex out → Claude) instead of staying stale-blocked.
@@ -653,7 +725,7 @@ export async function goalResumeCommand(
     if (hasUsageLimitBlocked) {
       recheckUsageLimitBackends({
         steps: session.plan.steps,
-        availability: detectBackendAvailability(),
+        availability,
         enabledWorkers: resolveEnabledWorkers(opts.config?.goal),
         ...(run.backendOverride ? { backendOverride: run.backendOverride } : {}),
         onProgress: !isJson && !quiet ? (text) => runtime.log(text) : undefined,

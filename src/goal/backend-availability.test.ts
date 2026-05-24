@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { detectBackendAvailability } from "./backend-availability.js";
+import {
+  detectBackendAvailability,
+  PI_DISABLED_FOR_LAUNCH_REASON,
+} from "./backend-availability.js";
 
 type SpawnResult = {
   status?: number | null;
@@ -212,6 +215,21 @@ describe("detectBackendAvailability", () => {
       reason: "claude --help exited with code 1: still starting",
     });
     expect(tracker.getCallCount("claude", claudeHelpArgs)).toBe(2);
+  });
+
+  it("reports pi as unavailable with a launch reason (disabled for launch)", () => {
+    installProbeResponses(baseProbeResponses());
+
+    const availability = detectBackendAvailability();
+
+    expect(getAvailability(availability, "pi")).toEqual({
+      id: "pi",
+      available: false,
+      reason: PI_DISABLED_FOR_LAUNCH_REASON,
+    });
+    // Codex and Claude remain available.
+    expect(getAvailability(availability, "codex").available).toBe(true);
+    expect(getAvailability(availability, "claude_code").available).toBe(true);
   });
 
   it("probes codex with sandboxed workspace-write flags and no dangerous bypass", () => {

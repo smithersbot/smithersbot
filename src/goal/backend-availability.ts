@@ -112,8 +112,17 @@ export function getCodexAskForApprovalPlacement(): CodexAskForApprovalPlacement 
   return "unsupported";
 }
 
+/** Why pi is not selectable/assignable for launch. */
+export const PI_DISABLED_FOR_LAUNCH_REASON =
+  "Pi backend disabled for launch (not instrumented for agent-visible launch/prompt/token history; different in-process capability boundary).";
+
 export function detectBackendAvailability(): BackendAvailability[] {
-  const results: BackendAvailability[] = [{ id: "pi", available: true }];
+  // Pi is disabled for launch: it is not instrumented for agent-visible
+  // launch/prompt/token history and uses a different in-process capability
+  // boundary. The pi code/runner is preserved; it is simply not available.
+  const results: BackendAvailability[] = [
+    { id: "pi", available: false, reason: PI_DISABLED_FOR_LAUNCH_REASON },
+  ];
 
   const codexAskForApproval = getCodexAskForApprovalPlacement();
   const codexProbe = probeBackend({

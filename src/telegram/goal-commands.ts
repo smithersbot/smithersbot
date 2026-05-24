@@ -215,6 +215,8 @@ export type GoalPlanResult = {
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
 const GOAL_SEMGREP_USAGE = "Usage: /goal_semgrep <off|step|goal>";
 const GOAL_WORKERS_USAGE = "Usage: /goal_workers <codex|claude_code|both|all>";
+const GOAL_WORKERS_PI_DISABLED =
+  "`pi` is disabled for launch (not instrumented for agent-visible launch/prompt/token history). Choose `codex` or `claude_code`.";
 const GOAL_WORKER_DISPLAY_ORDER: CliWorkerId[] = ["codex", "claude_code"];
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
@@ -2319,10 +2321,15 @@ export function registerTelegramGoalCommands({
 
     const nextWorkers = parseGoalWorkersArg(rawWorkers);
     if (!nextWorkers) {
+      const normalizedRaw = rawWorkers.trim().toLowerCase();
+      const rejectionMessage =
+        normalizedRaw === "pi"
+          ? `${GOAL_WORKERS_PI_DISABLED}\n${GOAL_WORKERS_USAGE}\nCurrent: \`${currentWorkersText}\``
+          : `Invalid workers: \`${rawWorkers}\`.\n${GOAL_WORKERS_USAGE}\nCurrent: \`${currentWorkersText}\``;
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `Invalid workers: \`${rawWorkers}\`.\n${GOAL_WORKERS_USAGE}\nCurrent: \`${currentWorkersText}\``,
+        rejectionMessage,
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,

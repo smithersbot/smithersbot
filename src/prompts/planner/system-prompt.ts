@@ -18,7 +18,9 @@ function normalizePromptWorkers(workers?: CliWorkerId[]): PromptWorkerId[] {
 }
 
 function formatBackendUnion(workers: PromptWorkerId[]): string {
-  return [...workers, "pi"].map((worker) => `"${worker}"`).join(" | ");
+  // Pi is disabled for launch, so it is intentionally excluded from the
+  // backend union the planner/scout may assign.
+  return workers.map((worker) => `"${worker}"`).join(" | ");
 }
 
 function primaryPromptBackend(workers: PromptWorkerId[]): PromptWorkerId {
@@ -34,7 +36,6 @@ function buildBackendSelectionRules(workers: PromptWorkerId[]): string {
       '- Use "codex" for coding tasks (creating/modifying code or files).',
       '- Use "claude_code" for testing tasks and every other type of task.',
       '- If a step both creates/modifies code AND runs tests, use "codex".',
-      '- Only use "pi" if the user explicitly requests it.',
       "- If only one backend is available at runtime, the executor will automatically use the available backend regardless of what you specify. Plan for the ideal backend; the system handles fallback.",
     ].join("\n");
   }
@@ -44,16 +45,14 @@ function buildBackendSelectionRules(workers: PromptWorkerId[]): string {
     return [
       "BACKEND SELECTION RULES (strict):",
       `- Every step MUST include a backend: ${backendUnion}.`,
-      '- Use "codex" for every non-Pi step, including coding, testing, inspection, documentation, and reporting tasks.',
-      '- Only use "pi" if the user explicitly requests it.',
+      '- Use "codex" for every step, including coding, testing, inspection, documentation, and reporting tasks.',
     ].join("\n");
   }
 
   return [
     "BACKEND SELECTION RULES (strict):",
     `- Every step MUST include a backend: ${backendUnion}.`,
-    '- Use "claude_code" for every non-Pi step, including coding, testing, inspection, documentation, and reporting tasks.',
-    '- Only use "pi" if the user explicitly requests it.',
+    '- Use "claude_code" for every step, including coding, testing, inspection, documentation, and reporting tasks.',
   ].join("\n");
 }
 
