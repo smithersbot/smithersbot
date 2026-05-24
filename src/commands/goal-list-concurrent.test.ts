@@ -34,6 +34,19 @@ function mockRuntime(): RuntimeEnv & { logs: string[] } {
   };
 }
 
+/**
+ * Seed an active run lock (live pid) so a persisted "executing" run is treated
+ * as genuinely executing. Without a lock, loadRun() correctly reconciles a
+ * lock-less "executing" run to "blocked" for crash recovery (see run-store
+ * migrateRun). This mirrors the createRunLock helper used in the other goal
+ * command tests.
+ */
+function createRunLock(runId: string): void {
+  const lockDir = path.join(testGoalsDir, ".locks", "runs");
+  fs.mkdirSync(lockDir, { recursive: true });
+  fs.writeFileSync(path.join(lockDir, `${runId}.lock`), JSON.stringify({ pid: process.pid }));
+}
+
 const sampleRun: SerializedRun = {
   runId: "test-run-1111",
   goal: "Test concurrent access",
@@ -160,9 +173,11 @@ describe("goal-list concurrent access", () => {
     const { saveRun } = await import("../goal/run-store.js");
     const { goalListCommand } = await import("./goal-list.js");
 
-    // Save a run in "executing" state
+    // Save a run in "executing" state with a live run lock so it is genuinely
+    // executing (a lock-less "executing" run is correctly reconciled to "blocked").
     const executingRun = { ...sampleRun, state: "executing" as const };
     saveRun(executingRun);
+    createRunLock(executingRun.runId);
 
     // List should work without checking for any locks
     const rt = mockRuntime();

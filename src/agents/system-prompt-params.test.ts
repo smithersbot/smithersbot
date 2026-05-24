@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
+import fsSync, { type PathLike, type Stats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MoltbotConfig } from "../config/config.js";
 import { buildSystemPromptParams } from "./system-prompt-params.js";
@@ -31,6 +32,36 @@ function buildParams(params: { config?: MoltbotConfig; workspaceDir?: string; cw
 }
 
 describe("buildSystemPromptParams repo root", () => {
+  // vitest.config.ts forces TMPDIR=<repo>/.tmp/vitest, so os.tmpdir() temp dirs
+  // live *inside* the real repo. Without this stub, resolveRepoRoot would walk
+  // up past the throwaway workspace and discover the real repo's .git, breaking
+  // the "no repo" cases. Restrict .git discovery to repos created under the
+  // vitest temp root so each case stays independent of the enclosing repo.
+  beforeEach(() => {
+    const realStatSync = fsSync.statSync.bind(fsSync);
+    const tmpRoot = path.resolve(os.tmpdir());
+    const impl = (target: PathLike): Stats => {
+      const resolved = path.resolve(String(target));
+      if (
+        path.basename(resolved) === ".git" &&
+        resolved !== tmpRoot &&
+        !resolved.startsWith(tmpRoot + path.sep)
+      ) {
+        const err = new Error(
+          `ENOENT: no such file or directory, stat '${resolved}'`,
+        ) as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return realStatSync(target);
+    };
+    vi.spyOn(fsSync, "statSync").mockImplementation(impl as typeof fsSync.statSync);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("detects repo root from workspaceDir", async () => {
     const temp = await makeTempDir("workspace");
     const repoRoot = path.join(temp, "repo");
