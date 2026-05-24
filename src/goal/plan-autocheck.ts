@@ -30,11 +30,7 @@ import {
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliPlanRevision } from "./cli-planner.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
-import { computeCpm } from "./cpm.js";
-import { computeDisplayStatuses } from "./execution-status.js";
-import { formatPlanOutput } from "./format-output.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
-import { renderMermaid } from "./mermaid-render.js";
 import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
@@ -433,17 +429,6 @@ function resolveRunIdentity(runDir: string): { runId: string; goalsDir: string }
   return { runId, goalsDir };
 }
 
-function renderMermaidDag(plan: Plan): string {
-  let cpm: ReturnType<typeof computeCpm> | undefined;
-  try {
-    cpm = computeCpm(plan);
-  } catch {
-    cpm = undefined;
-  }
-  const displayStatuses = computeDisplayStatuses(plan.steps);
-  return renderMermaid(plan, cpm, displayStatuses);
-}
-
 function summarizeFeedback(history: string[]): string {
   if (history.length === 0) return "None.";
   const compact = history
@@ -503,12 +488,6 @@ export function buildAutocheckPrompt(params: {
   contextNotes: string[];
   userEditInstructions?: string[];
 }): string {
-  const planDetail = formatPlanOutput(params.plan, {
-    diagram: "none",
-    format: "md",
-    workingDir: params.workingDir,
-  });
-  const mermaidDag = renderMermaidDag(params.plan);
   const snapshot = buildPlanSnapshot(params.plan);
   const userEditInstructionsSection = buildUserEditInstructionsSection(params.userEditInstructions);
 
@@ -523,16 +502,11 @@ export function buildAutocheckPrompt(params: {
       params.goalText,
       "",
       ...userEditInstructionsSection,
-      "Updated /plan_detail output:",
-      planDetail,
+      "Scout facts/artifact references:",
+      "No compact scout facts were provided to this autocheck round.",
       "",
-      "Updated plan snapshot JSON:",
+      "Updated plan JSON:",
       snapshot,
-      "",
-      "Updated mermaid DAG:",
-      "```mermaid",
-      mermaidDag,
-      "```",
     ].join("\n");
   }
 
@@ -556,16 +530,11 @@ export function buildAutocheckPrompt(params: {
     ...userEditInstructionsSection,
     ...contextSection,
     ...feedbackSection,
-    "Current /plan_detail output:",
-    planDetail,
+    "Scout facts/artifact references:",
+    "No compact scout facts were provided to this autocheck round.",
     "",
-    "Current plan snapshot JSON:",
+    "Current plan JSON:",
     snapshot,
-    "",
-    "Current mermaid DAG:",
-    "```mermaid",
-    mermaidDag,
-    "```",
   ].join("\n");
 }
 

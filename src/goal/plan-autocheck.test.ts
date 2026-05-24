@@ -905,7 +905,7 @@ describe("runPlanAutocheck", () => {
     expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
     expect(
       prompt.indexOf("User-requested changes (treat as authoritative requirements):"),
-    ).toBeLessThan(prompt.indexOf("Current /plan_detail output:"));
+    ).toBeLessThan(prompt.indexOf("Current plan JSON:"));
   });
 
   it("includes user-requested edits in the resume autocheck prompt", async () => {
@@ -940,7 +940,7 @@ describe("runPlanAutocheck", () => {
     expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
     expect(
       prompt.indexOf("User-requested changes (treat as authoritative requirements):"),
-    ).toBeLessThan(prompt.indexOf("Updated /plan_detail output:"));
+    ).toBeLessThan(prompt.indexOf("Updated plan JSON:"));
   });
 
   it("injects prior feedback in next prompt when session ID extraction fails", async () => {
@@ -1338,7 +1338,8 @@ describe("runPlanAutocheck", () => {
 
     expect(prompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
     expect(prompt).toContain("You are continuing plan review in an existing reviewer session.");
-    expect(prompt).toContain("Updated /plan_detail output:");
+    expect(prompt).toContain("Updated plan JSON:");
+    expect(prompt).toContain("Scout facts/artifact references:");
     expect(prompt).toContain("Resume prompt");
     expect(prompt).not.toContain("Prior reviewer feedback summary:");
     expect(prompt).not.toContain("Do not repeat this feedback");

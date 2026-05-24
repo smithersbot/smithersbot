@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { resolveScoutTemplatePath, SCOUT_PROMPT_TEMPLATE_FILE } from "./scout/loader.js";
 import { buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts } from "./planner/system-prompt.js";
 import { REVIEW_INSTRUCTION } from "./plan-autocheck/review-instruction.js";
+import { PLAN_QUALITY_RUBRIC } from "./shared/plan-quality-rubric.js";
 import { MANUAL_TESTS_SYSTEM_PROMPT } from "./manual-tests/system-prompt.js";
 import {
   WORKER_CONTEXT,
@@ -60,6 +61,13 @@ describe("src/prompts/ — scout template", () => {
     const oldPath = path.join(repoRoot, "src", "goal", "templates", "scout_prompt_template.md");
     expect(fs.existsSync(oldPath)).toBe(false);
   });
+
+  it("references agent-history mirrors and avoids private runtime output targets", () => {
+    const template = fs.readFileSync(resolveScoutTemplatePath(), "utf8");
+    expect(template).toContain("agent/history/goals/<workspace>/<goalId>/runtime/scout/");
+    expect(template).toContain("Planning artifact directory:");
+    expect(template).not.toContain(".clawdbot-dev/goals");
+  });
 });
 
 describe("src/prompts/ — planner system prompt", () => {
@@ -77,6 +85,9 @@ describe("src/prompts/ — planner system prompt", () => {
     expect(prompt).toContain(".env.example");
     expect(prompt).toContain("Workers do not receive raw secrets by default");
     expect(prompt).toContain("only where implemented and verified");
+    expect(prompt).toContain(PLAN_QUALITY_RUBRIC);
+    expect(prompt).toContain("Produce a plan satisfying the shared plan-quality rubric");
+    expect(prompt).not.toContain("full access to the filesystem");
   });
 
   it("rejects an empty worker list", () => {
@@ -107,38 +118,36 @@ describe("src/prompts/ — plan-autocheck review instruction", () => {
     for (const needle of needles) {
       expect(REVIEW_INSTRUCTION).toContain(needle);
     }
+    expect(REVIEW_INSTRUCTION).toContain(PLAN_QUALITY_RUBRIC);
   });
 });
 
 describe("src/prompts/ — planner system prompt (Stage 2Q self-verifying)", () => {
   it("declares implementation + tests + verification belong in the same step", () => {
     const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
-    expect(prompt).toContain(
-      'DO NOT split "implement X" and "add tests for X" into separate steps.',
-    );
-    expect(prompt).toContain(
-      "Implementation + tests + focused verification belong in the same step",
-    );
+    expect(prompt).toContain(PLAN_QUALITY_RUBRIC);
+    expect(prompt).toContain("IMPLEMENTATION/TEST SPLITS");
+    expect(prompt).toContain("focused tests");
   });
 
   it("declares success criteria are additive minimums", () => {
     const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
-    expect(prompt).toContain("SUCCESS CRITERIA AS ADDITIVE MINIMUMS");
-    expect(prompt).toContain("MINIMUM bar to consider a step done");
+    expect(prompt).toContain("Every code-changing step is SELF-VERIFYING");
+    expect(prompt).toContain("Success criteria are specific");
   });
 
   it("requires focused test commands in implementation step success criteria", () => {
     const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
-    expect(prompt).toContain(
-      "Every implementation step MUST include the EXACT focused test command(s)",
-    );
+    expect(prompt).toContain("Every implementation step names exact focused test command(s)");
   });
 
-  it("embeds the Stage 2P bad fixtures verbatim as examples", () => {
+  it("keeps only compact Stage 2P anti-pattern summaries in the planner prompt", () => {
     const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
-    expect(prompt).toContain('BAD PLAN B (Stage 2P "under-tested split" anti-pattern)');
-    expect(prompt).toContain('BAD PLAN C (Stage 2P "repo-chat split" anti-pattern)');
-    expect(prompt).toContain("GOOD COMBINED VARIANT");
+    expect(prompt).toContain("CONCISE ANTI-PATTERN REMINDERS");
+    expect(prompt).toContain("Stage 2P under-tested split");
+    expect(prompt).toContain("Stage 2P repo-chat split");
+    expect(prompt).not.toContain("EXAMPLE — BAD PLAN B");
+    expect(prompt).not.toContain("GOOD COMBINED VARIANT");
   });
 });
 

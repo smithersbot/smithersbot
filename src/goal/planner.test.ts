@@ -11,6 +11,7 @@ import {
   parsePlanResultFromText,
   PlanParseError,
 } from "./planner.js";
+import { PLAN_QUALITY_RUBRIC } from "../prompts/shared/plan-quality-rubric.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
 
@@ -796,62 +797,49 @@ describe("planner", () => {
 
     it("forbids splitting implementation and tests into separate steps", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain(
-        'DO NOT split "implement X" and "add tests for X" into separate steps. Implementation + tests + focused verification belong in the same step BY DEFAULT.',
-      );
+      expect(prompt).toContain(PLAN_QUALITY_RUBRIC);
+      expect(prompt).toContain("IMPLEMENTATION/TEST SPLITS");
     });
 
     it("declares success criteria are additive minimums, not the full verification contract", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain("SUCCESS CRITERIA AS ADDITIVE MINIMUMS");
-      expect(prompt).toContain("MINIMUM bar to consider a step done");
-      expect(prompt).toContain("ADDITIVE on top of the worker's default verification contract");
+      expect(prompt).toContain("Every code-changing step is SELF-VERIFYING");
+      expect(prompt).toContain("focused tests");
     });
 
     it("forbids tsc-only success criteria for logic-changing steps", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain(
-        "Do NOT write successCriteria that only mentions `tsc` / `pnpm exec tsc` for a step that changes runtime logic",
-      );
+      expect(prompt).toContain("TSC-ONLY LOGIC STEPS");
     });
 
     it("requires the exact focused test command in implementation step success criteria", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain(
-        "Every implementation step MUST include the EXACT focused test command(s) the worker should run",
-      );
+      expect(prompt).toContain("Every implementation step names exact focused test command(s)");
       expect(prompt).toContain("pnpm vitest run src/goal/planner.test.ts");
     });
 
     it("requires regression tests for command/config/prompt/worker/repo-chat surfaces", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain(
-        "For steps that touch command/config/prompt/worker/repo-chat surfaces",
-      );
-      expect(prompt).toContain(
-        "the focused test command MUST point at the matching regression test file in the same step",
-      );
+      expect(prompt).toContain("MISSING FOCUSED REGRESSIONS");
+      expect(prompt).toContain("command-handler, config-schema, prompt, worker-behavior");
     });
 
     it("preserves an allowance for final verification-matrix and report steps", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain(
-        "A final verification/matrix/report step is allowed ONLY when it is a genuinely cross-cutting integration sweep or a report-writing task",
-      );
+      expect(prompt).toContain("EXPLICITLY ALLOWED");
     });
 
     it("includes a Stage 2P bad-fixture example for add-529-transient-classifier", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
       expect(prompt).toContain("add-529-transient-classifier");
-      expect(prompt).toContain('BAD PLAN B (Stage 2P "under-tested split" anti-pattern)');
-      expect(prompt).toContain("GOOD COMBINED VARIANT");
+      expect(prompt).toContain("Stage 2P under-tested split");
+      expect(prompt).not.toContain("GOOD COMBINED VARIANT");
     });
 
     it("includes a Stage 2P bad-fixture example for the repo-chat split", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
-      expect(prompt).toContain('BAD PLAN C (Stage 2P "repo-chat split" anti-pattern)');
+      expect(prompt).toContain("Stage 2P repo-chat split");
       expect(prompt).toContain("add-repo-chat-cli-output-extraction");
-      expect(prompt).toContain("fix-repo-chat-resolution-order");
       expect(prompt).toContain("add-repo-chat-regression-tests");
     });
   });

@@ -13,7 +13,9 @@ GOAL_ID: {{GOAL_ID}}
 1. Explore the repository structure, read relevant source files, and understand the codebase.
 2. Produce a plan with milestone-sized nodes. Aim for {{NODE_COUNT_MIN}} to {{NODE_COUNT_MAX}} nodes by default.
    - You may exceed {{NODE_COUNT_MAX}} only if strictly necessary and nodes remain milestone-sized.
-3. Write all output files to {{OUTPUT_DIR}}/ (create subdirectories as needed).
+3. Write compact scout artifacts to the provided planning artifact directory (create subdirectories as needed). These artifacts are mirrored for future agents under `<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/scout/`.
+
+Planning artifact directory: {{OUTPUT_DIR}}
 
 ## How to Explore
 
@@ -58,7 +60,7 @@ Do NOT use single-letter ids like A, B, C.
 
 You MUST create all three files below unless clarification is required.
 
-### 1. {{OUTPUT_DIR}}/plan_draft.md
+### 1. plan_draft.md
 
 The entire file MUST be wrapped between sentinel markers exactly as shown below.
 
@@ -102,7 +104,7 @@ Notes on the example:
 
 END_PLAN_DRAFT
 
-### 2. {{OUTPUT_DIR}}/node_specs/<node-id>.md
+### 2. node_specs/<node-id>.md
 
 One file per node. Each file must contain:
 
@@ -119,7 +121,7 @@ Constraints:
 
 Verification: exactly one command (for example: pnpm test src/foo.test.ts)
 
-### 3. {{OUTPUT_DIR}}/scout_report.json
+### 3. scout_report.json
 
 {
   "goal_id": "{{GOAL_ID}}",
@@ -151,7 +153,7 @@ Verification: exactly one command (for example: pnpm test src/foo.test.ts)
 
 If you cannot produce a plan because critical information is missing or the goal is underspecified, create ONLY:
 
-{{OUTPUT_DIR}}/plan_needs_clarification.md
+plan_needs_clarification.md
 
 This file must contain exactly ONE question that must be answered before planning can proceed.
 
@@ -163,7 +165,7 @@ Do NOT create any other output files when clarification is required.
 ## Rules
 
 - This is READ-ONLY analysis. Do NOT modify repository source files.
-- Write ALL output files to {{OUTPUT_DIR}}/.
+- Write ALL scout artifacts to the provided planning artifact directory; future agents should use the mirrored `agent/history/.../runtime/scout/` references.
 - Read actual code before making claims.
 - Every node in scout_report.json must have a matching node_specs/<node-id>.md file.
 - Verification must be a single runnable command.
