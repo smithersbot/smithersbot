@@ -28,7 +28,6 @@ const EXPECTED_IN_SCOPE = [
   "plan-autocheck",
   "worker",
   "repo-chat",
-  "post-execution-review",
   "manual-tests",
   "lessons",
   "repair",
@@ -111,13 +110,7 @@ describe("agent surface sandbox/security classification builder", () => {
 
   it("marks single-shot planning/review phases as credential-stripped-native-sandbox-opt-out", () => {
     const audit = buildAgentSurfaceAudit();
-    for (const surface of [
-      "scout-planner",
-      "plan-autocheck",
-      "post-execution-review",
-      "manual-tests",
-      "lessons",
-    ]) {
+    for (const surface of ["scout-planner", "plan-autocheck", "manual-tests", "lessons"]) {
       const entry = audit.find((e) => e.surface === surface)!;
       for (const backend of ["codex", "claude_code"] as const) {
         const classification = entry.backends[backend]!;

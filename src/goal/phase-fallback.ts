@@ -1,6 +1,6 @@
 // Shared single-attempt backend fallback for lightweight backend-driven phases
-// (post-execution review, planner/scout, plan autocheck, manual tests, lessons,
-// repo-chat). The worker execution loop in agent-executor.ts has its own
+// (planner/scout, plan autocheck, manual tests, lessons, repo-chat). The worker
+// execution loop in agent-executor.ts has its own
 // attempt/fallback machinery; this helper gives every *other* phase the same
 // usage-limit classification, single-attempt fallback, and consistent messaging
 // without duplicating classification logic.

@@ -23,6 +23,7 @@ const mockSpawnSync = vi.fn();
 const mockExecFileSync = vi.fn();
 const mockRunCliProcess = vi.fn();
 const mockResolveClaudeBinary = vi.fn();
+const mockExtractRunLessons = vi.fn();
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
@@ -98,6 +99,15 @@ vi.mock("./cli-process.js", () => ({
 vi.mock("./scout.js", () => ({
   resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
 }));
+
+vi.mock("./lessons.js", async () => {
+  const actual = await vi.importActual<typeof import("./lessons.js")>("./lessons.js");
+  return {
+    ...actual,
+    extractRunLessons: (...args: Parameters<typeof actual.extractRunLessons>) =>
+      mockExtractRunLessons(...args),
+  };
+});
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -200,6 +210,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
     mockExecFileSync.mockReturnValue("");
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
+    mockExtractRunLessons.mockResolvedValue([]);
     mockRunCliProcess.mockResolvedValue({
       stdout: '{"approved":true,"issues":[]}',
       stderr: "",
@@ -1801,7 +1812,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it("runs post-execution review by default when a base SHA is available", async () => {
+  it("does not spawn the LLM post-execution review after a completed goal", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -1812,113 +1823,15 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       summary: "Done",
       turnsUsed: 1,
     });
-    mockRunCliProcess.mockResolvedValueOnce({
-      stdout: '{"approved":true,"issues":[]}',
-      stderr: "",
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      durationMs: 20,
-    });
-
-    const { executeGoalWithAgent } = await import("./agent-executor.js");
-    const outcome = await executeGoalWithAgent({
-      session,
-      runId: "run-post-review-approved",
-      workingDir: "/tmp/moltbot-goal-test",
-    });
-
-    expect(outcome.status).toBe("done");
-    if (outcome.status === "done") {
-      expect(outcome.summary).toContain("**Post-Execution Review**");
-      expect(outcome.summary).toContain("Approved.");
-    }
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      "git",
-      ["-C", "/tmp/moltbot-goal-test", "diff", "base-sha-review...HEAD"],
-      expect.any(Object),
-    );
-    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
-  });
-
-  it("runs one system-polish step when review finds actionable issues", async () => {
-    const step = makeStep({ backend: "codex" });
-    const plan = makePlan([step]);
-    const session = makeSession(plan);
-    session.taskCheckpoints = { "1": { baseSha: "base-sha-polish" } };
-
-    mockCliExecute
-      .mockResolvedValueOnce({
-        status: "complete",
-        summary: "Primary implementation done",
-        turnsUsed: 1,
-      })
-      .mockResolvedValueOnce({
-        status: "complete",
-        summary: "Polish applied",
-        turnsUsed: 1,
-      });
-
-    mockRunCliProcess
-      .mockResolvedValueOnce({
-        stdout: '{"approved":false,"issues":["Handle empty payloads in parser"]}',
-        stderr: "",
-        timedOut: false,
-        exitCode: 0,
-        signal: null,
-        durationMs: 25,
-      })
-      .mockResolvedValueOnce({
-        stdout: '{"approved":false,"issues":["Parser still misses empty payload edge case"]}',
-        stderr: "",
-        timedOut: false,
-        exitCode: 0,
-        signal: null,
-        durationMs: 30,
-      });
-
-    const { executeGoalWithAgent } = await import("./agent-executor.js");
-    const outcome = await executeGoalWithAgent({
-      session,
-      runId: "run-post-review-polish",
-      workingDir: "/tmp/moltbot-goal-test",
-    });
-
-    expect(outcome.status).toBe("done");
-    expect(mockCliExecute).toHaveBeenCalledTimes(2);
-    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
-    const polishStep = plan.steps.find((item) => item.id === "system-polish");
-    expect(polishStep).toBeDefined();
-    expect(polishStep?.successCriteria).toBe("All review issues addressed");
-    expect(polishStep?.dependsOn).toContain("1");
-    if (outcome.status === "done") {
-      expect(outcome.summary).toContain("System-polish executed once.");
-      expect(outcome.summary).toContain("Parser still misses empty payload edge case");
-    }
-  });
-
-  it("surfaces API-envelope review errors with a failed: prefix", async () => {
-    const step = makeStep({ backend: "codex" });
-    const plan = makePlan([step]);
-    const session = makeSession(plan);
-    session.taskCheckpoints = { "1": { baseSha: "base-sha-api-error" } };
-
-    mockCliExecute.mockResolvedValueOnce({
-      status: "complete",
-      summary: "Done",
-      turnsUsed: 1,
-    });
-    mockRunCliProcess.mockResolvedValueOnce({
+    // If the removed review still ran it would consume this error_max_turns
+    // envelope and leak it into the summary; assert it never does.
+    mockRunCliProcess.mockResolvedValue({
       stdout: JSON.stringify({
         type: "result",
-        subtype: "success",
         is_error: true,
-        api_error_status: 400,
-        duration_ms: 7447,
-        duration_api_ms: 0,
-        num_turns: 1,
-        result: "Prompt is too long",
-        stop_reason: "stop_sequence",
+        stop_reason: "tool_use",
+        num_turns: 2,
+        result: "error_max_turns",
       }),
       stderr: "",
       timedOut: false,
@@ -1930,25 +1843,94 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
-      runId: "run-post-review-api-error",
+      runId: "run-post-review-removed",
       workingDir: "/tmp/moltbot-goal-test",
     });
 
     expect(outcome.status).toBe("done");
+    // The review's backend spawn (runCliProcess) must never be invoked.
+    expect(mockRunCliProcess).not.toHaveBeenCalled();
     if (outcome.status === "done") {
-      expect(outcome.summary).toContain("**Post-Execution Review**");
-      expect(outcome.summary).toContain(
-        "Post-execution review failed: API 400: Prompt is too long",
-      );
-      expect(outcome.summary).not.toContain("Post-execution review skipped:");
+      expect(outcome.summary).not.toContain("Post-Execution Review");
+      expect(outcome.summary).not.toContain("Post-execution review skipped");
+      expect(outcome.summary).not.toContain("Approved.");
     }
   });
 
-  it("keeps the skipped: prefix when no base SHA is available", async () => {
+  it("never injects a system-polish step now that the review is removed", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
-    // No taskCheckpoints, so resolvePostExecutionReviewBaseSha returns undefined.
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-polish" } };
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Primary implementation done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-no-polish",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    // Only the primary task runs; no review-driven second worker pass.
+    expect(mockCliExecute).toHaveBeenCalledTimes(1);
+    expect(plan.steps.find((item) => item.id === "system-polish")).toBeUndefined();
+  });
+
+  it("still generates manual tests after a completed goal", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const complete = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        tests: [
+          {
+            description: "Verify the thing works end to end",
+            criticality: 8,
+            detail: "Run the flow and confirm the expected output appears.",
+          },
+        ],
+      }),
+    });
+    const manualTestsClient: GoalLlmClient = { complete };
+    const onStatusChange = vi.fn();
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-manual-tests-still-run",
+      workingDir: "/tmp/moltbot-goal-test",
+      manualTestsClient,
+      onStatusChange,
+    });
+
+    expect(outcome.status).toBe("done");
+    // The manual-tests phase still runs after completion.
+    expect(complete).toHaveBeenCalled();
+    const allDone = onStatusChange.mock.calls
+      .map((call) => call[0] as { type: string; manualTestsStatus?: string })
+      .find((event) => event.type === "all_done");
+    expect(allDone).toBeDefined();
+    expect(allDone?.manualTestsStatus).toBe("generated");
+  });
+
+  it("never collects a review diff for the removed phase even with a base SHA", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-api-error" } };
 
     mockCliExecute.mockResolvedValueOnce({
       status: "complete",
@@ -1959,15 +1941,44 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
-      runId: "run-post-review-no-base-sha",
+      runId: "run-no-review-diff",
       workingDir: "/tmp/moltbot-goal-test",
     });
 
     expect(outcome.status).toBe("done");
-    if (outcome.status === "done") {
-      expect(outcome.summary).toContain("Post-execution review skipped: no base SHA available.");
-      expect(outcome.summary).not.toContain("Post-execution review failed:");
-    }
+    // No `git diff <base>...HEAD` collection for a post-exec review remains.
+    const reviewDiffCalls = mockExecFileSync.mock.calls.filter((call) => {
+      const argv = call[1];
+      return (
+        Array.isArray(argv) &&
+        argv.includes("diff") &&
+        argv.some((arg: unknown) => typeof arg === "string" && arg.includes("...HEAD"))
+      );
+    });
+    expect(reviewDiffCalls).toHaveLength(0);
+    expect(mockRunCliProcess).not.toHaveBeenCalled();
+  });
+
+  it("still runs lessons extraction after a completed goal", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-lessons-still-run",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockExtractRunLessons).toHaveBeenCalled();
   });
 
   it("blocks when the selected backend is unavailable", async () => {

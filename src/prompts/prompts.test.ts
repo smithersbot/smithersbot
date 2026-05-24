@@ -24,7 +24,6 @@ import {
   CODEX_STYLE_DIRECTIVE,
   buildResponseFileInstruction,
 } from "./repo-chat/response-file-instruction.js";
-import { buildPostExecutionReviewPrompt } from "./post-execution-review/build-prompt.js";
 import {
   buildClaudeExtractionPrompt,
   buildLessonExtractionPrompt,
@@ -37,7 +36,6 @@ import { loadAgentWorkspaceTemplate } from "./agent-workspace/templates.js";
 // no consumer can silently drift away from the centralized text.
 import { buildPlanSystemPrompt as buildPlanSystemPromptFromGoal } from "../goal/planner.js";
 import { resolveScoutTemplatePath as resolveScoutTemplatePathFromGoal } from "../goal/scout.js";
-import { buildPostExecutionReviewPrompt as buildPostExecutionReviewPromptFromGoal } from "../goal/post-execution-review.js";
 import { WORKER_CONTEXT as WORKER_CONTEXT_FROM_GOAL } from "../goal/worker-context.js";
 import { REPO_CHAT_CONTEXT as REPO_CHAT_CONTEXT_FROM_CONSUMER } from "../repo-chat/repo-chat-context.js";
 
@@ -272,36 +270,6 @@ describe("src/prompts/ — repo-chat context and delivery", () => {
   });
 });
 
-describe("src/prompts/ — post-execution review", () => {
-  it("re-exports the canonical builder from src/goal/post-execution-review.ts", () => {
-    expect(buildPostExecutionReviewPromptFromGoal).toBe(buildPostExecutionReviewPrompt);
-  });
-
-  it("renders step ids, success criteria, and the diff", () => {
-    const prompt = buildPostExecutionReviewPrompt({
-      goal: "Test goal",
-      steps: [
-        {
-          id: "alpha",
-          description: "Do alpha",
-          shortSummary: "Alpha",
-          dependsOn: [],
-          successCriteria: "alpha is done",
-          constraints: [],
-          status: "done",
-          backend: "claude_code",
-          taskSummary: "Alpha completed",
-        },
-      ],
-      diff: "diff --git a/foo b/foo\n+added",
-    });
-    expect(prompt).toContain("alpha — Alpha");
-    expect(prompt).toContain("alpha is done");
-    expect(prompt).toContain("Test goal");
-    expect(prompt).toContain("```diff");
-  });
-});
-
 describe("src/prompts/ — lessons", () => {
   it("buildLessonExtractionPrompt embeds run metadata", () => {
     const prompt = buildLessonExtractionPrompt({
@@ -403,12 +371,6 @@ describe("src/prompts/ — no drift in consumer source files", () => {
       description: "lesson extraction prompt should not live in src/goal/lessons.ts",
     },
     {
-      consumer: path.join("src", "goal", "post-execution-review.ts"),
-      needle: "Review this diff for: verify that per-step success criteria were met",
-      description:
-        "post-execution review prompt should not live in src/goal/post-execution-review.ts",
-    },
-    {
       consumer: path.join("src", "repo-chat", "repo-chat-worker.ts"),
       needle: "FINAL RESPONSE (CRITICAL - READ THIS CAREFULLY)",
       description:
@@ -448,9 +410,6 @@ describe("src/prompts/ — no drift in consumer source files", () => {
     expect(fs.existsSync(path.join(promptsRoot, "repo-chat", "response-file-instruction.ts"))).toBe(
       true,
     );
-    expect(fs.existsSync(path.join(promptsRoot, "post-execution-review", "build-prompt.ts"))).toBe(
-      true,
-    );
     expect(fs.existsSync(path.join(promptsRoot, "lessons", "extraction-prompt.ts"))).toBe(true);
     expect(fs.existsSync(path.join(promptsRoot, "repair", "repo-chat-repair.ts"))).toBe(true);
   });
@@ -473,7 +432,6 @@ describe("src/prompts/ — lifecycle persistence coverage", () => {
       "Repo-chat context",
       "Repo-chat delivery",
       "Repo-chat repair",
-      "Post-execution review",
       "Manual-test suggester",
       "Lesson extraction",
     ];

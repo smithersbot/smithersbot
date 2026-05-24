@@ -1,5 +1,3 @@
-import { execFileSync } from "node:child_process";
-
 import type { MoltbotConfig } from "../config/config.js";
 import type { ClaudeCodeAuthMode, CliWorkerId, SemgrepMode } from "../config/types.goal.js";
 import {
@@ -67,12 +65,6 @@ import { orderStepsCriticalPathFirst, computeCriticalPathScores } from "./plan-o
 import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { generateManualTests, isNoBackendManualTestsError } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
-import {
-  isApiErrorEnvelopeReason,
-  runPostExecutionReview,
-  resolvePostExecutionReviewBaseSha,
-  truncateSingleLine,
-} from "./post-execution-review.js";
 import {
   appendGoalWorkingEntry,
   appendRalphContext,
@@ -287,7 +279,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     onProgress,
     onStatusChange,
     abortSignal,
-    claudeCodeAuth = "subscription",
   } = params;
 
   const plan = session.plan;
@@ -1014,231 +1005,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   if (allDone && !finalBuildGateFailurePrompt) {
     session.state = "done";
-    let postExecutionReviewNote: string | undefined;
-    const shouldRunPostExecutionReview = plan.buildGate?.postExecutionReview !== false;
-    const reviewBaseSha = resolvePostExecutionReviewBaseSha(plan.steps, session.taskCheckpoints);
-
-    if (!shouldRunPostExecutionReview) {
-      postExecutionReviewNote =
-        "Post-execution review skipped: disabled by buildGate.postExecutionReview.";
-    } else if (!reviewBaseSha) {
-      postExecutionReviewNote = "Post-execution review skipped: no base SHA available.";
-    } else {
-      let reviewDiff: string | undefined;
-      try {
-        reviewDiff = execFileSync("git", ["-C", workingDir, "diff", `${reviewBaseSha}...HEAD`], {
-          encoding: "utf8",
-          maxBuffer: 64 * 1024 * 1024,
-          timeout: 15_000,
-        });
-      } catch (error) {
-        postExecutionReviewNote = `Post-execution review skipped: failed to collect diff (${truncateSingleLine(formatExecError(error))}).`;
-      }
-
-      if (reviewDiff !== undefined) {
-        onProgress?.("  [review] Running post-execution code review...");
-        const initialReview = await runPostExecutionReview({
-          runId,
-          goal: session.goal,
-          steps: orderedSteps,
-          diff: reviewDiff,
-          workingDir,
-          claudeCodeAuth,
-          abortSignal: effectiveAbort,
-        });
-
-        if (initialReview.status === "error") {
-          const prefix = isApiErrorEnvelopeReason(initialReview.reason)
-            ? "Post-execution review failed"
-            : "Post-execution review skipped";
-          postExecutionReviewNote = `${prefix}: ${initialReview.reason}.`;
-        } else if (initialReview.status === "approved") {
-          postExecutionReviewNote = "Approved.";
-        } else {
-          const actionableIssues = initialReview.issues;
-          if (actionableIssues.length === 0) {
-            postExecutionReviewNote =
-              "Issues found, but reviewer did not provide actionable issue details.";
-          } else {
-            onProgress?.(
-              `  [review] Found ${actionableIssues.length} issue${actionableIssues.length === 1 ? "" : "s"}; running system-polish step.`,
-            );
-
-            const dependsOn = orderedSteps
-              .filter((step) => step.status === "done")
-              .map((step) => step.id);
-            const polishDescription = [
-              "Address post-execution review issues:",
-              ...actionableIssues.map((issue, index) => `${index + 1}. ${issue}`),
-            ].join("\n");
-            const existingPolishStep = plan.steps.find((step) => step.id === "system-polish");
-            const polishStep: PlanStep =
-              existingPolishStep ??
-              ({
-                id: "system-polish",
-                description: polishDescription,
-                shortSummary: "Apply review polish",
-                dependsOn,
-                successCriteria: "All review issues addressed",
-                constraints: ["No ralph; address the review issues directly in this attempt."],
-                status: "pending",
-                durationMinutes: 20,
-              } satisfies PlanStep);
-            if (!existingPolishStep) {
-              plan.steps.push(polishStep);
-              orderedSteps.push(polishStep);
-            } else {
-              existingPolishStep.description = polishDescription;
-              existingPolishStep.shortSummary = "Apply review polish";
-              existingPolishStep.dependsOn = dependsOn;
-              existingPolishStep.successCriteria = "All review issues addressed";
-              existingPolishStep.constraints = [
-                "No ralph; address the review issues directly in this attempt.",
-              ];
-              existingPolishStep.status = "pending";
-              existingPolishStep.turnsUsed = 0;
-              existingPolishStep.taskSummary = undefined;
-              existingPolishStep.blockedReason = undefined;
-              existingPolishStep.blockedQuestion = undefined;
-              existingPolishStep.failedDetail = undefined;
-              existingPolishStep.ralphDetail = undefined;
-            }
-
-            const polishBackend = clampBackendForEnabledWorkers(
-              resolveBackendForStep(polishStep, backendOverride, defaultBackend),
-              resolvedEnabledWorkers,
-            );
-            if (polishStep.executedBackend !== polishBackend) {
-              polishStep.executedBackend = polishBackend;
-            }
-            const polishRunner = polishBackend === "pi" ? piRunner : cliRunners[polishBackend];
-            let polishAttempted = false;
-            if (!polishRunner) {
-              postExecutionReviewNote =
-                "Issues found. System polish skipped because no compatible backend was available.";
-            } else {
-              polishAttempted = true;
-              const polishStartMs = Date.now();
-              const polishWorkerDir = resolveWorkerDir(runId, polishStep.id);
-              const completedSummaries = orderedSteps
-                .filter((step) => step.status === "done" && step.taskSummary)
-                .map((step) => ({ id: step.id, summary: step.taskSummary! }));
-              const polishContext: TaskRunnerContext = {
-                task: polishStep,
-                plan,
-                goal: session.goal,
-                workingDir,
-                runId,
-                denyPolicy: HARD_DENIES,
-                completedSummaries,
-                attemptBundles: loadAttemptBundles(polishWorkerDir),
-                onProgress,
-                abortSignal: effectiveAbort,
-                timeoutMs: resolveTaskTimeoutMs(polishStep.durationMinutes, timeoutMs),
-              };
-
-              polishStep.status = "in_progress";
-              onTaskStart?.(polishStep.id);
-              onProgress?.(
-                `\n--- Task ${polishStep.id} [${polishBackend}]: ${polishStep.description} ---`,
-              );
-              const polishResult = await polishRunner.execute(polishContext);
-              let polishCompleted = false;
-              let polishTaskFailed = false;
-              if (polishResult.status === "ralph") {
-                polishStep.turnsUsed = polishResult.turnsUsed;
-                polishStep.status = "blocked";
-                polishStep.blockedReason = "task_failed";
-                polishStep.blockedQuestion =
-                  "system-polish returned ralph, and additional polish cycles are disabled.";
-                polishStep.failedDetail = {
-                  whatTried:
-                    polishResult.ralphDetail?.approachTried ?? "system-polish returned ralph.",
-                  errorType: "system_polish_ralph",
-                  suggestedNext: "Proceeding without additional polish attempts.",
-                  needsRevert: false,
-                };
-                polishStep.taskSummary = undefined;
-                polishStep.ralphDetail = undefined;
-                onProgress?.(
-                  "  [warn] system-polish returned ralph; continuing without additional polish cycles.",
-                );
-                polishTaskFailed = true;
-              } else {
-                applyTaskResult(polishStep, polishResult, onProgress);
-                polishCompleted = polishResult.status === "complete";
-                polishTaskFailed = polishStep.blockedReason === "task_failed";
-              }
-              recordTaskResult(session, polishStep, polishStartMs, onTaskUpdate);
-              if (polishCompleted) {
-                appendGoalWorkingEntry(
-                  runId,
-                  polishStep.id,
-                  "done",
-                  polishStep.taskSummary ?? "Completed.",
-                );
-              } else if (polishTaskFailed) {
-                appendGoalWorkingEntry(
-                  runId,
-                  polishStep.id,
-                  "failed",
-                  polishStep.failedDetail?.whatTried ?? polishStep.blockedQuestion ?? "Failed.",
-                );
-              }
-
-              let postPolishDiff = reviewDiff;
-              try {
-                postPolishDiff = execFileSync(
-                  "git",
-                  ["-C", workingDir, "diff", `${reviewBaseSha}...HEAD`],
-                  {
-                    encoding: "utf8",
-                    maxBuffer: 64 * 1024 * 1024,
-                    timeout: 15_000,
-                  },
-                );
-              } catch (error) {
-                onProgress?.(
-                  `  [warn] Post-polish diff collection failed: ${truncateSingleLine(formatExecError(error))}`,
-                );
-              }
-
-              const postPolishReview = await runPostExecutionReview({
-                runId,
-                goal: session.goal,
-                steps: orderedSteps,
-                diff: postPolishDiff,
-                workingDir,
-                claudeCodeAuth,
-                abortSignal: effectiveAbort,
-              });
-              if (postPolishReview.status === "approved") {
-                postExecutionReviewNote = "Approved after system-polish.";
-              } else {
-                const remainingIssues =
-                  postPolishReview.status === "rejected" && postPolishReview.issues.length > 0
-                    ? postPolishReview.issues
-                    : actionableIssues;
-                const issueLines = remainingIssues.map((issue) => `- ${issue}`).join("\n");
-                const suffix =
-                  postPolishReview.status === "error"
-                    ? `\nReview rerun failed after polish: ${postPolishReview.reason}.`
-                    : "";
-                postExecutionReviewNote = [
-                  "Issues found after review.",
-                  polishAttempted ? "System-polish executed once." : "",
-                  "Remaining issues:",
-                  issueLines,
-                  suffix,
-                ]
-                  .filter(Boolean)
-                  .join("\n");
-              }
-            }
-          }
-        }
-      }
-    }
 
     let prUrl: string | undefined;
     const githubPushConfig = config?.goal?.githubPush;
@@ -1318,7 +1084,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         onProgress?.(`  [manual-tests] Generation failed: ${manualTestsError}`);
       }
     }
-    const baseSummary = buildGoalSummary({
+    const summary = buildGoalSummary({
       goal: session.goal,
       goalHeadline: plan.shortSummary,
       runId,
@@ -1327,9 +1093,6 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       manualTests,
       channel: params.channel,
     });
-    const summary = postExecutionReviewNote
-      ? `${baseSummary}\n\n**Post-Execution Review**\n${postExecutionReviewNote}`
-      : baseSummary;
     if (onStatusChange) {
       await onStatusChange({
         type: "all_done",

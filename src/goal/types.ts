@@ -101,7 +101,11 @@ export type PlanStep = {
 export type PlanBuildGate = {
   commands: string[];
   runBetweenSteps: boolean;
-  /** Enable/disable post-execution system review (defaults to true). */
+  /**
+   * Inert: the LLM post-execution diff review was removed from the goal
+   * lifecycle. Retained only so older serialized plans (and planner output that
+   * still emits it) keep parsing; it no longer drives any behavior.
+   */
   postExecutionReview?: boolean;
 };
 

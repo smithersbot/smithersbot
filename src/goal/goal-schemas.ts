@@ -33,6 +33,8 @@ export const GoalWorkerOutputSchema = z.discriminatedUnion("status", [
 const PlanBuildGateInputSchema = z.object({
   commands: z.array(z.string()),
   runBetweenSteps: z.boolean(),
+  // Inert: post-execution LLM diff review was removed. Kept optional so old
+  // serialized plans / planner output that still include it keep parsing.
   postExecutionReview: z.boolean().optional(),
 });
 

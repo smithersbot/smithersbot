@@ -952,7 +952,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           );
           const warning =
             `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
-            "Auto-approving plan to keep execution unblocked; verify results in post-execution review.";
+            "Auto-approving plan to keep execution unblocked; verify results via the build/test/lint gate.";
           contextNotes.push(warning);
           result = {
             stdout: warning,

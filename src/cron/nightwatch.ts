@@ -616,7 +616,6 @@ export const NIGHTWATCH_PROMPT_KEY_FILES = {
     "src/telegram/goal-commands.ts",
     "src/goal/goal-tools.ts",
     "src/goal/build-gate.ts",
-    "src/goal/post-execution-review.ts",
     "src/goal/agent-executor-helpers.ts",
     "src/goal/cli-planner.ts",
     "src/goal/scout.ts",

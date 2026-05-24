@@ -16,8 +16,8 @@
 //     deny matrices (private env, repo .env*, symlink escape, auth/session
 //     paths) are proven by src/goal/backend-sandbox.test.ts; the live OS-level
 //     bubblewrap proof is env-gated (see captureLiveSandboxProofStatus).
-//   - scout/planner, plan-autocheck, post-execution-review, lessons, and
-//     manual-tests spawn the backend with credential-stripped env
+//   - scout/planner, plan-autocheck, lessons, and manual-tests spawn the backend
+//     with credential-stripped env
 //     (buildCredentialStrippedEnv / buildClaudeCodeEnv from
 //     src/goal/claude-code-env.ts) but DO NOT use the shared native sandbox
 //     helper: Codex gets its coarse built-in `--sandbox read-only` /
@@ -269,25 +269,6 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
           "claude_code",
           "src/repo-chat/repo-chat-worker.ts buildClaudeCodeSandboxLaunchConfig(purpose=repo-chat) + buildClaudeCodeEnv",
           "Claude Code native fail-closed sandbox settings (read-only) via shared helper",
-        ),
-      },
-    },
-    {
-      surface: "post-execution-review",
-      inScope: true,
-      sourceFile: "src/goal/post-execution-review.ts",
-      description:
-        "Post-execution review of the diff (single-pass or chunked). Spawns the backend per chunk.",
-      backends: {
-        codex: optOutBackend(
-          "codex",
-          "src/goal/post-execution-review.ts (`exec --sandbox workspace-write`) + buildCredentialStrippedEnv(stripAuthKeys)",
-          "Codex exec `--sandbox workspace-write`, credential-stripped env",
-        ),
-        claude_code: optOutBackend(
-          "claude_code",
-          "src/goal/post-execution-review.ts + buildClaudeCodeEnv(claudeCodeAuth)",
-          "Claude print mode, credential + subscription-auth stripped env, no native sandbox",
         ),
       },
     },
