@@ -261,4 +261,34 @@ describe("runtime mirror", () => {
       ]),
     );
   });
+
+  it("mirrors cron jobs and writes an index when no run logs exist yet", () => {
+    const cronDir = path.join(tmpDir, "runtime", "cron-no-runs");
+    const destinationDir = path.join(tmpDir, "agent-history", "cron-no-runs");
+    writeText(path.join(cronDir, "jobs.json"), JSON.stringify({ version: 1, jobs: [] }));
+    writeText(path.join(cronDir, "jobs.json.bak"), "backup");
+    writeText(path.join(cronDir, "unrelated.txt"), "ignore");
+
+    const index = mirrorCronRuntimeToAgentHistory({
+      storePath: path.join(cronDir, "jobs.json"),
+      destinationDir,
+    });
+
+    expect(fs.existsSync(path.join(destinationDir, "index.json"))).toBe(true);
+    expect(fs.existsSync(path.join(destinationDir, "jobs.json"))).toBe(true);
+    expect(fs.existsSync(path.join(destinationDir, "jobs.json.bak"))).toBe(false);
+    expect(fs.existsSync(path.join(destinationDir, "unrelated.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(destinationDir, "runs"))).toBe(false);
+    expect(index.entries).toEqual([
+      expect.objectContaining({
+        relativePath: "jobs.json",
+        kind: "cron-jobs",
+        category: "cron-jobs",
+        sourceKind: "cron-runtime",
+        skipped: false,
+        truncated: false,
+      }),
+    ]);
+    expect(readIndex(path.join(destinationDir, "index.json")).entries).toHaveLength(1);
+  });
 });

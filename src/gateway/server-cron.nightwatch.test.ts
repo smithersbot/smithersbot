@@ -213,6 +213,28 @@ describe("buildGatewayCronService nightwatch routing", () => {
     });
   });
 
+  it("mirrors an existing cron store during service build before any run finishes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "server-cron-store-"));
+    const storePath = path.join(dir, "cron", "jobs.json");
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(storePath, JSON.stringify({ version: 1, jobs: [] }), "utf8");
+    mockResolveCronStorePath.mockReturnValueOnce(storePath);
+
+    try {
+      const { buildGatewayCronService } = await import("./server-cron.js");
+      buildGatewayCronService({
+        cfg: runtimeCfg,
+        deps: {} as never,
+        broadcast: vi.fn(),
+      });
+
+      expect(mockMirrorCronRuntimeToAgentHistory).toHaveBeenCalledWith({ storePath });
+      expect(mockAppendCronRunLog).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("swallows cron runtime mirror failures after recording a warning event", async () => {
     const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "server-cron-managed-"));
     const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;

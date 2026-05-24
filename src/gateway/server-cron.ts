@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import type { CliDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
@@ -21,6 +22,32 @@ export type GatewayCronState = {
   storePath: string;
   cronEnabled: boolean;
 };
+
+function mirrorCronRuntimeBestEffort(params: {
+  storePath: string;
+  phase: "startup" | "cron";
+  jobId?: string;
+  requireStoreFile?: boolean;
+}): void {
+  if (params.requireStoreFile && !fs.existsSync(params.storePath)) return;
+  try {
+    mirrorCronRuntimeToAgentHistory({ storePath: params.storePath });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    appendAgentHistoryEventBestEffort(
+      { kind: "cron" },
+      {
+        event: "runtime_mirror_warning",
+        phase: params.phase,
+        status: "warning",
+        errorClass: err instanceof Error ? err.name : "runtime_mirror_error",
+        outputSummary: `Runtime mirror failed: ${message}`,
+        ...(params.jobId ? { jobId: params.jobId } : {}),
+      },
+    );
+    getChildLogger({ module: "cron" }).warn({ err: message }, "cron: runtime mirror failed");
+  }
+}
 
 export function buildGatewayCronService(params: {
   cfg: ReturnType<typeof loadConfig>;
@@ -109,23 +136,7 @@ export function buildGatewayCronService(params: {
           nextRunAtMs: evt.nextRunAtMs,
         })
           .then(() => {
-            try {
-              mirrorCronRuntimeToAgentHistory({ storePath });
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              appendAgentHistoryEventBestEffort(
-                { kind: "cron" },
-                {
-                  event: "runtime_mirror_warning",
-                  phase: "cron",
-                  status: "warning",
-                  errorClass: err instanceof Error ? err.name : "runtime_mirror_error",
-                  outputSummary: `Runtime mirror failed: ${message}`,
-                  jobId: evt.jobId,
-                },
-              );
-              cronLogger.warn({ err: message }, "cron: runtime mirror failed");
-            }
+            mirrorCronRuntimeBestEffort({ storePath, phase: "cron", jobId: evt.jobId });
           })
           .catch((err) => {
             cronLogger.warn({ err: String(err), logPath }, "cron: run log append failed");
@@ -133,6 +144,8 @@ export function buildGatewayCronService(params: {
       }
     },
   });
+
+  mirrorCronRuntimeBestEffort({ storePath, phase: "startup", requireStoreFile: true });
 
   void registerNightwatchJob(cron, params.cfg.cron?.nightwatch).catch((err) => {
     cronLogger.warn({ err: String(err) }, "cron: failed to register nightwatch job");
