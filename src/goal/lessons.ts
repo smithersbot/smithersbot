@@ -2,6 +2,7 @@ import * as crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
 import {
   buildClaudeExtractionPrompt,
   buildLessonExtractionPrompt,
@@ -49,6 +50,7 @@ const LESSON_EXTRACTION_TIMEOUT_MS = 120_000;
 const MAX_PLAN_HISTORY_FOR_PROMPT = 12;
 const MAX_RALPH_INSIGHTS_FOR_PROMPT = 20;
 const MAX_STEP_RESULTS_FOR_PROMPT = 20;
+const MAX_ATTEMPT_SUMMARIES_FOR_PROMPT = 20;
 const MAX_SUMMARY_TEXT_CHARS = 500;
 const LESSONS_LOCK_RETRY_DELAY_MS = 20;
 const LESSONS_LOCK_TIMEOUT_MS = 5_000;
@@ -666,6 +668,51 @@ function collectRalphInsights(
   return insights.slice(-MAX_RALPH_INSIGHTS_FOR_PROMPT);
 }
 
+function resolveRuntimeMirrorDir(runId: string, workingDir: string): string {
+  return path.join(
+    resolveAgentGoalHistoryDir(workspaceNameFromWorkingDir(workingDir), runId),
+    "runtime",
+  );
+}
+
+function collectWorkerAttemptSummaries(
+  runId: string,
+  run: SerializedRun,
+): Array<{
+  stepId: string;
+  attemptNumber: number;
+  outcome: string;
+  backend: string;
+  changedFiles?: readonly string[];
+  errorClassification?: string;
+}> {
+  const attempts: Array<{
+    stepId: string;
+    attemptNumber: number;
+    outcome: string;
+    backend: string;
+    changedFiles?: readonly string[];
+    errorClassification?: string;
+  }> = [];
+  for (const stepId of collectStepIds(run)) {
+    for (const bundle of loadAttemptBundles(resolveWorkerDir(runId, stepId))) {
+      attempts.push({
+        stepId,
+        attemptNumber: bundle.attemptNumber,
+        outcome: bundle.outcome,
+        backend: bundle.backend,
+        ...(bundle.changedFiles && bundle.changedFiles.length > 0
+          ? { changedFiles: bundle.changedFiles.slice(0, 8) }
+          : {}),
+        ...(bundle.errorClassification
+          ? { errorClassification: truncateText(bundle.errorClassification, 120) }
+          : {}),
+      });
+    }
+  }
+  return attempts.slice(-MAX_ATTEMPT_SUMMARIES_FOR_PROMPT);
+}
+
 function buildCorrectionSummary(
   runId: string,
   workingDir: string,
@@ -678,6 +725,7 @@ function buildCorrectionSummary(
     `Run ID: ${runId}`,
     `Working directory: ${workingDir}`,
     `Goal: ${truncateText(run.goal, 260)}`,
+    `Agent-history runtime mirror: ${resolveRuntimeMirrorDir(runId, workingDir)}/`,
     "",
   ];
 
@@ -720,17 +768,55 @@ function buildCorrectionSummary(
     ([, result]) => !result.success || Boolean(result.error),
   );
   if (stepResults.length > 0) {
-    lines.push("Step results:");
+    lines.push("Step results (compact; full redacted output is in the runtime mirror):");
     for (const [stepId, result] of stepResults) {
       lines.push(`- ${stepId}: ${result.success ? "success" : "failed"}`);
       if (result.error) lines.push(`  Error: ${truncateText(result.error, 220)}`);
       if (result.output) lines.push(`  Output: ${truncateText(result.output, 220)}`);
     }
+    lines.push("");
+  }
+
+  const attempts = collectWorkerAttemptSummaries(runId, run);
+  if (attempts.length > 0) {
+    lines.push("Worker attempts (compact):");
+    for (const attempt of attempts) {
+      lines.push(
+        `- ${attempt.stepId} attempt ${attempt.attemptNumber}: ${attempt.outcome} via ${attempt.backend}`,
+      );
+      if (attempt.errorClassification) {
+        lines.push(`  Error classification: ${attempt.errorClassification}`);
+      }
+      if (attempt.changedFiles && attempt.changedFiles.length > 0) {
+        lines.push(`  Changed files: ${attempt.changedFiles.join(", ")}`);
+      }
+    }
+    lines.push("");
+  }
+
+  const runtimeDir = resolveRuntimeMirrorDir(runId, workingDir);
+  lines.push("Relevant redacted runtime artifact paths:");
+  lines.push(`- ${runtimeDir}/index.json`);
+  lines.push(`- ${runtimeDir}/workers/ (worker prompts, results, stdout, stderr, attempt bundles)`);
+  lines.push(`- ${runtimeDir}/autocheck/ (plan-review output and replans, if present)`);
+  lines.push(`- ${runtimeDir}/manual-tests/ (manual-test generation stdout/stderr, if present)`);
+
+  const manualFeedback = (run.planHistory ?? [])
+    .filter((entry) => entry.source === "user" && entry.editInstructions?.trim())
+    .slice(-5);
+  if (manualFeedback.length > 0) {
+    lines.push("");
+    lines.push("Manual feedback/edit instructions:");
+    for (const entry of manualFeedback) {
+      lines.push(
+        `- Revision ${entry.revision}: ${truncateText(entry.editInstructions ?? "", 260)}`,
+      );
+    }
   }
 
   return {
     hasCorrections: hasPlanCorrections || hasStepFailures || ralphInsights.length > 0,
-    summary: lines.join("\n").trim(),
+    summary: redactSecretValues(lines.join("\n").trim()),
   };
 }
 

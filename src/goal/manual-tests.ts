@@ -2,9 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { MANUAL_TESTS_SYSTEM_PROMPT } from "../prompts/manual-tests/system-prompt.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
 import {
   appendAgentHistoryEventBestEffort,
   parseBackendUsage,
+  resolveAgentHistoryEventsPath,
   writeCriticalAgentLaunchEvent,
   type AgentBackendUsage,
 } from "./agent-history-events.js";
@@ -36,6 +38,9 @@ const DEFAULT_MAX_TESTS = 5;
 const MANUAL_TESTS_TIMEOUT_MS = 300_000;
 const MANUAL_TESTS_PARSE_MAX_ATTEMPTS = 2;
 const MANUAL_TESTS_PARSE_RETRY_DELAY_MS = 2_000;
+const MAX_MANUAL_PROMPT_STEPS = 8;
+const MAX_MANUAL_PROMPT_TEXT_CHARS = 260;
+const MAX_MANUAL_LIVE_GAPS = 8;
 
 /**
  * Sentinel error message used when manual-test generation is skipped because
@@ -629,15 +634,111 @@ function buildFallbackTests(
   return fallback;
 }
 
-function buildManualTestsUserPrompt(goal: string, doneSteps: PlanStep[]): string {
-  const lines: string[] = [`Goal: ${goal}`, "", "Completed steps:"];
-  for (const step of doneSteps.slice(0, 10)) {
-    lines.push(`- [${step.id}] ${step.description}`);
-    if (step.taskSummary?.trim()) {
-      lines.push(`  Completion summary: ${step.taskSummary.trim()}`);
+function compactManualPromptText(value: string, maxChars = MAX_MANUAL_PROMPT_TEXT_CHARS): string {
+  const redacted = redactSecretValues(value).replace(/\s+/g, " ").trim();
+  if (redacted.length <= maxChars) return redacted;
+  return `${redacted.slice(0, maxChars).trimEnd()}...`;
+}
+
+function collectChangedSurfaces(doneSteps: PlanStep[]): string[] {
+  const surfaces: string[] = [];
+  const seen = new Set<string>();
+  for (const step of doneSteps) {
+    const label = step.shortSummary?.trim() || step.description;
+    const summary = step.taskSummary?.trim();
+    const value = summary
+      ? `[${step.id}] ${label}: ${compactManualPromptText(summary, 180)}`
+      : `[${step.id}] ${label}`;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    surfaces.push(value);
+    if (surfaces.length >= MAX_MANUAL_PROMPT_STEPS) break;
+  }
+  return surfaces;
+}
+
+function collectLiveGaps(params: { runId?: string; workingDir: string }): string[] {
+  if (!params.runId) return [];
+  try {
+    const eventsPath = resolveAgentHistoryEventsPath({
+      kind: "goal",
+      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      goalId: params.runId,
+    });
+    if (!fs.existsSync(eventsPath)) return [];
+    const gaps: string[] = [];
+    const seen = new Set<string>();
+    for (const line of fs.readFileSync(eventsPath, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const phase = typeof event.phase === "string" ? event.phase : "unknown";
+      const status = typeof event.status === "string" ? event.status : "";
+      const errorClass = typeof event.errorClass === "string" ? event.errorClass : "";
+      const summary = typeof event.outputSummary === "string" ? event.outputSummary : "";
+      const isGap =
+        status === "failed" ||
+        status === "error" ||
+        status === "skipped" ||
+        errorClass.length > 0 ||
+        /\b(manual|live|external|telegram|browser|device|visual|not verified|gap)\b/i.test(summary);
+      if (!isGap) continue;
+      const detail = compactManualPromptText(summary || errorClass || status, 180);
+      const value = `${phase}: ${detail}`;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      gaps.push(value);
+      if (gaps.length >= MAX_MANUAL_LIVE_GAPS) break;
+    }
+    return gaps;
+  } catch {
+    return [];
+  }
+}
+
+function buildRuntimeArtifactReferences(params: { runId?: string; workingDir: string }): string[] {
+  if (!params.runId) {
+    return [
+      "<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/ (available when a run id is provided)",
+    ];
+  }
+  const workspace = workspaceNameFromWorkingDir(params.workingDir);
+  const runtimeDir = path.join(resolveAgentGoalHistoryDir(workspace, params.runId), "runtime");
+  return [
+    `${runtimeDir}/index.json`,
+    `${runtimeDir}/workers/`,
+    `${runtimeDir}/autocheck/`,
+    `${runtimeDir}/manual-tests/`,
+  ];
+}
+
+function buildManualTestsUserPrompt(params: {
+  goal: string;
+  doneSteps: PlanStep[];
+  runId?: string;
+  workingDir: string;
+}): string {
+  const changedSurfaces = collectChangedSurfaces(params.doneSteps);
+  const lines: string[] = [
+    `Goal summary: ${compactManualPromptText(params.goal, 320)}`,
+    "",
+    "Changed surfaces:",
+  ];
+  if (changedSurfaces.length === 0) {
+    lines.push("- No completed implementation surfaces were recorded.");
+  } else {
+    for (const surface of changedSurfaces) {
+      lines.push(`- ${surface}`);
     }
   }
-  const automatedChecks = collectAutomatedChecks(doneSteps);
+
+  const automatedChecks = collectAutomatedChecks(params.doneSteps);
   lines.push("");
   lines.push("Automated checks already performed:");
   if (automatedChecks.length === 0) {
@@ -647,9 +748,33 @@ function buildManualTestsUserPrompt(goal: string, doneSteps: PlanStep[]): string
       lines.push(`- ${check}`);
     }
   }
+
+  const liveGaps = collectLiveGaps({ runId: params.runId, workingDir: params.workingDir });
+  lines.push("");
+  lines.push("Live/manual gaps from runtime events:");
+  if (liveGaps.length === 0) {
+    lines.push("- No live-environment gaps were explicitly recorded.");
+  } else {
+    for (const gap of liveGaps) {
+      lines.push(`- ${gap}`);
+    }
+  }
+
+  lines.push("");
+  lines.push("Agent-history runtime artifacts for debugging context:");
+  for (const artifact of buildRuntimeArtifactReferences({
+    runId: params.runId,
+    workingDir: params.workingDir,
+  })) {
+    lines.push(`- ${artifact}`);
+  }
+
   lines.push("");
   lines.push("Generate only the minimum manual tests needed for behavior not covered above.");
-  return lines.join("\n");
+  lines.push(
+    "Do not suggest re-running any deterministic build, lint, type-check, test, or CLI checks listed above.",
+  );
+  return redactSecretValues(lines.join("\n"));
 }
 
 const COMMAND_HINT =
@@ -706,9 +831,14 @@ export async function generateManualTests(
   const doneSteps = params.steps.filter((step) => (step.status ?? "done") === "done");
   if (doneSteps.length === 0) return [];
 
-  const userMessage = buildManualTestsUserPrompt(params.goal, doneSteps);
   const runId = resolveManualTestsRunId(params);
   const workingDir = params.workingDir ?? process.cwd();
+  const userMessage = buildManualTestsUserPrompt({
+    goal: params.goal,
+    doneSteps,
+    runId,
+    workingDir,
+  });
   let parsed: Record<string, unknown> | undefined;
 
   for (let attempt = 1; attempt <= MANUAL_TESTS_PARSE_MAX_ATTEMPTS; attempt += 1) {

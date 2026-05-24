@@ -710,6 +710,12 @@ describe("extractRunLessons", () => {
     expect(call.stdin).toContain("Adjust for monorepo tsconfig lookup");
     expect(call.stdin).toContain("Resolve tsconfig from package root before invoking toolchain.");
     expect(call.stdin).toContain("Cannot resolve workspace tsconfig path");
+    expect(call.stdin).toContain("Agent-history runtime mirror:");
+    expect(call.stdin).toContain("Relevant redacted runtime artifact paths:");
+    expect(call.stdin).toContain("agent/history/goals/");
+    expect(call.stdin).toContain("/runtime/workers/");
+    expect(call.stdin).toContain("/runtime/manual-tests/");
+    expect(call.stdin).not.toContain(".clawdbot-dev");
     expect(call.stdin).toContain("- [known-dedup] Do not duplicate this existing lesson.");
 
     expect(recorded).toHaveLength(1);
@@ -760,8 +766,8 @@ describe("extractRunLessons", () => {
           "step-alpha": {
             stepId: "step-alpha",
             success: false,
-            output: "worker output",
-            error: "worker error",
+            output: "worker output FAKE_TELEGRAM_SECRET_123",
+            error: "worker error FAKE_TELEGRAM_SECRET_123",
             durationMs: 50,
           },
         },
@@ -783,6 +789,9 @@ describe("extractRunLessons", () => {
 
       const recorded = await extractRunLessons(runId, workingDir, []);
 
+      const call = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+      expect(call.stdin).not.toContain("FAKE_TELEGRAM_SECRET_123");
+      expect(call.stdin).toContain("[REDACTED]");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]?.lesson).toContain("[REDACTED]");
       expect(recorded[0]?.lesson).not.toContain("FAKE_TELEGRAM_SECRET_123");

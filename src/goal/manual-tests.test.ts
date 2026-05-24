@@ -271,9 +271,21 @@ describe("generateManualTests", () => {
         backend: "goal-llm-client",
         phase: "manual-tests",
       });
-      expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
-        "Goal: Improve authentication reliability",
+      const promptArtifact = fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8");
+      expect(promptArtifact).toContain("Goal summary: Improve authentication reliability");
+      expect(promptArtifact).toContain("Changed surfaces:");
+      expect(promptArtifact).toContain("Automated checks already performed:");
+      expect(promptArtifact).toContain(
+        "Do not suggest re-running any deterministic build, lint, type-check, test, or CLI checks listed above.",
       );
+      expect(promptArtifact).not.toContain("Completed implementation steps:");
+      expect(promptArtifact).toContain("agent/history/goals/");
+      expect(promptArtifact).toContain("/runtime/index.json");
+      expect(promptArtifact).not.toContain(".clawdbot-dev");
+      const userMessage = complete.mock.calls[0]?.[0]?.userMessage as string;
+      expect(userMessage).toContain("Changed surfaces:");
+      expect(userMessage).toContain("Agent-history runtime artifacts for debugging context:");
+      expect(userMessage).not.toContain("Completed implementation steps:");
       expect(events[1]).toMatchObject({
         event: "result",
         tokenUsage: { available: true, inputTokens: 33, outputTokens: 7, totalTokens: 40 },
@@ -540,8 +552,15 @@ describe("generateManualTests", () => {
     expect(call.stdin.startsWith("## System Prompt\nYou are a QA assistant")).toBe(true);
     expect(call.stdin).toContain("You are a QA assistant");
     expect(call.stdin).toContain("## User Message");
-    expect(call.stdin).toContain("Goal: Improve authentication reliability");
-    expect(call.stdin.length).toBeLessThanOrEqual(2969);
+    expect(call.stdin).toContain("Goal summary: Improve authentication reliability");
+    expect(call.stdin).toContain("Changed surfaces:");
+    expect(call.stdin).not.toContain("Completed implementation steps:");
+    expect(call.stdin).toContain("Agent-history runtime artifacts for debugging context:");
+    expect(call.stdin).toContain(
+      "<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/",
+    );
+    expect(call.stdin).not.toContain(".clawdbot-dev");
+    expect(call.stdin.length).toBeLessThanOrEqual(4300);
   });
 
   it("falls back to Codex when Claude Code hits a usage limit", async () => {
@@ -1100,9 +1119,11 @@ describe("generateManualTests diagnostics artifacts", () => {
       status: "started",
     });
     expect(events[0]?.promptArtifactPath).toEqual(expect.any(String));
-    expect(fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8")).toContain(
-      "Goal: Improve reliability",
-    );
+    const promptArtifact = fs.readFileSync(String(events[0]?.promptArtifactPath), "utf8");
+    expect(promptArtifact).toContain("Goal summary: Improve reliability");
+    expect(promptArtifact).toContain("agent/history/goals/");
+    expect(promptArtifact).toContain("/runtime/manual-tests/");
+    expect(promptArtifact).not.toContain(".clawdbot-dev");
     expect(events[1]).toMatchObject({
       event: "result",
       status: "success",
