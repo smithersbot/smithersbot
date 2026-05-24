@@ -144,6 +144,86 @@ describe("runtime mirror", () => {
     );
   });
 
+  it("mirrors lessons evidence and terminal run state into the goal runtime index", () => {
+    const runDir = path.join(tmpDir, "runtime", "goals", "goal-lessons");
+    const destinationDir = path.join(tmpDir, "agent-history", "runtime-lessons");
+    const plantedSecret = "PLANTED_LESSONS_MIRROR_SECRET";
+
+    writeText(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId: "goal-lessons",
+        state: "done",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+      }),
+    );
+    writeText(
+      path.join(runDir, "lessons", "result.json"),
+      JSON.stringify({
+        status: "success",
+        backend: "codex",
+        candidateCount: 0,
+        storedGlobally: false,
+        promptReference: "agent/history/goals/workspace/goal-lessons/events/prompts/launch.txt",
+        token: plantedSecret,
+      }),
+    );
+    writeText(
+      path.join(runDir, "lessons", "summary.txt"),
+      `status: success\nsecret=${plantedSecret}\n`,
+    );
+    writeText(path.join(runDir, "lessons", "artifact.lock"), "lock");
+
+    const index = mirrorGoalRuntimeToAgentHistory({
+      workspaceName: "smithersbot",
+      goalId: "goal-lessons",
+      sourceDir: runDir,
+      destinationDir,
+      secretValues: [plantedSecret],
+    });
+
+    const mirroredRun = JSON.parse(
+      fs.readFileSync(path.join(destinationDir, "run.json"), "utf8"),
+    ) as { state: string };
+    expect(mirroredRun.state).toBe("done");
+    expect(fs.existsSync(path.join(destinationDir, "lessons", "result.json"))).toBe(true);
+    expect(fs.existsSync(path.join(destinationDir, "lessons", "summary.txt"))).toBe(true);
+    expect(fs.readFileSync(path.join(destinationDir, "lessons", "result.json"), "utf8")).toContain(
+      RUNTIME_MIRROR_REDACTION,
+    );
+    expect(
+      index.entries
+        .filter((entry) => entry.category === "lessons")
+        .map((entry) => entry.relativePath),
+    ).toEqual(["lessons/artifact.lock", "lessons/result.json", "lessons/summary.txt"]);
+    expect(index.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "run.json",
+          category: "run",
+          skipped: false,
+          redactionCount: 0,
+          truncated: false,
+        }),
+        expect.objectContaining({
+          relativePath: "lessons/result.json",
+          category: "lessons",
+          skipped: false,
+          redactionCount: 1,
+          truncated: false,
+        }),
+        expect.objectContaining({
+          relativePath: "lessons/artifact.lock",
+          category: "lessons",
+          skipped: true,
+          skipReason: "lock file",
+          redactionCount: 0,
+        }),
+      ]),
+    );
+    expect(readIndex(path.join(destinationDir, "index.json")).entries).toEqual(index.entries);
+  });
+
   it("mirrors large below-cap files fully and truncates over-cap files with head and tail", () => {
     const runDir = path.join(tmpDir, "runtime", "goals", "goal-2");
     const destinationDir = path.join(tmpDir, "agent-history", "runtime");

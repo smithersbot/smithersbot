@@ -613,6 +613,12 @@ describe("extractRunLessons", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
   }
 
+  function readRunLessonEvidence(runId: string): Record<string, unknown> {
+    return JSON.parse(
+      fs.readFileSync(path.join(resolveRunDir(runId), "lessons", "result.json"), "utf8"),
+    ) as Record<string, unknown>;
+  }
+
   it("loads artifacts from temp run directories, includes existing lessons, and records extracted lessons", async () => {
     const runId = "extract-run-success";
     const workingDir = "/repo/project-a";
@@ -735,22 +741,21 @@ describe("extractRunLessons", () => {
     const stored = loadLessons();
     expect(stored).toHaveLength(1);
     expect(stored[0]).toEqual(recorded[0]);
-    const evidencePath = path.join(resolveRunDir(runId), "lessons", "extracted-lessons.json");
+    const evidencePath = path.join(resolveRunDir(runId), "lessons", "result.json");
     expect(fs.existsSync(evidencePath)).toBe(true);
-    const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8")) as {
-      source: string;
-      lessons: Array<{ id: string; pattern: string; lesson: string; runId: string }>;
-    };
-    expect(evidence.source).toBe("per-goal-lessons-extraction");
-    expect(evidence.lessons).toEqual([
-      expect.objectContaining({
-        id: recorded[0]?.id,
-        pattern: "workspace-tsconfig",
-        lesson:
-          "Resolve tsconfig from the current package root instead of assuming repo root defaults.",
-        runId,
-      }),
-    ]);
+    const evidence = readRunLessonEvidence(runId);
+    expect(evidence).toMatchObject({
+      source: "per-goal-lessons-extraction",
+      status: "success",
+      backend: "claude_code",
+      candidateCount: 1,
+      storedGlobally: true,
+      storedLessonCount: 1,
+      promptArtifactPath: expect.any(String),
+      promptReference: expect.any(String),
+    });
+    expect(fs.existsSync(path.join(resolveRunDir(runId), "lessons", "summary.txt"))).toBe(true);
+    expect(JSON.stringify(evidence)).not.toContain("Resolve tsconfig from the current package");
     expect(JSON.stringify(evidence)).not.toContain("known-dedup");
     expect(JSON.stringify(evidence)).not.toContain("Do not duplicate this existing lesson.");
     const events = readLessonHistoryEvents(runId, workingDir);
@@ -769,6 +774,54 @@ describe("extractRunLessons", () => {
       status: "success",
       tokenUsage: { available: true, inputTokens: 44, outputTokens: 11 },
     });
+  });
+
+  it("writes zero-candidate success evidence without copying the global lessons store", async () => {
+    const runId = "extract-run-zero-candidates";
+    const workingDir = "/repo/project-zero";
+    saveLessons([
+      {
+        id: "unrelated-global",
+        workingDir: "/repo/other",
+        pattern: "unrelated-pattern",
+        lesson: "Unrelated global lesson must not be copied into run evidence.",
+        source: "worker",
+        runId: "other-run",
+        scope: "global",
+        createdAt: "2026-02-24T00:00:00.000Z",
+      },
+    ]);
+    saveExtractionRun({
+      runId,
+      workingDir,
+      stepResults: {
+        "step-alpha": {
+          stepId: "step-alpha",
+          success: false,
+          output: "failed",
+          error: "failure trigger",
+          durationMs: 30,
+        },
+      },
+    });
+    mockRunCliProcess.mockResolvedValueOnce(makeCliResult({ stdout: '{"lessons":[]}' }));
+
+    const recorded = await extractRunLessons(runId, workingDir, []);
+
+    expect(recorded).toEqual([]);
+    expect(loadLessons().map((lesson) => lesson.id)).toEqual(["unrelated-global"]);
+    const evidence = readRunLessonEvidence(runId);
+    expect(evidence).toMatchObject({
+      status: "success",
+      backend: "claude_code",
+      candidateCount: 0,
+      storedGlobally: false,
+      storedLessonCount: 0,
+      promptArtifactPath: expect.any(String),
+    });
+    const evidenceText = JSON.stringify(evidence);
+    expect(evidenceText).not.toContain("unrelated-pattern");
+    expect(evidenceText).not.toContain("Unrelated global lesson");
   });
 
   it("redacts known secret values from extracted lessons before storing them", async () => {
@@ -1221,6 +1274,14 @@ describe("extractRunLessons", () => {
     const recorded = await extractRunLessons(runId, workingDir, []);
     expect(recorded).toEqual([]);
     expect(loadLessons()).toEqual([]);
+    expect(readRunLessonEvidence(runId)).toMatchObject({
+      status: "failure",
+      candidateCount: 0,
+      storedGlobally: false,
+      storedLessonCount: 0,
+      errorClass: "backend_exhausted",
+      errorMessage: expect.any(String),
+    });
   });
 
   it("returns empty when correction summary has no corrections and skips CLI extraction", async () => {
@@ -1252,5 +1313,12 @@ describe("extractRunLessons", () => {
     expect(recorded).toEqual([]);
     expect(mockRunCliProcess).not.toHaveBeenCalled();
     expect(loadLessons()).toEqual([]);
+    expect(readRunLessonEvidence(runId)).toMatchObject({
+      status: "skipped",
+      candidateCount: 0,
+      storedGlobally: false,
+      storedLessonCount: 0,
+      promptReference: "not-created: no corrections detected",
+    });
   });
 });

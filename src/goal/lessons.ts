@@ -47,7 +47,8 @@ import type { SerializedRun } from "./types.js";
 
 const LESSONS_FILENAME = "goal-lessons.json";
 const RUN_LESSONS_DIR = "lessons";
-const RUN_LESSONS_FILENAME = "extracted-lessons.json";
+const RUN_LESSONS_RESULT_FILENAME = "result.json";
+const RUN_LESSONS_SUMMARY_FILENAME = "summary.txt";
 const LESSON_EXTRACTION_TIMEOUT_MS = 120_000;
 const MAX_PLAN_HISTORY_FOR_PROMPT = 12;
 const MAX_RALPH_INSIGHTS_FOR_PROMPT = 20;
@@ -91,6 +92,25 @@ type ParsedLessonCandidates = {
 type LessonExtractionResult = {
   lessons: LessonCandidate[];
   tokenUsage: AgentBackendUsage;
+  promptArtifactPath?: string;
+};
+
+type RunLessonsEvidenceStatus = "success" | "failure" | "skipped";
+
+type RunLessonsEvidence = {
+  runId: string;
+  status: RunLessonsEvidenceStatus;
+  generatedAt: string;
+  source: "per-goal-lessons-extraction";
+  backend?: CliWorkerId;
+  attemptedBackends?: CliWorkerId[];
+  candidateCount: number;
+  storedGlobally: boolean;
+  storedLessonCount: number;
+  promptArtifactPath?: string;
+  promptReference: string;
+  errorClass?: string;
+  errorMessage?: string;
 };
 
 function resolveLessonsPath(stateDir: string = resolveStateDir()): string {
@@ -112,23 +132,34 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   fs.chmodSync(filePath, 0o600);
 }
 
-function writeRunLessonsEvidence(runId: string, lessons: Lesson[]): void {
+function writeRunLessonsEvidence(
+  evidence: Omit<RunLessonsEvidence, "generatedAt" | "source">,
+): void {
   try {
-    atomicWriteJson(path.join(resolveRunDir(runId), RUN_LESSONS_DIR, RUN_LESSONS_FILENAME), {
-      runId,
+    const result: RunLessonsEvidence = {
+      ...evidence,
       generatedAt: new Date().toISOString(),
       source: "per-goal-lessons-extraction",
-      lessons: lessons.map((lesson) => ({
-        id: lesson.id,
-        pattern: lesson.pattern,
-        lesson: lesson.lesson,
-        source: lesson.source,
-        scope: lesson.scope ?? "project",
-        runId: lesson.runId,
-        ...(lesson.stepId ? { stepId: lesson.stepId } : {}),
-        createdAt: lesson.createdAt,
-      })),
-    });
+      promptReference: evidence.promptArtifactPath ?? evidence.promptReference,
+    };
+    const lessonsDir = path.join(resolveRunDir(evidence.runId), RUN_LESSONS_DIR);
+    atomicWriteJson(path.join(lessonsDir, RUN_LESSONS_RESULT_FILENAME), result);
+    const summary = [
+      `status: ${result.status}`,
+      `backend: ${result.backend ?? "none"}`,
+      `candidateCount: ${result.candidateCount}`,
+      `storedGlobally: ${result.storedGlobally ? "true" : "false"}`,
+      `storedLessonCount: ${result.storedLessonCount}`,
+      `promptReference: ${result.promptReference}`,
+      `generatedAt: ${result.generatedAt}`,
+      ...(result.errorClass ? [`errorClass: ${result.errorClass}`] : []),
+      ...(result.errorMessage ? [`errorMessage: ${result.errorMessage}`] : []),
+    ].join("\n");
+    fs.writeFileSync(
+      path.join(lessonsDir, RUN_LESSONS_SUMMARY_FILENAME),
+      redactSecretValues(`${summary}\n`),
+      "utf8",
+    );
   } catch {
     // Best-effort: per-goal evidence is diagnostic and must not block completion.
   }
@@ -528,7 +559,11 @@ async function runClaudeLessonExtraction(params: {
     outputSummary: `extracted ${parsed.lessons.length} lesson candidate(s)`,
     promptArtifactPath: launchHistory.promptArtifactPath,
   });
-  return { lessons: parsed.lessons, tokenUsage };
+  return {
+    lessons: parsed.lessons,
+    tokenUsage,
+    promptArtifactPath: launchHistory.promptArtifactPath,
+  };
 }
 
 async function runCodexLessonExtraction(params: {
@@ -638,7 +673,11 @@ async function runCodexLessonExtraction(params: {
     outputSummary: `extracted ${parsed.lessons.length} lesson candidate(s)`,
     promptArtifactPath: launchHistory.promptArtifactPath,
   });
-  return { lessons: parsed.lessons, tokenUsage };
+  return {
+    lessons: parsed.lessons,
+    tokenUsage,
+    promptArtifactPath: launchHistory.promptArtifactPath,
+  };
 }
 
 function collectStepIds(run: SerializedRun): string[] {
@@ -851,10 +890,32 @@ export async function extractRunLessons(
 ): Promise<Lesson[]> {
   try {
     const run = loadRun(runId);
-    if (!run) return [];
+    if (!run) {
+      writeRunLessonsEvidence({
+        runId,
+        status: "skipped",
+        candidateCount: 0,
+        storedGlobally: false,
+        storedLessonCount: 0,
+        promptReference: "not-created: run not found",
+        errorClass: "run_not_found",
+        errorMessage: "Run state was not available for lesson extraction.",
+      });
+      return [];
+    }
 
     const correction = buildCorrectionSummary(runId, workingDir, run);
-    if (!correction.hasCorrections) return [];
+    if (!correction.hasCorrections) {
+      writeRunLessonsEvidence({
+        runId,
+        status: "skipped",
+        candidateCount: 0,
+        storedGlobally: false,
+        storedLessonCount: 0,
+        promptReference: "not-created: no corrections detected",
+      });
+      return [];
+    }
 
     const prompt = buildLessonExtractionPrompt({
       runId,
@@ -872,7 +933,7 @@ export async function extractRunLessons(
     if (claudeBinary) backends.push("claude_code");
     backends.push("codex");
 
-    const outcome = await runWithBackendFallback<LessonCandidate[]>({
+    const outcome = await runWithBackendFallback<LessonExtractionResult>({
       backends,
       fallbackOnAnyError: true,
       attempt: async (backend) => {
@@ -892,7 +953,7 @@ export async function extractRunLessons(
                   prompt,
                   attemptNumber: backends.indexOf(backend) + 1,
                 });
-          return { ok: true, value: result.lessons };
+          return { ok: true, value: result };
         } catch (error) {
           const errorText = error instanceof Error ? error.message : String(error);
           appendLessonHistory({
@@ -910,8 +971,36 @@ export async function extractRunLessons(
       },
     });
 
-    const candidates = outcome.status === "success" ? outcome.value : [];
-    if (candidates.length === 0) return [];
+    if (outcome.status !== "success") {
+      writeRunLessonsEvidence({
+        runId,
+        status: "failure",
+        attemptedBackends: backends,
+        candidateCount: 0,
+        storedGlobally: false,
+        storedLessonCount: 0,
+        promptReference: "not-available: extraction failed before a successful prompt result",
+        errorClass: "backend_exhausted",
+        errorMessage: outcome.message,
+      });
+      return [];
+    }
+
+    const candidates = outcome.value.lessons;
+    if (candidates.length === 0) {
+      writeRunLessonsEvidence({
+        runId,
+        status: "success",
+        backend: outcome.backend,
+        attemptedBackends: backends,
+        candidateCount: 0,
+        storedGlobally: false,
+        storedLessonCount: 0,
+        promptArtifactPath: outcome.value.promptArtifactPath,
+        promptReference: outcome.value.promptArtifactPath ?? "not-available",
+      });
+      return [];
+    }
 
     const recorded: Lesson[] = [];
     for (const candidate of candidates) {
@@ -926,9 +1015,30 @@ export async function extractRunLessons(
       });
       recorded.push(added);
     }
-    writeRunLessonsEvidence(runId, recorded);
+    writeRunLessonsEvidence({
+      runId,
+      status: "success",
+      backend: outcome.backend,
+      attemptedBackends: backends,
+      candidateCount: candidates.length,
+      storedGlobally: recorded.length > 0,
+      storedLessonCount: recorded.length,
+      promptArtifactPath: outcome.value.promptArtifactPath,
+      promptReference: outcome.value.promptArtifactPath ?? "not-available",
+    });
     return recorded;
-  } catch {
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    writeRunLessonsEvidence({
+      runId,
+      status: "failure",
+      candidateCount: 0,
+      storedGlobally: false,
+      storedLessonCount: 0,
+      promptReference: "not-available: lesson extraction failed open",
+      errorClass: error instanceof Error ? error.name : "Error",
+      errorMessage,
+    });
     return [];
   }
 }
