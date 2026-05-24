@@ -5521,7 +5521,11 @@ describe("goal-commands telegram adapter", () => {
   });
 
   describe("registerTelegramGoalCommands approve/resume reply threading", () => {
-    function makeHarness(): {
+    function makeHarness(
+      options: {
+        commandFragmentBuffer?: import("./command-fragments.js").CommandFragmentBuffer;
+      } = {},
+    ): {
       commandHandlers: Record<string, (ctx: unknown) => Promise<void>>;
       callbackHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
       reactionHandler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>;
@@ -5596,6 +5600,7 @@ describe("goal-commands telegram adapter", () => {
           }),
           shouldSkipUpdate: () => false,
           textLimit: 4000,
+          commandFragmentBuffer: options.commandFragmentBuffer,
         });
       };
 
@@ -6133,6 +6138,98 @@ describe("goal-commands telegram adapter", () => {
         });
         expect(hasPhotoReply).toBe(true);
       });
+    });
+
+    it("combines split /goal_answer text before answering the blocked step", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need a value",
+            requiredInputKey: "db_type",
+          },
+        }),
+      );
+      mockGoalAnswerCommand.mockResolvedValue({ status: "done" });
+      mockGoalResumeCommand.mockResolvedValue({ status: "done" });
+      const { CommandFragmentBuffer, buildCommandFragmentKey } =
+        await import("./command-fragments.js");
+      const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+      const harness = makeHarness({ commandFragmentBuffer });
+      await harness.register();
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run post", 930));
+      expect(mockGoalAnswerCommand).not.toHaveBeenCalled();
+      const appended = commandFragmentBuffer.tryAppendMatching(
+        {
+          accountId: "default",
+          chatId: 42,
+          resolvedThreadId: undefined,
+          senderId: "42",
+          commandNames: ["goal_answer"],
+        },
+        931,
+        "gres",
+        Date.now() + 1,
+      );
+      expect(appended).toBe(true);
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "42",
+        commandName: "goal_answer",
+        runId: "test-run-id-1234",
+      });
+      await commandFragmentBuffer.cancelAndFlush(key);
+
+      await waitForAssertion(() => {
+        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(1);
+      });
+      expect(mockGoalAnswerCommand.mock.calls[0]?.[1]).toEqual(
+        expect.objectContaining({ value: "postgres" }),
+      );
+    });
+
+    it("buffers /goal_resume with trailing text and does not resume from the first chunk", async () => {
+      saveRunFixture(makeRun({ state: "blocked" }));
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+      const { CommandFragmentBuffer, buildCommandFragmentKey } =
+        await import("./command-fragments.js");
+      const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+      const harness = makeHarness({ commandFragmentBuffer });
+      await harness.register();
+
+      await harness.commandHandlers.goal_resume?.(makeCommandCtx("test-run because", 940));
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      const appended = commandFragmentBuffer.tryAppendMatching(
+        {
+          accountId: "default",
+          chatId: 42,
+          resolvedThreadId: undefined,
+          senderId: "42",
+          commandNames: ["goal_resume"],
+        },
+        941,
+        " details continue",
+        Date.now() + 1,
+      );
+      expect(appended).toBe(true);
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "42",
+        commandName: "goal_resume",
+        runId: "test-run-id-1234",
+      });
+      await commandFragmentBuffer.cancelAndFlush(key);
+
+      await waitForAssertion(() => {
+        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
+      });
+      expect(mockGoalResumeCommand.mock.calls[0]?.[0]).toBe("test-run-id-1234");
     });
 
     it("threads replies for /goal_feedback background string results", async () => {

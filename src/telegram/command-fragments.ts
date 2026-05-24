@@ -17,7 +17,12 @@ export const COMMAND_ANCHOR_TTL_MS = 60000;
 export const COMMAND_ANCHOR_MIN_TTL_MS = 10000;
 export const COMMAND_ANCHOR_MAX_TTL_MS = 60000;
 
-export type CommandFragmentCommandName = "new_goal" | "repo_chat" | "goal_feedback";
+export type CommandFragmentCommandName =
+  | "new_goal"
+  | "repo_chat"
+  | "goal_feedback"
+  | "goal_answer"
+  | "goal_resume";
 
 export type CommandFragmentKeyParams = {
   accountId: string;
@@ -294,6 +299,30 @@ export class CommandFragmentBuffer {
     });
     this.scheduleFlush(key, entry);
     return true;
+  }
+
+  tryAppendMatching(
+    params: NormalizedCommandFragmentParams & {
+      commandNames: readonly CommandFragmentCommandName[];
+    },
+    messageId: number,
+    text: string,
+    receivedAtMs: number,
+  ): boolean {
+    for (const [key, entry] of this.entries) {
+      if (!params.commandNames.includes(entry.commandName)) continue;
+      const expectedPrefix = [
+        "cmd",
+        params.accountId,
+        params.chatId,
+        params.resolvedThreadId ?? "main",
+        params.senderId,
+        entry.commandName,
+      ].join(":");
+      if (!key.startsWith(`${expectedPrefix}:`)) continue;
+      if (this.tryAppend(key, messageId, text, receivedAtMs)) return true;
+    }
+    return false;
   }
 
   async flush(key: string): Promise<void> {

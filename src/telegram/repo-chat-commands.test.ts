@@ -425,6 +425,7 @@ describe("repo-chat-commands", () => {
       chatId: 42,
       resolvedThreadId: undefined,
       senderId: "42",
+      commandName: "repo_chat",
     });
     await commandFragmentBuffer.cancelAndFlush(key);
 
@@ -458,6 +459,7 @@ describe("repo-chat-commands", () => {
       chatId: 42,
       resolvedThreadId: undefined,
       senderId: "42",
+      commandName: "repo_chat",
     });
     await commandFragmentBuffer.cancelAndFlush(key);
 

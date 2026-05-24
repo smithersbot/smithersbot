@@ -1482,6 +1482,50 @@ export function registerTelegramGoalCommands({
     await sendGoalPlanResult({ bot, chatId, runtime, result, threadId, replyToMessageId });
   }
 
+  async function bufferGoalCommandText(params: {
+    ctx: TelegramGoalCommandContext;
+    commandName: "goal_answer" | "goal_feedback" | "goal_resume";
+    runId?: string;
+    replyToMessageId?: number;
+    text: string;
+    flushCallback: (combinedText: string) => void | Promise<void>;
+  }): Promise<boolean> {
+    const msg = params.ctx.message;
+    if (!msg || !commandFragmentBuffer || !params.text) return false;
+    const normalized = normalizeCommandFragmentParams(msg, accountId);
+    const key = buildCommandFragmentKey({
+      ...normalized,
+      commandName: params.commandName,
+      runId: params.runId,
+      replyToMessageId: params.replyToMessageId,
+    });
+    const nowMs = Date.now();
+    if (commandFragmentBuffer.getPendingCommandName(key) === params.commandName) {
+      const appended = commandFragmentBuffer.tryAppend(key, msg.message_id, params.text, nowMs);
+      if (appended) return true;
+    }
+    if (commandFragmentBuffer.hasPending(key)) {
+      await commandFragmentBuffer.cancelAndFlush(key);
+    }
+    if (params.text.trimStart().startsWith("/")) return false;
+    commandFragmentBuffer.bufferCommand(key, {
+      commandName: params.commandName,
+      text: params.text,
+      firstMessageId: msg.message_id,
+      receivedAtMs: nowMs,
+      dispatch: {
+        chatId: msg.chat.id,
+        threadIdForSend: (msg as { message_thread_id?: number }).message_thread_id,
+        senderId: normalized.senderId,
+        replyToMessageId: params.replyToMessageId,
+        sourceMessageId: msg.message_id,
+        accountId,
+      },
+      flushCallback: params.flushCallback,
+    });
+    return true;
+  }
+
   async function startGoalResume(params: {
     rawId: string;
     chatId: number;
@@ -2503,6 +2547,9 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const replyToMessageId = ctx.message?.message_id;
+    const commandReplyToMessageId = (
+      ctx.message as { reply_to_message?: { message_id?: number } } | undefined
+    )?.reply_to_message?.message_id;
     const rawId = ctx.match?.trim() ?? "";
     if (!rawId) {
       await sendGoalReply(
@@ -2515,14 +2562,30 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    await startGoalResume({
-      rawId,
-      chatId: resolved.chatId,
-      threadId: resolved.threadIdForSend,
-      replyToMessageId,
-      lockLabel: "resume",
-      backgroundLabel: "goal_resume",
-    });
+    const [resumeRunIdRaw = "", ...resumeTextParts] = rawId.split(/\s+/);
+    const resumeText = resumeTextParts.join(" ").trim();
+    const dispatchResume = async (_combinedText?: string) => {
+      await startGoalResume({
+        rawId: resumeRunIdRaw,
+        chatId: resolved.chatId,
+        threadId: resolved.threadIdForSend,
+        replyToMessageId,
+        lockLabel: "resume",
+        backgroundLabel: "goal_resume",
+      });
+    };
+    if (resumeText) {
+      const buffered = await bufferGoalCommandText({
+        ctx,
+        commandName: "goal_resume",
+        runId: resolveRunId(resumeRunIdRaw) ?? resumeRunIdRaw,
+        replyToMessageId: commandReplyToMessageId,
+        text: resumeText,
+        flushCallback: dispatchResume,
+      });
+      if (buffered) return;
+    }
+    await dispatchResume();
   });
 
   // /goal_reject <runId>
@@ -2646,6 +2709,9 @@ export function registerTelegramGoalCommands({
     const resolved = await authAndResolve(ctx);
     if (!resolved) return;
     const replyToMessageId = ctx.message?.message_id;
+    const commandReplyToMessageId = (
+      ctx.message as { reply_to_message?: { message_id?: number } } | undefined
+    )?.reply_to_message?.message_id;
     const raw = ctx.match?.trim() ?? "";
     const spaceIdx = raw.indexOf(" ");
     if (spaceIdx === -1) {
@@ -2673,50 +2739,67 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const answerLock = acquireGoalOpLock(answerRunId, "answer");
-    if (!answerLock.acquired) {
-      await sendGoalReply(
+    const dispatchAnswer = (answerText: string) => {
+      const answerLock = acquireGoalOpLock(answerRunId, "answer");
+      if (!answerLock.acquired) {
+        void sendGoalReply(
+          bot,
+          resolved.chatId,
+          formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
+          runtime,
+          resolved.threadIdForSend,
+          replyToMessageId,
+        );
+        return;
+      }
+      const statusCb = buildOnStatusChange({
         bot,
-        resolved.chatId,
-        formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
+        chatId: resolved.chatId,
+        threadId: resolved.threadIdForSend,
         runtime,
-        resolved.threadIdForSend,
+        runId: answerRunId,
+      });
+      runGoalInBackground({
+        bot,
+        chatId: resolved.chatId,
+        threadId: resolved.threadIdForSend,
+        runtime,
+        label: "goal_answer",
         replyToMessageId,
-      );
-      return;
-    }
-    const statusCb = buildOnStatusChange({
-      bot,
-      chatId: resolved.chatId,
-      threadId: resolved.threadIdForSend,
-      runtime,
+        releaseGoalLock: answerLock.release,
+        fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
+        onResult: async (result) => {
+          if (result == null) return;
+          if (typeof result === "string") {
+            await sendGoalReply(
+              bot,
+              resolved.chatId,
+              result,
+              runtime,
+              resolved.threadIdForSend,
+              replyToMessageId,
+            );
+          } else {
+            await sendPlanResult(
+              resolved.chatId,
+              result,
+              resolved.threadIdForSend,
+              replyToMessageId,
+            );
+          }
+        },
+      });
+    };
+    const buffered = await bufferGoalCommandText({
+      ctx,
+      commandName: "goal_answer",
       runId: answerRunId,
+      replyToMessageId: commandReplyToMessageId,
+      text: value,
+      flushCallback: (combinedText) => dispatchAnswer(combinedText),
     });
-    runGoalInBackground({
-      bot,
-      chatId: resolved.chatId,
-      threadId: resolved.threadIdForSend,
-      runtime,
-      label: "goal_answer",
-      replyToMessageId,
-      releaseGoalLock: answerLock.release,
-      fn: () => handleGoalAnswer(answerRunIdRaw, value, statusCb, cfg),
-      onResult: async (result) => {
-        if (result == null) return;
-        if (typeof result === "string") {
-          await sendGoalReply(
-            bot,
-            resolved.chatId,
-            result,
-            runtime,
-            resolved.threadIdForSend,
-            replyToMessageId,
-          );
-        } else {
-          await sendPlanResult(resolved.chatId, result, resolved.threadIdForSend, replyToMessageId);
-        }
-      },
-    });
+    if (buffered) return;
+    dispatchAnswer(value);
   });
 
   // /goal_feedback <runId> <feedback>

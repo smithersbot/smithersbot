@@ -252,15 +252,17 @@ export function shouldRouteTelegramTextToRepoChat(params: {
     params.chatId != null &&
     params.senderId
   ) {
-    const commandKey = buildCommandFragmentKey({
-      accountId: params.accountId,
-      chatId: params.chatId,
-      resolvedThreadId: params.threadId,
-      senderId: params.senderId,
-      commandName: "repo_chat",
-    });
-    if (params.commandFragmentBuffer.getAnchor(commandKey)) {
-      return false;
+    for (const commandName of ["new_goal", "repo_chat"] as const) {
+      const commandKey = buildCommandFragmentKey({
+        accountId: params.accountId,
+        chatId: params.chatId,
+        resolvedThreadId: params.threadId,
+        senderId: params.senderId,
+        commandName,
+      });
+      if (params.commandFragmentBuffer.getAnchor(commandKey)) {
+        return false;
+      }
     }
   }
 
@@ -666,12 +668,77 @@ export const registerTelegramHandlers = ({
       .reply_to_message?.message_id;
     const repoChatEnabled = isRepoChatBackendEnabled(telegramCfg.repoChatBackend);
 
+    const bufferLongFreeformRoute = async (bufferParams: {
+      commandName: "repo_chat" | "goal_answer" | "goal_feedback";
+      runId?: string;
+      replyToMessageId?: number;
+      text: string;
+      flushCallback: (combinedText: string) => void | Promise<void>;
+    }): Promise<boolean> => {
+      if (!commandFragmentBuffer) return false;
+      const normalized = normalizeCommandFragmentParams(params.msg, accountId);
+      const key = buildCommandFragmentKey({
+        ...normalized,
+        commandName: bufferParams.commandName,
+        runId: bufferParams.runId,
+        replyToMessageId: bufferParams.replyToMessageId,
+      });
+      const nowMs = Date.now();
+      if (commandFragmentBuffer.getPendingCommandName(key) === bufferParams.commandName) {
+        const appended = commandFragmentBuffer.tryAppend(
+          key,
+          sourceMessageId,
+          bufferParams.text,
+          nowMs,
+        );
+        if (appended) return true;
+      }
+      if (commandFragmentBuffer.hasPending(key)) {
+        await commandFragmentBuffer.cancelAndFlush(key);
+      }
+      if (bufferParams.text.trimStart().startsWith("/")) return false;
+      commandFragmentBuffer.bufferCommand(key, {
+        commandName: bufferParams.commandName,
+        text: bufferParams.text,
+        firstMessageId: sourceMessageId,
+        receivedAtMs: nowMs,
+        dispatch: {
+          chatId,
+          threadIdForSend: params.threadId,
+          senderId: normalized.senderId,
+          replyToMessageId: bufferParams.replyToMessageId,
+          sourceMessageId,
+          accountId,
+        },
+        flushCallback: bufferParams.flushCallback,
+      });
+      return true;
+    };
+
     if (replyToMessageId != null && repoChatEnabled) {
       const repoChatSession = findRepoChatSessionByMessageId({
         chatId,
         messageId: replyToMessageId,
       });
       if (repoChatSession) {
+        const buffered = await bufferLongFreeformRoute({
+          commandName: "repo_chat",
+          replyToMessageId,
+          text: params.text,
+          flushCallback: (combinedText) =>
+            dispatchTelegramRepoChatForInboundText({
+              bot,
+              runtime,
+              telegramCfg,
+              claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+              chatId,
+              threadId: params.threadId,
+              prompt: combinedText,
+              sourceMessageId,
+              replyToMessageId,
+            }),
+        });
+        if (buffered) return true;
         return dispatchTelegramRepoChatForInboundText({
           bot,
           runtime,
@@ -699,6 +766,24 @@ export const registerTelegramHandlers = ({
         senderId: String(params.msg.from?.id ?? "unknown"),
       })
     ) {
+      const buffered = await bufferLongFreeformRoute({
+        commandName: "repo_chat",
+        replyToMessageId,
+        text: params.text,
+        flushCallback: (combinedText) =>
+          dispatchTelegramRepoChatForInboundText({
+            bot,
+            runtime,
+            telegramCfg,
+            claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+            chatId,
+            threadId: params.threadId,
+            prompt: combinedText,
+            sourceMessageId,
+            replyToMessageId,
+          }),
+      });
+      if (buffered) return true;
       return dispatchTelegramRepoChatForInboundText({
         bot,
         runtime,
@@ -808,50 +893,74 @@ export const registerTelegramHandlers = ({
           });
         },
         answer: (runId, text) => {
-          const answerLock = acquireGoalOpLock(runId, "answer");
-          if (!answerLock.acquired) {
-            void sendGoalReply(
+          const dispatchAnswer = (answerText: string) => {
+            const answerLock = acquireGoalOpLock(runId, "answer");
+            if (!answerLock.acquired) {
+              void sendGoalReply(
+                bot,
+                chatId,
+                formatGoalLockedMessage(runId, answerLock.existingLabel),
+                runtime,
+                params.threadId,
+                sourceMessageId,
+              );
+              return;
+            }
+            const statusCb = buildOnStatusChange({
               bot,
               chatId,
-              formatGoalLockedMessage(runId, answerLock.existingLabel),
+              threadId: params.threadId,
               runtime,
-              params.threadId,
-              sourceMessageId,
-            );
+              runId,
+            });
+            runGoalInBackground({
+              bot,
+              chatId,
+              threadId: params.threadId,
+              runtime,
+              label: "goal-router:answer",
+              replyToMessageId: sourceMessageId,
+              releaseGoalLock: answerLock.release,
+              fn: () => handleGoalAnswer(runId, answerText, statusCb, cfg),
+              onResult: async (result) => {
+                if (result == null) return;
+                if (typeof result === "string") {
+                  await sendGoalReply(
+                    bot,
+                    chatId,
+                    result,
+                    runtime,
+                    params.threadId,
+                    sourceMessageId,
+                  );
+                } else {
+                  await sendGoalPlanResult({
+                    bot,
+                    chatId,
+                    runtime,
+                    result,
+                    threadId: params.threadId,
+                    replyToMessageId: sourceMessageId,
+                  });
+                }
+              },
+            });
+          };
+
+          if (replyToMessageId != null) {
+            void bufferLongFreeformRoute({
+              commandName: "goal_answer",
+              runId,
+              replyToMessageId,
+              text,
+              flushCallback: (combinedText) => dispatchAnswer(combinedText),
+            }).then((buffered) => {
+              if (!buffered) dispatchAnswer(text);
+            });
             return;
           }
-          const statusCb = buildOnStatusChange({
-            bot,
-            chatId,
-            threadId: params.threadId,
-            runtime,
-            runId,
-          });
-          runGoalInBackground({
-            bot,
-            chatId,
-            threadId: params.threadId,
-            runtime,
-            label: "goal-router:answer",
-            replyToMessageId: sourceMessageId,
-            releaseGoalLock: answerLock.release,
-            fn: () => handleGoalAnswer(runId, text, statusCb, cfg),
-            onResult: async (result) => {
-              if (result == null) return;
-              if (typeof result === "string") {
-                await sendGoalReply(bot, chatId, result, runtime, params.threadId, sourceMessageId);
-              } else {
-                await sendGoalPlanResult({
-                  bot,
-                  chatId,
-                  runtime,
-                  result,
-                  threadId: params.threadId,
-                  replyToMessageId: sourceMessageId,
-                });
-              }
-            },
-          });
+
+          dispatchAnswer(text);
         },
         feedback: (runId, text) => {
           const dispatchFeedback = (feedbackText: string) => {
@@ -1446,19 +1555,16 @@ export const registerTelegramHandlers = ({
         .reply_to_message?.message_id;
       if (!isCommandLike && text && commandFragmentBuffer && replyToMessageId == null) {
         const normalized = normalizeCommandFragmentParams(msg, accountId);
-        for (const commandName of ["new_goal", "repo_chat"] as const) {
-          const commandKey = buildCommandFragmentKey({
+        const consumed = commandFragmentBuffer.tryAppendMatching(
+          {
             ...normalized,
-            commandName,
-          });
-          const consumed = commandFragmentBuffer.tryAppend(
-            commandKey,
-            msg.message_id,
-            text,
-            Date.now(),
-          );
-          if (consumed) return;
-        }
+            commandNames: ["new_goal", "repo_chat", "goal_feedback", "goal_answer", "goal_resume"],
+          },
+          msg.message_id,
+          text,
+          Date.now(),
+        );
+        if (consumed) return;
       }
 
       // Text fragment handling - Telegram splits long pastes into multiple inbound messages (~4096 chars).

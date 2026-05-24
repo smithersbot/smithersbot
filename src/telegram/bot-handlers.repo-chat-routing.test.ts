@@ -85,6 +85,7 @@ describe("shouldRouteTelegramTextToRepoChat", () => {
       chatId: 42,
       resolvedThreadId: 7,
       senderId: "99",
+      commandName: "new_goal",
     });
     commandFragmentBuffer.setAnchor(commandKey, {
       commandName: "new_goal",
@@ -124,6 +125,78 @@ describe("shouldRouteTelegramTextToRepoChat", () => {
 });
 
 describe("registerTelegramHandlers repo-chat routing", () => {
+  function makeRouteHarness(
+    options: {
+      commandFragmentBuffer?: CommandFragmentBuffer;
+      repoChatBackend?: "codex" | "claude_code" | null;
+    } = {},
+  ) {
+    const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        messageHandlers.set(event, handler);
+      }),
+      api: {
+        answerCallbackQuery: vi.fn(async () => undefined),
+        editMessageText: vi.fn(async () => ({ message_id: 1 })),
+        sendMessage: vi.fn(async () => ({ message_id: 2 })),
+        setMessageReaction: vi.fn(async () => undefined),
+      },
+    };
+
+    registerTelegramHandlers({
+      cfg: { goal: { claudeCodeAuth: "subscription" } },
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: options.repoChatBackend ?? "claude_code",
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+      commandFragmentBuffer: options.commandFragmentBuffer,
+    });
+
+    const messageHandler = messageHandlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    if (!messageHandler) {
+      throw new Error("Expected Telegram handlers to be registered");
+    }
+    return { bot, messageHandler };
+  }
+
+  function makeTextMessage(text: string, messageId: number, replyToMessageId?: number) {
+    return {
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text,
+        message_id: messageId,
+        date: 1,
+        ...(replyToMessageId != null ? { reply_to_message: { message_id: replyToMessageId } } : {}),
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    };
+  }
+
   async function setupCommandAnchorCallbackTest(params?: {
     expiresAtMs?: number;
     appendHandler?: (text: string) => Promise<void>;
@@ -135,9 +208,10 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       chatId: 42,
       resolvedThreadId: undefined,
       senderId: "99",
+      commandName: "new_goal",
     });
     commandFragmentBuffer.setAnchor(commandKey, {
-      commandName: "repo_chat",
+      commandName: "new_goal",
       anchoredAtMs: Date.now(),
       expiresAtMs: params?.expiresAtMs ?? Date.now() + 60_000,
       appendHandler,
@@ -245,6 +319,111 @@ describe("registerTelegramHandlers repo-chat routing", () => {
     };
   }
 
+  it("combines split free-text repo chat into one inbound dispatch", async () => {
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const { messageHandler } = makeRouteHarness({ commandFragmentBuffer });
+
+    await messageHandler(makeTextMessage("How does the repo-chat ", 900));
+    await messageHandler(makeTextMessage("worker resume sessions?", 901));
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+    const key = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+      commandName: "repo_chat",
+    });
+    await commandFragmentBuffer.cancelAndFlush(key);
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledTimes(1);
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 42,
+        prompt: "How does the repo-chat worker resume sessions?",
+        sourceMessageId: 900,
+        replyToMessageId: undefined,
+      }),
+    );
+  });
+
+  it("combines split replies to known repo-chat sessions before dispatch", async () => {
+    findRepoChatSessionByMessageIdMock.mockReturnValue({ id: "repo-chat-session" });
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const { messageHandler } = makeRouteHarness({ commandFragmentBuffer });
+
+    await messageHandler(makeTextMessage("Follow up with first ", 910, 400));
+    await messageHandler(makeTextMessage("and second chunk", 911, 400));
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+    const key = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+      commandName: "repo_chat",
+      replyToMessageId: 400,
+    });
+    await commandFragmentBuffer.cancelAndFlush(key);
+
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledTimes(1);
+    expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 42,
+        prompt: "Follow up with first and second chunk",
+        sourceMessageId: 910,
+        replyToMessageId: 400,
+      }),
+    );
+  });
+
+  it("buffers split Add Details replies and answers with the combined text once", async () => {
+    const goalCommands = await import("./goal-commands.js");
+    const handlerSpy = vi
+      .spyOn(goalCommands, "handleGoalAnswer")
+      .mockResolvedValue("Resuming: run-1234..." as never);
+    const runGoalInBackgroundSpy = vi
+      .spyOn(goalCommands, "runGoalInBackground")
+      .mockImplementation((params) => {
+        void (async () => {
+          try {
+            await params.fn();
+          } finally {
+            params.releaseGoalLock?.();
+          }
+        })();
+      });
+    routeTelegramTextMock.mockReturnValue({ kind: "GOAL_ANSWER", runId: "run-1234" });
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const { messageHandler } = makeRouteHarness({
+      commandFragmentBuffer,
+      repoChatBackend: null,
+    });
+
+    await messageHandler(makeTextMessage("The decisive ", 920, 400));
+    await messageHandler(makeTextMessage("unblock token is postgres", 921, 400));
+
+    expect(runGoalInBackgroundSpy).not.toHaveBeenCalled();
+    const key = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+      commandName: "goal_answer",
+      runId: "run-1234",
+      replyToMessageId: 400,
+    });
+    await commandFragmentBuffer.cancelAndFlush(key);
+
+    await vi.waitFor(() => expect(handlerSpy).toHaveBeenCalledTimes(1));
+    expect(handlerSpy).toHaveBeenCalledWith(
+      "run-1234",
+      "The decisive unblock token is postgres",
+      expect.any(Function),
+      expect.anything(),
+    );
+  });
+
   it("routes replies to known repo-chat sessions directly without goal routing", async () => {
     findRepoChatSessionByMessageIdMock.mockReturnValue({ id: "repo-chat-session" });
 
@@ -337,6 +516,7 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       chatId: 42,
       resolvedThreadId: undefined,
       senderId: "99",
+      commandName: "repo_chat",
     });
     const pendingFlush = vi.fn(async () => undefined);
     commandFragmentBuffer.bufferCommand(commandKey, {
@@ -415,6 +595,16 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       getFile: async () => ({}),
     });
 
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+    const replyKey = buildCommandFragmentKey({
+      accountId: "telegram-account",
+      chatId: 42,
+      resolvedThreadId: undefined,
+      senderId: "99",
+      commandName: "repo_chat",
+      replyToMessageId: 400,
+    });
+    await commandFragmentBuffer.cancelAndFlush(replyKey);
     expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledTimes(1);
     expect(dispatchTelegramRepoChatForInboundTextMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -436,6 +626,7 @@ describe("registerTelegramHandlers repo-chat routing", () => {
       chatId: 42,
       resolvedThreadId: undefined,
       senderId: "99",
+      commandName: "new_goal",
     });
     commandFragmentBuffer.setAnchor(commandKey, {
       commandName: "new_goal",
