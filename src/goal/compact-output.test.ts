@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildGoalRetrySummary,
+  buildRunBlockerSummary,
   formatAttemptBadge,
   formatCompactGoalCompletionSummary,
   formatCompactGoalOutput,
@@ -10,6 +11,7 @@ import {
   resolveCompactGoalRenderOptions,
   truncateSingleLine,
 } from "./compact-output.js";
+import type { RunBlockerInput } from "./compact-output.js";
 
 function findLineIndex(lines: string[], prefix: string): number {
   return lines.findIndex((line) => line.startsWith(prefix));
@@ -58,6 +60,102 @@ describe("goal visual helpers", () => {
   it("renders state indicators in emoji and text variants", () => {
     expect(formatGoalStateIndicator("done", "emoji")).toBe("\u2705 Done");
     expect(formatGoalStateIndicator("blocked", "text")).toBe("Blocked");
+  });
+});
+
+describe("buildRunBlockerSummary", () => {
+  const usageLimitText =
+    "You've hit your usage limit. Upgrade at https://example.com/upgrade or wait for reset.";
+
+  function run(overrides: Partial<RunBlockerInput>): RunBlockerInput {
+    return { state: "executing", blocked: null, ...overrides };
+  }
+
+  it("renders a clear blocker for an actually-blocked run with a structured blocker", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: usageLimitText,
+            requiredInputKey: "none",
+          },
+        }),
+      ),
+    ).toBe(`Execution: ${usageLimitText} (key: none)`);
+  });
+
+  it("renders needs-input detail for a user-input-blocked run", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need the database password",
+            requiredInputKey: "db_password",
+          },
+        }),
+      ),
+    ).toBe("Execution: Need the database password (key: db_password)");
+  });
+
+  it("does NOT render a stale blocker for a done run", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({
+          state: "done",
+          blocked: {
+            blockedAt: "execution",
+            prompt: usageLimitText,
+            requiredInputKey: "none",
+          },
+          lastError: usageLimitText,
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does NOT render a stale blocker for an executing run that has runnable work", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({
+          state: "executing",
+          blocked: {
+            blockedAt: "execution",
+            prompt: usageLimitText,
+            requiredInputKey: "none",
+          },
+          lastError: usageLimitText,
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does NOT render stale lastError after resolution (cancelled/awaiting_approval)", () => {
+    expect(
+      buildRunBlockerSummary(run({ state: "cancelled", lastError: usageLimitText })),
+    ).toBeUndefined();
+    expect(
+      buildRunBlockerSummary(run({ state: "awaiting_approval", lastError: usageLimitText })),
+    ).toBeUndefined();
+  });
+
+  it("still surfaces planning failures via lastError", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({ state: "planning", lastError: "Planner failed to produce a plan" }),
+      ),
+    ).toBe("Planner failed to produce a plan");
+  });
+
+  it("falls back to lastError when blocked state lacks a structured blocker", () => {
+    expect(
+      buildRunBlockerSummary(
+        run({ state: "blocked", blocked: null, lastError: "Execution stalled" }),
+      ),
+    ).toBe("Execution stalled");
   });
 });
 

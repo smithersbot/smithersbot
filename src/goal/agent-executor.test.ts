@@ -269,6 +269,39 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
+  it("clears stale run-level blocker fields on transition to done", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    // Simulate a prior interruption that left stale blocker/lastError fields.
+    session.state = "blocked";
+    session.blocked = {
+      blockedAt: "execution",
+      prompt: "You've hit your usage limit. Upgrade at https://example.com/upgrade",
+      requiredInputKey: "resume_execution",
+    };
+    session.lastError = "You've hit your usage limit.";
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-clears-blocker-on-done",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(session.state).toBe("done");
+    // Stale blocker/lastError must be cleared so /goal_status renders no blocker.
+    expect(session.blocked).toBeNull();
+    expect(session.lastError).toBeUndefined();
+  });
+
   it("allows legacy workingDir by default with a warning", async () => {
     const root = "/tmp/smithersbot-managed-agent-executor";
     const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;

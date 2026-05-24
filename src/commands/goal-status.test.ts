@@ -421,6 +421,119 @@ describe("goal-status command", () => {
     expect(lines.some((line) => line.includes("Dependency Graph"))).toBe(false);
   });
 
+  it("done goal with a stale blocker field renders no top-level blocker", async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "done-stale-blocker",
+      state: "done",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "You've hit your usage limit. Upgrade at https://example.com/upgrade",
+        requiredInputKey: "none",
+      },
+      lastError: "You've hit your usage limit. Upgrade at https://example.com/upgrade",
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("done-stale-blocker", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("✅ Done:");
+    expect(output).not.toContain("**Blocker**");
+    expect(output).not.toContain("usage limit");
+    expect(output).not.toContain("https://example.com/upgrade");
+  });
+
+  it("executing goal with runnable work and a stale blocker field renders no blocker", async () => {
+    const runId = "executing-stale-blocker";
+    saveRunFixture({
+      ...sampleRun,
+      runId,
+      state: "executing",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "You've hit your usage limit. Upgrade at https://example.com/upgrade",
+        requiredInputKey: "none",
+      },
+      lastError: "You've hit your usage limit. Upgrade at https://example.com/upgrade",
+      plan: {
+        goal: "Build a widget",
+        workingDir: "/tmp",
+        summary: "Widget plan",
+        steps: [
+          { id: "1", description: "Create dir", dependsOn: [], status: "done" },
+          { id: "2", description: "Write code", dependsOn: ["1"], status: "in_progress" },
+        ],
+      },
+      stepResults: { "1": { stepId: "1", success: true, output: "", durationMs: 1 } },
+    });
+    // An active run lock keeps loadRun from recovering this as a stale/blocked run.
+    fs.mkdirSync(path.join(testGoalsDir, ".locks", "runs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(testGoalsDir, ".locks", "runs", `${runId}.lock`),
+      JSON.stringify({ pid: process.pid, label: "execute", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand(runId, {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("⏳ Executing:");
+    expect(output).not.toContain("**Blocker**");
+    expect(output).not.toContain("usage limit");
+  });
+
+  it("actually usage-limit-blocked goal renders a clear usage-limit blocker", async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "blocked-usage-limit",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "You've hit your usage limit. Resume to retry once it resets.",
+        requiredInputKey: "resume_execution",
+      },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-usage-limit", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("**Blocker**");
+    expect(output).toContain("You've hit your usage limit");
+  });
+
+  it("actually user-input-blocked goal renders needs-input blocker", async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "blocked-needs-input",
+      state: "blocked",
+      blocked: { blockedAt: "execution", prompt: "Need API key", requiredInputKey: "api_key" },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("blocked-needs-input", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("**Blocker** Execution: Need API key (key: api_key)");
+  });
+
+  it("does not show raw backend error text after resolution (done with stale lastError)", async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "done-stale-lasterror",
+      state: "done",
+      blocked: null,
+      lastError:
+        "error_max_turns stop_reason tool_use — see https://console.example.com/settings/billing",
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("done-stale-lasterror", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("✅ Done:");
+    expect(output).not.toContain("**Blocker**");
+    expect(output).not.toContain("error_max_turns");
+    expect(output).not.toContain("console.example.com");
+  });
+
   it("JSON mode includes blocked object with prompt and requiredInputKey", async () => {
     saveRunFixture({
       ...sampleRun,

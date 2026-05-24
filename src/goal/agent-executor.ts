@@ -287,6 +287,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   assertGoalWorkerWorkspace({ workingDir, config: config?.goal, onWarning: onProgress });
 
   session.state = "executing";
+  // Clear stale run-level blocker fields from a prior interruption so a resumed
+  // run does not render an old blocker (e.g. a usage-limit message) while it is
+  // actively executing. Mirrors the resume command, which already nulls
+  // session.blocked before executing. Any genuinely new block sets these again.
+  session.blocked = null;
+  session.lastError = undefined;
   session.buildGateConfig = plan.buildGate;
   session.stepRalphCounts ??= {};
   session.buildGateFixCounts ??= {};
@@ -1005,6 +1011,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
   if (allDone && !finalBuildGateFailurePrompt) {
     session.state = "done";
+    // A completed run must carry no blocker. Clear any stale blocker/lastError
+    // left over from an interruption earlier in this run so /goal_status and the
+    // done message never render a phantom top-level blocker.
+    session.blocked = null;
+    session.lastError = undefined;
 
     let prUrl: string | undefined;
     const githubPushConfig = config?.goal?.githubPush;

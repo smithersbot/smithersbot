@@ -1,4 +1,4 @@
-import type { GoalState, ManualTestSuggestion } from "./types.js";
+import type { GoalState, ManualTestSuggestion, SerializedRun } from "./types.js";
 
 export type GoalOutputMode = "concise" | "verbose" | "full";
 export type GoalOutputChannel = "cli" | "telegram";
@@ -290,6 +290,42 @@ function fitStepLinesToBudget(params: {
     shownStepCount: shown,
     hiddenStepCount: hidden,
   };
+}
+
+/** Narrow view of a run needed to decide whether a top-level blocker renders. */
+export type RunBlockerInput = Pick<SerializedRun, "state" | "blocked" | "lastError">;
+
+/**
+ * Decide whether a top-level "Blocker" line should render for a run, and what
+ * text it should contain.
+ *
+ * A blocker must only surface when the run is *currently* blocked with an
+ * unresolved blocker, or when planning failed and left the run stuck. Stale
+ * `blocked`/`lastError` fields carried over from a prior interruption must NOT
+ * render once the run has resumed (executing), completed (done), or been
+ * cancelled — otherwise a recovered or finished goal still shows a phantom
+ * blocker such as "Blocker You've hit your usage limit...". Returns undefined
+ * when no blocker should render.
+ */
+export function buildRunBlockerSummary(run: RunBlockerInput): string | undefined {
+  if (run.state === "blocked") {
+    if (run.blocked) {
+      const blockedAt = run.blocked.blockedAt === "planning" ? "Planning" : "Execution";
+      const keySuffix = run.blocked.requiredInputKey
+        ? ` (key: ${run.blocked.requiredInputKey})`
+        : "";
+      return `${blockedAt}: ${run.blocked.prompt}${keySuffix}`;
+    }
+    // Blocked without a structured blocker: surface the last error as the reason.
+    return run.lastError;
+  }
+  // Planning can fail and leave a lastError the operator still needs to see; the
+  // run is effectively stuck even though its state is not "blocked".
+  if (run.state === "planning") {
+    return run.lastError;
+  }
+  // executing / awaiting_approval / done / cancelled: never render a stale blocker.
+  return undefined;
 }
 
 export function formatCompactGoalOutput(input: CompactGoalRenderInput): CompactGoalRenderResult {

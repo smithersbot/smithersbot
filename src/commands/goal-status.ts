@@ -2,7 +2,11 @@ import path from "node:path";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { loadAttemptBundles } from "../goal/attempt-bundle.js";
 import type { GoalOutputChannel, GoalOutputMode } from "../goal/compact-output.js";
-import { buildGoalRetrySummary, formatCompactGoalOutput } from "../goal/compact-output.js";
+import {
+  buildGoalRetrySummary,
+  buildRunBlockerSummary,
+  formatCompactGoalOutput,
+} from "../goal/compact-output.js";
 import { computeCpm } from "../goal/cpm.js";
 import { renderAsciiDependencies } from "../goal/dag-render.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
@@ -73,15 +77,6 @@ function buildProgress(run: SerializedRun): { completed: number; total: number }
   return { completed: 0, total: 0 };
 }
 
-function buildBlockerSummary(run: SerializedRun): string | undefined {
-  if (run.blocked) {
-    const blockedAt = run.blocked.blockedAt === "planning" ? "Planning" : "Execution";
-    const keySuffix = run.blocked.requiredInputKey ? ` (key: ${run.blocked.requiredInputKey})` : "";
-    return `${blockedAt}: ${run.blocked.prompt}${keySuffix}`;
-  }
-  return run.lastError;
-}
-
 function buildActionHint(run: SerializedRun, channel: GoalOutputChannel): string | undefined {
   const runPrefix = run.runId.slice(0, 8);
 
@@ -135,7 +130,7 @@ function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): strin
     state: run.state,
     title: resolveGoalTitle(run),
     progress: buildProgress(run),
-    blockerSummary: buildBlockerSummary(run),
+    blockerSummary: buildRunBlockerSummary(run),
     retrySummary,
     mode,
     channel,
