@@ -112,6 +112,11 @@ export async function modelsListCommand(
   }
 
   if (rows.length === 0) {
+    if (opts.json) {
+      // JSON mode must always emit machine-readable JSON, even with zero models.
+      printModelTable(rows, runtime, opts);
+      return;
+    }
     runtime.log("No models found.");
     return;
   }

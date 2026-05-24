@@ -14,6 +14,8 @@ const resolveEnvApiKey = vi.fn().mockReturnValue(undefined);
 const resolveAwsSdkEnvVarName = vi.fn().mockReturnValue(undefined);
 const getCustomProviderApiKey = vi.fn().mockReturnValue(undefined);
 const discoverAuthStorage = vi.fn().mockReturnValue({});
+// Drives both the legacy discover path and the ModelRegistry mock below. Each test sets
+// `discoverModels.mockReturnValue({ getAll, getAvailable })` to seed the registry contents.
 const discoverModels = vi.fn();
 
 vi.mock("../config/config.js", () => ({
@@ -45,6 +47,18 @@ vi.mock("../agents/model-auth.js", () => ({
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
+  AuthStorage: class {
+    constructor(_path: string) {}
+  },
+  ModelRegistry: class {
+    constructor(_auth: unknown, _path: string) {}
+    getAll() {
+      return discoverModels()?.getAll?.() ?? [];
+    }
+    getAvailable() {
+      return discoverModels()?.getAvailable?.() ?? [];
+    }
+  },
   discoverAuthStorage,
   discoverModels,
 }));
