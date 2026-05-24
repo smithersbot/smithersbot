@@ -258,7 +258,7 @@ flowchart LR
 
 ### Reading the goal flowchart
 
-`/goal_status` renders the goal's task DAG. Redundant arrows are removed (if `a → b → c`, the implied `a → c` is not drawn), so each arrow is a real dependency. Each task node is styled by its current state:
+`/goal_status` renders the goal's task DAG. Each task node is styled by its current state:
 
 | Node style | Meaning |
 | --- | --- |
