@@ -47,8 +47,10 @@ describe("message-channel", () => {
   });
 
   it("normalizes gateway message channels and rejects unknown values", () => {
-    expect(resolveGatewayMessageChannel("discord")).toBe("discord");
-    expect(resolveGatewayMessageChannel(" imsg ")).toBe("imessage");
+    expect(resolveGatewayMessageChannel("telegram")).toBe("telegram");
+    expect(resolveGatewayMessageChannel("gchat")).toBe("googlechat");
+    expect(resolveGatewayMessageChannel("discord")).toBeUndefined();
+    expect(resolveGatewayMessageChannel(" imsg ")).toBeUndefined();
     expect(resolveGatewayMessageChannel("web")).toBeUndefined();
     expect(resolveGatewayMessageChannel("nope")).toBeUndefined();
   });
