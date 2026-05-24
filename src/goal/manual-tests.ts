@@ -14,6 +14,15 @@ import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
 } from "./backend-availability.js";
+import {
+  appendClaudeCodeSandboxArgs,
+  appendCodexNativeSandboxExecArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  mergeCodexNativeSandboxEnv,
+  writeCodexNativeSandboxConfig,
+  type ClaudeCodeLaunchSandboxConfig,
+  type CodexNativeSandboxConfig,
+} from "./backend-sandbox.js";
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
 import { runCliProcess } from "./cli-process.js";
 import { runWithBackendFallback, type PhaseAttempt } from "./phase-fallback.js";
@@ -266,21 +275,28 @@ function extractAssistantTextFromCliResult(rawStdout: string): string {
   throw new Error("Manual test CLI response did not include assistant text.");
 }
 
-function buildCodexManualTestsArgs(prompt: string): string[] {
+function buildCodexManualTestsArgs(params: {
+  prompt: string;
+  sandboxConfig: CodexNativeSandboxConfig;
+}): string[] {
   const codexAskForApproval = getCodexAskForApprovalPlacement();
-  return [
+  const args = [
     ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
     "--json",
     ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
-    "--sandbox",
-    "workspace-write",
-    "--cd",
-    process.cwd(),
-    "-c",
-    "net.allowed=true",
-    prompt,
   ];
+  appendCodexNativeSandboxExecArgs(args, params.sandboxConfig);
+  args.push(params.prompt);
+  return args;
+}
+
+function buildClaudeManualTestsArgs(params: {
+  sandboxConfig: ClaudeCodeLaunchSandboxConfig;
+}): string[] {
+  const args = ["-p", "--output-format", "json", "--max-turns", "1"];
+  appendClaudeCodeSandboxArgs(args, params.sandboxConfig);
+  return args;
 }
 
 async function runManualTestsForBackend(params: {
@@ -295,9 +311,25 @@ async function runManualTestsForBackend(params: {
 }): Promise<PhaseAttempt<string>> {
   const { backend, claudeBin, combinedPrompt, artifacts, artifactHint } = params;
   const useCodex = backend === "codex";
+  const claudeSandbox = !useCodex
+    ? buildClaudeCodeSandboxLaunchConfig({
+        workingDir: params.workingDir,
+        runId: `${params.runId ?? "manual-tests"}-manual-tests-${params.attemptNumber}`,
+        purpose: "repo-chat",
+      })
+    : undefined;
+  const codexSandbox = useCodex
+    ? writeCodexNativeSandboxConfig({
+        workingDir: params.workingDir,
+        runId: `${params.runId ?? "manual-tests"}-manual-tests-${params.attemptNumber}`,
+        purpose: "repo-chat",
+        requiresNetwork: true,
+        sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+      })
+    : undefined;
   const args = useCodex
-    ? buildCodexManualTestsArgs(combinedPrompt)
-    : ["-p", "--output-format", "json", "--max-turns", "1"];
+    ? buildCodexManualTestsArgs({ prompt: combinedPrompt, sandboxConfig: codexSandbox! })
+    : buildClaudeManualTestsArgs({ sandboxConfig: claudeSandbox! });
   let promptArtifactPath: string | undefined;
   if (params.runId) {
     const launchHistory = writeCriticalAgentLaunchEvent({
@@ -332,7 +364,12 @@ async function runManualTestsForBackend(params: {
     cwd: params.workingDir,
     timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
     ...(useCodex ? {} : { stdin: combinedPrompt }),
-    env: useCodex ? buildCredentialStrippedEnv() : buildClaudeCodeEnv("subscription"),
+    env: useCodex
+      ? mergeCodexNativeSandboxEnv(
+          buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+          codexSandbox!,
+        )
+      : buildClaudeCodeEnv("subscription"),
     ...(artifacts ? { stdoutPath: artifacts.stdoutPath, stderrPath: artifacts.stderrPath } : {}),
   });
   if (artifacts) {

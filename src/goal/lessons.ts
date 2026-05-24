@@ -16,6 +16,14 @@ import {
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
+import {
+  appendClaudeCodeSandboxArgs,
+  appendCodexNativeSandboxExecArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  mergeCodexNativeSandboxEnv,
+  writeCodexNativeSandboxConfig,
+  type CodexNativeSandboxConfig,
+} from "./backend-sandbox.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
@@ -327,7 +335,10 @@ function parseCandidatesFromCliOutput(stdout: string): ParsedLessonCandidates {
   return { parsed: false, lessons: [] };
 }
 
-function buildCodexExtractionArgs(params: { workingDir: string; prompt: string }): string[] {
+function buildCodexExtractionArgs(params: {
+  prompt: string;
+  sandboxConfig: CodexNativeSandboxConfig;
+}): string[] {
   const askForApprovalPlacement = getCodexAskForApprovalPlacement();
   const args = [
     ...(askForApprovalPlacement === "before_exec" ? ["--ask-for-approval", "never"] : []),
@@ -336,13 +347,9 @@ function buildCodexExtractionArgs(params: { workingDir: string; prompt: string }
     "--json",
     "--color",
     "never",
-    "--sandbox",
-    "read-only",
-    "--cd",
-    params.workingDir,
-    "--skip-git-repo-check",
-    params.prompt,
   ];
+  appendCodexNativeSandboxExecArgs(args, params.sandboxConfig);
+  args.push(params.prompt);
   return args;
 }
 
@@ -388,6 +395,11 @@ async function runClaudeLessonExtraction(params: {
   attemptNumber: number;
 }): Promise<LessonExtractionResult> {
   const stdin = buildClaudeExtractionPrompt(params.prompt);
+  const sandboxConfig = buildClaudeCodeSandboxLaunchConfig({
+    workingDir: params.workingDir,
+    runId: `${params.runId}-lessons-${params.attemptNumber}`,
+    purpose: "repo-chat",
+  });
   const args = [
     "-p",
     "--output-format",
@@ -399,6 +411,7 @@ async function runClaudeLessonExtraction(params: {
     "--append-system-prompt",
     CLAUDE_READ_ONLY_PROMPT,
   ];
+  appendClaudeCodeSandboxArgs(args, sandboxConfig);
   const launchHistory = writeCriticalAgentLaunchEvent({
     scope: {
       kind: "goal",
@@ -498,7 +511,13 @@ async function runCodexLessonExtraction(params: {
   prompt: string;
   attemptNumber: number;
 }): Promise<LessonExtractionResult> {
-  const args = buildCodexExtractionArgs(params);
+  const sandboxConfig = writeCodexNativeSandboxConfig({
+    workingDir: params.workingDir,
+    runId: `${params.runId}-lessons-${params.attemptNumber}`,
+    purpose: "repo-chat",
+    sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+  });
+  const args = buildCodexExtractionArgs({ prompt: params.prompt, sandboxConfig });
   const launchHistory = writeCriticalAgentLaunchEvent({
     scope: {
       kind: "goal",
@@ -524,7 +543,10 @@ async function runCodexLessonExtraction(params: {
     args,
     cwd: params.workingDir,
     timeoutMs: LESSON_EXTRACTION_TIMEOUT_MS,
-    env: buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+    env: mergeCodexNativeSandboxEnv(
+      buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+      sandboxConfig,
+    ),
   });
   const tokenUsage = parseBackendUsage(`${result.stdout}\n${result.stderr}`);
 

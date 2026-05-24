@@ -11,6 +11,57 @@ const resolveClaudeBinaryMock = vi.fn();
 const buildClaudeCodeEnvMock = vi.fn();
 const buildCredentialStrippedEnvMock = vi.fn();
 const detectBackendAvailabilityMock = vi.fn();
+const buildClaudeCodeSandboxLaunchConfigMock = vi.fn(
+  (params: { runId: string; workingDir: string; purpose: string }) => ({
+    settingsPath: `/tmp/${params.runId}-settings.json`,
+    args: [
+      "--settings",
+      `/tmp/${params.runId}-settings.json`,
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+    ],
+  }),
+);
+const writeCodexNativeSandboxConfigMock = vi.fn(
+  (params: { runId: string; workingDir: string; purpose: string; requiresNetwork?: boolean }) => ({
+    profileName: "smithersbot",
+    executionRoot: params.workingDir,
+    codexHome: `/tmp/${params.runId}-codex-home`,
+    configPath: `/tmp/${params.runId}-codex-home/config.toml`,
+    helperDir: `/tmp/${params.runId}-codex-home/bin`,
+    helperPath: `/tmp/${params.runId}-codex-home/bin/codex-linux-sandbox`,
+    codexPath: "codex",
+    authReferencePath: `/tmp/${params.runId}-codex-home/auth.json`,
+    authSourcePath: "/home/test/.codex/auth.json",
+    env: {
+      CODEX_HOME: `/tmp/${params.runId}-codex-home`,
+      PATH: `/tmp/${params.runId}-codex-home/bin:${process.env.PATH ?? ""}`,
+    },
+    args: ["sandbox", "linux", "--permissions-profile", "smithersbot", "--cd", params.workingDir],
+    configToml: [
+      'default_permissions = "smithersbot"',
+      "[permissions.smithersbot.filesystem]",
+      '"/" = "read"',
+      `"${params.workingDir}" = "read"`,
+      `"${params.workingDir}/.env" = "deny"`,
+      '"/managed/private/env/smithersbot/.env" = "deny"',
+      '"/home/test/.codex/auth.json" = "deny"',
+    ].join("\n"),
+    deniedReadPaths: [
+      `${params.workingDir}/.env`,
+      `${params.workingDir}/.env.local`,
+      `${params.workingDir}/.env.production`,
+      "/managed/private/env/smithersbot/.env",
+      "/home/test/.codex/auth.json",
+      "/home/test/.claude/settings.json",
+    ],
+    allowedReadPaths: [params.workingDir],
+    writablePaths: [],
+    requiresNetwork: params.requiresNetwork,
+  }),
+);
 
 vi.mock("./cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => runCliProcessMock(...args),
@@ -30,7 +81,19 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => "unsupported",
 }));
 
+vi.mock("./backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./backend-sandbox.js")>();
+  return {
+    ...actual,
+    buildClaudeCodeSandboxLaunchConfig: (...args: unknown[]) =>
+      buildClaudeCodeSandboxLaunchConfigMock(...args),
+    writeCodexNativeSandboxConfig: (...args: unknown[]) =>
+      writeCodexNativeSandboxConfigMock(...args),
+  };
+});
+
 import { clampCriticality, generateManualTests } from "./manual-tests.js";
+import { buildClaudeCodeSandboxSettingsConfig } from "./backend-sandbox.js";
 
 describe("clampCriticality", () => {
   it("defaults invalid values to 5", () => {
@@ -117,6 +180,8 @@ describe("generateManualTests", () => {
     buildClaudeCodeEnvMock.mockReset();
     buildCredentialStrippedEnvMock.mockReset();
     detectBackendAvailabilityMock.mockReset();
+    buildClaudeCodeSandboxLaunchConfigMock.mockClear();
+    writeCodexNativeSandboxConfigMock.mockClear();
     resolveClaudeBinaryMock.mockReturnValue("/usr/bin/claude");
     buildClaudeCodeEnvMock.mockReturnValue({ CLAUDE_AUTH: "subscription" });
     buildCredentialStrippedEnvMock.mockReturnValue({ CODEX_AUTH: "stripped" });
@@ -450,14 +515,33 @@ describe("generateManualTests", () => {
       env: Record<string, string>;
     };
     expect(call.command).toBe("/usr/bin/claude");
-    expect(call.args).toEqual(["-p", "--output-format", "json", "--max-turns", "1"]);
+    expect(call.args).toEqual([
+      "-p",
+      "--output-format",
+      "json",
+      "--max-turns",
+      "1",
+      "--settings",
+      "/tmp/manual-tests-manual-tests-1-settings.json",
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+    ]);
     expect(call.cwd).toBe(process.cwd());
     expect(call.timeoutMs).toBe(300_000);
     expect(call.env).toEqual({ CLAUDE_AUTH: "subscription" });
+    expect(buildClaudeCodeSandboxLaunchConfigMock).toHaveBeenCalledWith({
+      workingDir: process.cwd(),
+      runId: "manual-tests-manual-tests-1",
+      purpose: "repo-chat",
+    });
     expect(call.stdin).toContain("## System Prompt");
+    expect(call.stdin.startsWith("## System Prompt\nYou are a QA assistant")).toBe(true);
     expect(call.stdin).toContain("You are a QA assistant");
     expect(call.stdin).toContain("## User Message");
     expect(call.stdin).toContain("Goal: Improve authentication reliability");
+    expect(call.stdin.length).toBeLessThanOrEqual(2969);
   });
 
   it("falls back to Codex when Claude Code hits a usage limit", async () => {
@@ -494,6 +578,67 @@ describe("generateManualTests", () => {
     const second = runCliProcessMock.mock.calls[1]?.[0] as { command: string };
     expect(first.command).toBe("/usr/bin/claude");
     expect(second.command).toBe("codex");
+    const secondCall = runCliProcessMock.mock.calls[1]?.[0] as {
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
+    expect(secondCall.args).not.toContain("--sandbox");
+    expect(secondCall.args).not.toContain("workspace-write");
+    expect(secondCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(secondCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(secondCall.env.CODEX_HOME).toContain("manual-tests-manual-tests-2-codex-home");
+    const sandboxConfig = writeCodexNativeSandboxConfigMock.mock.results[0]?.value as {
+      writablePaths: string[];
+      deniedReadPaths: string[];
+      allowedReadPaths: string[];
+      requiresNetwork?: boolean;
+    };
+    expect(sandboxConfig.writablePaths).toEqual([]);
+    expect(sandboxConfig.allowedReadPaths).toContain(process.cwd());
+    expect(sandboxConfig.deniedReadPaths).toEqual(
+      expect.arrayContaining([
+        `${process.cwd()}/.env`,
+        "/managed/private/env/smithersbot/.env",
+        "/home/test/.codex/auth.json",
+        "/home/test/.claude/settings.json",
+      ]),
+    );
+    expect(sandboxConfig.requiresNetwork).toBe(true);
+  });
+
+  it("uses the shared Claude read-only sandbox profile for manual-test CLI launches", () => {
+    const workingDir = "/repo/manual-tests-sandbox";
+    const settings = buildClaudeCodeSandboxSettingsConfig({
+      workingDir,
+      runId: "manual-tests-sandbox",
+      purpose: "repo-chat",
+      denyReadDeps: {
+        homedir: () => "/home/test",
+        privateRoot: () => "/managed/private",
+        pathExists: () => true,
+        realPath: (candidate) => candidate,
+      },
+    }).settings;
+
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.failIfUnavailable).toBe(true);
+    expect(settings.sandbox.filesystem.allowRead).toContain(workingDir);
+    expect(settings.sandbox.filesystem.allowWrite).toEqual([]);
+    expect(settings.sandbox.filesystem.denyRead).toEqual(
+      expect.arrayContaining([
+        `${workingDir}/.env`,
+        `${workingDir}/.env.local`,
+        "/managed/private",
+        "/home/test/.claude",
+      ]),
+    );
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining([
+        `Read(${workingDir}/.env)`,
+        "Read(/home/test/.codex/**)",
+        "Read(/home/test/.claude/**)",
+      ]),
+    );
   });
 
   it("throws one clear message when both backends are usage-limited", async () => {
@@ -1117,7 +1262,9 @@ describe("generateManualTests diagnostics artifacts", () => {
       env: Record<string, string>;
     };
     expect(call.command).toBe("codex");
-    expect(call.env).toEqual({ CODEX_AUTH: "stripped" });
+    expect(call.env.CODEX_AUTH).toBe("stripped");
+    expect(call.env.CODEX_HOME).toContain(`${path.basename(tmpRunDir)}-manual-tests-1-codex-home`);
+    expect(call.env.PATH).toContain(`${call.env.CODEX_HOME}${path.sep}bin`);
   });
 
   it("redacts known secret values in stdout/stderr artifacts and returned tests", async () => {

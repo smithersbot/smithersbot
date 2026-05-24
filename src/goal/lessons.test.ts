@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeAttemptBundle, resolveWorkerDir } from "./attempt-bundle.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { buildClaudeCodeSandboxSettingsConfig } from "./backend-sandbox.js";
+import {
+  buildClaudeExtractionPrompt,
+  buildLessonExtractionPrompt,
+} from "../prompts/lessons/extraction-prompt.js";
 import { saveRun } from "./run-store.js";
 import {
   addLesson,
@@ -21,6 +26,56 @@ import type { Lesson } from "./lessons.js";
 import type { SerializedRun } from "./types.js";
 
 const mockRunCliProcess = vi.fn();
+const mockBuildClaudeCodeSandboxLaunchConfig = vi.fn(
+  (params: { runId: string; workingDir: string; purpose: string }) => ({
+    settingsPath: `/tmp/${params.runId}-settings.json`,
+    args: [
+      "--settings",
+      `/tmp/${params.runId}-settings.json`,
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+    ],
+  }),
+);
+const mockWriteCodexNativeSandboxConfig = vi.fn(
+  (params: { runId: string; workingDir: string; purpose: string }) => ({
+    profileName: "smithersbot",
+    executionRoot: params.workingDir,
+    codexHome: `/tmp/${params.runId}-codex-home`,
+    configPath: `/tmp/${params.runId}-codex-home/config.toml`,
+    helperDir: `/tmp/${params.runId}-codex-home/bin`,
+    helperPath: `/tmp/${params.runId}-codex-home/bin/codex-linux-sandbox`,
+    codexPath: "codex",
+    authReferencePath: `/tmp/${params.runId}-codex-home/auth.json`,
+    authSourcePath: "/home/test/.codex/auth.json",
+    env: {
+      CODEX_HOME: `/tmp/${params.runId}-codex-home`,
+      PATH: `/tmp/${params.runId}-codex-home/bin:${process.env.PATH ?? ""}`,
+    },
+    args: ["sandbox", "linux", "--permissions-profile", "smithersbot", "--cd", params.workingDir],
+    configToml: [
+      'default_permissions = "smithersbot"',
+      "[permissions.smithersbot.filesystem]",
+      '"/" = "read"',
+      `"${params.workingDir}" = "read"`,
+      `"${params.workingDir}/.env" = "deny"`,
+      '"/managed/private/env/smithersbot/.env" = "deny"',
+      '"/home/test/.codex/auth.json" = "deny"',
+    ].join("\n"),
+    deniedReadPaths: [
+      `${params.workingDir}/.env`,
+      `${params.workingDir}/.env.local`,
+      `${params.workingDir}/.env.production`,
+      "/managed/private/env/smithersbot/.env",
+      "/home/test/.codex/auth.json",
+      "/home/test/.claude/settings.json",
+    ],
+    allowedReadPaths: [params.workingDir],
+    writablePaths: [],
+  }),
+);
 const LESSONS_MODULE_URL = new URL("./lessons.ts", import.meta.url).href;
 const CONCURRENT_ADD_LESSON_HELPER = `
 import fs from "node:fs";
@@ -61,6 +116,17 @@ addLesson({
 vi.mock("./cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
 }));
+
+vi.mock("./backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./backend-sandbox.js")>();
+  return {
+    ...actual,
+    buildClaudeCodeSandboxLaunchConfig: (...args: unknown[]) =>
+      mockBuildClaudeCodeSandboxLaunchConfig(...args),
+    writeCodexNativeSandboxConfig: (...args: unknown[]) =>
+      mockWriteCodexNativeSandboxConfig(...args),
+  };
+});
 
 const mockResolveClaudeBinary = vi.fn();
 vi.mock("./scout.js", async (importOriginal) => {
@@ -513,6 +579,8 @@ describe("extractRunLessons", () => {
     delete process.env.CLAWDBOT_STATE_DIR;
     mockRunCliProcess.mockReset();
     mockResolveClaudeBinary.mockReset();
+    mockBuildClaudeCodeSandboxLaunchConfig.mockClear();
+    mockWriteCodexNativeSandboxConfig.mockClear();
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
   });
 
@@ -630,6 +698,13 @@ describe("extractRunLessons", () => {
     expect(call.cwd).toBe(workingDir);
     expectForbiddenAgentEnvAbsent(call.env);
     expect(call.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(mockBuildClaudeCodeSandboxLaunchConfig).toHaveBeenCalledWith({
+      workingDir,
+      runId: `${runId}-lessons-1`,
+      purpose: "repo-chat",
+    });
+    expect(call.args).toContain("--settings");
+    expect(call.args).toContain(`/tmp/${runId}-lessons-1-settings.json`);
     expect(call.args).not.toContain("--dangerously-skip-permissions");
     expect(call.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(call.stdin).toContain("Adjust for monorepo tsconfig lookup");
@@ -773,6 +848,30 @@ describe("extractRunLessons", () => {
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
     expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
     expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+    const codexCall = mockRunCliProcess.mock.calls[1]?.[0] as {
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
+    expect(codexCall.args).not.toContain("--sandbox");
+    expect(codexCall.args).not.toContain("--skip-git-repo-check");
+    expect(codexCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(codexCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(codexCall.env.CODEX_HOME).toContain(`${runId}-lessons-2-codex-home`);
+    const sandboxConfig = mockWriteCodexNativeSandboxConfig.mock.results[0]?.value as {
+      writablePaths: string[];
+      deniedReadPaths: string[];
+      allowedReadPaths: string[];
+    };
+    expect(sandboxConfig.writablePaths).toEqual([]);
+    expect(sandboxConfig.allowedReadPaths).toContain(workingDir);
+    expect(sandboxConfig.deniedReadPaths).toEqual(
+      expect.arrayContaining([
+        `${workingDir}/.env`,
+        "/managed/private/env/smithersbot/.env",
+        "/home/test/.codex/auth.json",
+        "/home/test/.claude/settings.json",
+      ]),
+    );
     expect(recorded).toHaveLength(1);
     expect(recorded[0]?.pattern).toBe("fallback-works");
     const events = readLessonHistoryEvents(runId, workingDir);
@@ -845,6 +944,9 @@ describe("extractRunLessons", () => {
     expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
 
     const call = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(call.stdin.indexOf("Return ONLY JSON with this shape:")).toBeLessThan(
+      call.stdin.indexOf("Run: extract-run-prompt-contract"),
+    );
     expect(call.stdin).toContain(
       '{"lessons":[{"pattern":"...","lesson":"...","scope":"project|global","stepId":"optional"}]}',
     );
@@ -884,6 +986,101 @@ describe("extractRunLessons", () => {
     expect(call.stdin).toContain(
       'Classify scope for each lesson: "global" for principles that apply to any project, "project" for lessons specific to this working directory.',
     );
+    const correctionSummary = [
+      `Run ID: ${runId}`,
+      `Working directory: ${workingDir}`,
+      "Goal: Improve extraction reliability",
+      "",
+      "Plan history:",
+      "- Revision 1 (source: autocheck)",
+      "  Summary: Revised plan",
+      "  Edit instructions: Fix reliability issue from failed parser run",
+      "",
+      "Step results:",
+      "- step-alpha: failed",
+      "  Error: Parser emitted malformed JSON",
+      "  Output: pnpm build failed",
+    ].join("\n");
+    const afterPrompt = buildLessonExtractionPrompt({
+      runId,
+      workingDir,
+      existingLessons: [],
+      correctionSummary,
+    });
+    const oldPrompt = [
+      "Extract reusable project lessons from this completed goal run.",
+      "",
+      `Run: ${runId}`,
+      `Working directory: ${workingDir}`,
+      "",
+      "Existing lessons (do not duplicate or paraphrase these):",
+      "None.",
+      "",
+      "Correction summary artifacts:",
+      correctionSummary,
+      "",
+      "Critical framing:",
+      "- Every correction in this summary has ALREADY been applied to the codebase; the code is in its fully fixed, committed state.",
+      "- The worker on the next run will see the fixed code directly.",
+      "- Only create a lesson if it captures a forward-looking principle that would NOT be obvious from reading the current source code.",
+      "",
+      "Return ONLY JSON with this shape:",
+      '{ "lessons": [{ "pattern": "short-keyword", "lesson": "1-3 sentence insight", "scope": "project|global", "stepId": "optional step id" }] }',
+      "",
+      "Rules:",
+      "- Lessons are ONLY for improving the worker prompt (the CLI agent executing individual plan steps).",
+      "- Do NOT include advice for the planner, plan autocheck/reviewer, manual-test suggester, post-execution reviewer, or any other LLM surface.",
+      "- Only include lessons about issues that actually caused problems or confusion in this run.",
+      "- Lessons must encode forward-looking principles that improve future worker decisions and are not obvious from current source.",
+      "- Reject any candidate that merely describes what was changed or fixed in this run.",
+      "- Reject any candidate that gives advice about things the worker cannot control (for example system config, hardcoded build-gate policy, Semgrep severity/excludes).",
+      "- Reject any candidate that works around a flaky code path instead of fixing code.",
+      "- Reject any candidate that restates implementation details already visible in source.",
+      "- Pattern should be short and specific (kebab-case preferred).",
+      "- Lesson text should be concrete and generalizable.",
+      '- Classify scope for each lesson: "global" for principles that apply to any project, "project" for lessons specific to this working directory.',
+      "- If unsure whether a lesson should be included, do not include it.",
+      '- If no useful new lessons exist, return exactly: {"lessons":[]}.',
+    ].join("\n");
+    expect(afterPrompt.length).toBeLessThanOrEqual(oldPrompt.length);
+    expect(buildClaudeExtractionPrompt(afterPrompt).length).toBeLessThanOrEqual(
+      buildClaudeExtractionPrompt(oldPrompt).length,
+    );
+  });
+
+  it("uses the shared Claude read-only sandbox profile for lesson CLI launches", () => {
+    const workingDir = "/repo/lessons-sandbox";
+    const settings = buildClaudeCodeSandboxSettingsConfig({
+      workingDir,
+      runId: "lessons-sandbox",
+      purpose: "repo-chat",
+      denyReadDeps: {
+        homedir: () => "/home/test",
+        privateRoot: () => "/managed/private",
+        pathExists: () => true,
+        realPath: (candidate) => candidate,
+      },
+    }).settings;
+
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.failIfUnavailable).toBe(true);
+    expect(settings.sandbox.filesystem.allowRead).toContain(workingDir);
+    expect(settings.sandbox.filesystem.allowWrite).toEqual([]);
+    expect(settings.sandbox.filesystem.denyRead).toEqual(
+      expect.arrayContaining([
+        `${workingDir}/.env`,
+        `${workingDir}/.env.local`,
+        "/managed/private",
+        "/home/test/.claude",
+      ]),
+    );
+    expect(settings.permissions.deny).toEqual(
+      expect.arrayContaining([
+        `Read(${workingDir}/.env)`,
+        "Read(/home/test/.codex/**)",
+        "Read(/home/test/.claude/**)",
+      ]),
+    );
   });
 
   it("strips credential env vars from Codex lesson extraction subprocesses", async () => {
@@ -909,10 +1106,17 @@ describe("extractRunLessons", () => {
 
     const call = mockRunCliProcess.mock.calls[0]?.[0] as {
       command: string;
+      args: string[];
       env: Record<string, string | undefined>;
     };
     expect(call.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(call.env);
+    expect(call.args).not.toContain("--sandbox");
+    expect(call.args).not.toContain("--skip-git-repo-check");
+    expect(call.env.CODEX_HOME).toContain(`${runId}-lessons-1-codex-home`);
+    expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir, runId: `${runId}-lessons-1`, purpose: "repo-chat" }),
+    );
   });
 
   it("repairs malformed JSONL lines when parsing extracted lessons", async () => {
