@@ -94,6 +94,7 @@ vi.mock("./backend-sandbox.js", async (importOriginal) => {
 
 import { clampCriticality, generateManualTests } from "./manual-tests.js";
 import { buildClaudeCodeSandboxSettingsConfig } from "./backend-sandbox.js";
+import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
 describe("clampCriticality", () => {
   it("defaults invalid values to 5", () => {
@@ -1111,6 +1112,29 @@ describe("generateManualTests diagnostics artifacts", () => {
     expect(fs.existsSync(expectedStdoutPath)).toBe(true);
     expect(fs.existsSync(expectedStderrPath)).toBe(true);
     expect(fs.readFileSync(expectedStdoutPath, "utf8")).toBe(claudeStdout);
+    const destinationDir = path.join(tmpRunDir, "agent-history-runtime");
+    const index = mirrorGoalRuntimeToAgentHistory({
+      workspaceName: "manual-tests-workspace",
+      goalId: path.basename(tmpRunDir),
+      sourceDir: tmpRunDir,
+      destinationDir,
+    });
+    expect(fs.existsSync(path.join(destinationDir, "manual-tests", "stdout.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(destinationDir, "manual-tests", "stderr.txt"))).toBe(true);
+    expect(index.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          relativePath: "manual-tests/stdout.txt",
+          category: "manual-tests",
+          skipped: false,
+        }),
+        expect.objectContaining({
+          relativePath: "manual-tests/stderr.txt",
+          category: "manual-tests",
+          skipped: false,
+        }),
+      ]),
+    );
     const events = readManualTestsHistory();
     expect(events[0]).toMatchObject({
       event: "launch",

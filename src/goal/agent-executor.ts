@@ -87,6 +87,7 @@ import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-run
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import { appendAgentHistoryEventBestEffort } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
@@ -1094,6 +1095,16 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       } else {
         onProgress?.(`  [manual-tests] Generation failed: ${manualTestsError}`);
       }
+    }
+    try {
+      mirrorGoalRuntimeToAgentHistory({
+        workspaceName: workspaceNameFromWorkingDir(workingDir),
+        goalId: runId,
+        sourceDir: resolveRunDir(runId),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      onProgress?.(`  [warn] Runtime mirror after completion failed: ${message}`);
     }
     const summary = buildGoalSummary({
       goal: session.goal,

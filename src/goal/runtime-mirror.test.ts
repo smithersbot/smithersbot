@@ -125,6 +125,20 @@ describe("runtime mirror", () => {
       redactionCount: 1,
       sourceKind: "goal-runtime",
     });
+    expect(
+      index.entries.find((entry) => entry.relativePath === "manual-tests/tests.json"),
+    ).toMatchObject({
+      category: "manual-tests",
+      skipped: false,
+      sourceKind: "goal-runtime",
+    });
+    expect(
+      index.entries.find((entry) => entry.relativePath === "lessons/summary.json"),
+    ).toMatchObject({
+      category: "lessons",
+      skipped: false,
+      sourceKind: "goal-runtime",
+    });
     expect(readIndex(path.join(destinationDir, "index.json")).entries).toHaveLength(
       expectedFiles.length,
     );

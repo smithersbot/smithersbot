@@ -40,12 +40,14 @@ import {
 import { runCliProcess } from "./cli-process.js";
 import { runWithBackendFallback } from "./phase-fallback.js";
 import { extractJson } from "./planner.js";
-import { loadRun } from "./run-store.js";
+import { loadRun, resolveRunDir } from "./run-store.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { CliWorkerId } from "../config/types.goal.js";
 import type { SerializedRun } from "./types.js";
 
 const LESSONS_FILENAME = "goal-lessons.json";
+const RUN_LESSONS_DIR = "lessons";
+const RUN_LESSONS_FILENAME = "extracted-lessons.json";
 const LESSON_EXTRACTION_TIMEOUT_MS = 120_000;
 const MAX_PLAN_HISTORY_FOR_PROMPT = 12;
 const MAX_RALPH_INSIGHTS_FOR_PROMPT = 20;
@@ -108,6 +110,28 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   fs.writeFileSync(tmp, redactSecretValues(`${JSON.stringify(data, null, 2)}\n`), "utf8");
   fs.renameSync(tmp, filePath);
   fs.chmodSync(filePath, 0o600);
+}
+
+function writeRunLessonsEvidence(runId: string, lessons: Lesson[]): void {
+  try {
+    atomicWriteJson(path.join(resolveRunDir(runId), RUN_LESSONS_DIR, RUN_LESSONS_FILENAME), {
+      runId,
+      generatedAt: new Date().toISOString(),
+      source: "per-goal-lessons-extraction",
+      lessons: lessons.map((lesson) => ({
+        id: lesson.id,
+        pattern: lesson.pattern,
+        lesson: lesson.lesson,
+        source: lesson.source,
+        scope: lesson.scope ?? "project",
+        runId: lesson.runId,
+        ...(lesson.stepId ? { stepId: lesson.stepId } : {}),
+        createdAt: lesson.createdAt,
+      })),
+    });
+  } catch {
+    // Best-effort: per-goal evidence is diagnostic and must not block completion.
+  }
 }
 
 function isLesson(value: unknown): value is Lesson {
@@ -902,6 +926,7 @@ export async function extractRunLessons(
       });
       recorded.push(added);
     }
+    writeRunLessonsEvidence(runId, recorded);
     return recorded;
   } catch {
     return [];

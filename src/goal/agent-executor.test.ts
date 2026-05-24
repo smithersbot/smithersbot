@@ -24,6 +24,7 @@ const mockExecFileSync = vi.fn();
 const mockRunCliProcess = vi.fn();
 const mockResolveClaudeBinary = vi.fn();
 const mockExtractRunLessons = vi.fn();
+const mockMirrorGoalRuntimeToAgentHistory = vi.fn();
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
@@ -106,6 +107,16 @@ vi.mock("./lessons.js", async () => {
     ...actual,
     extractRunLessons: (...args: Parameters<typeof actual.extractRunLessons>) =>
       mockExtractRunLessons(...args),
+  };
+});
+
+vi.mock("./runtime-mirror.js", async () => {
+  const actual = await vi.importActual<typeof import("./runtime-mirror.js")>("./runtime-mirror.js");
+  return {
+    ...actual,
+    mirrorGoalRuntimeToAgentHistory: (
+      ...args: Parameters<typeof actual.mirrorGoalRuntimeToAgentHistory>
+    ) => mockMirrorGoalRuntimeToAgentHistory(...args),
   };
 });
 
@@ -211,6 +222,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     mockExecFileSync.mockReturnValue("");
     mockResolveClaudeBinary.mockReturnValue("/usr/bin/claude");
     mockExtractRunLessons.mockResolvedValue([]);
+    mockMirrorGoalRuntimeToAgentHistory.mockReturnValue({
+      generatedAt: "2026-05-24T00:00:00.000Z",
+      sourceKind: "goal-runtime",
+      entries: [],
+    });
     mockRunCliProcess.mockResolvedValue({
       stdout: '{"approved":true,"issues":[]}',
       stderr: "",
@@ -2009,6 +2025,98 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       .find((event) => event.type === "all_done");
     expect(allDone).toBeDefined();
     expect(allDone?.manualTestsStatus).toBe("generated");
+  });
+
+  it("mirrors goal runtime after lessons and manual-tests completion artifacts are produced", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+    mockExtractRunLessons.mockResolvedValueOnce([
+      {
+        id: "lesson-1",
+        workingDir: "/tmp/moltbot-goal-test",
+        pattern: "completion-mirror",
+        lesson: "Mirror after completion artifacts are written.",
+        source: "autocheck",
+        scope: "project",
+        runId: "run-post-completion-mirror",
+        createdAt: "2026-05-24T00:00:00.000Z",
+      },
+    ]);
+    const complete = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        tests: [
+          {
+            description: "Verify completion artifacts",
+            criticality: 7,
+            detail: "Complete a goal and inspect the redacted runtime mirror.",
+          },
+        ],
+      }),
+    });
+    const onStatusChange = vi.fn();
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-completion-mirror",
+      workingDir: "/tmp/moltbot-goal-test",
+      manualTestsClient: { complete },
+      onStatusChange,
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockExtractRunLessons).toHaveBeenCalled();
+    expect(complete).toHaveBeenCalled();
+    expect(mockMirrorGoalRuntimeToAgentHistory).toHaveBeenCalledWith({
+      workspaceName: "moltbot-goal-test",
+      goalId: "run-post-completion-mirror",
+      sourceDir: "/tmp/moltbot-goal-test/runs/run-post-completion-mirror",
+    });
+    expect(mockExtractRunLessons.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
+    );
+    expect(complete.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
+    );
+    expect(onStatusChange).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "all_done", manualTestsStatus: "generated" }),
+    );
+  });
+
+  it("keeps completion fail-open when the post-completion runtime mirror fails", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const progress: string[] = [];
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Done",
+      turnsUsed: 1,
+    });
+    mockMirrorGoalRuntimeToAgentHistory.mockImplementationOnce(() => {
+      throw new Error("mirror disk unavailable");
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-post-completion-mirror-fail-open",
+      workingDir: "/tmp/moltbot-goal-test",
+      onProgress: (line) => progress.push(line),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(progress).toContain(
+      "  [warn] Runtime mirror after completion failed: mirror disk unavailable",
+    );
   });
 
   it("never collects a review diff for the removed phase even with a base SHA", async () => {

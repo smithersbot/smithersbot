@@ -11,7 +11,7 @@ import {
   buildClaudeExtractionPrompt,
   buildLessonExtractionPrompt,
 } from "../prompts/lessons/extraction-prompt.js";
-import { saveRun } from "./run-store.js";
+import { resolveRunDir, saveRun } from "./run-store.js";
 import {
   addLesson,
   clearLessons,
@@ -735,6 +735,24 @@ describe("extractRunLessons", () => {
     const stored = loadLessons();
     expect(stored).toHaveLength(1);
     expect(stored[0]).toEqual(recorded[0]);
+    const evidencePath = path.join(resolveRunDir(runId), "lessons", "extracted-lessons.json");
+    expect(fs.existsSync(evidencePath)).toBe(true);
+    const evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8")) as {
+      source: string;
+      lessons: Array<{ id: string; pattern: string; lesson: string; runId: string }>;
+    };
+    expect(evidence.source).toBe("per-goal-lessons-extraction");
+    expect(evidence.lessons).toEqual([
+      expect.objectContaining({
+        id: recorded[0]?.id,
+        pattern: "workspace-tsconfig",
+        lesson:
+          "Resolve tsconfig from the current package root instead of assuming repo root defaults.",
+        runId,
+      }),
+    ]);
+    expect(JSON.stringify(evidence)).not.toContain("known-dedup");
+    expect(JSON.stringify(evidence)).not.toContain("Do not duplicate this existing lesson.");
     const events = readLessonHistoryEvents(runId, workingDir);
     expect(events[0]).toMatchObject({
       event: "launch",
