@@ -227,6 +227,51 @@ describe("computeDisplayStatuses — resume visual state", () => {
   });
 });
 
+describe("computeDisplayStatuses — recomputes all nodes + terminal states", () => {
+  it("recomputes the display state for EVERY node, not just the first", () => {
+    // A mixed resume snapshot: done, usage-limit, retryable technical, hard
+    // user-input block, and a downstream of the hard block. computeDisplayStatuses
+    // must produce a recomputed entry for every node.
+    const steps = [
+      step({ id: "A", status: "done" }),
+      step({ id: "B", status: "blocked", blockedReason: "usage_limit" }),
+      step({ id: "C", status: "blocked", blockedReason: "error" }),
+      step({ id: "D", status: "blocked", blockedReason: "user_input", blockedQuestion: "q" }),
+      step({ id: "E", status: "pending", dependsOn: ["D"] }),
+    ];
+    const m = computeDisplayStatuses(steps);
+    expect(m.size).toBe(steps.length);
+    expect(m.get("A")).toBe("done");
+    expect(m.get("B")).toBe("usage_limited");
+    expect(m.get("C")).toBe("pending");
+    expect(m.get("D")).toBe("blocked");
+    expect(m.get("E")).toBe("soft_blocked");
+  });
+
+  it("a done goal has no stale blocked or usage-limited nodes", () => {
+    const steps = [
+      step({ id: "A", status: "done" }),
+      step({ id: "B", status: "done", dependsOn: ["A"] }),
+    ];
+    const m = computeDisplayStatuses(steps);
+    expect([...m.values()]).toEqual(["done", "done"]);
+  });
+
+  it("a cancelled goal's steps keep their underlying states (done/pending), no stale blocked", () => {
+    // No per-step "cancelled" status exists; completed steps stay done and
+    // not-started steps stay pending — none should appear blocked/usage_limited.
+    const steps = [
+      step({ id: "A", status: "done" }),
+      step({ id: "B", status: "pending", dependsOn: ["A"] }),
+    ];
+    const m = computeDisplayStatuses(steps);
+    expect(m.get("A")).toBe("done");
+    expect(m.get("B")).toBe("pending");
+    expect([...m.values()]).not.toContain("blocked");
+    expect([...m.values()]).not.toContain("usage_limited");
+  });
+});
+
 describe("isHardBlocked / isRetryableBlocked", () => {
   it("user_input block is hard, not retryable", () => {
     const s = step({

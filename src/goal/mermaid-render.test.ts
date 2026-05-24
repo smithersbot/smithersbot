@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { computeCpm } from "./cpm.js";
 import type { ExecutionDisplayStatus } from "./execution-status.js";
+import { computeDisplayStatuses } from "./execution-status.js";
 import { normalizeLabel, renderMermaid } from "./mermaid-render.js";
 import { computeCriticalPathScores, orderStepIdsCriticalPathFirst } from "./plan-order.js";
 import type { Plan, PlanStep, StepResult } from "./types.js";
@@ -624,13 +625,17 @@ describe("renderMermaid", () => {
       expect(out).toContain("class C waiting;");
     });
 
-    it("usage_limited maps to 🪫 emoji and a distinct usagelimited class", () => {
+    it("usage_limited follows the approved blocked rule (no amber/dashed class, no battery icon)", () => {
       const statuses = new Map<string, ExecutionDisplayStatus>([["C", "usage_limited"]]);
       const out = renderMermaid(statusPlan, undefined, statuses);
-      // Distinct emoji + class — not the plain pending node, not the red blocked node.
-      expect(out).toContain("🪫 3.");
-      expect(out).toContain("class C usagelimited;");
-      expect(out).toContain("classDef usagelimited fill:#713F12");
+      // A usage-limit block uses the same approved blocked style/icon — no
+      // invented amber/dashed `usagelimited` class and no battery icon.
+      expect(out).toContain("⛔ 3.");
+      expect(out).toContain("class C blocked;");
+      expect(out).not.toContain("🪫");
+      expect(out).not.toContain("usagelimited");
+      expect(out).not.toContain("#FBBF24");
+      expect(out).not.toContain("#713F12");
     });
 
     it("pending status has no emoji prefix", () => {
@@ -728,6 +733,142 @@ describe("renderMermaid", () => {
       expect(out).toContain("Pending<br/>~2 min | Claude Code");
       expect(out).not.toContain("42s | Pi");
       expect(out).not.toContain("~2 min | Pi");
+    });
+  });
+
+  describe("approved status/diagram visual rules (usage-limit + resume)", () => {
+    it("a usage-limit unresolved step follows the approved blocked rule end-to-end", () => {
+      const plan = makePlan([
+        step({
+          id: "A",
+          description: "Out of credits",
+          status: "blocked",
+          blockedReason: "out_of_credits",
+        }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      // Logical display status is preserved (resume/backend-recheck needs it)...
+      expect(statuses.get("A")).toBe("usage_limited");
+      const out = renderMermaid(plan, undefined, statuses);
+      // ...but the VISUAL mapping is the approved blocked style/icon only — no
+      // invented amber/dashed `usagelimited` class, no battery icon, no colors.
+      expect(out).toContain("⛔ 1.");
+      expect(out).toContain("class A blocked;");
+      expect(out).not.toContain("usagelimited");
+      expect(out).not.toContain("🪫");
+      expect(out).not.toContain("#FBBF24");
+      expect(out).not.toContain("#713F12");
+    });
+
+    it("a dependent step renders waiting (not hard-blocked) when upstream is unresolved", () => {
+      const plan = makePlan([
+        step({
+          id: "A",
+          description: "Exhausted",
+          status: "blocked",
+          blockedReason: "usage_limit",
+        }),
+        step({ id: "B", description: "Downstream", status: "pending", dependsOn: ["A"] }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(out).toContain("class A blocked;");
+      expect(out).toContain("class B waiting;");
+      expect(out).toContain("⏳");
+    });
+
+    it("an independent runnable sibling stays pending while a sibling is usage-limited", () => {
+      const plan = makePlan([
+        step({
+          id: "A",
+          description: "Exhausted",
+          status: "blocked",
+          blockedReason: "out_of_credits",
+        }),
+        step({ id: "B", description: "Independent", status: "pending" }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(out).toContain("class A blocked;");
+      expect(out).toContain("class B pending;");
+    });
+
+    it("recomputes ALL node display states (resume), not just the first node", () => {
+      // done stays done; usage-limit -> approved blocked visual; retryable
+      // technical -> pending; hard block stays blocked; downstream of hard -> waiting.
+      const plan = makePlan([
+        step({ id: "A", description: "Done", status: "done" }),
+        step({
+          id: "B",
+          description: "Exhausted",
+          status: "blocked",
+          blockedReason: "usage_limit",
+        }),
+        step({ id: "C", description: "Retryable", status: "blocked", blockedReason: "error" }),
+        step({
+          id: "D",
+          description: "Needs input",
+          status: "blocked",
+          blockedReason: "user_input",
+          blockedQuestion: "q",
+        }),
+        step({ id: "E", description: "Downstream", status: "pending", dependsOn: ["D"] }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(out).toContain("class A done;");
+      expect(out).toContain("class B blocked;");
+      expect(out).toContain("class C pending;");
+      expect(out).toContain("class D blocked;");
+      expect(out).toContain("class E waiting;");
+      // No stale invented usage-limited styling anywhere.
+      expect(out).not.toContain("usagelimited");
+      expect(out).not.toContain("🪫");
+    });
+
+    it("a done goal graph has no stale blocked or usage-limited nodes", () => {
+      const plan = makePlan([
+        step({ id: "A", description: "First", status: "done" }),
+        step({ id: "B", description: "Second", status: "done", dependsOn: ["A"] }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(out).toContain("class A done;");
+      expect(out).toContain("class B done;");
+      expect(out).not.toContain("class A blocked;");
+      expect(out).not.toContain("class B blocked;");
+      expect(out).not.toContain("usagelimited");
+      expect(out).not.toContain("⛔");
+      expect(out).not.toContain("🪫");
+    });
+
+    it("a cancelled goal graph shows step states correctly with no stale blocked nodes", () => {
+      // A cancelled goal has no per-step "cancelled" display status; the graph
+      // renders underlying step states (completed stay done, remaining stay
+      // pending) and must leave no stale blocked/usage-limited styling.
+      const plan = makePlan([
+        step({ id: "A", description: "Completed before cancel", status: "done" }),
+        step({ id: "B", description: "Not started", status: "pending", dependsOn: ["A"] }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(out).toContain("class A done;");
+      expect(out).toContain("class B pending;");
+      expect(out).not.toContain("usagelimited");
+      expect(out).not.toContain("⛔");
+      expect(out).not.toContain("🪫");
+    });
+
+    it("preserves transitive-arrow reduction with display statuses applied (no regression)", () => {
+      const plan = makePlan([
+        step({ id: "a", description: "A", status: "done" }),
+        step({ id: "b", description: "B", status: "done", dependsOn: ["a"] }),
+        step({ id: "c", description: "C", status: "pending", dependsOn: ["b", "a"] }),
+      ]);
+      const statuses = computeDisplayStatuses(plan.steps);
+      const out = renderMermaid(plan, undefined, statuses);
+      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c"]);
+      expect(out).not.toContain("a --> c");
     });
   });
 
