@@ -1181,7 +1181,7 @@ describe("runPlanAutocheck", () => {
       expect.arrayContaining(["exec", "--json", "--color", "never", "--cd", tmpDir]),
     );
     expect(call.args).not.toContain("--sandbox");
-    expect(call.args).not.toContain("--skip-git-repo-check");
+    expect(call.args).toContain("--skip-git-repo-check");
     expect(call.env.CODEX_HOME).toContain("-autocheck-r1-fresh-codex-home");
     expect(call.env.PATH).toContain("-autocheck-r1-fresh-codex-home/bin");
     const sandboxConfig = mockWriteCodexNativeSandboxConfig.mock.results[0]?.value as {

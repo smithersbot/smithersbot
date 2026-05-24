@@ -18,6 +18,7 @@ import {
   buildClaudeSandboxProbeCommand,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
+  appendCodexNativeSandboxExecArgs,
   classifyClaudeSubscriptionAuthProbeFailure,
   codexNativeSandboxStatus,
   claudeCodeNativeSandboxStatus,
@@ -109,6 +110,40 @@ describe("Codex native permission-profile sandbox config", () => {
       "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
     ]);
     expect(config.args).not.toContain("--sandbox");
+  });
+
+  it("appends the Codex trust preflight skip once before the execution root", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/repo",
+      runId: "exec-args",
+      purpose: "repo-chat",
+      sandboxRoot: HOST_TEMP_ROOT,
+      codexPath: "/usr/local/bin/codex",
+    });
+    const originalSandboxArgs = [...config.args];
+
+    const args = appendCodexNativeSandboxExecArgs(["exec", "--json"], config);
+
+    expect(args).toEqual(["exec", "--json", "--skip-git-repo-check", "--cd", "/repo"]);
+    expect(config.args).toEqual(originalSandboxArgs);
+  });
+
+  it("does not duplicate an existing Codex trust preflight skip", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/repo",
+      runId: "exec-args-dedup",
+      purpose: "repo-chat",
+      sandboxRoot: HOST_TEMP_ROOT,
+      codexPath: "/usr/local/bin/codex",
+    });
+
+    const args = appendCodexNativeSandboxExecArgs(
+      ["exec", "--json", "--skip-git-repo-check"],
+      config,
+    );
+
+    expect(args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
+    expect(args).toEqual(["exec", "--json", "--skip-git-repo-check", "--cd", "/repo"]);
   });
 
   it("emits the Codex 0.133 permission-profile TOML shape without broad recursive denies", () => {

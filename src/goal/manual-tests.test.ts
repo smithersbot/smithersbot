@@ -584,6 +584,7 @@ describe("generateManualTests", () => {
     };
     expect(secondCall.args).not.toContain("--sandbox");
     expect(secondCall.args).not.toContain("workspace-write");
+    expect(secondCall.args).toContain("--skip-git-repo-check");
     expect(secondCall.args).not.toContain("--dangerously-skip-permissions");
     expect(secondCall.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(secondCall.env.CODEX_HOME).toContain("manual-tests-manual-tests-2-codex-home");

@@ -853,7 +853,7 @@ describe("extractRunLessons", () => {
       env: Record<string, string | undefined>;
     };
     expect(codexCall.args).not.toContain("--sandbox");
-    expect(codexCall.args).not.toContain("--skip-git-repo-check");
+    expect(codexCall.args).toContain("--skip-git-repo-check");
     expect(codexCall.args).not.toContain("--dangerously-skip-permissions");
     expect(codexCall.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(codexCall.env.CODEX_HOME).toContain(`${runId}-lessons-2-codex-home`);
@@ -1112,7 +1112,7 @@ describe("extractRunLessons", () => {
     expect(call.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(call.env);
     expect(call.args).not.toContain("--sandbox");
-    expect(call.args).not.toContain("--skip-git-repo-check");
+    expect(call.args).toContain("--skip-git-repo-check");
     expect(call.env.CODEX_HOME).toContain(`${runId}-lessons-1-codex-home`);
     expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
       expect.objectContaining({ workingDir, runId: `${runId}-lessons-1`, purpose: "repo-chat" }),

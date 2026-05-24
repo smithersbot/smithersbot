@@ -266,6 +266,7 @@ describe("repo-chat-worker", () => {
         LAST_MESSAGE_FILE_PATH,
         "Explain the tests in src/goal",
       ]);
+      expect(args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
       expect(args).not.toContain("--sandbox");
       expect(args).not.toContain("read-only");
       expect(args).not.toContain("workspace-write");

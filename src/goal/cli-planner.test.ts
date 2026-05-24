@@ -400,6 +400,7 @@ describe("runCliPlanning", () => {
     expect(procCall.cwd).toBe(process.cwd());
     expect(procCall.args).not.toContain("--dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it("writes agent-visible launch and prompt history before planner spawn and captures tokens", async () => {
@@ -552,10 +553,12 @@ describe("runCliPlanning", () => {
       env: Record<string, string | undefined>;
     };
     expect(procCall.args).not.toContain("--permissions-profile");
+    expect(procCall.args).toContain("--skip-git-repo-check");
     expect(procCall.args).toContain("--cd");
     expect(procCall.args).not.toContain("--sandbox");
     expect(procCall.args).not.toContain("--dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(procCall.env.CODEX_HOME).toContain(codexSandboxRoot);
     expect(procCall.env.PATH).toContain(`${procCall.env.CODEX_HOME}${path.sep}bin`);
     expectForbiddenAgentEnvAbsent(procCall.env);
@@ -565,7 +568,9 @@ describe("runCliPlanning", () => {
     expect(configToml).toContain(
       `${JSON.stringify(path.join(managedRoot, "private", "env", "smithersbot", ".env"))} = "deny"`,
     );
-    expect(configToml).toContain(`${JSON.stringify(path.join(os.homedir(), ".codex", "auth.json"))} = "deny"`);
+    expect(configToml).toContain(
+      `${JSON.stringify(path.join(os.homedir(), ".codex", "auth.json"))} = "deny"`,
+    );
     expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
   });
 
@@ -628,7 +633,12 @@ describe("runCliPlanning", () => {
       env: Record<string, string | undefined>;
     };
     const configToml = fs.readFileSync(path.join(procCall.env.CODEX_HOME!, "config.toml"), "utf8");
-    const codexScoutDir = path.join(os.tmpdir(), "moltbot-goal-planner", "run-codex-scout-sandbox", "scout");
+    const codexScoutDir = path.join(
+      os.tmpdir(),
+      "moltbot-goal-planner",
+      "run-codex-scout-sandbox",
+      "scout",
+    );
     expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
     expect(configToml).not.toContain(`${JSON.stringify(process.cwd())} = "write"`);
     expect(configToml).toContain(`${JSON.stringify(codexScoutDir)} = "write"`);
@@ -2049,8 +2059,12 @@ describe("runCliPlanning", () => {
     };
     expect(procCall.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(procCall.env);
+    expect(procCall.args).toContain("--skip-git-repo-check");
     expect(procCall.args).toContain("--cd");
     expect(procCall.args).not.toContain("--sandbox");
+    expect(procCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     const configToml = fs.readFileSync(path.join(procCall.env.CODEX_HOME!, "config.toml"), "utf8");
     expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
     expect(configToml).not.toContain(`${JSON.stringify(process.cwd())} = "write"`);

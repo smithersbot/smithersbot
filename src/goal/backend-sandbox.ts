@@ -220,6 +220,9 @@ export function appendCodexNativeSandboxExecArgs(
   args: string[],
   config: CodexNativeSandboxConfig,
 ): string[] {
+  if (!args.includes("--skip-git-repo-check")) {
+    args.push("--skip-git-repo-check");
+  }
   args.push("--cd", config.executionRoot);
   return args;
 }
