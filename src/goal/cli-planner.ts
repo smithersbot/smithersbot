@@ -14,6 +14,15 @@ import {
   buildCredentialStrippedEnv,
   writeAuthModeArtifact,
 } from "./claude-code-env.js";
+import {
+  appendClaudeCodeSandboxArgs,
+  appendCodexNativeSandboxExecArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  mergeCodexNativeSandboxEnv,
+  writeCodexNativeSandboxConfig,
+  type ClaudeCodeLaunchSandboxConfig,
+  type CodexNativeSandboxConfig,
+} from "./backend-sandbox.js";
 import { runCliProcess } from "./cli-process.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { requireEffectiveEnabledWorkers } from "./effective-workers.js";
@@ -59,20 +68,18 @@ const ANTHROPIC_USAGE_LIMIT_RE =
   /(?:you(?:'|’)?ve|you have)\s+hit\s+your\s+(?:chatgpt\s+)?(?:usage\s+)?limit|usage\s+limit|resets?\s+\d/i;
 
 function buildPlanAndScoutAppendix(enabledWorkers: CliWorkerId[]): string {
+  const backendUnion = enabledWorkers
+    .filter((worker) => worker === "codex" || worker === "claude_code")
+    .map((worker) => `"${worker}"`)
+    .join(" | ");
   return `## Canonical Execution Plan Output
 
-After writing all scout output files, create this file:
-- {{OUTPUT_DIR}}/${EXECUTION_PLAN_FILE}
+After scout files, write {{OUTPUT_DIR}}/${EXECUTION_PLAN_FILE} and print that same JSON object as final stdout.
 
-Then print the exact same JSON object as your final stdout response.
-
-The JSON must satisfy the planning schema below exactly.
-
-${buildPlanSystemPrompt(enabledWorkers)}
-
-Additional requirements:
+Requirements:
+- Match the stable planning schema above, including DAG dependencies, success criteria, constraints, and backend: ${backendUnion}.
 - Keep dependency structure aligned with ${SCOUT_REPORT_FILE}.
-- Every step id must map to an existing scout node id, except bootstrap step id "create-conventions".
+- Step ids must map to scout node ids, except bootstrap id "create-conventions".
 - If clarification is required, create ${SCOUT_NEEDS_CLARIFICATION_FILE} and return:
   { "blocked": true, "question": "The specific question you need answered" }`;
 }
@@ -178,20 +185,29 @@ function extractResetHint(errorMessage: string): string | undefined {
   return undefined;
 }
 
-function buildCodexPlanningArgs(plannerCwd: string, prompt: string): string[] {
+function buildCodexPlanningArgs(params: {
+  prompt: string;
+  sandboxConfig: CodexNativeSandboxConfig;
+}): string[] {
   const codexAskForApproval = getCodexAskForApprovalPlacement();
-  return [
+  const args = [
     ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
     "exec",
     ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
-    "--sandbox",
-    "workspace-write",
-    "--cd",
-    plannerCwd,
-    "-c",
-    "net.allowed=true",
-    prompt,
   ];
+  appendCodexNativeSandboxExecArgs(args, params.sandboxConfig);
+  args.push(params.prompt);
+  return args;
+}
+
+function buildClaudePlanningArgs(params: {
+  sandboxConfig: ClaudeCodeLaunchSandboxConfig;
+  model?: string;
+}): string[] {
+  const args = ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS];
+  appendClaudeCodeSandboxArgs(args, params.sandboxConfig);
+  if (params.model) args.push("--model", params.model);
+  return args;
 }
 
 function sanitizePlannerArgvForHistory(args: readonly string[]): string[] {
@@ -407,7 +423,11 @@ function buildPlanningPrompt(params: {
   });
 
   return [
-    `Current workspace path: ${cwd}`,
+    buildPlanSystemPrompt(enabledWorkers),
+    "",
+    "## Context",
+    "",
+    `Workspace: ${cwd}`,
     "",
     scoutBrief,
     "",
@@ -623,6 +643,20 @@ export async function runCliPlanRevision(
     // Best-effort diagnostics.
   }
 
+  const claudeRevisionSandbox = buildClaudeCodeSandboxLaunchConfig({
+    workingDir: plannerCwd,
+    runId: `${runId}-plan-revision-r${revisionRound}`,
+    purpose: "repo-chat",
+  });
+  const codexRevisionSandbox = plannerBackends.includes("codex")
+    ? writeCodexNativeSandboxConfig({
+        workingDir: plannerCwd,
+        runId: `${runId}-plan-revision-r${revisionRound}`,
+        purpose: "repo-chat",
+        sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+      })
+    : undefined;
+
   let plannerBackendUsed: PlannerBackendId | undefined;
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
@@ -639,8 +673,11 @@ export async function runCliPlanRevision(
     const command = backend === "claude_code" ? claudeCommand : "codex";
     const args =
       backend === "claude_code"
-        ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS, ...(model ? ["--model", model] : [])]
-        : buildCodexPlanningArgs(plannerCwd, prompt);
+        ? buildClaudePlanningArgs({ sandboxConfig: claudeRevisionSandbox, model })
+        : buildCodexPlanningArgs({
+            prompt,
+            sandboxConfig: codexRevisionSandbox!,
+          });
     const launchHistory = writeCriticalAgentLaunchEvent({
       scope: {
         kind: "goal",
@@ -673,7 +710,10 @@ export async function runCliPlanRevision(
       env:
         backend === "claude_code"
           ? revisionEnv
-          : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+          : mergeCodexNativeSandboxEnv(
+              buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+              codexRevisionSandbox!,
+            ),
     });
     redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDOUT_FILE));
     redactTextArtifactIfExists(path.join(revisionDir, PLAN_REVISION_STDERR_FILE));
@@ -903,6 +943,21 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const authMode = params.claudeCodeAuth ?? "subscription";
   const planningEnv = buildClaudeCodeEnv(authMode);
   writeAuthModeArtifact(scoutDir, authMode);
+  const claudePlanningSandbox = buildClaudeCodeSandboxLaunchConfig({
+    workingDir: plannerCwd,
+    runId: `${runId}-planner`,
+    purpose: "repo-chat",
+    extraWritablePaths: includeScoutArtifacts ? [scoutDir] : [],
+  });
+  const codexPlanningSandbox = plannerBackends.includes("codex")
+    ? writeCodexNativeSandboxConfig({
+        workingDir: plannerCwd,
+        runId: `${runId}-planner`,
+        purpose: "repo-chat",
+        extraWritablePaths: codexScoutDir ? [codexScoutDir] : [],
+        sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+      })
+    : undefined;
   let plannerBackendUsed: PlannerBackendId | undefined;
   let plannerDegradedReason: PlannerDegradedReason | undefined;
   let plannerDegradedResetHint: string | undefined;
@@ -923,8 +978,11 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     const command = backend === "claude_code" ? claudeCommand : "codex";
     const args =
       backend === "claude_code"
-        ? ["-p", "--allowedTools", CLAUDE_ALLOWED_TOOLS]
-        : buildCodexPlanningArgs(plannerCwd, prompt);
+        ? buildClaudePlanningArgs({ sandboxConfig: claudePlanningSandbox })
+        : buildCodexPlanningArgs({
+            prompt,
+            sandboxConfig: codexPlanningSandbox!,
+          });
     const launchHistory = writeCriticalAgentLaunchEvent({
       scope: {
         kind: "goal",
@@ -957,7 +1015,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       env:
         backend === "claude_code"
           ? planningEnv
-          : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+          : mergeCodexNativeSandboxEnv(
+              buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+              codexPlanningSandbox!,
+            ),
     });
     redactTextArtifactIfExists(path.join(scoutDir, PLANNER_STDOUT_FILE));
     redactTextArtifactIfExists(path.join(scoutDir, PLANNER_STDERR_FILE));

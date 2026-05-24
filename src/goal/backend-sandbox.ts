@@ -353,6 +353,7 @@ export function buildCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
 }): CodexNativeSandboxConfig {
@@ -377,8 +378,12 @@ export function buildCodexNativeSandboxConfig(params: {
       : uniqueValues([params.workingDir, path.join(resolveAgentRoot(), "history")]);
   const writablePaths =
     params.purpose === "repo-chat"
-      ? []
-      : uniqueValues([params.workingDir, path.join(params.workingDir, ".git")]);
+      ? uniqueValues(params.extraWritablePaths ?? [])
+      : uniqueValues([
+          params.workingDir,
+          path.join(params.workingDir, ".git"),
+          ...(params.extraWritablePaths ?? []),
+        ]);
   const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir, authSourcePath);
   const configToml = buildCodexPermissionProfileToml({
     executionRoot,
@@ -414,6 +419,7 @@ export function writeCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
 }): CodexNativeSandboxConfig {
@@ -610,6 +616,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
 }): ClaudeCodeSandboxSettingsConfig {
@@ -627,7 +634,10 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
     params.purpose === "repo-chat"
       ? uniqueValues([agentRoot, params.workingDir])
       : uniqueValues([params.workingDir, path.join(agentRoot, "history")]);
-  const allowWrite = params.purpose === "repo-chat" ? [] : [params.workingDir];
+  const allowWrite =
+    params.purpose === "repo-chat"
+      ? uniqueValues(params.extraWritablePaths ?? [])
+      : uniqueValues([params.workingDir, ...(params.extraWritablePaths ?? [])]);
 
   return {
     settingsDir,
@@ -657,6 +667,7 @@ export function writeClaudeCodeSandboxSettings(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
 }): ClaudeCodeSandboxSettingsConfig {
@@ -679,6 +690,7 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  extraWritablePaths?: string[];
   settingsRoot?: string;
 }): ClaudeCodeLaunchSandboxConfig {
   const config = writeClaudeCodeSandboxSettings({

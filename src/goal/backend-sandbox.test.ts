@@ -425,6 +425,40 @@ describe("Codex native sandbox auth continuity", () => {
     }
   });
 
+  it("keeps repo-chat Codex read-only except explicit extra writable paths", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      const scoutDir = path.join(os.tmpdir(), "planner-scout-extra-write");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot, CODEX_HOME: undefined }, () => {
+        const config = buildCodexNativeSandboxConfig({
+          workingDir,
+          runId: "repo-chat-extra-write",
+          purpose: "repo-chat",
+          extraWritablePaths: [scoutDir],
+          sandboxRoot: HOST_TEMP_ROOT,
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        expect(config.executionRoot).toBe(path.join(managedRoot, "agent"));
+        expect(config.allowedReadPaths).toContain(path.join(managedRoot, "agent"));
+        expect(config.allowedReadPaths).toContain(workingDir);
+        expect(config.writablePaths).toEqual([scoutDir]);
+        expect(config.configToml).toContain(`${JSON.stringify(config.executionRoot)} = "read"`);
+        expect(config.configToml).toContain(`${JSON.stringify(scoutDir)} = "write"`);
+        expect(config.configToml).not.toContain(`${JSON.stringify(workingDir)} = "write"`);
+        expect(config.deniedReadPaths).toContain(path.join(workingDir, ".env"));
+        expect(config.deniedReadPaths).toContain(
+          path.join(managedRoot, "private", "env", "smithersbot", ".env"),
+        );
+        expect(config.deniedReadPaths).toContain(path.join(os.homedir(), ".codex", "auth.json"));
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
   // (e)+(f) Both the generated CODEX_HOME/auth.json and the real ~/.codex/auth.json
   // are blocked from the sandboxed shell: the generated reference is a symlink to
   // the real auth source, and that source is in the deny list.
@@ -692,6 +726,47 @@ describe("Claude Code native sandbox settings", () => {
     // No workspace-relative / recursive Read-tool patterns.
     expect(perm.some((rule) => rule.startsWith("Read(./"))).toBe(false);
     expect(perm.some((rule) => rule.includes("Read(**/"))).toBe(false);
+  });
+
+  it("keeps repo-chat Claude settings read-only except explicit extra writable paths", () => {
+    const home = "/home/testuser";
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: "/managed/agent/workspaces/smithersbot/repo",
+      runId: "claude-extra-write",
+      purpose: "repo-chat",
+      extraWritablePaths: ["/tmp/planner-scout"],
+      denyReadDeps: {
+        homedir: () => home,
+        privateRoot: () => "/managed/private",
+        pathExists: () => true,
+        realPath: (candidate) => {
+          if (candidate === path.join(home, ".claude")) return "/real/claude-config";
+          if (candidate === "/managed/private") return "/managed/private";
+          return candidate;
+        },
+      },
+    });
+
+    expect(config.settings.sandbox.enabled).toBe(true);
+    expect(config.settings.sandbox.failIfUnavailable).toBe(true);
+    expect(config.settings.sandbox.filesystem.allowRead).toContain(
+      "/managed/agent/workspaces/smithersbot/repo",
+    );
+    expect(config.settings.sandbox.filesystem.allowWrite).toEqual(["/tmp/planner-scout"]);
+    expect(config.settings.sandbox.filesystem.allowWrite).not.toContain(
+      "/managed/agent/workspaces/smithersbot/repo",
+    );
+    expect(config.settings.sandbox.filesystem.denyRead).toContain(
+      "/managed/agent/workspaces/smithersbot/repo/.env",
+    );
+    expect(config.settings.sandbox.filesystem.denyRead).toContain("/managed/private");
+    expect(config.settings.sandbox.filesystem.denyRead).toContain("/real/claude-config");
+    expect(config.settings.permissions.deny).toContain(
+      "Read(/managed/agent/workspaces/smithersbot/repo/.env)",
+    );
+    expect(config.settings.permissions.deny).toContain("Read(/real/claude-config/**)");
+    expect(config.settings.permissions.deny).toContain(`Read(${path.join(home, ".codex")}/**)`);
+    expect(config.settings.permissions.deny).toContain(`Read(${path.join(home, ".ssh")}/**)`);
   });
 
   it("returns a structured fail-closed blocker until the live probe is explicitly enabled", () => {

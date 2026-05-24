@@ -275,7 +275,9 @@ describe("runCliPlanning", () => {
   let priorApiKeyOld: string | undefined;
   let priorBaseUrl: string | undefined;
   let priorManagedRoot: string | undefined;
+  let priorCodexSandboxRoot: string | undefined;
   let managedRoot: string;
+  let codexSandboxRoot: string;
 
   beforeEach(() => {
     goalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-test-"));
@@ -291,8 +293,15 @@ describe("runCliPlanning", () => {
     priorApiKeyOld = process.env.ANTHROPIC_API_KEY_OLD;
     priorBaseUrl = process.env.ANTHROPIC_BASE_URL;
     priorManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    priorCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
     managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-managed-"));
+    const hostTempRoot = process.env.CODEX_HOME
+      ? path.join(process.env.CODEX_HOME, "memories")
+      : os.tmpdir();
+    fs.mkdirSync(hostTempRoot, { recursive: true });
+    codexSandboxRoot = fs.mkdtempSync(path.join(hostTempRoot, "cli-planner-codex-"));
     process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = codexSandboxRoot;
   });
 
   afterEach(() => {
@@ -306,7 +315,10 @@ describe("runCliPlanning", () => {
     else process.env.ANTHROPIC_BASE_URL = priorBaseUrl;
     if (priorManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
     else process.env.SMITHERSBOT_GOALS_ROOT = priorManagedRoot;
+    if (priorCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+    else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = priorCodexSandboxRoot;
     fs.rmSync(managedRoot, { recursive: true, force: true });
+    fs.rmSync(codexSandboxRoot, { recursive: true, force: true });
     fs.rmSync(goalsDir, { recursive: true, force: true });
   });
 
@@ -480,6 +492,219 @@ describe("runCliPlanning", () => {
     }
   });
 
+  it("launches Codex planning through the shared native sandbox helper", async () => {
+    const previousEnv = seedForbiddenAgentEnv();
+    try {
+      mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+        const scoutDir = path.dirname(String(params.stdoutPath));
+        fs.writeFileSync(
+          path.join(scoutDir, EXECUTION_PLAN_FILE),
+          JSON.stringify({
+            summary: "Codex sandboxed planning",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "sandboxed-plan",
+                description: "Inspect repository state",
+                dependsOn: [],
+                durationMinutes: 5,
+                backend: "codex",
+              },
+            ],
+          }),
+          "utf8",
+        );
+        return {
+          stdout: JSON.stringify({
+            summary: "Codex sandboxed planning",
+            workingDir: "/tmp/test-wd",
+            steps: [
+              {
+                id: "sandboxed-plan",
+                description: "Inspect repository state",
+                dependsOn: [],
+                durationMinutes: 5,
+                backend: "codex",
+              },
+            ],
+          }),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      await runCliPlanning({
+        runId: "run-codex-native-sandbox",
+        goalText: "Plan with Codex",
+        goalsDir,
+        includeScoutArtifacts: false,
+        enabledWorkers: ["codex"],
+      });
+    } finally {
+      restoreForbiddenAgentEnv(previousEnv);
+    }
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
+    expect(procCall.args).not.toContain("--permissions-profile");
+    expect(procCall.args).toContain("--cd");
+    expect(procCall.args).not.toContain("--sandbox");
+    expect(procCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    expect(procCall.env.CODEX_HOME).toContain(codexSandboxRoot);
+    expect(procCall.env.PATH).toContain(`${procCall.env.CODEX_HOME}${path.sep}bin`);
+    expectForbiddenAgentEnvAbsent(procCall.env);
+
+    const configToml = fs.readFileSync(path.join(procCall.env.CODEX_HOME!, "config.toml"), "utf8");
+    expect(configToml).toContain(`${JSON.stringify(path.join(process.cwd(), ".env"))} = "deny"`);
+    expect(configToml).toContain(
+      `${JSON.stringify(path.join(managedRoot, "private", "env", "smithersbot", ".env"))} = "deny"`,
+    );
+    expect(configToml).toContain(`${JSON.stringify(path.join(os.homedir(), ".codex", "auth.json"))} = "deny"`);
+    expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
+  });
+
+  it("allows Codex scout artifact writes without granting repo writes", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const prompt = String((params.args as string[]).at(-1));
+      const match = /Write all output files to (.+)\/ \(create subdirectories as needed\)\./.exec(
+        prompt,
+      );
+      if (!match?.[1]) throw new Error("missing Codex scout dir in prompt");
+      const codexScoutDir = match[1].trim();
+      writeScoutArtifacts(codexScoutDir, "run-codex-scout-sandbox");
+      fs.writeFileSync(
+        path.join(codexScoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify({
+          summary: "Codex scout sandbox",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        }),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify({
+          summary: "Codex scout sandbox",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      };
+    });
+
+    await runCliPlanning({
+      runId: "run-codex-scout-sandbox",
+      goalText: "Plan with Codex scout artifacts",
+      goalsDir,
+      enabledWorkers: ["codex"],
+    });
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
+      env: Record<string, string | undefined>;
+    };
+    const configToml = fs.readFileSync(path.join(procCall.env.CODEX_HOME!, "config.toml"), "utf8");
+    const codexScoutDir = path.join(os.tmpdir(), "moltbot-goal-planner", "run-codex-scout-sandbox", "scout");
+    expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
+    expect(configToml).not.toContain(`${JSON.stringify(process.cwd())} = "write"`);
+    expect(configToml).toContain(`${JSON.stringify(codexScoutDir)} = "write"`);
+  });
+
+  it("launches Claude planning with generated read-only sandbox settings and scout-only writes", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      writeScoutArtifacts(scoutDir, "run-claude-scout-sandbox");
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify({
+          summary: "Claude sandboxed planning",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify({
+          summary: "Claude sandboxed planning",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      };
+    });
+
+    await runCliPlanning({
+      runId: "run-claude-scout-sandbox",
+      goalText: "Plan with Claude scout artifacts",
+      goalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+
+    const procCall = mockRunCliProcess.mock.calls[0]?.[0] as { args: string[]; stdin: string };
+    const settingsPath = procCall.args[procCall.args.indexOf("--settings") + 1];
+    expect(settingsPath).toBeTruthy();
+    expect(procCall.args).toContain("--setting-sources");
+    expect(procCall.args).toContain("--permission-mode");
+    expect(procCall.args).not.toContain("--dangerously-skip-permissions");
+    expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
+    const settings = JSON.parse(fs.readFileSync(settingsPath!, "utf8")) as {
+      sandbox: { filesystem: { allowRead: string[]; allowWrite: string[]; denyRead: string[] } };
+      permissions: { deny: string[] };
+    };
+    expect(settings.sandbox.enabled).toBe(true);
+    expect(settings.sandbox.failIfUnavailable).toBe(true);
+    expect(settings.sandbox.filesystem.allowRead).toContain(process.cwd());
+    expect(settings.sandbox.filesystem.allowWrite).toEqual([
+      path.join(goalsDir, "run-claude-scout-sandbox", "scout"),
+    ]);
+    expect(settings.sandbox.filesystem.allowWrite).not.toContain(process.cwd());
+    expect(procCall.stdin.startsWith("You are a technical planning agent.")).toBe(true);
+  });
+
   it("uses Codex-only planning when Claude Code is unavailable", async () => {
     const previousEnv = seedForbiddenAgentEnv();
     mockResolveClaudeBinary.mockReturnValue(null);
@@ -541,6 +766,137 @@ describe("runCliPlanning", () => {
     expect(procCall.command).toBe("codex");
     expect(procCall.args).toContain("exec");
     expectForbiddenAgentEnvAbsent(procCall.env);
+  });
+
+  it("keeps the planning prompt prefix stable while moving dynamic goal context after it", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify({
+          summary: "Stable prefix plan",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "stable-prefix",
+              description: "Verify prompt structure",
+              dependsOn: [],
+              durationMinutes: 5,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify({
+          summary: "Stable prefix plan",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "stable-prefix",
+              description: "Verify prompt structure",
+              dependsOn: [],
+              durationMinutes: 5,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      };
+    });
+
+    await runCliPlanning({
+      runId: "run-prefix-a",
+      goalText: "Add feature A",
+      goalsDir,
+      includeScoutArtifacts: false,
+      enabledWorkers: ["claude_code"],
+    });
+    await runCliPlanning({
+      runId: "run-prefix-b",
+      goalText: "Add feature B",
+      goalsDir,
+      includeScoutArtifacts: false,
+      enabledWorkers: ["claude_code"],
+    });
+
+    const firstPrompt = (mockRunCliProcess.mock.calls[0]![0] as { stdin: string }).stdin;
+    const secondPrompt = (mockRunCliProcess.mock.calls[1]![0] as { stdin: string }).stdin;
+    const firstStaticPrefix = firstPrompt.slice(0, firstPrompt.indexOf("\n\nGoal:"));
+    const secondStaticPrefix = secondPrompt.slice(0, secondPrompt.indexOf("\n\nGoal:"));
+    expect(firstStaticPrefix).toBe(secondStaticPrefix);
+    expect(firstStaticPrefix).toContain("Step schema:");
+    expect(firstStaticPrefix).toContain("BACKEND SELECTION RULES");
+    expect(firstStaticPrefix).toContain("dependsOn");
+    expect(firstPrompt.indexOf("Goal: Add feature A")).toBeGreaterThan(firstStaticPrefix.length);
+    expect(secondPrompt.indexOf("Goal: Add feature B")).toBeGreaterThan(secondStaticPrefix.length);
+  });
+
+  it("keeps scout planning schema requirements after the stable prefix", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      writeScoutArtifacts(scoutDir, "run-scout-prefix");
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify({
+          summary: "Scout prefix plan",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 5,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify({
+          summary: "Scout prefix plan",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files",
+              dependsOn: [],
+              durationMinutes: 5,
+              backend: "claude_code",
+            },
+          ],
+        }),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 20,
+      };
+    });
+
+    await runCliPlanning({
+      runId: "run-scout-prefix",
+      goalText: "Use scout planning",
+      goalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+
+    const prompt = (mockRunCliProcess.mock.calls[0]![0] as { stdin: string }).stdin;
+    expect(prompt.startsWith("You are a technical planning agent.")).toBe(true);
+    expect(prompt.indexOf("## Context")).toBeGreaterThan(
+      prompt.indexOf("Respond ONLY with raw JSON"),
+    );
+    expect(prompt).toContain("## Canonical Execution Plan Output");
+    expect(prompt).toContain("Match the stable planning schema above");
+    expect(prompt).toContain("DAG dependencies");
+    expect(prompt).toContain('backend: "claude_code"');
+    expect(prompt).toContain("Write all output files to");
   });
 
   it("redacts known secret values in planner stdout, raw output, and copied scout artifacts", async () => {
@@ -1623,9 +1979,17 @@ describe("runCliPlanning", () => {
     expect(procCall.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(procCall.args).toContain("--model");
     expect(procCall.args).toContain("claude-sonnet-4-20250514");
+    expect(procCall.args).toContain("--settings");
+    expect(procCall.args).toContain("--setting-sources");
     expect(procCall.args).not.toContain("--dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(procCall.cwd).toBe(process.cwd());
+    const settingsPath = procCall.args[procCall.args.indexOf("--settings") + 1];
+    const settings = JSON.parse(fs.readFileSync(settingsPath!, "utf8")) as {
+      sandbox: { filesystem: { allowRead: string[]; allowWrite: string[] } };
+    };
+    expect(settings.sandbox.filesystem.allowRead).toContain(process.cwd());
+    expect(settings.sandbox.filesystem.allowWrite).toEqual([]);
   });
 
   it("strips credential env vars from Codex plan revision", async () => {
@@ -1681,9 +2045,15 @@ describe("runCliPlanning", () => {
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       command: string;
       env: Record<string, string | undefined>;
+      args: string[];
     };
     expect(procCall.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(procCall.env);
+    expect(procCall.args).toContain("--cd");
+    expect(procCall.args).not.toContain("--sandbox");
+    const configToml = fs.readFileSync(path.join(procCall.env.CODEX_HOME!, "config.toml"), "utf8");
+    expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
+    expect(configToml).not.toContain(`${JSON.stringify(process.cwd())} = "write"`);
   });
 
   it("serializes buildGate, successCriteria, and constraints in revision prompts", async () => {
@@ -1815,6 +2185,74 @@ describe("runCliPlanning", () => {
     );
     expect(fs.existsSync(promptArtifact)).toBe(true);
     expect(fs.readFileSync(promptArtifact, "utf8")).toContain("Prior corrections checklist:");
+  });
+
+  it("keeps the plan revision prompt prefix stable before dynamic revision context", async () => {
+    mockRunCliProcess.mockResolvedValue({
+      stdout: JSON.stringify({
+        summary: "Revised summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "refine-auth",
+            description: "Adjust auth flow and verify behavior",
+            dependsOn: [],
+            durationMinutes: 30,
+            backend: "claude_code",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 64,
+    });
+
+    const currentPlan = {
+      goal: "Refine auth flow",
+      summary: "Original summary",
+      workingDir: "/tmp/test-wd",
+      steps: [
+        {
+          id: "step-1",
+          description: "Initial step",
+          dependsOn: [],
+          status: "pending" as const,
+          durationMinutes: 45,
+          backend: "claude_code" as const,
+        },
+      ],
+    };
+
+    await runCliPlanRevision({
+      runId: "run-revision-prefix-a",
+      goalText: "Refine auth flow A",
+      currentPlan,
+      editInstructions: "Tighten validation logic",
+      goalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+    await runCliPlanRevision({
+      runId: "run-revision-prefix-b",
+      goalText: "Refine auth flow B",
+      currentPlan,
+      editInstructions: "Tighten output formatting",
+      goalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+
+    const firstPrompt = (mockRunCliProcess.mock.calls[0]![0] as { stdin: string }).stdin;
+    const secondPrompt = (mockRunCliProcess.mock.calls[1]![0] as { stdin: string }).stdin;
+    const firstStaticPrefix = firstPrompt.slice(0, firstPrompt.indexOf("\n\nGoal:"));
+    const secondStaticPrefix = secondPrompt.slice(0, secondPrompt.indexOf("\n\nGoal:"));
+    expect(firstStaticPrefix).toBe(secondStaticPrefix);
+    expect(firstStaticPrefix).toContain("Step schema:");
+    expect(firstStaticPrefix).toContain("BACKEND SELECTION RULES");
+    expect(firstPrompt).toContain("Goal: Refine auth flow A");
+    expect(secondPrompt).toContain("Goal: Refine auth flow B");
+    expect(firstPrompt).toContain("Revision instructions: Tighten validation logic");
+    expect(secondPrompt).toContain("Revision instructions: Tighten output formatting");
   });
 
   it("omits prior corrections checklist on first revision with no prior feedback", async () => {
