@@ -12,6 +12,7 @@ import {
   createSandboxProbeFixture,
   isCommandAvailable,
   isLiveSandboxProbeEnabled,
+  liveSandboxProbeHostReady,
   PROBE_HOME_CONFIG_SENTINEL,
   runGoalWorkerSandboxLiveProbe,
   SANDBOX_LIVE_PROBES_ENV,
@@ -158,7 +159,17 @@ describe("goal worker sandbox live probes", () => {
 
   it.runIf(isLiveSandboxProbeEnabled())(
     "runs the live Codex goal-worker sandbox probe when explicitly enabled",
-    async () => {
+    async (ctx) => {
+      if (!liveSandboxProbeHostReady("codex")) {
+        // The Codex native sandbox cannot be established on this host (codex CLI,
+        // bubblewrap, or a writable /var/tmp absent — e.g. this nested
+        // read-only-/var/tmp CI sandbox), so the end-to-end live proof is not
+        // attemptable here. Skip rather than fail; a capable host still runs and
+        // asserts it. A real denial regression keeps the host "ready"
+        // (live-probe-failed), so this gate never masks a sandbox failure.
+        ctx.skip();
+        return;
+      }
       const result = await runGoalWorkerSandboxLiveProbe("codex");
       expect(result.status).toBe("proven");
     },

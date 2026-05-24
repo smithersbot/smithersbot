@@ -286,6 +286,37 @@ export function classifyBackendProbeReadiness(backend: GoalBackendId): SandboxPr
   return { backend, status: "unproven", reason: `${backend} has no native sandbox probe.` };
 }
 
+/**
+ * Whether this host can actually establish the live native sandbox for `backend`,
+ * so the end-to-end goal-worker live proof is attemptable here. Returns true only
+ * once the native deny/allow matrix actually executes: the proven case AND the
+ * `live-probe-failed` case (the matrix ran but a denial regressed) both count as
+ * "ready". Every other failure — codex/claude CLI absent, bubblewrap/socat host
+ * prerequisite missing, sandbox config/helper setup failing on a read-only
+ * /var/tmp, or namespaces that cannot be created (operator-action-required) —
+ * means the sandbox cannot be established on this host, so the live proof should
+ * be skipped rather than misreported as a denial failure.
+ *
+ * Because a genuine denial regression keeps the host "ready" (live-probe-failed),
+ * gating the live assertion on this check never masks a real sandbox failure: a
+ * capable host where a denial broke still runs the proof and fails it.
+ */
+export function liveSandboxProbeHostReady(backend: GoalBackendId): boolean {
+  if (backend === "codex") {
+    const status = codexNativeSandboxStatus({
+      env: { ...process.env, SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
+    });
+    return status.proven || status.blocker === "live-probe-failed";
+  }
+  if (backend === "claude_code") {
+    const status = claudeCodeNativeSandboxStatus({
+      env: { ...process.env, SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
+    });
+    return status.supported || status.blocker === "live-probe-failed";
+  }
+  return false;
+}
+
 export async function runGoalWorkerSandboxLiveProbe(
   backend: GoalBackendId,
 ): Promise<SandboxProbeStatus> {

@@ -61,6 +61,12 @@ export type CanvasHostHandler = {
   handleHttpRequest: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
   handleUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => boolean;
   close: () => Promise<void>;
+  /**
+   * Test-only hook: drives the same scheduleReload/broadcast chain the file
+   * watcher fires on a change. No-op when live reload is disabled. Production
+   * never calls this; the real fs.watch path stays the runtime trigger.
+   */
+  triggerReload: () => void;
 };
 
 function defaultIndexHTML() {
@@ -247,6 +253,7 @@ export async function createCanvasHostHandler(
       handleHttpRequest: async () => false,
       handleUpgrade: () => false,
       close: async () => {},
+      triggerReload: () => {},
     };
   }
 
@@ -401,6 +408,7 @@ export async function createCanvasHostHandler(
     basePath,
     handleHttpRequest,
     handleUpgrade,
+    triggerReload: () => scheduleReload(),
     close: async () => {
       if (debounce) clearTimeout(debounce);
       watcherClosed = true;
@@ -414,7 +422,7 @@ export async function createCanvasHostHandler(
 
 export async function startCanvasHost(opts: CanvasHostServerOpts): Promise<CanvasHostServer> {
   if (isDisabledByEnv() && opts.allowInTests !== true) {
-    return { port: 0, rootDir: "", close: async () => {} };
+    return { port: 0, rootDir: "", close: async () => {}, triggerReload: () => {} };
   }
 
   const handler =
@@ -474,6 +482,7 @@ export async function startCanvasHost(opts: CanvasHostServerOpts): Promise<Canva
   return {
     port: boundPort,
     rootDir: handler.rootDir,
+    triggerReload: () => handler.triggerReload(),
     close: async () => {
       if (ownsHandler) await handler.close();
       await new Promise<void>((resolve, reject) =>

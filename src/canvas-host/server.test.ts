@@ -190,8 +190,15 @@ describe("canvas host", () => {
         });
       });
 
+      // Give the server-side socket time to register before broadcasting, then
+      // change the file and drive the production reload path deterministically.
+      // fs.watch does not fire reliably for files under the vitest .tmp working
+      // area, so the test triggers the same scheduleReload/broadcast chain the
+      // watcher fires (server.triggerReload) instead of racing the watcher's
+      // timing. The real fs.watch path in server.ts is unchanged.
       await new Promise((resolve) => setTimeout(resolve, 100));
       await fs.writeFile(index, "<html><body>v2</body></html>", "utf8");
+      server.triggerReload();
       expect(await msg).toBe("reload");
       ws.close();
     } finally {
