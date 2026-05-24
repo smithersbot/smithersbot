@@ -12,6 +12,7 @@ import {
 } from "./cli-planner.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import * as runtimeMirror from "./runtime-mirror.js";
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
@@ -401,6 +402,21 @@ describe("runCliPlanning", () => {
       "Unified planning summary",
     );
     expect(fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))).toBe(true);
+    const mirroredPlanPath = path.join(
+      managedRoot,
+      "agent",
+      "history",
+      "goals",
+      workspaceNameFromWorkingDir(process.cwd()),
+      "run-success",
+      "runtime",
+      "scout",
+      EXECUTION_PLAN_FILE,
+    );
+    expect(fs.existsSync(mirroredPlanPath)).toBe(true);
+    expect(
+      fs.existsSync(path.join(path.dirname(path.dirname(mirroredPlanPath)), "index.json")),
+    ).toBe(true);
 
     const procCall = mockRunCliProcess.mock.calls[0]?.[0] as {
       env: Record<string, string | undefined>;
@@ -484,6 +500,65 @@ describe("runCliPlanning", () => {
     expect(planningCall.stdin).not.toContain("## Conceptual Planning Phases");
     expect(planningCall.stdin).not.toContain("### Scout Phase");
     expect(planningCall.stdin).not.toContain("BEGIN_SCOUT_PROMPT");
+  });
+
+  it("keeps planning successful and writes a warning event when runtime mirroring fails", async () => {
+    const mirrorSpy = vi
+      .spyOn(runtimeMirror, "mirrorGoalRuntimeToAgentHistory")
+      .mockImplementationOnce(() => {
+        throw new Error("mirror unavailable");
+      });
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const stdoutPath = String(params.stdoutPath);
+      const scoutDir = path.dirname(stdoutPath);
+      fs.writeFileSync(stdoutPath, "planner stdout", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeScoutArtifacts(scoutDir, "run-mirror-warning");
+      const plan = {
+        summary: "Plan still succeeds",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "analyze-repo",
+            description: "Inspect repository files and verify with a targeted test run",
+            dependsOn: [],
+            durationMinutes: 45,
+            backend: "codex",
+          },
+        ],
+      };
+      fs.writeFileSync(path.join(scoutDir, EXECUTION_PLAN_FILE), JSON.stringify(plan), "utf8");
+      return {
+        stdout: JSON.stringify(plan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 123,
+      };
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-mirror-warning",
+      goalText: "Create a tiny test artifact",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("success");
+    expect(mirrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceName: workspaceNameFromWorkingDir(process.cwd()),
+        goalId: "run-mirror-warning",
+        goalsDir,
+      }),
+    );
+    expect(readPlannerHistoryEvents("run-mirror-warning", process.cwd()).at(-1)).toMatchObject({
+      event: "runtime_mirror_warning",
+      phase: "planner",
+      status: "warning",
+    });
+    mirrorSpy.mockRestore();
   });
 
   it("builds a compact cached scout summary with artifact references", () => {

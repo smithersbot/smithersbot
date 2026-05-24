@@ -31,6 +31,7 @@ import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import * as runtimeMirror from "./runtime-mirror.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -1650,6 +1651,74 @@ describe("cli-worker", () => {
           outputTokens: 7,
         },
       });
+    });
+
+    it("mirrors worker attempt artifacts and records a warning when mirroring fails", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-runtime-mirror-"));
+      const runId = "run-runtime-mirror";
+      const stepId = "step-runtime-mirror";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        dir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      const mirrorSpy = vi
+        .spyOn(runtimeMirror, "mirrorGoalRuntimeToAgentHistory")
+        .mockImplementationOnce(() => {
+          throw new Error("mirror unavailable");
+        });
+
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "Mirrored" }),
+          "utf8",
+        );
+        return {
+          stdout: "worker stdout",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "codex",
+        step,
+        plan,
+        goal: "Verify worker runtime mirror",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+      });
+
+      expect(result.output.status).toBe("complete");
+      expect(mirrorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceName: workspaceNameFromWorkingDir(dir),
+          goalId: runId,
+        }),
+      );
+      expect(readWorkerHistoryEvents(dir, runId).at(-1)).toMatchObject({
+        event: "runtime_mirror_warning",
+        phase: "worker",
+        status: "warning",
+        stepId,
+        attemptNumber: 1,
+      });
+      mirrorSpy.mockRestore();
     });
 
     it("classifies missing worker_result.json with no exit code or signal as process loss", async () => {

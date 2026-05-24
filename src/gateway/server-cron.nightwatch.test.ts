@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoltbotConfig } from "../config/config.js";
 
@@ -27,6 +30,19 @@ vi.mock("../cron/store.js", () => ({
   resolveCronStorePath: (...args: unknown[]) => mockResolveCronStorePath(...args),
 }));
 
+const mockAppendCronRunLog = vi.fn(async () => undefined);
+const mockResolveCronRunLogPath = vi.fn(() => "/tmp/moltbot-nightwatch-cron/runs/job-1.jsonl");
+vi.mock("../cron/run-log.js", () => ({
+  appendCronRunLog: (...args: unknown[]) => mockAppendCronRunLog(...args),
+  resolveCronRunLogPath: (...args: unknown[]) => mockResolveCronRunLogPath(...args),
+}));
+
+const mockMirrorCronRuntimeToAgentHistory = vi.fn(() => ({}));
+vi.mock("../goal/runtime-mirror.js", () => ({
+  mirrorCronRuntimeToAgentHistory: (...args: unknown[]) =>
+    mockMirrorCronRuntimeToAgentHistory(...args),
+}));
+
 const mockCronList = vi.fn(async () => []);
 const mockCronAdd = vi.fn(async () => ({}));
 const mockCronUpdate = vi.fn(async () => ({}));
@@ -39,6 +55,7 @@ let capturedCronDeps:
         job: Record<string, unknown>;
         message: string;
       }) => Promise<{ status: "ok" | "error" | "skipped"; summary?: string; error?: string }>;
+      onEvent: (evt: Record<string, unknown>) => void;
     }
   | undefined;
 
@@ -71,6 +88,8 @@ describe("buildGatewayCronService nightwatch routing", () => {
     capturedCronDeps = undefined;
     mockLoadConfig.mockReturnValue(runtimeCfg);
     mockRunNightwatch.mockResolvedValue({ status: "ok", summary: "Plan delivered to Telegram" });
+    mockAppendCronRunLog.mockResolvedValue(undefined);
+    mockMirrorCronRuntimeToAgentHistory.mockReturnValue({});
     mockRunCronIsolatedAgentTurn.mockResolvedValue({
       status: "ok",
       summary: "isolated run complete",
@@ -167,5 +186,78 @@ describe("buildGatewayCronService nightwatch routing", () => {
       }),
     );
     expect(result).toEqual({ status: "ok", summary: "isolated run complete" });
+  });
+
+  it("mirrors cron runtime artifacts after finished run log append", async () => {
+    const { buildGatewayCronService } = await import("./server-cron.js");
+    buildGatewayCronService({
+      cfg: runtimeCfg,
+      deps: {} as never,
+      broadcast: vi.fn(),
+    });
+
+    capturedCronDeps?.onEvent({
+      action: "finished",
+      jobId: "job-1",
+      status: "ok",
+      runAtMs: 123,
+      durationMs: 45,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockAppendCronRunLog).toHaveBeenCalledTimes(1);
+    expect(mockMirrorCronRuntimeToAgentHistory).toHaveBeenCalledWith({
+      storePath: "/tmp/moltbot-nightwatch-cron-store.json",
+    });
+  });
+
+  it("swallows cron runtime mirror failures after recording a warning event", async () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "server-cron-managed-"));
+    const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    mockMirrorCronRuntimeToAgentHistory.mockImplementationOnce(() => {
+      throw new Error("mirror unavailable");
+    });
+
+    try {
+      const { buildGatewayCronService } = await import("./server-cron.js");
+      buildGatewayCronService({
+        cfg: runtimeCfg,
+        deps: {} as never,
+        broadcast: vi.fn(),
+      });
+
+      expect(() =>
+        capturedCronDeps?.onEvent({
+          action: "finished",
+          jobId: "job-1",
+          status: "ok",
+          runAtMs: 123,
+          durationMs: 45,
+        }),
+      ).not.toThrow();
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const eventsPath = path.join(managedRoot, "agent", "history", "cron", "events.jsonl");
+      const events = fs
+        .readFileSync(eventsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(events.at(-1)).toMatchObject({
+        event: "runtime_mirror_warning",
+        phase: "cron",
+        status: "warning",
+        jobId: "job-1",
+      });
+    } finally {
+      if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
   });
 });

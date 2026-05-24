@@ -7,6 +7,8 @@ import { registerNightwatchJob, runNightwatch } from "../cron/nightwatch.js";
 import { appendCronRunLog, resolveCronRunLogPath } from "../cron/run-log.js";
 import { CronService } from "../cron/service.js";
 import { resolveCronStorePath } from "../cron/store.js";
+import { appendAgentHistoryEventBestEffort } from "../goal/agent-history-events.js";
+import { mirrorCronRuntimeToAgentHistory } from "../goal/runtime-mirror.js";
 import { runHeartbeatOnce } from "../infra/heartbeat-runner.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
@@ -105,9 +107,29 @@ export function buildGatewayCronService(params: {
           runAtMs: evt.runAtMs,
           durationMs: evt.durationMs,
           nextRunAtMs: evt.nextRunAtMs,
-        }).catch((err) => {
-          cronLogger.warn({ err: String(err), logPath }, "cron: run log append failed");
-        });
+        })
+          .then(() => {
+            try {
+              mirrorCronRuntimeToAgentHistory({ storePath });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              appendAgentHistoryEventBestEffort(
+                { kind: "cron" },
+                {
+                  event: "runtime_mirror_warning",
+                  phase: "cron",
+                  status: "warning",
+                  errorClass: err instanceof Error ? err.name : "runtime_mirror_error",
+                  outputSummary: `Runtime mirror failed: ${message}`,
+                  jobId: evt.jobId,
+                },
+              );
+              cronLogger.warn({ err: message }, "cron: runtime mirror failed");
+            }
+          })
+          .catch((err) => {
+            cronLogger.warn({ err: String(err), logPath }, "cron: run log append failed");
+          });
       }
     },
   });

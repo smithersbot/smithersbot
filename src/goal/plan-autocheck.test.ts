@@ -7,6 +7,7 @@ import { buildAutocheckPrompt, runPlanAutocheck } from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
+import * as runtimeMirror from "./runtime-mirror.js";
 
 const mockRunCliProcess = vi.hoisted(() => vi.fn());
 vi.mock("./cli-process.js", () => ({
@@ -269,6 +270,52 @@ describe("runPlanAutocheck", () => {
     expect(firstCall.command).toBe("/usr/bin/claude");
     expect(firstCall.args).toContain("--output-format");
     expect(firstCall.args).toContain("stream-json");
+  });
+
+  it("mirrors autocheck round artifacts and records a warning when mirroring fails", async () => {
+    const initialPlan = makePlan("Initial plan");
+    const mirrorSpy = vi
+      .spyOn(runtimeMirror, "mirrorGoalRuntimeToAgentHistory")
+      .mockImplementationOnce(() => {
+        throw new Error("mirror unavailable");
+      });
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: claudeStdout({ decision: { approved: true }, sessionId: "session-mirror" }),
+      }),
+    );
+
+    const commitRevision = vi.fn();
+    const workingDir = path.join(tmpDir, "workspace");
+    const runDir = runPath(tmpDir, "run-autocheck-mirror");
+    fs.mkdirSync(workingDir, { recursive: true });
+
+    const result = await runPlanAutocheck({
+      plan: initialPlan,
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir,
+      runDir,
+      commitRevision,
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mirrorSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceName: workspaceNameFromWorkingDir(workingDir),
+        goalId: "run-autocheck-mirror",
+        goalsDir: tmpDir,
+      }),
+    );
+    expect(readAutocheckHistoryEvents("run-autocheck-mirror", workingDir)).toContainEqual(
+      expect.objectContaining({
+        event: "runtime_mirror_warning",
+        phase: "autocheck",
+        status: "warning",
+        round: 1,
+      }),
+    );
+    mirrorSpy.mockRestore();
   });
 
   it("writes agent-visible launch and prompt history before reviewer spawn and captures tokens", async () => {

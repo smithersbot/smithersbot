@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   resolveAgentGoalHistoryDir,
+  resolveAgentRoot,
   resolveAgentRepoChatHistoryDir,
   slugifyWorkspaceName,
 } from "../config/managed-paths.js";
@@ -21,6 +22,9 @@ export type AgentHistoryScope =
       kind: "repo-chat";
       workspaceName: string;
       sessionId: string;
+    }
+  | {
+      kind: "cron";
     };
 
 export type AgentBackendUsage =
@@ -105,6 +109,9 @@ export type BestEffortAgentHistoryWriteResult =
 function resolveScopeDir(scope: AgentHistoryScope): string {
   if (scope.kind === "goal") {
     return resolveAgentGoalHistoryDir(scope.workspaceName, scope.goalId);
+  }
+  if (scope.kind === "cron") {
+    return path.join(resolveAgentRoot(), "history", "cron");
   }
   return path.join(
     resolveAgentRepoChatHistoryDir(scope.workspaceName),

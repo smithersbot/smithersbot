@@ -54,6 +54,7 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
 // --- Constants ---
 
@@ -215,6 +216,45 @@ function appendWorkerHistoryBestEffort(params: {
   );
   if (!result.ok) {
     params.onProgress?.(`  [warn] ${result.warning}`);
+  }
+}
+
+function mirrorWorkerRuntimeBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  stepId: string;
+  attemptNumber: number;
+  backend: GoalBackendId;
+  onProgress?: (text: string) => void;
+}): void {
+  const scope = {
+    kind: "goal" as const,
+    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    goalId: params.runId,
+  };
+  try {
+    mirrorGoalRuntimeToAgentHistory({
+      workspaceName: scope.workspaceName,
+      goalId: params.runId,
+    });
+  } catch (error) {
+    const result = appendAgentHistoryEventBestEffort(scope, {
+      event: "runtime_mirror_warning",
+      phase: "worker",
+      backend: params.backend,
+      runId: params.runId,
+      goalId: params.runId,
+      stepId: params.stepId,
+      attemptNumber: params.attemptNumber,
+      status: "warning",
+      errorClass: error instanceof Error ? error.name : "runtime_mirror_error",
+      outputSummary: `Runtime mirror failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+    if (!result.ok) {
+      params.onProgress?.(`  [warn] ${result.warning}`);
+    }
   }
 }
 
@@ -566,6 +606,14 @@ export async function executeTaskWithCliWorker(
       artifactPaths: [stdoutPath, stderrPath, launchHistory.promptArtifactPath],
       onProgress,
     });
+    mirrorWorkerRuntimeBestEffort({
+      workingDir,
+      runId,
+      stepId: step.id,
+      attemptNumber,
+      backend,
+      onProgress,
+    });
     throw error;
   }
   const { stdout, stderr, timedOut, exitCode, signal, durationMs } = processResult;
@@ -765,6 +813,14 @@ export async function executeTaskWithCliWorker(
       durationMs,
       resultFile,
     },
+    onProgress,
+  });
+  mirrorWorkerRuntimeBestEffort({
+    workingDir,
+    runId,
+    stepId: step.id,
+    attemptNumber,
+    backend,
     onProgress,
   });
 

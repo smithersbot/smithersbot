@@ -35,6 +35,7 @@ import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
 const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
@@ -420,6 +421,40 @@ function appendAutocheckHistoryBestEffort(params: {
       ...params.extra,
     },
   );
+}
+
+function mirrorAutocheckRuntimeBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  goalsDir: string;
+  round: number;
+}): void {
+  const scope = {
+    kind: "goal" as const,
+    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    goalId: params.runId,
+  };
+  try {
+    mirrorGoalRuntimeToAgentHistory({
+      workspaceName: scope.workspaceName,
+      goalId: params.runId,
+      goalsDir: params.goalsDir,
+    });
+  } catch (error) {
+    appendAgentHistoryEventBestEffort(scope, {
+      event: "runtime_mirror_warning",
+      phase: "autocheck",
+      runId: params.runId,
+      goalId: params.runId,
+      status: "warning",
+      attemptNumber: params.round,
+      round: params.round,
+      errorClass: error instanceof Error ? error.name : "runtime_mirror_error",
+      outputSummary: `Runtime mirror failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
 }
 
 function resolveRunIdentity(runDir: string): { runId: string; goalsDir: string } {
@@ -1039,6 +1074,12 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
       approved: result.decision.approved,
       durationMs: result.durationMs,
       autocheckRounds,
+      round: roundNumber,
+    });
+    mirrorAutocheckRuntimeBestEffort({
+      workingDir: params.workingDir,
+      runId,
+      goalsDir,
       round: roundNumber,
     });
 

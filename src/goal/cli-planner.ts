@@ -50,6 +50,7 @@ import {
 import type { Plan, PlannerBackendId, PlannerDegradedReason } from "./types.js";
 import type { ClaudeCodeAuthMode, CliWorkerId } from "../config/types.goal.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 7_200_000;
 const LOG_EXCERPT_CHARS = 2048;
@@ -311,6 +312,37 @@ function appendPlannerHistoryBestEffort(params: {
       ...params.extra,
     },
   );
+}
+
+function mirrorPlannerRuntimeBestEffort(params: {
+  workingDir: string;
+  runId: string;
+  goalsDir?: string;
+}): void {
+  const scope = {
+    kind: "goal" as const,
+    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    goalId: params.runId,
+  };
+  try {
+    mirrorGoalRuntimeToAgentHistory({
+      workspaceName: scope.workspaceName,
+      goalId: params.runId,
+      ...(params.goalsDir ? { goalsDir: params.goalsDir } : {}),
+    });
+  } catch (error) {
+    appendAgentHistoryEventBestEffort(scope, {
+      event: "runtime_mirror_warning",
+      phase: "planner",
+      runId: params.runId,
+      goalId: params.runId,
+      status: "warning",
+      errorClass: error instanceof Error ? error.name : "runtime_mirror_error",
+      outputSummary: `Runtime mirror failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
+  }
 }
 
 function resolvePlannerBackends(enabledWorkers?: CliWorkerId[]): CliWorkerId[] {
@@ -1473,6 +1505,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     outputSummary: tailText(effectivePlan.summary, LOG_EXCERPT_CHARS),
     artifactPaths: [EXECUTION_PLAN_FILE],
   });
+  mirrorPlannerRuntimeBestEffort({ workingDir: plannerCwd, runId, goalsDir });
 
   return {
     status: "success",
