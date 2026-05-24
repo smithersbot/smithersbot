@@ -96,11 +96,6 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     publicDescription: "Show Claude Code and Codex usage quota.",
   },
   {
-    command: "usage_history",
-    label: "Advanced & admin",
-    publicDescription: "Show local historical Claude Code and Codex usage.",
-  },
-  {
     command: "gateway_restart",
     label: "Advanced & admin",
     publicDescription: "Dangerous/admin: restart the gateway service.",

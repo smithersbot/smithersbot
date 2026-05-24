@@ -59,12 +59,7 @@ import {
 } from "./nightwatch-commands.js";
 import { buildPublicTelegramMenu } from "./public-menu.js";
 import { REPO_CHAT_COMMAND_SPECS, registerTelegramRepoChatCommands } from "./repo-chat-commands.js";
-import {
-  USAGE_HISTORY_COMMAND_SPEC,
-  USAGE_STATUS_COMMAND_SPEC,
-  registerUsageHistoryCommand,
-  registerUsageStatusCommand,
-} from "./usage-status.js";
+import { USAGE_STATUS_COMMAND_SPEC, registerUsageStatusCommand } from "./usage-status.js";
 import type { CommandFragmentBuffer } from "./command-fragments.js";
 
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
@@ -181,9 +176,7 @@ export const registerTelegramNativeCommands = ({
   const repoChatSpecs = nativeEnabled ? REPO_CHAT_COMMAND_SPECS : [];
   const gatewayRestartSpecs = nativeEnabled ? [GATEWAY_RESTART_COMMAND_SPEC] : [];
   const gatewayStatusSpecs = nativeEnabled ? [GATEWAY_STATUS_COMMAND_SPEC] : [];
-  const usageStatusSpecs = nativeEnabled
-    ? [USAGE_STATUS_COMMAND_SPEC, USAGE_HISTORY_COMMAND_SPEC]
-    : [];
+  const usageStatusSpecs = nativeEnabled ? [USAGE_STATUS_COMMAND_SPEC] : [];
   const createRepoSpecs = nativeEnabled ? [CREATE_REPO_COMMAND_SPEC] : [];
   const nightwatchSpecs = nativeEnabled ? NIGHTWATCH_COMMAND_SPECS : [];
   const allCommands: Array<{ command: string; description: string }> = [
@@ -592,17 +585,6 @@ export const registerTelegramNativeCommands = ({
           shouldSkipUpdate,
         });
         registerUsageStatusCommand({
-          bot,
-          cfg,
-          telegramCfg,
-          allowFrom,
-          groupAllowFrom,
-          useAccessGroups,
-          resolveGroupPolicy,
-          resolveTelegramGroupConfig,
-          shouldSkipUpdate,
-        });
-        registerUsageHistoryCommand({
           bot,
           cfg,
           telegramCfg,

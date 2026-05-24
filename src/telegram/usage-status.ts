@@ -18,7 +18,6 @@ import { boldLabel, formatStatusMessage } from "./status-format.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 const USAGE_STATUS_COMMAND = "usage_status";
-const USAGE_HISTORY_COMMAND = "usage_history";
 
 // Claude Code's statusLine command (scripts/claude-statusline.mjs) writes the
 // live rate-limit JSON Claude pipes to it here. The cache only refreshes while
@@ -32,7 +31,6 @@ const CLAUDE_REFRESH_POLL_MS = 250;
 // External usage CLIs are invoked synchronously; cap each to keep the command
 // responsive even when offline or when npx must resolve a package.
 const CODEX_LIMIT_TIMEOUT_MS = 15_000;
-const CCUSAGE_TIMEOUT_MS = 20_000;
 const EXTERNAL_CLI_MAX_BUFFER = 4 * 1024 * 1024;
 
 const USAGE_STATUS_TITLE = "SmithersBot usage status";
@@ -40,11 +38,6 @@ const USAGE_STATUS_TITLE = "SmithersBot usage status";
 export const USAGE_STATUS_COMMAND_SPEC = {
   command: USAGE_STATUS_COMMAND,
   description: "Show Claude Code and Codex usage quota",
-} as const;
-
-export const USAGE_HISTORY_COMMAND_SPEC = {
-  command: USAGE_HISTORY_COMMAND,
-  description: "Show local historical Claude Code and Codex usage",
 } as const;
 
 type SpawnSyncLike = typeof childProcess.spawnSync;
@@ -91,19 +84,13 @@ type CodexQuota = {
   planType?: string;
   rateLimitReachedType?: string;
 };
-type HistoricalSummary = { days: number; totalCost?: number; totalTokens?: number };
-
 type CliOutcome = { ok: true; stdout: string } | { ok: false; reason: string };
 type CachedValue<T> = { value: T; cachedAtMs: number };
 
 let codexQuotaCache: CachedValue<CodexQuota> | undefined;
-const historicalUsageCache: Partial<Record<"claude" | "codex", CachedValue<HistoricalSummary>>> =
-  {};
 
 export function clearUsageStatusCachesForTest(): void {
   codexQuotaCache = undefined;
-  delete historicalUsageCache.claude;
-  delete historicalUsageCache.codex;
 }
 
 export function resolveClaudeStatuslineCachePath(
@@ -354,27 +341,6 @@ function parseCodexLimit(raw: string): CodexQuota | undefined {
   };
 }
 
-function parseCcusageDaily(raw: string): HistoricalSummary | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (!parsed || typeof parsed !== "object") return undefined;
-  const root = parsed as Record<string, unknown>;
-  const daily = Array.isArray(root.daily) ? root.daily : [];
-  const totals =
-    root.totals && typeof root.totals === "object" ? (root.totals as Record<string, unknown>) : {};
-  const totalCost = pickNumber(totals, ["totalCost", "total_cost", "cost"]);
-  const totalTokens = pickNumber(totals, ["totalTokens", "total_tokens", "tokens"]);
-  return {
-    days: daily.length,
-    ...(totalCost != null ? { totalCost } : {}),
-    ...(totalTokens != null ? { totalTokens } : {}),
-  };
-}
-
 function runCli(
   spawnSyncImpl: SpawnSyncLike,
   command: string,
@@ -556,45 +522,6 @@ function buildCodexSection(outcome: CliOutcome, nowMs: number): string[] {
   return [boldLabel("Codex", "current"), ...buildCodexLines(quota)];
 }
 
-function formatHistoricalSummary(label: string, summary: HistoricalSummary): string {
-  const parts = [`${summary.days} day(s)`];
-  if (summary.totalTokens != null)
-    parts.push(`${summary.totalTokens.toLocaleString("en-US")} tokens`);
-  if (summary.totalCost != null) parts.push(`$${summary.totalCost.toFixed(2)}`);
-  return boldLabel(label, parts.join(", "));
-}
-
-function formatHistoricalLine(
-  label: string,
-  cacheKey: "claude" | "codex",
-  outcome: CliOutcome,
-  nowMs: number,
-): string {
-  if (!outcome.ok) {
-    const cached = historicalUsageCache[cacheKey];
-    if (cached) {
-      return `${formatHistoricalSummary(label, cached.value)} (stale; ${formatCacheAge(
-        cached.cachedAtMs,
-        nowMs,
-      )}; ccusage ${outcome.reason})`;
-    }
-    return boldLabel(label, `unavailable (${outcome.reason})`);
-  }
-  const summary = parseCcusageDaily(outcome.stdout);
-  if (!summary) {
-    const cached = historicalUsageCache[cacheKey];
-    if (cached) {
-      return `${formatHistoricalSummary(label, cached.value)} (stale; ${formatCacheAge(
-        cached.cachedAtMs,
-        nowMs,
-      )}; unrecognized ccusage output)`;
-    }
-    return boldLabel(label, "unavailable (unrecognized ccusage output)");
-  }
-  historicalUsageCache[cacheKey] = { value: summary, cachedAtMs: nowMs };
-  return formatHistoricalSummary(label, summary);
-}
-
 function collectTokenLikeEnvValues(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
     .filter(([key, value]) => /TOKEN|SECRET|KEY|PASSWORD/i.test(key) && typeof value === "string")
@@ -644,45 +571,6 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
 
   // Defense in depth: the message is built from parsed numeric/time fields only,
   // never raw payloads, but redact any token-like values just in case.
-  return redactSecretValues(text, {
-    includeConfigSecrets: false,
-    secretValues: collectTokenLikeEnvValues(env),
-  });
-}
-
-export function buildUsageHistoryMessage(options: BuildUsageStatusOptions = {}): string {
-  const env = options.env ?? process.env;
-  const nowMs = options.nowMs ?? Date.now();
-  const spawnSyncImpl = options.spawnSync ?? childProcess.spawnSync;
-  const text = formatStatusMessage({
-    title: "SmithersBot usage history",
-    lines: [
-      boldLabel("Source", "local logs, not remaining quota"),
-      formatHistoricalLine(
-        "Claude Code",
-        "claude",
-        runCli(
-          spawnSyncImpl,
-          "npx",
-          ["-y", "ccusage@latest", "claude", "daily", "--json"],
-          CCUSAGE_TIMEOUT_MS,
-        ),
-        nowMs,
-      ),
-      formatHistoricalLine(
-        "Codex",
-        "codex",
-        runCli(
-          spawnSyncImpl,
-          "npx",
-          ["-y", "ccusage@latest", "codex", "daily", "--json"],
-          CCUSAGE_TIMEOUT_MS,
-        ),
-        nowMs,
-      ),
-    ],
-  });
-
   return redactSecretValues(text, {
     includeConfigSecrets: false,
     secretValues: collectTokenLikeEnvValues(env),
@@ -741,48 +629,6 @@ export function registerUsageStatusCommand({
 }: RegisterUsageStatusCommandParams): void {
   const build = buildMessage ?? (() => buildUsageStatusMessage());
   bot.command(USAGE_STATUS_COMMAND, async (ctx: TelegramUsageStatusContext) => {
-    const msg = ctx.message;
-    if (!msg) return;
-    if (shouldSkipUpdate(ctx)) return;
-
-    const auth = await resolveTelegramCommandAuth({
-      msg,
-      bot,
-      cfg,
-      telegramCfg,
-      allowFrom,
-      groupAllowFrom,
-      useAccessGroups,
-      resolveGroupPolicy,
-      resolveTelegramGroupConfig,
-      requireAuth: true,
-    });
-    if (!auth) return;
-
-    await sendUsageStatusMessage(
-      bot,
-      msg.chat.id,
-      build(),
-      auth.isGroup ? auth.resolvedThreadId : msg.message_thread_id,
-    );
-  });
-}
-
-export function registerUsageHistoryCommand(params: RegisterUsageStatusCommandParams): void {
-  const {
-    bot,
-    cfg,
-    telegramCfg,
-    allowFrom,
-    groupAllowFrom,
-    useAccessGroups,
-    resolveGroupPolicy,
-    resolveTelegramGroupConfig,
-    shouldSkipUpdate,
-    buildMessage,
-  } = params;
-  const build = buildMessage ?? (() => buildUsageHistoryMessage());
-  bot.command(USAGE_HISTORY_COMMAND, async (ctx: TelegramUsageStatusContext) => {
     const msg = ctx.message;
     if (!msg) return;
     if (shouldSkipUpdate(ctx)) return;

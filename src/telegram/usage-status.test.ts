@@ -6,14 +6,11 @@ import type { TelegramAccountConfig } from "../config/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildClaudeStatuslineRefreshCommand,
-  buildUsageHistoryMessage,
   buildUsageStatusMessage,
   clearUsageStatusCachesForTest,
   refreshClaudeStatuslineCache,
-  registerUsageHistoryCommand,
   registerUsageStatusCommand,
   resolveClaudeStatuslineCachePath,
-  USAGE_HISTORY_COMMAND_SPEC,
   USAGE_STATUS_COMMAND_SPEC,
   type StatuslineCacheEntry,
 } from "./usage-status.js";
@@ -351,66 +348,6 @@ describe("buildUsageStatusMessage", () => {
     );
   });
 
-  it("renders historical ccusage through usage_history", () => {
-    const text = buildUsageHistoryMessage({
-      env: {},
-      nowMs: NOW,
-      spawnSync: makeSpawnSync({
-        ccusageClaude: okResult(CCUSAGE_CLAUDE),
-        ccusageCodex: okResult(
-          JSON.stringify({
-            daily: [{ date: "2026-05-23" }],
-            totals: { totalCost: 1.25, totalTokens: 9876 },
-          }),
-        ),
-      }),
-    });
-
-    expect(text).toContain("**SmithersBot usage history**");
-    expect(text).toContain("**Source:** local logs, not remaining quota");
-    expect(text).toContain("**Claude Code:** 2 day(s), 123,456 tokens, $12.50");
-    expect(text).toContain("**Codex:** 1 day(s), 9,876 tokens, $1.25");
-    expect(text).not.toMatch(/\n{3,}/);
-  });
-
-  it("uses stale cached historical ccusage when later calls time out", () => {
-    buildUsageHistoryMessage({
-      env: {},
-      nowMs: NOW,
-      readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({
-        ccusageClaude: okResult(CCUSAGE_CLAUDE),
-        ccusageCodex: okResult(
-          JSON.stringify({
-            daily: [{ date: "2026-05-23" }],
-            totals: { totalCost: 1.25, totalTokens: 9876 },
-          }),
-        ),
-      }),
-      refreshClaudeStatusline: false,
-    });
-
-    const spawnSync = makeSpawnSync({
-      ccusageClaude: errResult("ETIMEDOUT"),
-      ccusageCodex: errResult("ETIMEDOUT"),
-    });
-    const text = buildUsageHistoryMessage({
-      env: {},
-      nowMs: NOW + 120_000,
-      readCache: cacheReader(undefined),
-      spawnSync,
-      refreshClaudeStatusline: false,
-    });
-
-    expect(text).toContain("**Claude Code:** 2 day(s), 123,456 tokens, $12.50 (stale;");
-    expect(text).toContain("**Codex:** 1 day(s), 9,876 tokens, $1.25 (stale;");
-    expect(text).toContain("ccusage timed out");
-    const ccusageCall = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
-      (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("ccusage@latest"),
-    );
-    expect(ccusageCall?.[2]).toMatchObject({ timeout: 20_000 });
-  });
-
   it("redacts token-like values that would otherwise leak into the output", () => {
     const leakedToken = "topsecrettokenvalue1234";
     const codexWithLeak = JSON.stringify({
@@ -593,11 +530,11 @@ describe("usage_status command registration", () => {
     vi.unstubAllEnvs();
   });
 
-  it("appears in the public Telegram menu", () => {
-    expect(PUBLIC_TELEGRAM_MENU.map((entry) => entry.command)).toContain("usage_status");
-    expect(PUBLIC_TELEGRAM_MENU.map((entry) => entry.command)).toContain("usage_history");
+  it("appears in the public Telegram menu without usage_history", () => {
+    const commands = PUBLIC_TELEGRAM_MENU.map((entry) => entry.command);
+    expect(commands).toContain("usage_status");
+    expect(commands).not.toContain("usage_history");
     expect(USAGE_STATUS_COMMAND_SPEC.command).toBe("usage_status");
-    expect(USAGE_HISTORY_COMMAND_SPEC.command).toBe("usage_history");
   });
 
   it("is published and registered through the native command registry", async () => {
@@ -637,9 +574,9 @@ describe("usage_status command registration", () => {
 
     const published = bot.api.setMyCommands.mock.calls[0]?.[0] as Array<{ command: string }>;
     expect(published.map((entry) => entry.command)).toContain("usage_status");
-    expect(published.map((entry) => entry.command)).toContain("usage_history");
+    expect(published.map((entry) => entry.command)).not.toContain("usage_history");
     expect(handlers.usage_status).toBeTypeOf("function");
-    expect(handlers.usage_history).toBeTypeOf("function");
+    expect(handlers.usage_history).toBeUndefined();
   });
 
   it("sends the usage status message as Telegram HTML to the requesting chat", async () => {
@@ -676,44 +613,6 @@ describe("usage_status command registration", () => {
     });
 
     expect(bot.api.sendMessage).toHaveBeenCalledWith(555, "<b>USAGE STATUS:</b> body", {
-      parse_mode: "HTML",
-    });
-  });
-
-  it("sends usage history as Telegram HTML to the requesting chat", async () => {
-    const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
-    const bot = {
-      api: { sendMessage: vi.fn().mockResolvedValue(undefined) },
-      command: (name: string, handler: (ctx: unknown) => Promise<void>) => {
-        handlers[name] = handler;
-      },
-    } as const;
-
-    registerUsageHistoryCommand({
-      bot: bot as unknown as Parameters<typeof registerUsageHistoryCommand>[0]["bot"],
-      cfg: {} as MoltbotConfig,
-      telegramCfg: {} as TelegramAccountConfig,
-      allowFrom: [111],
-      groupAllowFrom: [],
-      useAccessGroups: false,
-      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }) as ChannelGroupPolicy,
-      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
-      shouldSkipUpdate: () => false,
-      buildMessage: () => "**USAGE HISTORY:** body",
-    });
-
-    expect(handlers.usage_history).toBeTypeOf("function");
-    await handlers.usage_history?.({
-      message: {
-        chat: { id: 555, type: "private" },
-        from: { id: 111, username: "allowed" },
-        message_id: 1,
-        date: 123,
-      },
-      match: "",
-    });
-
-    expect(bot.api.sendMessage).toHaveBeenCalledWith(555, "<b>USAGE HISTORY:</b> body", {
       parse_mode: "HTML",
     });
   });
