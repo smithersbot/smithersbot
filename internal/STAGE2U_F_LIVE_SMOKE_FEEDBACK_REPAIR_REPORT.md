@@ -101,6 +101,44 @@ Status: the repair implements the index-before-runs behavior for an existing cro
 A future live smoke after gateway restart should see `agent/history/cron/index.json`
 when the cron store exists, even before a completed cron run is available.
 
+## Scout Artifact Reconciliation Repair
+
+Regression root cause: the prompt cleanup in commit `fa982fa69` correctly stopped
+rendering the private runtime scout directory into model-facing prompts, and instead
+advertised an agent-visible scout output path under
+`agent/history/goals/<workspace>/<goalId>/runtime/scout/...`. The host, however, still
+validated the canonical scout directory returned by `resolveScoutDir(...)`. In failed
+goal `f8e975ce`, the model followed the prompt and wrote `plan_draft.md`,
+`scout_report.json`, `execution_plan.json`, and `node_specs/*.md` to the advertised
+agent-visible scout path, while `validateScoutOutput()` still checked the canonical
+runtime scout directory and failed because `plan_draft.md` was missing there.
+
+Fix applied: `runCliPlanning()` now reconciles scout artifacts after the planner/scout
+process exits and before `validateScoutOutput()` runs. The host computes a deterministic
+absolute agent-history scout alias, advertises that alias to the model, clears stale
+model-facing scout artifacts before each planning attempt, and then collects/copies the
+known scout artifacts from that alias into the canonical runtime scout directory before
+validation. The existing Codex temporary-directory artifact copy behavior remains intact,
+and the runtime mirror still mirrors canonical scout artifacts into `agent/history`.
+
+The private runtime store remains absent from prompts because the prompt cleanup
+requirement still stands: agents should see and write only the agent-history scout alias.
+The reconciliation is host-side only, so no model-facing prompt needs to expose the
+private canonical directory.
+
+Additional regression coverage for this repair was added or updated in:
+
+- `src/goal/cli-planner.test.ts`
+- `src/goal/scout.test.ts`
+- `src/prompts/prompts.test.ts`
+
+The reconciliation verification reported by the repair task passed:
+
+- `pnpm vitest run src/goal/cli-planner.test.ts src/goal/scout.test.ts src/prompts/prompts.test.ts`
+- `pnpm exec tsc -p tsconfig.json`
+- `pnpm build`
+- `pnpm lint`
+
 ## Tests Added Or Updated
 
 Prompt leak repair:
