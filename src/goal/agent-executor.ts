@@ -246,6 +246,8 @@ export type ExecuteGoalParams = {
   onTaskUpdate?: (result: TaskExecutionResult) => void;
   /** Called when a task transitions to in_progress (before execution). */
   onTaskStart?: (taskId: string) => void;
+  /** Called before the final runtime mirror so persisted run.json reflects terminal state. */
+  onRunStatePersist?: () => void | Promise<void>;
   onProgress?: (text: string) => void;
   onStatusChange?: (event: GoalStatusChangeEvent) => void | Promise<void>;
   abortSignal?: AbortSignal;
@@ -1096,6 +1098,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         onProgress?.(`  [manual-tests] Generation failed: ${manualTestsError}`);
       }
     }
+    await params.onRunStatePersist?.();
     try {
       mirrorGoalRuntimeToAgentHistory({
         workspaceName: workspaceNameFromWorkingDir(workingDir),

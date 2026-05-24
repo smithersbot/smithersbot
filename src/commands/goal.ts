@@ -373,6 +373,7 @@ export async function goalCommand(
       } as SerializedRun,
       claudeCodeAuth: resolvedAuthMode,
       onTaskUpdate: () => persistRun(),
+      onRunStatePersist: () => persistRun(),
       onProgress: (text) => {
         if (!isJson) runtime.log(text);
       },

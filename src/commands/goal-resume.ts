@@ -871,6 +871,7 @@ export async function goalResumeCommand(
     claudeCodeAuth,
     onTaskUpdate: () => persistRun(),
     onTaskStart: () => persistRun(),
+    onRunStatePersist: () => persistRun(),
     onProgress: (text) => {
       if (!isJson && !quiet) runtime.log(text);
     },

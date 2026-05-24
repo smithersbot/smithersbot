@@ -2061,6 +2061,25 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       }),
     });
     const onStatusChange = vi.fn();
+    mockRunStore.set("run-post-completion-mirror", {
+      runId: "run-post-completion-mirror",
+      state: "executing",
+    });
+    const onRunStatePersist = vi.fn(() => {
+      mockRunStore.set("run-post-completion-mirror", {
+        runId: "run-post-completion-mirror",
+        state: session.state,
+      });
+    });
+    let stateAtMirror: unknown;
+    mockMirrorGoalRuntimeToAgentHistory.mockImplementationOnce(() => {
+      stateAtMirror = mockRunStore.get("run-post-completion-mirror")?.state;
+      return {
+        generatedAt: "2026-05-24T00:00:00.000Z",
+        sourceKind: "goal-runtime",
+        entries: [],
+      };
+    });
 
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
@@ -2069,20 +2088,26 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       workingDir: "/tmp/moltbot-goal-test",
       manualTestsClient: { complete },
       onStatusChange,
+      onRunStatePersist,
     });
 
     expect(outcome.status).toBe("done");
     expect(mockExtractRunLessons).toHaveBeenCalled();
     expect(complete).toHaveBeenCalled();
+    expect(onRunStatePersist).toHaveBeenCalledOnce();
+    expect(stateAtMirror).toBe("done");
     expect(mockMirrorGoalRuntimeToAgentHistory).toHaveBeenCalledWith({
       workspaceName: "moltbot-goal-test",
       goalId: "run-post-completion-mirror",
       sourceDir: "/tmp/moltbot-goal-test/runs/run-post-completion-mirror",
     });
     expect(mockExtractRunLessons.mock.invocationCallOrder[0]).toBeLessThan(
-      mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
+      onRunStatePersist.mock.invocationCallOrder[0]!,
     );
     expect(complete.mock.invocationCallOrder[0]).toBeLessThan(
+      onRunStatePersist.mock.invocationCallOrder[0]!,
+    );
+    expect(onRunStatePersist.mock.invocationCallOrder[0]).toBeLessThan(
       mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
     );
     expect(onStatusChange).toHaveBeenCalledWith(
@@ -2095,6 +2120,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     const plan = makePlan([step]);
     const session = makeSession(plan);
     const progress: string[] = [];
+    const onRunStatePersist = vi.fn();
 
     mockCliExecute.mockResolvedValueOnce({
       status: "complete",
@@ -2110,10 +2136,15 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       session,
       runId: "run-post-completion-mirror-fail-open",
       workingDir: "/tmp/moltbot-goal-test",
+      onRunStatePersist,
       onProgress: (line) => progress.push(line),
     });
 
     expect(outcome.status).toBe("done");
+    expect(onRunStatePersist).toHaveBeenCalledOnce();
+    expect(onRunStatePersist.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
+    );
     expect(progress).toContain(
       "  [warn] Runtime mirror after completion failed: mirror disk unavailable",
     );
