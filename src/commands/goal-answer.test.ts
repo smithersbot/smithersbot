@@ -4,7 +4,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { loadRun, saveRun } from "../goal/run-store.js";
-import type { SerializedRun } from "../goal/types.js";
+import { acquireGoalOpLock } from "../goal/goal-lock.js";
+import { normalizeAnsweredUserInputBlocks } from "../goal/resume-state.js";
+import { computeDisplayStatuses, findRunnableSteps } from "../goal/execution-status.js";
+import type { PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 
 async function catchJsonExit(fn: () => Promise<unknown>): Promise<void> {
@@ -97,6 +100,10 @@ describe("goal-answer command", () => {
 
   it("persists answer and clears blocked state", async () => {
     saveRun(makeBlockedRun());
+    // The auto-resume holds the run lock while executing; hold it here so loadRun
+    // does not reconcile the freshly-persisted "executing" state back to a stale
+    // crash-recovery block.
+    acquireGoalOpLock("answer-test-run", "test-resume", testGoalsDir);
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const rt = mockRuntime();
     await goalAnswerCommand("answer-test-run", { key: "db_password", value: "s3cret" }, rt);
@@ -150,6 +157,9 @@ describe("goal-answer command", () => {
         },
       }),
     );
+    // Hold the run lock so loadRun does not reconcile the persisted "executing"
+    // state back to a stale crash-recovery block (see test above).
+    acquireGoalOpLock("answer-test-run", "test-resume", testGoalsDir);
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const rt = mockRuntime();
     await goalAnswerCommand("answer-test-run", { key: "tasks:1,2:input", value: "ok" }, rt);
@@ -228,5 +238,102 @@ describe("goal-answer command", () => {
     const rt = mockRuntime();
     await goalAnswerCommand("nonexistent", { key: "k", value: "v" }, rt);
     expect(rt.errors.join("\n")).toContain("Run not found: nonexistent");
+  });
+
+  it("collider: fans out the answer so the auto-resume normalizes BOTH parents while an unanswered block stays blocked", async () => {
+    const runId = "answer-collider-run";
+    saveRun(
+      makeBlockedRun({
+        runId,
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need details for both parents",
+          requiredInputKey: "tasks:parent-a,parent-b:input",
+        },
+        plan: {
+          goal: "Collider",
+          summary: "Collider plan",
+          steps: [
+            {
+              id: "parent-a",
+              description: "Parent A",
+              dependsOn: [],
+              status: "blocked",
+              blockedReason: "user_input",
+              blockedQuestion: "Detail for A?",
+            },
+            {
+              id: "parent-b",
+              description: "Parent B",
+              dependsOn: [],
+              status: "blocked",
+              blockedReason: "user_input",
+              blockedQuestion: "Detail for B?",
+            },
+            {
+              id: "child",
+              description: "Child",
+              dependsOn: ["parent-a", "parent-b"],
+              status: "pending",
+            },
+            {
+              id: "lone",
+              description: "Lone unanswered",
+              dependsOn: [],
+              status: "blocked",
+              blockedReason: "user_input",
+              blockedQuestion: "Lone detail?",
+            },
+          ],
+        },
+      }),
+    );
+    // Active resume holds the run lock; keep loadRun from reconciling the
+    // persisted "executing" state.
+    acquireGoalOpLock(runId, "test-resume", testGoalsDir);
+
+    // Run the real resume normalization slice during auto-resume, exactly as
+    // goalResumeCommand does, so we observe the end-to-end persisted result.
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    vi.mocked(goalResumeCommand).mockImplementationOnce(async (id: string) => {
+      const resumed = loadRun(id, testGoalsDir)!;
+      normalizeAnsweredUserInputBlocks(resumed.plan!.steps as PlanStep[], resumed.answers);
+      resumed.state = "executing";
+      saveRun(resumed, testGoalsDir);
+      return { status: "done", summary: "All steps completed." };
+    });
+
+    const { goalAnswerCommand } = await import("./goal-answer.js");
+    const rt = mockRuntime();
+    await goalAnswerCommand(runId, { key: "tasks:parent-a,parent-b:input", value: "go ahead" }, rt);
+
+    expect(goalResumeCommand).toHaveBeenCalled();
+
+    const run = loadRun(runId, testGoalsDir)!;
+    // Answer fanned out to BOTH parent task keys.
+    expect(run.answers["task:parent-a:input"]).toBe("go ahead");
+    expect(run.answers["task:parent-b:input"]).toBe("go ahead");
+
+    const byId = new Map((run.plan!.steps as PlanStep[]).map((s) => [s.id, s]));
+    // Both answered parents normalized to pending — not just the first.
+    expect(byId.get("parent-a")!.status).toBe("pending");
+    expect(byId.get("parent-a")!.blockedReason).toBeUndefined();
+    expect(byId.get("parent-b")!.status).toBe("pending");
+    expect(byId.get("parent-b")!.blockedReason).toBeUndefined();
+    // Unanswered user-input block stays hard blocked.
+    expect(byId.get("lone")!.status).toBe("blocked");
+    expect(byId.get("lone")!.blockedReason).toBe("user_input");
+
+    // Renderer agrees: answered parents are not hard blocked; lone stays blocked.
+    const display = computeDisplayStatuses(run.plan!.steps as PlanStep[]);
+    expect(display.get("parent-a")).toBe("pending");
+    expect(display.get("parent-b")).toBe("pending");
+    expect(display.get("lone")).toBe("blocked");
+    // Child waits until both parents complete: the runnable set is the two parents.
+    expect(
+      findRunnableSteps(run.plan!.steps as PlanStep[])
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(["parent-a", "parent-b"]);
   });
 });

@@ -2,10 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadRun, saveRun } from "../goal/run-store.js";
+import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import { resetMessageIndex } from "./goal-message-index.js";
 import { buildBlockedCaption, describeBlockedStep } from "./goal-blocked-ui.js";
-import type { SerializedRun } from "../goal/types.js";
+import {
+  computeDisplayStatuses,
+  findRunnableSteps,
+  isHardBlocked,
+} from "../goal/execution-status.js";
+import { acquireGoalOpLock } from "../goal/goal-lock.js";
+import type { PlanStep, SerializedRun } from "../goal/types.js";
+// NOTE: normalizeAnsweredUserInputBlocks is imported lazily inside the resume
+// mock below. A static import would eagerly pull agent-executor -> cli-worker ->
+// planner into the module graph, which trips the hoisted planner vi.mock factory
+// (MockPlanParseError TDZ) before this file's top-level class is initialized.
 
 let testGoalsDir: string;
 const mockRedactSecretValues = vi.hoisted(() => vi.fn());
@@ -4719,6 +4729,387 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("Config writes are disabled");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+  });
+
+  describe("answered user-input normalization through Telegram resume entry points", () => {
+    // Every public Telegram resume entry point converges on goalResumeCommand:
+    //   /goal_resume, the gResume:<id> button, and the approve/reaction path all
+    //   funnel through startGoalResume -> handleGoalApprove -> goalResumeCommand,
+    //   while the Add Details / answer reply routes handleGoalAnswer ->
+    //   goalAnswerCommand -> goalResumeCommand. These tests drive each entry
+    //   point and prove that, by the time the run is resumed, every answered
+    //   user-input block has been normalized to runnable (no hard "blocked"
+    //   node) while an unanswered user-input block stays hard blocked.
+    //
+    // goalResumeCommand is mocked in this file, so the resume mock below runs the
+    // SAME normalization slice the real command performs (the production
+    // normalizeAnsweredUserInputBlocks helper against the persisted run) — the
+    // full real-resume wiring is covered in goal-resume.test.ts.
+
+    /** Build a collider run: two user-input parents + a child depending on both. */
+    function makeColliderRun(opts: {
+      runId: string;
+      parentBAnswered: boolean;
+      includeLone?: boolean;
+      telegramPlanMessageId?: number;
+    }): SerializedRun {
+      const answers: Record<string, string> = { "task:parent-a:input": "go ahead" };
+      if (opts.parentBAnswered) answers["task:parent-b:input"] = "go ahead";
+      const steps = [
+        {
+          id: "parent-a",
+          description: "Parent A",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+          blockedQuestion: "Detail for A?",
+        },
+        {
+          id: "parent-b",
+          description: "Parent B",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+          blockedQuestion: "Detail for B?",
+        },
+        {
+          id: "child",
+          description: "Child",
+          dependsOn: ["parent-a", "parent-b"],
+          status: "pending",
+        },
+      ];
+      if (opts.includeLone) {
+        steps.push({
+          id: "lone",
+          description: "Lone unanswered",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+          blockedQuestion: "Lone detail?",
+        });
+      }
+      return makeRun({
+        runId: opts.runId,
+        state: "blocked",
+        answers,
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need details for the parents",
+          requiredInputKey: "tasks:parent-a,parent-b:input",
+        },
+        ...(opts.telegramPlanMessageId != null
+          ? { telegramPlanMessage: { chatId: 42, messageId: opts.telegramPlanMessageId } }
+          : {}),
+        plan: {
+          goal: "Collider",
+          workingDir: "/tmp/ws",
+          summary: "Collider plan",
+          steps: steps as never,
+        },
+      });
+    }
+
+    /**
+     * Stand-in resume that runs the production normalization slice against the
+     * persisted run, exactly as goalResumeCommand does before it transitions to
+     * executing. Returns the same done/blocked shape the real command returns.
+     */
+    function normalizingResume() {
+      return async (rawId: string, _opts?: unknown) => {
+        const { normalizeAnsweredUserInputBlocks } = await import("../goal/resume-state.js");
+        const resolved = resolveRunId(String(rawId)) ?? String(rawId);
+        const run = loadRun(resolved, testGoalsDir);
+        if (!run?.plan) return { status: "done", summary: "No plan." };
+        normalizeAnsweredUserInputBlocks(run.plan.steps, run.answers);
+        const stillHardBlocked = run.plan.steps.some((s) => isHardBlocked(s));
+        run.state = stillHardBlocked ? "blocked" : "executing";
+        if (!stillHardBlocked) run.blocked = null;
+        saveRun(run, testGoalsDir);
+        return stillHardBlocked
+          ? {
+              status: "blocked" as const,
+              question: "Lone detail?",
+              requiredInputKey: "task:lone:input",
+              blockedAt: "execution" as const,
+            }
+          : { status: "done" as const, summary: "All steps completed." };
+      };
+    }
+
+    function stepsById(run: SerializedRun): Map<string, PlanStep> {
+      return new Map((run.plan?.steps ?? []).map((s) => [s.id, s]));
+    }
+
+    async function waitForResume(assertion: () => void, timeoutMs = 2000): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        try {
+          assertion();
+          return;
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    }
+
+    /** Harness that captures both command handlers and bot.on event handlers. */
+    function makeResumeHarness(): {
+      commandHandlers: Record<string, (ctx: unknown) => Promise<void>>;
+      onHandlers: Record<string, (ctx: unknown, next?: () => Promise<void>) => Promise<void>>;
+      register: () => Promise<void>;
+    } {
+      const commandHandlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      const onHandlers: Record<
+        string,
+        (ctx: unknown, next?: () => Promise<void>) => Promise<void>
+      > = {};
+      const bot = {
+        api: {
+          sendMessage: vi.fn().mockResolvedValue({ message_id: 900 }),
+          sendPhoto: vi.fn().mockResolvedValue({ message_id: 901 }),
+          sendChatAction: vi.fn().mockResolvedValue(true),
+          answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+          setMessageReaction: vi.fn().mockResolvedValue(true),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) commandHandlers[entry] = handler;
+          } else {
+            commandHandlers[name] = handler;
+          }
+        },
+        on: (
+          event: string,
+          handler: (ctx: unknown, next?: () => Promise<void>) => Promise<void>,
+        ) => {
+          onHandlers[event] = handler;
+        },
+      } as unknown as import("grammy").Bot;
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: {} as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+      return { commandHandlers, onHandlers, register };
+    }
+
+    it("handleGoalApprove (shared /goal_resume + gResume + reaction path) clears both answered parents to runnable", async () => {
+      const runId = "aaaaaaaa-1111-2222-3333-444444444444";
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
+      mockGoalResumeCommand.mockImplementation(normalizingResume());
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      await handleGoalApprove("aaaaaaaa");
+
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+
+      const run = loadRun(runId, testGoalsDir)!;
+      const steps = stepsById(run);
+      // BOTH answered parents normalized to pending — not just the first.
+      expect(steps.get("parent-a")!.status).toBe("pending");
+      expect(steps.get("parent-a")!.blockedReason).toBeUndefined();
+      expect(steps.get("parent-b")!.status).toBe("pending");
+      expect(steps.get("parent-b")!.blockedReason).toBeUndefined();
+      // Renderer agrees: no hard "blocked" node remains.
+      const display = computeDisplayStatuses(run.plan!.steps);
+      expect(display.get("parent-a")).toBe("pending");
+      expect(display.get("parent-b")).toBe("pending");
+      expect([...display.values()]).not.toContain("blocked");
+      // Child waits until both parents complete (runnable set = the two parents).
+      const runnable = findRunnableSteps(run.plan!.steps)
+        .map((s) => s.id)
+        .sort();
+      expect(runnable).toEqual(["parent-a", "parent-b"]);
+    });
+
+    it("handleGoalApprove keeps an UNANSWERED user-input block hard blocked while clearing the answered one", async () => {
+      const runId = "bbbbbbbb-1111-2222-3333-444444444444";
+      // parent-b is NOT answered here; child depends on both parents.
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: false }));
+      mockGoalResumeCommand.mockImplementation(normalizingResume());
+
+      const { handleGoalApprove } = await import("./goal-commands.js");
+      await handleGoalApprove("bbbbbbbb");
+
+      const run = loadRun(runId, testGoalsDir)!;
+      const steps = stepsById(run);
+      expect(steps.get("parent-a")!.status).toBe("pending");
+      // Unanswered user-input block stays hard blocked.
+      expect(steps.get("parent-b")!.status).toBe("blocked");
+      expect(steps.get("parent-b")!.blockedReason).toBe("user_input");
+
+      const display = computeDisplayStatuses(run.plan!.steps);
+      expect(display.get("parent-a")).toBe("pending");
+      expect(display.get("parent-b")).toBe("blocked");
+      // Child has a hard-blocked dependency -> waiting (soft_blocked), not needs-input.
+      expect(display.get("child")).toBe("soft_blocked");
+      // Only the answered parent is runnable.
+      expect(findRunnableSteps(run.plan!.steps).map((s) => s.id)).toEqual(["parent-a"]);
+    });
+
+    it("gResume:<id> Resume button resumes through goalResumeCommand and normalizes answered parents", async () => {
+      const runId = "cccccccc-1111-2222-3333-444444444444";
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
+      mockGoalResumeCommand.mockImplementation(normalizingResume());
+
+      const harness = makeResumeHarness();
+      await harness.register();
+      await harness.onHandlers["callback_query:data"]({
+        callbackQuery: {
+          id: "cb-resume",
+          data: "gResume:cccccccc",
+          message: { chat: { id: 42, type: "private" }, message_id: 510 },
+        },
+      });
+
+      await waitForResume(() => {
+        expect(mockGoalResumeCommand).toHaveBeenCalled();
+        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      });
+      await waitForResume(() => {
+        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        expect(steps.get("parent-a")!.status).toBe("pending");
+        expect(steps.get("parent-b")!.status).toBe("pending");
+      });
+      const display = computeDisplayStatuses(loadRun(runId, testGoalsDir)!.plan!.steps);
+      expect([...display.values()]).not.toContain("blocked");
+    });
+
+    it("/goal_resume command resumes through goalResumeCommand and normalizes answered parents", async () => {
+      const runId = "dddddddd-1111-2222-3333-444444444444";
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
+      mockGoalResumeCommand.mockImplementation(normalizingResume());
+
+      const harness = makeResumeHarness();
+      await harness.register();
+      await harness.commandHandlers["goal_resume"]({
+        match: "dddddddd",
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: 520,
+          date: 123_456,
+        },
+      });
+
+      await waitForResume(() => {
+        expect(mockGoalResumeCommand).toHaveBeenCalled();
+        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      });
+      await waitForResume(() => {
+        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        expect(steps.get("parent-a")!.status).toBe("pending");
+        expect(steps.get("parent-b")!.status).toBe("pending");
+      });
+    });
+
+    it("approve reaction resumes through goalResumeCommand and normalizes answered parents", async () => {
+      const runId = "eeeeeeee-1111-2222-3333-444444444444";
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: true, telegramPlanMessageId: 530 }));
+      mockGoalResumeCommand.mockImplementation(normalizingResume());
+
+      const harness = makeResumeHarness();
+      await harness.register();
+      await harness.onHandlers["message_reaction"]({
+        update: {
+          message_reaction: {
+            chat: { id: 42 },
+            message_id: 530,
+            old_reaction: [],
+            // 👍 (thumbs up) is in APPROVE_EMOJIS.
+            new_reaction: [{ type: "emoji", emoji: "👍" }],
+          },
+        },
+      });
+
+      await waitForResume(() => {
+        expect(mockGoalResumeCommand).toHaveBeenCalled();
+        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      });
+      await waitForResume(() => {
+        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        expect(steps.get("parent-a")!.status).toBe("pending");
+        expect(steps.get("parent-b")!.status).toBe("pending");
+      });
+    });
+
+    it("Add Details / answer reply routes into handleGoalAnswer -> goalAnswerCommand with the multi-task key", async () => {
+      // The gAD ForceReply reply handler calls handleGoalAnswer(runId, value)
+      // (registerTelegramGoalCommands message handler). handleGoalAnswer forwards
+      // an execution-time block to goalAnswerCommand, whose auto-resume then
+      // normalizes the answered parents (proven end-to-end in goal-answer.test.ts).
+      const runId = "ffffffff-1111-2222-3333-444444444444";
+      saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
+      mockGoalAnswerCommand.mockResolvedValue({ status: "done", summary: "All steps completed." });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("ffffffff", "go ahead");
+
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      const [id, opts] = mockGoalAnswerCommand.mock.calls[0];
+      expect(id).toBe(runId);
+      expect(opts.key).toBe("tasks:parent-a,parent-b:input");
+      expect(opts.value).toBe("go ahead");
+      const text = typeof result === "string" ? result : (result as { text: string }).text;
+      expect(text).toContain("Resuming:");
+    });
+
+    it("resume_execution auto-retry resumes through goalResumeCommand without storing fake user input", async () => {
+      const runId = "12121212-1111-2222-3333-444444444444";
+      // An interrupted run recovers as state "executing"; an active lock keeps
+      // loadRun from reconciling it back to a stale block.
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "executing",
+          answers: {},
+          plan: {
+            goal: "Interrupted",
+            workingDir: "/tmp/ws",
+            summary: "Interrupted plan",
+            steps: [
+              { id: "1", description: "Step one", dependsOn: [], status: "in_progress" } as never,
+            ],
+          },
+        }),
+      );
+      acquireGoalOpLock(runId, "test-resume", testGoalsDir);
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Resumed." });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      await handleGoalAnswer(runId, "anything the user typed");
+
+      // Resumed directly, with no fake answer injected into the run.
+      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      const run = loadRun(runId, testGoalsDir)!;
+      expect(run.answers).toEqual({});
     });
   });
 
