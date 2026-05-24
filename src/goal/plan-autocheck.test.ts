@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
-import { runPlanAutocheck } from "./plan-autocheck.js";
+import { buildAutocheckPrompt, runPlanAutocheck } from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
@@ -39,6 +39,65 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
   detectBackendAvailability: () => mockDetectBackendAvailability(),
 }));
+
+const mockBuildClaudeCodeSandboxLaunchConfig = vi.hoisted(() =>
+  vi.fn((params: { workingDir: string; runId: string; purpose: string }) => ({
+    settingsPath: `/tmp/${params.runId}-settings.json`,
+    args: [
+      "--settings",
+      `/tmp/${params.runId}-settings.json`,
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+    ],
+  })),
+);
+const mockWriteCodexNativeSandboxConfig = vi.hoisted(() =>
+  vi.fn((params: { workingDir: string; runId: string; purpose: string }) => ({
+    profileName: "smithersbot",
+    executionRoot: params.workingDir,
+    codexHome: `/tmp/${params.runId}-codex-home`,
+    configPath: `/tmp/${params.runId}-codex-home/config.toml`,
+    helperDir: `/tmp/${params.runId}-codex-home/bin`,
+    helperPath: `/tmp/${params.runId}-codex-home/bin/codex-linux-sandbox`,
+    codexPath: "codex",
+    authReferencePath: `/tmp/${params.runId}-codex-home/auth.json`,
+    authSourcePath: "/home/test/.codex/auth.json",
+    env: {
+      CODEX_HOME: `/tmp/${params.runId}-codex-home`,
+      PATH: `/tmp/${params.runId}-codex-home/bin:${process.env.PATH ?? ""}`,
+    },
+    args: ["sandbox", "linux", "--permissions-profile", "smithersbot", "--cd", params.workingDir],
+    configToml: [
+      'default_permissions = "smithersbot"',
+      "[permissions.smithersbot.filesystem]",
+      '"/" = "read"',
+      `"${params.workingDir}" = "read"`,
+      `"${params.workingDir}/.env" = "deny"`,
+      '"/home/test/.codex/auth.json" = "deny"',
+    ].join("\n"),
+    deniedReadPaths: [
+      `${params.workingDir}/.env`,
+      `${params.workingDir}/.env.local`,
+      `${params.workingDir}/.env.production`,
+      "/home/test/.codex/auth.json",
+      "/home/test/.claude/settings.json",
+    ],
+    allowedReadPaths: [params.workingDir],
+    writablePaths: [],
+  })),
+);
+vi.mock("./backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./backend-sandbox.js")>();
+  return {
+    ...actual,
+    buildClaudeCodeSandboxLaunchConfig: (...args: unknown[]) =>
+      mockBuildClaudeCodeSandboxLaunchConfig(...args),
+    writeCodexNativeSandboxConfig: (...args: unknown[]) =>
+      mockWriteCodexNativeSandboxConfig(...args),
+  };
+});
 
 const FORBIDDEN_AGENT_ENV_KEYS = [
   "TELEGRAM_BOT_TOKEN",
@@ -1110,10 +1169,42 @@ describe("runPlanAutocheck", () => {
 
     const call = mockRunCliProcess.mock.calls[0]?.[0] as {
       command: string;
+      args: string[];
       env: Record<string, string | undefined>;
     };
     expect(call.command).toBe("codex");
     expectForbiddenAgentEnvAbsent(call.env);
+    expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: tmpDir, purpose: "repo-chat" }),
+    );
+    expect(call.args).toEqual(
+      expect.arrayContaining(["exec", "--json", "--color", "never", "--cd", tmpDir]),
+    );
+    expect(call.args).not.toContain("--sandbox");
+    expect(call.args).not.toContain("--skip-git-repo-check");
+    expect(call.env.CODEX_HOME).toContain("-autocheck-r1-fresh-codex-home");
+    expect(call.env.PATH).toContain("-autocheck-r1-fresh-codex-home/bin");
+    const sandboxConfig = mockWriteCodexNativeSandboxConfig.mock.results[0]?.value as {
+      profileName: string;
+      deniedReadPaths: string[];
+      writablePaths: string[];
+      allowedReadPaths: string[];
+      configToml: string;
+    };
+    expect(sandboxConfig.profileName).toBe("smithersbot");
+    expect(sandboxConfig.writablePaths).toEqual([]);
+    expect(sandboxConfig.allowedReadPaths).toContain(tmpDir);
+    expect(sandboxConfig.deniedReadPaths).toEqual(
+      expect.arrayContaining([
+        `${tmpDir}/.env`,
+        `${tmpDir}/.env.local`,
+        `${tmpDir}/.env.production`,
+        "/home/test/.codex/auth.json",
+        "/home/test/.claude/settings.json",
+      ]),
+    );
+    expect(sandboxConfig.configToml).toContain(`"${tmpDir}" = "read"`);
+    expect(sandboxConfig.configToml).toContain(`"${tmpDir}/.env" = "deny"`);
   });
 
   it("strips poisoned Claude subscription auth env from reviewer subprocesses", async () => {
@@ -1149,8 +1240,109 @@ describe("runPlanAutocheck", () => {
     expect(call.command).toBe("/usr/bin/claude");
     expectForbiddenAgentEnvAbsent(call.env);
     expect(call.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(mockBuildClaudeCodeSandboxLaunchConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: tmpDir, purpose: "repo-chat" }),
+    );
+    expect(call.args).toEqual(
+      expect.arrayContaining([
+        "--settings",
+        expect.stringContaining("-autocheck-r1-fresh-settings.json"),
+        "--setting-sources",
+        "",
+        "--permission-mode",
+        "default",
+      ]),
+    );
     expect(call.args).not.toContain("--dangerously-skip-permissions");
     expect(call.args).not.toContain("--allow-dangerously-skip-permissions");
+  });
+
+  it("keeps Codex resume args session-bound without fresh launch sandbox flags", async () => {
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}' }));
+
+    await runPlanAutocheck({
+      plan: makePlan("Codex resume sandbox", "1", "codex"),
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-codex-resume-sandbox"),
+      existingSessionId: "codex-resume-session",
+      existingBackend: "codex",
+      commitRevision: vi.fn(),
+    });
+
+    const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+      args: string[];
+      env: Record<string, string | undefined>;
+    };
+    expect(call.args).toEqual(["exec", "resume", "codex-resume-session", expect.any(String)]);
+    expect(call.args).not.toContain("--json");
+    expect(call.args).not.toContain("--color");
+    expect(call.args).not.toContain("--cd");
+    expect(call.args).not.toContain("--sandbox");
+    expect(call.args).not.toContain("--skip-git-repo-check");
+    expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "repo-chat" }),
+    );
+    expect(call.env.CODEX_HOME).toContain("-autocheck-r1-resume-codex-home");
+  });
+
+  it("builds a stable review-instruction prefix and compact dynamic prior feedback", () => {
+    const firstPrompt = buildAutocheckPrompt({
+      goalText: "Ship feature A",
+      plan: makePlan("Stable prefix A", "1", "codex"),
+      workingDir: tmpDir,
+      resume: false,
+      priorFeedback: [
+        "Round 1 feedback should be omitted after compaction.",
+        "Round 2 feedback stays.",
+        "Round 3 feedback stays.",
+        "Round 4 feedback stays.",
+      ],
+      contextNotes: ["Context note A"],
+    });
+    const secondPrompt = buildAutocheckPrompt({
+      goalText: "Ship feature B",
+      plan: makePlan("Stable prefix B", "2", "claude_code"),
+      workingDir: path.join(tmpDir, "other"),
+      resume: false,
+      priorFeedback: ["Different feedback"],
+      contextNotes: [],
+    });
+
+    expect(firstPrompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
+    expect(secondPrompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
+    expect(firstPrompt.slice(0, REVIEW_INSTRUCTION.length)).toBe(
+      secondPrompt.slice(0, REVIEW_INSTRUCTION.length),
+    );
+    expect(firstPrompt.indexOf(REVIEW_INSTRUCTION)).toBeLessThan(
+      firstPrompt.indexOf("Original goal (verbatim):"),
+    );
+    expect(firstPrompt).toContain("Ship feature A");
+    expect(firstPrompt).toContain("Stable prefix A");
+    expect(firstPrompt).toContain("Prior reviewer feedback summary:");
+    expect(firstPrompt).toContain("Earlier feedback omitted for compactness: 1 entry.");
+    expect(firstPrompt).not.toContain("Round 1 feedback should be omitted");
+    expect(firstPrompt).toContain("Round 4 feedback stays.");
+  });
+
+  it("omits prior feedback on resume prompts while preserving updated plan content", () => {
+    const prompt = buildAutocheckPrompt({
+      goalText: "Resume goal",
+      plan: makePlan("Resume prompt", "1", "claude_code"),
+      workingDir: tmpDir,
+      resume: true,
+      priorFeedback: ["Do not repeat this feedback in a resumed reviewer session."],
+      contextNotes: ["Do not repeat this context note in resume mode."],
+    });
+
+    expect(prompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
+    expect(prompt).toContain("You are continuing plan review in an existing reviewer session.");
+    expect(prompt).toContain("Updated /plan_detail output:");
+    expect(prompt).toContain("Resume prompt");
+    expect(prompt).not.toContain("Prior reviewer feedback summary:");
+    expect(prompt).not.toContain("Do not repeat this feedback");
+    expect(prompt).not.toContain("Do not repeat this context note");
   });
 
   it("repairs malformed direct decision JSON with trailing brace", async () => {

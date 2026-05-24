@@ -16,6 +16,14 @@ import {
 import { runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
 import {
+  appendClaudeCodeSandboxArgs,
+  appendCodexNativeSandboxExecArgs,
+  buildClaudeCodeSandboxLaunchConfig,
+  writeCodexNativeSandboxConfig,
+  type ClaudeCodeLaunchSandboxConfig,
+  type CodexNativeSandboxConfig,
+} from "./backend-sandbox.js";
+import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
@@ -313,6 +321,7 @@ function normalizeBackend(value: string | undefined): PlanAutocheckBackend | und
 
 function buildClaudeReviewerArgs(params: {
   prompt: string;
+  sandboxConfig: ClaudeCodeLaunchSandboxConfig;
   sessionId?: string;
   model?: string;
 }): string[] {
@@ -326,6 +335,7 @@ function buildClaudeReviewerArgs(params: {
     "--append-system-prompt",
     CLAUDE_READ_ONLY_PROMPT,
   ];
+  appendClaudeCodeSandboxArgs(args, params.sandboxConfig);
   if (params.model) args.push("--model", params.model);
   if (params.sessionId) args.push("--resume", params.sessionId);
   args.push(params.prompt);
@@ -335,6 +345,7 @@ function buildClaudeReviewerArgs(params: {
 function buildCodexReviewerArgs(params: {
   prompt: string;
   workingDir: string;
+  sandboxConfig: CodexNativeSandboxConfig;
   sessionId?: string;
   model?: string;
 }): string[] {
@@ -349,11 +360,9 @@ function buildCodexReviewerArgs(params: {
     args.push("resume", params.sessionId);
   }
   if (!params.sessionId) {
-    args.push("--json", "--color", "never", "--sandbox", "read-only");
-    args.push("--cd", params.workingDir);
+    args.push("--json", "--color", "never");
+    appendCodexNativeSandboxExecArgs(args, params.sandboxConfig);
   }
-
-  args.push("--skip-git-repo-check");
 
   if (params.model) {
     args.push("--model", params.model);
@@ -437,7 +446,19 @@ function renderMermaidDag(plan: Plan): string {
 
 function summarizeFeedback(history: string[]): string {
   if (history.length === 0) return "None.";
-  return history.map((entry, idx) => `${idx + 1}. ${entry}`).join("\n");
+  const compact = history
+    .slice(-3)
+    .map((entry) => truncateDetail(entry))
+    .filter(Boolean);
+  const omitted = history.length - compact.length;
+  return [
+    omitted > 0
+      ? `Earlier feedback omitted for compactness: ${omitted} entr${omitted === 1 ? "y" : "ies"}.`
+      : undefined,
+    ...compact.map((entry, idx) => `${idx + 1}. ${entry}`),
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 }
 
 function buildPlanSnapshot(plan: Plan): string {
@@ -473,7 +494,7 @@ function buildUserEditInstructionsSection(userEditInstructions: string[] | undef
   ];
 }
 
-function buildAutocheckPrompt(params: {
+export function buildAutocheckPrompt(params: {
   goalText: string;
   plan: Plan;
   workingDir: string;
@@ -493,6 +514,8 @@ function buildAutocheckPrompt(params: {
 
   if (params.resume) {
     return [
+      REVIEW_INSTRUCTION,
+      "",
       "You are continuing plan review in an existing reviewer session.",
       "Re-review this updated plan and answer: Is this plan ready to execute?",
       "",
@@ -510,8 +533,6 @@ function buildAutocheckPrompt(params: {
       "```mermaid",
       mermaidDag,
       "```",
-      "",
-      REVIEW_INSTRUCTION,
     ].join("\n");
   }
 
@@ -524,6 +545,8 @@ function buildAutocheckPrompt(params: {
   ];
 
   return [
+    REVIEW_INSTRUCTION,
+    "",
     "You are an independent plan reviewer.",
     "Question: Is this plan ready to execute?",
     "",
@@ -543,8 +566,6 @@ function buildAutocheckPrompt(params: {
     "```mermaid",
     mermaidDag,
     "```",
-    "",
-    REVIEW_INSTRUCTION,
   ].join("\n");
 }
 
@@ -596,17 +617,36 @@ async function runReviewerAttempt(params: {
   if (!command) {
     throw new Error("claude binary not found on PATH");
   }
+  const claudeSandbox =
+    params.backend === "claude_code"
+      ? buildClaudeCodeSandboxLaunchConfig({
+          workingDir: params.workingDir,
+          runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
+          purpose: "repo-chat",
+        })
+      : undefined;
+  const codexSandbox =
+    params.backend === "codex"
+      ? writeCodexNativeSandboxConfig({
+          workingDir: params.workingDir,
+          runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
+          purpose: "repo-chat",
+          sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
+        })
+      : undefined;
 
   const args =
     params.backend === "claude_code"
       ? buildClaudeReviewerArgs({
           prompt: params.prompt,
+          sandboxConfig: claudeSandbox!,
           sessionId: params.sessionId,
           model: params.model,
         })
       : buildCodexReviewerArgs({
           prompt: params.prompt,
           workingDir: params.workingDir,
+          sandboxConfig: codexSandbox!,
           sessionId: params.sessionId,
           model: params.model,
         });
@@ -644,7 +684,11 @@ async function runReviewerAttempt(params: {
     env:
       params.backend === "claude_code"
         ? buildClaudeCodeEnv(params.claudeCodeAuth)
-        : buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+        : {
+            ...buildCredentialStrippedEnv(process.env, { stripAuthKeys: true }),
+            CODEX_HOME: codexSandbox?.env.CODEX_HOME,
+            PATH: codexSandbox?.env.PATH,
+          },
   });
   redactTextArtifactIfExists(params.stdoutPath);
   redactTextArtifactIfExists(params.stderrPath);
