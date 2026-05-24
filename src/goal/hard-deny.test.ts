@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
-import { HARD_DENIES, checkCommandDeny, checkPathDeny } from "./hard-deny.js";
+import {
+  HARD_DENIES,
+  checkCommandDeny,
+  checkPathDeny,
+  renderGroupedHardDenies,
+} from "./hard-deny.js";
 
 describe("checkPathDeny", () => {
   it("includes every shared secret path pattern in HARD_DENIES", () => {
@@ -92,6 +97,49 @@ describe("checkPathDeny", () => {
   it("allows normal repo files", () => {
     for (const filePath of ["README.md", "SETUP.md", "AGENTS.md", "package.json"]) {
       expect(checkPathDeny(filePath)).toBeNull();
+    }
+  });
+});
+
+describe("renderGroupedHardDenies", () => {
+  it("groups repeated reasons under one heading without DENIED spam", () => {
+    const rendered = renderGroupedHardDenies(HARD_DENIES);
+
+    expect(rendered.startsWith("Hard Denies\n")).toBe(true);
+    expect(rendered).toContain(
+      "These are enforced by SmithersBot policy and, where available, backend sandbox settings.",
+    );
+    expect(rendered).toContain(
+      "Local secret/config files. Workers cannot read SmithersBot config; ask the user to relay any required value:",
+    );
+    expect(rendered).toContain("Elevated privileges not permitted:");
+    expect(rendered).toContain("Publishing/deployment not permitted:");
+    expect(rendered).toContain("Destructive commands not permitted:");
+    expect(rendered).not.toContain("DENIED:");
+
+    expect(rendered.match(/Elevated privileges not permitted:/g)).toHaveLength(1);
+    expect(rendered.match(/Publishing\/deployment not permitted:/g)).toHaveLength(1);
+    expect(rendered.match(/- sudo/g)).toHaveLength(1);
+    expect(rendered.match(/- npm publish/g)).toHaveLength(1);
+  });
+
+  it("renders policy coverage for sensitive, privileged, deployment, publish, and destructive categories", () => {
+    const rendered = renderGroupedHardDenies(HARD_DENIES);
+
+    for (const pattern of [
+      ".env",
+      "auth.json",
+      "~/.clawdbot-dev/**",
+      "~/.smithersbot/**",
+      "sudo",
+      "docker push",
+      "npm publish",
+      "gh release create",
+      "rm -rf /",
+      "mkfs",
+      "dd if=",
+    ]) {
+      expect(rendered).toContain(`- ${pattern}`);
     }
   });
 });

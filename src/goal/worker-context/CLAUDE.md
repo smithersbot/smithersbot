@@ -92,9 +92,8 @@ Do not ralph with the same approach — explain what went wrong and what to do d
   are NOT agent-visible. The repo-root `.env.example` is the safe variable-name
   contract — it must contain placeholder values only.
 - Agent-readable history lives under `<managed-root>/agent/history/` (goals and
-  repo-chats) as sanitized summaries. Raw stdout/stderr blobs and raw transcripts
-  are not mirrored there by default; if any worker output is included it has
-  passed through secret redaction and a size cap.
+  repo-chats). Redacted runtime artifacts are mirrored into agent history with
+  generous caps and an index.
 - Workers do NOT receive raw secrets in env by default. The standard
   `buildGoalWorkerEnv` flow strips provider credentials before launch.
 - `<managed-root>/private/env/<workspace-name>/.env` may only be loaded by trusted
@@ -121,6 +120,8 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 
 ## Security
 
+- The launch prompt begins with a grouped hard-deny section generated from
+  SmithersBot policy. Treat those entries as controlling instructions.
 - Never commit secrets, credentials, tokens, private keys, or live configuration values.
 - Use fake placeholders in tests and examples.
 - Do not edit sensitive files such as `.env*`, `*.pem`, `*.key`, `credentials*`, `.aws/**`, or `.ssh/**`.

@@ -34,6 +34,7 @@ import {
   WORKER_DYNAMIC_CONTEXT_HEADER,
   WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX,
 } from "./worker-context.js";
+import { renderGroupedHardDenies } from "./hard-deny.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
@@ -407,7 +408,6 @@ export async function executeTaskWithCliWorker(
     step,
     plan,
     goal,
-    hardDenies,
     completedSummaries,
     lessons,
     resumeAnswer,
@@ -782,7 +782,7 @@ export function buildCliWorkerPrompt(params: {
   step: PlanStep;
   plan: Plan;
   goal: string;
-  hardDenies: HardDeny[];
+  hardDenies?: HardDeny[];
   completedSummaries?: Array<{ id: string; summary: string }>;
   lessons?: Array<{ pattern: string; lesson: string }>;
   resumeAnswer?: string;
@@ -794,7 +794,6 @@ export function buildCliWorkerPrompt(params: {
     step,
     plan,
     goal,
-    hardDenies,
     completedSummaries,
     lessons,
     resumeAnswer,
@@ -866,12 +865,6 @@ export function buildCliWorkerPrompt(params: {
   }
   lines.push("");
 
-  lines.push("HARD DENIES (never do these):");
-  for (const deny of hardDenies) {
-    lines.push(`- ${deny.pattern}: ${deny.reason}`);
-  }
-  lines.push("");
-
   if (previousAttempt) {
     lines.push("PREVIOUS ATTEMPT FAILED:");
     lines.push(previousAttempt);
@@ -891,7 +884,15 @@ function buildPromptSection(title: string, content: string): string {
   return `${title}\n\n${content.trim()}`;
 }
 
-function buildCliPromptPayload(params: {
+function readDenyPromptContent(denyFilePath: string): string {
+  try {
+    return fs.readFileSync(denyFilePath, "utf8");
+  } catch {
+    return renderGroupedHardDenies();
+  }
+}
+
+export function buildCliPromptPayload(params: {
   backend: GoalBackendId;
   prompt: string;
   denyFilePath: string;
@@ -902,9 +903,10 @@ function buildCliPromptPayload(params: {
   appendedSystemPrompt?: string;
 } {
   const { backend, prompt, denyFilePath, projectConventions } = params;
+  const denyContent = readDenyPromptContent(denyFilePath);
 
   if (backend === "codex") {
-    const sections: string[] = [];
+    const sections: string[] = [denyContent.trim()];
     const trimmedProjectConventions = projectConventions?.trim();
     if (trimmedProjectConventions) {
       sections.push(buildPromptSection("## PROJECT CONVENTIONS", trimmedProjectConventions));
@@ -917,7 +919,6 @@ function buildCliPromptPayload(params: {
     return { promptArg, persistedPrompt: promptArg };
   }
 
-  const denyContent = fs.readFileSync(denyFilePath, "utf8");
   const appendedSystemPrompt = WORKER_CONTEXT ? `${denyContent}\n\n${WORKER_CONTEXT}` : denyContent;
   return {
     promptArg: prompt,
@@ -940,11 +941,7 @@ export function buildAllowedToolsList(): string[] {
 
 /** Build capability bounds text for --append-system-prompt, and write to disk for auditing. */
 export function writeDenyFile(hardDenies: HardDeny[], dir: string): string {
-  const lines: string[] = ["HARD DENIES (enforced):"];
-  for (const deny of hardDenies) {
-    lines.push(`- DENIED: ${deny.pattern} — ${deny.reason}`);
-  }
-  const content = lines.join("\n");
+  const content = renderGroupedHardDenies(hardDenies);
   // Write to disk for debugging/audit; the CLI gets the content inline.
   const filePath = path.join(dir, "capability-bounds.txt");
   fs.writeFileSync(filePath, content, "utf8");

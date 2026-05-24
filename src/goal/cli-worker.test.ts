@@ -14,6 +14,7 @@ import { runCliProcess } from "./cli-process.js";
 import {
   buildAllowedToolsList,
   buildCliArgs,
+  buildCliPromptPayload,
   buildGoalWorkerEnv,
   buildCliWorkerPrompt,
   executeTaskWithCliWorker,
@@ -662,7 +663,7 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--sandbox");
     });
 
-    it("prepends project conventions before worker context for codex workers", () => {
+    it("prepends hard denies, then project conventions before worker context for codex workers", () => {
       const args = buildCliArgs({
         backend: "codex",
         prompt: "do the task",
@@ -672,12 +673,14 @@ describe("cli-worker", () => {
       });
 
       const prompt = args[args.length - 1]!;
+      expect(prompt.startsWith("Hard Denies\n")).toBe(true);
       const conventionsHeader = "## PROJECT CONVENTIONS";
       const workerGuidelinesHeader = "## WORKER GUIDELINES";
       expect(prompt).toContain(conventionsHeader);
       expect(prompt).toContain(workerGuidelinesHeader);
       expect(prompt).toContain("----------------------------------------");
       expect(prompt).toContain("Use yarn test\nNo force-push");
+      expect(prompt.indexOf("Hard Denies")).toBeLessThan(prompt.indexOf(conventionsHeader));
       expect(prompt.indexOf(conventionsHeader)).toBeLessThan(prompt.indexOf(WORKER_CONTEXT));
       expect(prompt.indexOf(workerGuidelinesHeader)).toBeLessThan(prompt.indexOf(WORKER_CONTEXT));
       expect(prompt.indexOf(WORKER_CONTEXT)).toBeLessThan(prompt.indexOf("do the task"));
@@ -1333,7 +1336,8 @@ describe("cli-worker", () => {
       const promptArtifactPath = path.join(workerDir, "worker-prompt-3.txt");
       const artifact = fs.readFileSync(promptArtifactPath, "utf8");
       expect(artifact).toContain("## APPENDED SYSTEM PROMPT");
-      expect(artifact).toContain("HARD DENIES (enforced):");
+      expect(artifact).toContain("Hard Denies");
+      expect(artifact).not.toContain("DENIED:");
       expect(artifact).toContain(WORKER_CONTEXT);
       expect(artifact).toContain("## USER PROMPT");
       expect(artifact).toContain("YOUR TASK: Implement auth module");
@@ -1708,7 +1712,7 @@ describe("cli-worker", () => {
       return prompt.slice(0, index);
     }
 
-    it("includes hard deny list", () => {
+    it("keeps hard denies out of the dynamic task prompt", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep(),
         plan: makePlan(),
@@ -1716,8 +1720,9 @@ describe("cli-worker", () => {
         hardDenies: HARD_DENIES.slice(0, 2),
         resultPath: "/tmp/worker_result.json",
       });
-      expect(prompt).toContain("HARD DENIES");
-      expect(prompt).toContain(HARD_DENIES[0]!.pattern);
+      expect(prompt).not.toContain("Hard Denies");
+      expect(prompt).not.toContain("DENIED:");
+      expect(prompt).not.toContain(HARD_DENIES[0]!.pattern);
     });
 
     it("includes success criteria and constraints when provided", () => {
@@ -1878,7 +1883,6 @@ describe("cli-worker", () => {
       expect(stableWorkerPrefix(first)).toContain('"status": "ralph"');
       expect(stableWorkerPrefix(first)).toContain('"status": "blocked"');
       expect(stableWorkerPrefix(first)).toContain('"status": "failed"');
-      expect(stableWorkerPrefix(first)).toContain("Never read, print, summarize, or modify denied");
 
       expect(first).toContain("GOAL: Build alpha");
       expect(first).toContain("YOUR TASK: Implement alpha feature");
@@ -1928,13 +1932,55 @@ describe("cli-worker", () => {
   });
 
   describe("writeDenyFile", () => {
-    it("writes deny list to capability-bounds.txt", () => {
+    it("writes grouped deny list to capability-bounds.txt", () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-deny-"));
       const result = writeDenyFile(HARD_DENIES.slice(0, 1), dir);
       expect(result).toBe(path.join(dir, "capability-bounds.txt"));
       const content = fs.readFileSync(result, "utf8");
-      expect(content).toContain("HARD DENIES");
+      expect(content.startsWith("Hard Denies\n")).toBe(true);
       expect(content).toContain(HARD_DENIES[0]!.pattern);
+      expect(content).not.toContain("DENIED:");
+    });
+  });
+
+  describe("buildCliPromptPayload", () => {
+    it("starts Codex prompts with grouped hard denies before project conventions", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-payload-"));
+      const denyFilePath = writeDenyFile(HARD_DENIES, dir);
+      const payload = buildCliPromptPayload({
+        backend: "codex",
+        prompt: "DYNAMIC TASK CONTEXT:\nYOUR TASK: Test",
+        denyFilePath,
+        projectConventions: "Project rules",
+      });
+
+      expect(payload.promptArg.startsWith("Hard Denies\n")).toBe(true);
+      expect(payload.promptArg.indexOf("Hard Denies")).toBe(0);
+      expect(payload.promptArg.indexOf("## PROJECT CONVENTIONS")).toBeGreaterThan(
+        payload.promptArg.indexOf("Hard Denies"),
+      );
+      expect(payload.promptArg.indexOf("## WORKER GUIDELINES")).toBeGreaterThan(
+        payload.promptArg.indexOf("## PROJECT CONVENTIONS"),
+      );
+      expect(payload.promptArg.match(/Hard Denies/g)).toHaveLength(1);
+      expect(payload.promptArg).not.toContain("DENIED:");
+      expect(payload.promptArg).not.toContain("HARD DENIES (never do these):");
+    });
+
+    it("starts Claude appended system prompts with grouped hard denies", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-payload-"));
+      const denyFilePath = writeDenyFile(HARD_DENIES, dir);
+      const payload = buildCliPromptPayload({
+        backend: "claude_code",
+        prompt: "DYNAMIC TASK CONTEXT:\nYOUR TASK: Test",
+        denyFilePath,
+      });
+
+      expect(payload.appendedSystemPrompt?.startsWith("Hard Denies\n")).toBe(true);
+      expect(payload.appendedSystemPrompt).toContain(WORKER_CONTEXT);
+      expect(payload.appendedSystemPrompt?.match(/Hard Denies/g)).toHaveLength(1);
+      expect(payload.appendedSystemPrompt).not.toContain("DENIED:");
+      expect(payload.persistedPrompt).not.toContain("HARD DENIES (never do these):");
     });
   });
 

@@ -210,7 +210,8 @@ describe("src/prompts/ — worker context", () => {
       "<managed-root>/private/env/<workspace-name>/.env",
       ".env.example",
       "<managed-root>/agent/history/",
-      "sanitized summaries",
+      "Redacted runtime artifacts are mirrored into agent history with",
+      "generous caps and an index",
       "Workers do NOT receive raw secrets in env by default",
       "buildGoalWorkerEnv",
       "host-side commands (gateway-side flows)",
@@ -227,6 +228,15 @@ describe("src/prompts/ — worker context", () => {
     for (const needle of needles) {
       expect(WORKER_CONTEXT).toContain(needle);
     }
+  });
+
+  it("documents grouped hard-deny framing and redacted runtime history mirrors", () => {
+    expect(WORKER_CONTEXT).toContain("grouped hard-deny section generated from");
+    expect(WORKER_CONTEXT).toContain(
+      "Redacted runtime artifacts are mirrored into agent history with",
+    );
+    expect(WORKER_CONTEXT).not.toContain("Raw stdout/stderr blobs and raw transcripts");
+    expect(WORKER_CONTEXT).not.toContain("are not mirrored there by default");
   });
 });
 

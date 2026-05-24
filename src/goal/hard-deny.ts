@@ -73,6 +73,63 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "gh release create", reason: "Release creation not permitted", type: "command" },
 ];
 
+const HARD_DENY_ENFORCEMENT_LINE =
+  "These are enforced by SmithersBot policy and, where available, backend sandbox settings.";
+
+function hardDenyHeadingFor(deny: HardDeny): string {
+  if (deny.type === "path") {
+    return "Local secret/config files. Workers cannot read SmithersBot config; ask the user to relay any required value:";
+  }
+  if (deny.reason === "Elevated privileges not permitted") {
+    return "Elevated privileges not permitted:";
+  }
+  if (
+    deny.reason === "Publishing not permitted" ||
+    deny.reason === "Deployment not permitted" ||
+    deny.reason === "Release creation not permitted"
+  ) {
+    return "Publishing/deployment not permitted:";
+  }
+  if (
+    deny.reason === "Recursive root deletion not permitted" ||
+    deny.reason === "Filesystem formatting not permitted" ||
+    deny.reason === "Raw disk writes not permitted"
+  ) {
+    return "Destructive commands not permitted:";
+  }
+  return `${deny.reason}:`;
+}
+
+export function renderGroupedHardDenies(hardDenies: HardDenyList = HARD_DENIES): string {
+  const grouped = new Map<string, string[]>();
+  const seenByHeading = new Map<string, Set<string>>();
+
+  for (const deny of hardDenies) {
+    const heading = hardDenyHeadingFor(deny);
+    let patterns = grouped.get(heading);
+    if (!patterns) {
+      patterns = [];
+      grouped.set(heading, patterns);
+      seenByHeading.set(heading, new Set<string>());
+    }
+    const seen = seenByHeading.get(heading)!;
+    if (seen.has(deny.pattern)) continue;
+    seen.add(deny.pattern);
+    patterns.push(deny.pattern);
+  }
+
+  const lines = ["Hard Denies", HARD_DENY_ENFORCEMENT_LINE, ""];
+  for (const [heading, patterns] of grouped) {
+    lines.push(heading);
+    for (const pattern of patterns) {
+      lines.push(`- ${pattern}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/");
 }
