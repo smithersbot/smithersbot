@@ -1202,6 +1202,231 @@ describe("runPlanAutocheck", () => {
     });
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
   });
+
+  describe("reviewer session reuse (Stage 2U-C verification)", () => {
+    // Locks in the four reviewer-session-reuse guarantees documented on
+    // runPlanAutocheck: round 2+ resume the same backend-bound session; a
+    // backend switch never reuses an incompatible session id; plan revision
+    // preserves accumulated reviewer feedback; and launch/result/round history
+    // (with token usage) is recorded for every round.
+
+    it("resumes the SAME reviewer session id in round 2 for the same backend", async () => {
+      const firstPlan = makePlan("Reuse round 1", "1", "claude_code");
+      const revisedPlan = makePlan("Reuse round 2", "2", "claude_code");
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: claudeStdout({
+              decision: { approved: false, editInstructions: "Add an explicit verification step." },
+              sessionId: "reuse-session",
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }),
+        );
+      mockRunCliPlanRevision.mockResolvedValueOnce({ plan: revisedPlan });
+
+      const result = await runPlanAutocheck({
+        plan: firstPlan,
+        goalText: "Ship feature",
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-reuse-same-backend"),
+        commitRevision: vi.fn(),
+      });
+
+      expect(result).toMatchObject({
+        approved: true,
+        autocheckRounds: 1,
+        backend: "claude_code",
+        sessionId: "reuse-session",
+      });
+
+      // Round 1 starts fresh; round 2 resumes the exact session id from round 1.
+      const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+      const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
+      expect(firstArgs).not.toContain("--resume");
+      expect(secondArgs).toContain("--resume");
+      expect(secondArgs).toContain("reuse-session");
+    });
+
+    it("clears the session id on a cross-backend usage-limit fallback so it is not reused", async () => {
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: "",
+            stderr: "API 429: monthly usage limit reached. Resets at 3pm.",
+            exitCode: 1,
+          }),
+        )
+        .mockResolvedValueOnce(
+          // The fallback backend (codex) succeeds AND reports its own session id.
+          cliResult({
+            stdout: '{"session_id":"codex-fallback-session"}\nFinal: {"approved": true}\n',
+          }),
+        );
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("Backend switch clears session", "1", "claude_code"),
+        goalText: "Ship feature",
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-reuse-backend-switch"),
+        commitRevision: vi.fn(),
+      });
+
+      // Approval came from the fallback backend, so the claude-bound result must
+      // NOT carry codex's session id forward — it is cleared to avoid resuming an
+      // incompatible session in a later round/run.
+      expect(result.approved).toBe(true);
+      expect(result.backend).toBe("claude_code");
+      expect(result.sessionId).toBeUndefined();
+      expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+      expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+    });
+
+    it("does not reuse an incompatible stored session id when the backend changed", async () => {
+      mockRunCliProcess.mockResolvedValueOnce(
+        cliResult({
+          stdout: claudeStdout({ decision: { approved: true }, sessionId: "fresh-claude-session" }),
+        }),
+      );
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("Stored backend mismatch", "1", "claude_code"),
+        goalText: "Ship feature",
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-reuse-stored-mismatch"),
+        existingSessionId: "old-codex-session",
+        existingBackend: "codex",
+        commitRevision: vi.fn(),
+      });
+
+      expect(result.sessionId).toBe("fresh-claude-session");
+      const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+      expect(firstArgs).not.toContain("--resume");
+      expect(firstArgs).not.toContain("old-codex-session");
+    });
+
+    it("preserves and accumulates prior autocheck feedback across plan revisions", async () => {
+      const plan1 = makePlan("History plan 1", "1", "claude_code");
+      const plan2 = makePlan("History plan 2", "2", "claude_code");
+      const plan3 = makePlan("History plan 3", "3", "claude_code");
+      const plan4 = makePlan("History plan 4", "4", "claude_code");
+
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: claudeStdout({
+              decision: { approved: false, editInstructions: "Round 1: add file paths." },
+              sessionId: "history-session",
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: claudeStdout({
+              decision: { approved: false, editInstructions: "Round 2: fix dependency order." },
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: claudeStdout({
+              decision: { approved: false, editInstructions: "Round 3: add verification." },
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }),
+        );
+      mockRunCliPlanRevision
+        .mockResolvedValueOnce({ plan: plan2 })
+        .mockResolvedValueOnce({ plan: plan3 })
+        .mockResolvedValueOnce({ plan: plan4 });
+
+      await runPlanAutocheck({
+        plan: plan1,
+        goalText: "Ship feature",
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-reuse-history"),
+        commitRevision: vi.fn(),
+      });
+
+      // Prior feedback grows each revision and never drops earlier rounds.
+      expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(3);
+      const calls = mockRunCliPlanRevision.mock.calls.map(
+        (call) => (call[0] as { priorFeedback?: string[] }).priorFeedback,
+      );
+      expect(calls[0]).toEqual([]);
+      expect(calls[1]).toEqual(["Round 1: add file paths."]);
+      expect(calls[2]).toEqual(["Round 1: add file paths.", "Round 2: fix dependency order."]);
+    });
+
+    it("records launch/result/round history with token usage for EVERY round", async () => {
+      const runId = "run-reuse-per-round-history";
+      const revisedPlan = makePlan("Per-round revised", "2", "codex");
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: [
+              '{"session_id":"codex-tok-session"}',
+              '{"type":"token_count","token_count":{"input_tokens":11,"output_tokens":4,"total_tokens":15}}',
+              '{"approved":false,"editInstructions":"Tighten dependency ordering."}',
+            ].join("\n"),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: [
+              '{"type":"token_count","token_count":{"input_tokens":6,"output_tokens":3,"total_tokens":9}}',
+              '{"approved":true}',
+            ].join("\n"),
+          }),
+        );
+      mockRunCliPlanRevision.mockResolvedValueOnce({ plan: revisedPlan });
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("Per-round history", "1", "codex"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, runId),
+        commitRevision: vi.fn(),
+      });
+
+      expect(result).toMatchObject({ approved: true, autocheckRounds: 1, backend: "codex" });
+
+      // Round 2 resumed the round-1 session id.
+      const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
+      expect(secondArgs).toEqual(expect.arrayContaining(["exec", "resume", "codex-tok-session"]));
+
+      const events = readAutocheckHistoryEvents(runId, tmpDir);
+      const launchEvents = events.filter((event) => event.event === "launch");
+      const resultEvents = events.filter((event) => event.event === "result");
+      const roundEvents = events.filter((event) => event.event === "round");
+
+      // One launch + result + round event per round, tagged with the round number.
+      expect(launchEvents.map((event) => event.round)).toEqual([1, 2]);
+      expect(resultEvents.map((event) => event.round)).toEqual([1, 2]);
+      expect(roundEvents.map((event) => event.round)).toEqual([1, 2]);
+
+      // Token usage is captured per round.
+      expect(resultEvents[0]).toMatchObject({
+        status: "rejected",
+        tokenUsage: { available: true, totalTokens: 15, source: "codex-json" },
+      });
+      expect(resultEvents[1]).toMatchObject({
+        status: "approved",
+        tokenUsage: { available: true, totalTokens: 9, source: "codex-json" },
+      });
+      expect(roundEvents[0]).toMatchObject({ status: "revision_committed" });
+      expect(roundEvents[1]).toMatchObject({ status: "approved" });
+    });
+  });
 });
 
 describe("Stage 2Q — plan-autocheck reviewer instruction", () => {

@@ -849,6 +849,25 @@ function clampMaxRounds(value: number | undefined): number {
   return Math.trunc(value);
 }
 
+/**
+ * Run the plan reviewer in up to `maxRounds` revision rounds.
+ *
+ * Reviewer session reuse semantics (verified by plan-autocheck.test.ts):
+ * - SESSION REUSE: the reviewer session id returned by a round is carried into
+ *   the next round and resumed (`--resume`/`exec resume`) so round 2+ continue
+ *   the same conversation instead of starting fresh. `existingSessionId` lets a
+ *   resumed run continue a session created before a restart.
+ * - BACKEND-BOUND: a session id is only reused when its backend matches the
+ *   current `mode`. A backend switch (stored `existingBackend` !== `mode`, or a
+ *   cross-backend usage-limit fallback) clears the incompatible session id and
+ *   starts fresh, recording a context note rather than resuming.
+ * - HISTORY PRESERVED ACROSS REVISIONS: `feedbackHistory` accumulates each
+ *   round's edit instructions and is forwarded to the planner revision as
+ *   `priorFeedback` (earlier rounds only), so a revision never discards prior
+ *   autocheck feedback.
+ * - PER-ROUND INSTRUMENTATION: every reviewer attempt records launch + result
+ *   agent-history events (with token usage) and a per-round `round` event.
+ */
 export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<PlanAutocheckResult> {
   const maxRounds = clampMaxRounds(params.maxRounds);
   const timeoutMs = params.timeoutMs ?? DEFAULT_AUTOCHECK_TIMEOUT_MS;
