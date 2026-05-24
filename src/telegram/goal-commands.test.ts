@@ -3722,6 +3722,7 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         resolvedThreadId: undefined,
         senderId: "42",
+        commandName: "new_goal",
       });
       await commandFragmentBuffer.cancelAndFlush(key);
 
@@ -3756,6 +3757,7 @@ describe("goal-commands telegram adapter", () => {
         chatId: 42,
         resolvedThreadId: undefined,
         senderId: "42",
+        commandName: "new_goal",
       });
       await commandFragmentBuffer.cancelAndFlush(key);
 

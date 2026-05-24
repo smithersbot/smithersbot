@@ -209,14 +209,16 @@ describe("command-fragments", () => {
         chatId: 42,
         resolvedThreadId: undefined,
         senderId: "7",
+        commandName: "new_goal",
       });
       const key2 = buildCommandFragmentKey({
         accountId: "default",
         chatId: 42,
         resolvedThreadId: undefined,
         senderId: "7",
+        commandName: "new_goal",
       });
-      expect(key1).toBe("cmd:42:main:7");
+      expect(key1).toBe("cmd:default:42:main:7:new_goal:run:none:reply:none");
       expect(key1).toBe(key2);
     });
 
@@ -237,14 +239,39 @@ describe("command-fragments", () => {
         text: "hello",
       });
 
-      const dmKey = buildCommandFragmentKey(normalizeCommandFragmentParams(dmMessage, "default"));
-      const forumKey = buildCommandFragmentKey(
-        normalizeCommandFragmentParams(forumMessage, "default"),
-      );
+      const dmKey = buildCommandFragmentKey({
+        ...normalizeCommandFragmentParams(dmMessage, "default"),
+        commandName: "new_goal",
+      });
+      const forumKey = buildCommandFragmentKey({
+        ...normalizeCommandFragmentParams(forumMessage, "default"),
+        commandName: "new_goal",
+      });
 
-      expect(dmKey).toBe("cmd:777:main:7");
-      expect(forumKey).toBe("cmd:777:12:7");
+      expect(dmKey).toBe("cmd:default:777:main:7:new_goal:run:none:reply:none");
+      expect(forumKey).toBe("cmd:default:777:12:7:new_goal:run:none:reply:none");
       expect(dmKey).not.toBe(forumKey);
+    });
+
+    it("separates surfaces, goals, reply prompts, accounts, and senders", () => {
+      const base = {
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: 10,
+        senderId: "7",
+        commandName: "goal_feedback" as const,
+        runId: "run-a",
+        replyToMessageId: 100,
+      };
+      const key = buildCommandFragmentKey(base);
+
+      expect(buildCommandFragmentKey({ ...base, commandName: "new_goal" })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, runId: "run-b" })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, replyToMessageId: 101 })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, accountId: "other" })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, senderId: "8" })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, chatId: 43 })).not.toBe(key);
+      expect(buildCommandFragmentKey({ ...base, resolvedThreadId: 11 })).not.toBe(key);
     });
   });
 
@@ -895,6 +922,72 @@ describe("command-fragments", () => {
         }),
       );
       expect(runRepoChatWorkerMock).not.toHaveBeenCalled();
+    });
+
+    it("combines the live /new_goal G9 continuation regression without prompting", async () => {
+      vi.useFakeTimers();
+      const { createTelegramBot } = await import("./bot.js");
+      createTelegramBot({ token: "tok", config: buildConfig("codex") as never });
+
+      const messageHandler = getOnHandler("message");
+      const newGoalHandler = getCommandHandler("new_goal");
+      const part1 = [
+        "Fix repo-wide test hygiene quick wins.",
+        "G1: pass lint.",
+        "G2: remove stale mocks.",
+        "G3: stabilize timers.",
+        "G4: tighten assertions.",
+        "G5: update reports.",
+        "G6: keep scope narrow.",
+        "G7: avoid source churn.",
+        "G8: verify focused slices.",
+      ].join("\n");
+      const part2 = [
+        "G9: canvas-host fs.watch reload timeout",
+        "G10: repo-chat continuation coverage",
+        "Report: document the changes.",
+        "Verification: run focused tests, typecheck, build, and lint.",
+        "Out of scope: gateway restart and backend fallback changes.",
+      ].join("\n");
+
+      await newGoalHandler({
+        match: part1,
+        message: makeTelegramMessage({
+          messageId: 610,
+          text: `/new_goal ${part1}`,
+        }),
+      });
+
+      expect(goalCommandMock).not.toHaveBeenCalled();
+      expect(sendMessageSpy.mock.calls.some((call) => call[1] === "Right away, sir.")).toBe(false);
+
+      await messageHandler({
+        message: makeTelegramMessage({
+          messageId: 611,
+          text: part2,
+        }),
+        me: { username: "moltbot_bot" },
+        getFile: async () => ({}),
+      });
+
+      expect(
+        sendMessageSpy.mock.calls.some((call) =>
+          String(call[1]).includes("This looks like more text for /new_goal"),
+        ),
+      ).toBe(false);
+      expect(goalCommandMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+      await waitForAssertion(() => {
+        expect(goalCommandMock).toHaveBeenCalledTimes(1);
+      });
+      const goal = String(goalCommandMock.mock.calls[0]?.[0]?.goal);
+      expect(goal).toContain("G9: canvas-host fs.watch reload timeout");
+      expect(goal).toContain("G10: repo-chat continuation coverage");
+      expect(goal).toContain("Report: document the changes.");
+      expect(goal).toContain("Verification: run focused tests, typecheck, build, and lint.");
+      expect(goal).toContain("Out of scope: gateway restart and backend fallback changes.");
     });
 
     it("combines split /repo_chat into one request and preserves disabled-backend reply", async () => {

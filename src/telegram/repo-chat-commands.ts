@@ -459,7 +459,11 @@ export function registerTelegramRepoChatCommands({
     const msg = ctx.message;
     if (msg && commandFragmentBuffer && prompt) {
       const normalized = normalizeCommandFragmentParams(msg, accountId);
-      const key = buildCommandFragmentKey(normalized);
+      const key = buildCommandFragmentKey({
+        ...normalized,
+        commandName: "repo_chat",
+        replyToMessageId: resolved.replyToMessageId,
+      });
       const nowMs = Date.now();
       if (commandFragmentBuffer.getPendingCommandName(key) === "repo_chat") {
         const appended = commandFragmentBuffer.tryAppend(key, msg.message_id, prompt, nowMs);

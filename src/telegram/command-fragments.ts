@@ -17,14 +17,22 @@ export const COMMAND_ANCHOR_TTL_MS = 60000;
 export const COMMAND_ANCHOR_MIN_TTL_MS = 10000;
 export const COMMAND_ANCHOR_MAX_TTL_MS = 60000;
 
-export type CommandFragmentCommandName = "new_goal" | "repo_chat";
+export type CommandFragmentCommandName = "new_goal" | "repo_chat" | "goal_feedback";
 
 export type CommandFragmentKeyParams = {
   accountId: string;
   chatId: string | number;
   resolvedThreadId: number | undefined;
   senderId: string;
+  commandName: CommandFragmentCommandName;
+  runId?: string;
+  replyToMessageId?: number;
 };
+
+export type NormalizedCommandFragmentParams = Omit<
+  CommandFragmentKeyParams,
+  "commandName" | "runId" | "replyToMessageId"
+>;
 
 export type CommandFragmentDispatchMetadata = {
   chatId: number;
@@ -70,13 +78,24 @@ type CommandFragmentDebugLogger = {
 };
 
 export function buildCommandFragmentKey(params: CommandFragmentKeyParams): string {
-  return `cmd:${params.chatId}:${params.resolvedThreadId ?? "main"}:${params.senderId}`;
+  const runPart = params.runId?.trim() ? params.runId.trim() : "none";
+  const replyPart = params.replyToMessageId != null ? String(params.replyToMessageId) : "none";
+  return [
+    "cmd",
+    params.accountId,
+    params.chatId,
+    params.resolvedThreadId ?? "main",
+    params.senderId,
+    params.commandName,
+    `run:${runPart}`,
+    `reply:${replyPart}`,
+  ].join(":");
 }
 
 export function normalizeCommandFragmentParams(
   msg: TelegramMessage,
   accountId: string,
-): CommandFragmentKeyParams {
+): NormalizedCommandFragmentParams {
   const chatId = msg.chat.id;
   const isForum = (msg.chat as { is_forum?: boolean }).is_forum === true;
   const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;

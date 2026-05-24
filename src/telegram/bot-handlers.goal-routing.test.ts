@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mockRuns = vi.hoisted(() => [] as SerializedRun[]);
 const mockHandleGoalEdit = vi.hoisted(() => vi.fn());
@@ -27,6 +27,7 @@ vi.mock("./goal-commands.js", async (importOriginal) => {
 import { handleTelegramGoalRouting, registerTelegramHandlers } from "./bot-handlers.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import type { SerializedRun } from "../goal/types.js";
+import { COMMAND_FRAGMENT_MAX_GAP_MS, CommandFragmentBuffer } from "./command-fragments.js";
 
 const now = new Date().toISOString();
 
@@ -513,7 +514,7 @@ describe("handleTelegramGoalRouting", () => {
 });
 
 describe("registerTelegramHandlers goal-router reply threading", () => {
-  function makeBotHarness() {
+  function makeBotHarness(options: { commandFragmentBuffer?: CommandFragmentBuffer } = {}) {
     mockHandleGoalEdit.mockReset();
     mockHandleGoalAnswer.mockReset();
     mockHandleGoalFeedback.mockReset();
@@ -556,7 +557,7 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
         info: vi.fn(),
         warn: vi.fn(),
       } as never,
-      commandFragmentBuffer: undefined,
+      commandFragmentBuffer: options.commandFragmentBuffer,
     });
 
     const messageHandler = messageHandlers.get("message");
@@ -564,6 +565,10 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     if (!messageHandler) throw new Error("Expected message handler");
     return { bot, messageHandler };
   }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   async function routeText(params: {
     text: string;
@@ -694,5 +699,60 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
         if (lock.acquired) lock.release();
       }
     }
+  });
+
+  it("buffers split feedback replies before acquiring the feedback lock", async () => {
+    vi.useFakeTimers();
+    mockHandleGoalFeedback.mockResolvedValue("Feedback incorporated");
+    const run = makeRun({
+      runId: "feedback-run",
+      state: "done",
+      telegramFeedbackPromptMessages: [{ chatId: 42, messageId: 430 }],
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Fix G9 and ",
+        message_id: 801,
+        reply_to_message: { message_id: 430 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    expect(mockHandleGoalFeedback).not.toHaveBeenCalled();
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "FULL_MULTIMESSAGE_FEEDBACK_SENTINEL_20260524_G9_G10_REPO_CHAT_GOAL_ANSWER_ADD_DETAILS",
+        message_id: 802,
+        reply_to_message: { message_id: 430 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(
+      harness.bot.api.sendMessage.mock.calls.some((call) =>
+        String(call[1]).includes("Already being processed"),
+      ),
+    ).toBe(false);
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 1050);
+
+    await vi.waitFor(() => {
+      expect(mockHandleGoalFeedback).toHaveBeenCalledTimes(1);
+    });
+    expect(mockHandleGoalFeedback.mock.calls[0]?.[1]).toContain(
+      "FULL_MULTIMESSAGE_FEEDBACK_SENTINEL_20260524_G9_G10_REPO_CHAT_GOAL_ANSWER_ADD_DETAILS",
+    );
   });
 });
