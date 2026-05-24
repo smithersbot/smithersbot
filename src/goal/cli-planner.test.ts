@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
 import {
+  buildCachedScoutSummary,
   CLAUDE_ALLOWED_TOOLS,
   runCliPlanning,
   runCliPlanRevision,
@@ -414,6 +415,107 @@ describe("runCliPlanning", () => {
     expect(procCall.args).not.toContain("--dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--allow-dangerously-skip-permissions");
     expect(procCall.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
+
+  it("replans with compact cached scout context without rerunning the scout template", async () => {
+    const runId = "run-cached-scout-replan";
+    const scoutDir = path.join(goalsDir, runId, "scout");
+    writeScoutArtifacts(scoutDir, runId);
+    const scoutData = {
+      status: "success" as const,
+      report: {
+        goal_id: runId,
+        nodes: [
+          {
+            id: "analyze-repo",
+            type: "Impl",
+            objective: "Analyze repository structure",
+            verification: "pnpm vitest run src/goal/cli-planner.test.ts",
+            effort: 2,
+            risk: 1,
+            uncertainty: 1,
+          },
+        ],
+        edges: [],
+      },
+      planDraft: fs.readFileSync(path.join(scoutDir, "plan_draft.md"), "utf8"),
+    };
+
+    mockRunCliProcess.mockResolvedValueOnce({
+      stdout: JSON.stringify({
+        summary: "Cached scout replan summary",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "analyze-repo",
+            description: "Use cached scout facts and verify with focused tests",
+            dependsOn: [],
+            durationMinutes: 20,
+            backend: "codex",
+          },
+        ],
+      }),
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 50,
+    });
+
+    const result = await runCliPlanning({
+      runId,
+      goalText: "Replan from cached scout",
+      goalsDir,
+      scoutData,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.scoutStatus).toBe("success");
+    expect(result.scoutData).toEqual(scoutData);
+    expect(fs.existsSync(path.join(scoutDir, "scout_report.json"))).toBe(true);
+    expect(fs.existsSync(path.join(scoutDir, "plan_draft.md"))).toBe(true);
+    expect(fs.existsSync(path.join(scoutDir, "node_specs", "analyze-repo.md"))).toBe(true);
+
+    const planningCall = mockRunCliProcess.mock.calls[0]?.[0] as { stdin: string };
+    expect(planningCall.stdin).toContain("## Replan With Cached Scout Context");
+    expect(planningCall.stdin).toContain("## Cached Scout Context");
+    expect(planningCall.stdin).toContain("agent/history/goals/");
+    expect(planningCall.stdin).toContain("Do not run a fresh scout by default");
+    expect(planningCall.stdin).not.toContain("## Conceptual Planning Phases");
+    expect(planningCall.stdin).not.toContain("### Scout Phase");
+    expect(planningCall.stdin).not.toContain("BEGIN_SCOUT_PROMPT");
+  });
+
+  it("builds a compact cached scout summary with artifact references", () => {
+    const summary = buildCachedScoutSummary({
+      runId: "run-summary",
+      cwd: "/tmp/workspaces/smithersbot/repo",
+      scoutDir: "/tmp/goals/run-summary/scout",
+      scoutData: {
+        status: "success",
+        report: {
+          goal_id: "run-summary",
+          nodes: [
+            {
+              id: "step-one",
+              type: "Impl",
+              objective: "Touch concrete files",
+              verification: "pnpm vitest run src/example.test.ts",
+              effort: 1,
+              risk: 2,
+              uncertainty: 3,
+            },
+          ],
+          edges: [{ from: "step-one", to: "step-two", why: "dependency" }],
+        },
+        planDraft: "BEGIN_PLAN_DRAFT\nGOAL_ID: run-summary\nEND_PLAN_DRAFT",
+      },
+    });
+
+    expect(summary).toContain("## Cached Scout Context");
+    expect(summary).toContain("agent/history/goals/repo/run-summary/runtime/scout");
+    expect(summary).toContain("step-one (Impl)");
+    expect(summary).toContain("step-one -> step-two: dependency");
   });
 
   it("writes agent-visible launch and prompt history before planner spawn and captures tokens", async () => {

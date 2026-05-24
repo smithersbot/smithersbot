@@ -95,6 +95,62 @@ Goal: ${params.goalText}
 Current workspace path: ${params.cwd}`;
 }
 
+function truncateForPrompt(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const headChars = Math.floor(maxChars * 0.65);
+  const tailChars = Math.max(0, maxChars - headChars);
+  return `${text.slice(0, headChars)}\n\n[...truncated cached scout draft...]\n\n${text.slice(
+    -tailChars,
+  )}`;
+}
+
+export function buildCachedScoutSummary(params: {
+  runId: string;
+  cwd: string;
+  scoutDir: string;
+  scoutData: Extract<ScoutResult, { status: "success" }>;
+}): string {
+  const { runId, cwd, scoutDir, scoutData } = params;
+  const workspaceName = workspaceNameFromWorkingDir(cwd);
+  const runtimeMirrorBase = `<managed-root>/agent/history/goals/${workspaceName}/${runId}/runtime/scout`;
+  const nodes = scoutData.report.nodes.map((node) =>
+    [
+      `- ${node.id} (${node.type})`,
+      `  objective: ${node.objective}`,
+      `  verification: ${node.verification}`,
+      `  effort/risk/uncertainty: ${node.effort}/${node.risk}/${node.uncertainty}`,
+    ].join("\n"),
+  );
+  const edges =
+    scoutData.report.edges.length > 0
+      ? scoutData.report.edges.map((edge) => `- ${edge.from} -> ${edge.to}: ${edge.why}`)
+      : ["- none"];
+
+  return [
+    "## Cached Scout Context",
+    "",
+    "Use this compact scout context from the previous successful scout. Do not run a fresh scout by default; a fresh-rescout command path is deferred.",
+    "",
+    "Artifact references:",
+    `- Runtime scout directory: ${scoutDir}`,
+    `- Agent-history mirror: ${runtimeMirrorBase}/`,
+    `- Scout report: ${runtimeMirrorBase}/${SCOUT_REPORT_FILE}`,
+    `- Plan draft: ${runtimeMirrorBase}/${SCOUT_PLAN_DRAFT_FILE}`,
+    `- Node specs: ${runtimeMirrorBase}/${SCOUT_NODE_SPECS_DIR}/`,
+    "",
+    `Scout goal id: ${scoutData.report.goal_id}`,
+    "",
+    "Scout nodes:",
+    ...nodes,
+    "",
+    "Scout edges:",
+    ...edges,
+    "",
+    "Cached plan draft excerpt:",
+    truncateForPrompt(scoutData.planDraft, 6_000),
+  ].join("\n");
+}
+
 export type CliPlanningParams = {
   runId: string;
   goalText: string;
@@ -108,6 +164,8 @@ export type CliPlanningParams = {
   enabledWorkers?: CliWorkerId[];
   /** Preserve legacy --no-scout semantics by skipping scout artifact generation. */
   includeScoutArtifacts?: boolean;
+  /** Reuse successful scout artifacts loaded from an earlier planning attempt. */
+  scoutData?: Extract<ScoutResult, { status: "success" }>;
   /** Optional cancellation signal for planner process and transient-overload backoff. */
   abortSignal?: AbortSignal;
 };
@@ -399,14 +457,36 @@ function buildPlanningPrompt(params: {
   scoutDir: string;
   includeScoutArtifacts: boolean;
   enabledWorkers: CliWorkerId[];
+  scoutData?: Extract<ScoutResult, { status: "success" }>;
 }): string {
-  const { runId, goalText, cwd, scoutDir, includeScoutArtifacts, enabledWorkers } = params;
+  const { runId, goalText, cwd, scoutDir, includeScoutArtifacts, enabledWorkers, scoutData } =
+    params;
   if (!includeScoutArtifacts) {
     return buildPlanOnlyPrompt({
       goalText,
       cwd,
       enabledWorkers,
     });
+  }
+
+  if (scoutData) {
+    return [
+      buildPlanSystemPrompt(enabledWorkers),
+      "",
+      "## Replan With Cached Scout Context",
+      "",
+      `Goal: ${goalText}`,
+      `Current workspace path: ${cwd}`,
+      "",
+      buildCachedScoutSummary({ runId, cwd, scoutDir, scoutData }),
+      "",
+      "## Replan Instructions",
+      "- Consume the cached scout facts and artifact references above.",
+      "- Do not rerun the Scout Phase or recreate scout artifacts during normal /goal_resume --replan.",
+      `- Write the revised execution plan to ${path.join(scoutDir, EXECUTION_PLAN_FILE)} and print that same JSON object as final stdout.`,
+      "- Preserve the scout DAG/dependency structure unless the plan-quality rubric requires correction.",
+      "- Respond ONLY with a JSON object matching the schema above.",
+    ].join("\n");
   }
 
   const templatePath = resolveScoutTemplatePath();
@@ -482,6 +562,17 @@ function clearStalePlanningArtifacts(scoutDir: string): void {
     fs.rmSync(path.join(scoutDir, artifact), { force: true });
   }
   fs.rmSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true, force: true });
+}
+
+function clearStaleReplanArtifacts(scoutDir: string): void {
+  const staleSingleFileArtifacts = [
+    SCOUT_NEEDS_CLARIFICATION_FILE,
+    EXECUTION_PLAN_FILE,
+    PLANNER_RAW_OUTPUT_FILE,
+  ];
+  for (const artifact of staleSingleFileArtifacts) {
+    fs.rmSync(path.join(scoutDir, artifact), { force: true });
+  }
 }
 
 function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
@@ -914,6 +1005,7 @@ export async function runCliPlanRevision(
 export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlanningResult> {
   const { runId, goalText, goalsDir } = params;
   const includeScoutArtifacts = params.includeScoutArtifacts !== false;
+  const cachedScoutData = includeScoutArtifacts ? params.scoutData : undefined;
   const timeout = params.timeoutMs ?? DEFAULT_PLANNING_TIMEOUT_MS;
   const plannerCwd = params.cwd ?? process.cwd();
 
@@ -923,11 +1015,16 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   const scoutDir = resolveScoutDir(runId, goalsDir);
   fs.mkdirSync(scoutDir, { recursive: true });
-  clearStalePlanningArtifacts(scoutDir);
-  if (includeScoutArtifacts) {
+  if (cachedScoutData) {
+    clearStaleReplanArtifacts(scoutDir);
+  } else {
+    clearStalePlanningArtifacts(scoutDir);
+  }
+  if (includeScoutArtifacts && !cachedScoutData) {
     fs.mkdirSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
   }
-  const codexScoutDir = includeScoutArtifacts ? resolveCodexScoutDir(runId) : undefined;
+  const codexScoutDir =
+    includeScoutArtifacts && !cachedScoutData ? resolveCodexScoutDir(runId) : undefined;
   if (codexScoutDir) {
     fs.rmSync(codexScoutDir, { recursive: true, force: true });
     fs.mkdirSync(path.join(codexScoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
@@ -940,6 +1037,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     scoutDir,
     includeScoutArtifacts,
     enabledWorkers: plannerBackends,
+    ...(cachedScoutData ? { scoutData: cachedScoutData } : {}),
   });
   const codexPrompt =
     codexScoutDir == null
@@ -951,6 +1049,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
           scoutDir: codexScoutDir,
           includeScoutArtifacts,
           enabledWorkers: plannerBackends,
+          ...(cachedScoutData ? { scoutData: cachedScoutData } : {}),
         });
   fs.writeFileSync(path.join(scoutDir, PLANNING_BRIEF_FILE), claudePrompt, "utf8");
 
@@ -1197,7 +1296,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   let scoutStatus: CliPlanningResult["scoutStatus"] = "skipped";
   let scoutSkipReason: string | undefined;
 
-  if (includeScoutArtifacts) {
+  if (cachedScoutData) {
+    scoutData = cachedScoutData;
+    scoutStatus = "success";
+  } else if (includeScoutArtifacts) {
     const scoutResult = validateScoutOutput(scoutDir);
 
     if (scoutResult.status === "error") {

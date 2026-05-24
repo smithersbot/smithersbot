@@ -353,6 +353,7 @@ async function retryPlanning(
             ? { enabledWorkers: opts.config.goal.enabledWorkers }
             : {}),
           includeScoutArtifacts,
+          ...(includeScoutArtifacts && scoutData ? { scoutData } : {}),
         });
       } finally {
         progress.done();

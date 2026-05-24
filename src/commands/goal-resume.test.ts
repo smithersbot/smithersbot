@@ -1470,6 +1470,17 @@ describe("goal-resume command", () => {
       await goalResumeCommand(runId, { replan: true }, rt);
 
       expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+      expect(mockRunCliPlanning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          includeScoutArtifacts: true,
+          scoutData: {
+            status: "success",
+            report: { goal_id: "g", nodes: [], edges: [] },
+            planDraft: "canonical plan draft",
+          },
+        }),
+      );
     });
 
     it("falls back to legacy scout artifact names when replanning", async () => {
@@ -1496,6 +1507,17 @@ describe("goal-resume command", () => {
       await goalResumeCommand(runId, { replan: true }, rt);
 
       expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+      expect(mockRunCliPlanning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          includeScoutArtifacts: true,
+          scoutData: {
+            status: "success",
+            report: { goal_id: "g", nodes: [], edges: [] },
+            planDraft: "legacy plan draft",
+          },
+        }),
+      );
     });
 
     it("falls back to legacy scout artifacts when canonical artifacts are incomplete", async () => {
@@ -1531,6 +1553,17 @@ describe("goal-resume command", () => {
       await goalResumeCommand(runId, { replan: true }, rt);
 
       expect(rt.logs.join("\n")).toContain("Replanning with cached scout data...");
+      expect(mockRunCliPlanning).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId,
+          includeScoutArtifacts: true,
+          scoutData: {
+            status: "success",
+            report: { goal_id: "g", nodes: [], edges: [] },
+            planDraft: "legacy fallback draft",
+          },
+        }),
+      );
     });
 
     it("preserves --no-scout mode on replanning", async () => {
@@ -1576,6 +1609,7 @@ describe("goal-resume command", () => {
         claudeCodeAuth: "subscription",
         includeScoutArtifacts: false,
       });
+      expect(mockRunCliPlanning.mock.calls[0]?.[0]).not.toHaveProperty("scoutData");
       expect(rt.logs.join("\n")).toContain("Replanning (--no-scout mode)...");
     });
   });
