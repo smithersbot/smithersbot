@@ -16,14 +16,10 @@
 //     deny matrices (private env, repo .env*, symlink escape, auth/session
 //     paths) are proven by src/goal/backend-sandbox.test.ts; the live OS-level
 //     bubblewrap proof is env-gated (see captureLiveSandboxProofStatus).
-//   - scout/planner, plan-autocheck, lessons, and manual-tests spawn the backend
-//     with credential-stripped env
-//     (buildCredentialStrippedEnv / buildClaudeCodeEnv from
-//     src/goal/claude-code-env.ts) but DO NOT use the shared native sandbox
-//     helper: Codex gets its coarse built-in `--sandbox read-only` /
-//     `workspace-write` flag (which restricts writes but does not enforce the
-//     proven .env/auth deny matrix) and Claude gets no native sandbox settings
-//     at all. They are classified credential-stripped-native-sandbox-opt-out.
+//   - Stage 2U-E moved scout/planner, plan-autocheck, lessons, and manual-tests
+//     CLI backends onto the same shared helper with read-only or narrow
+//     workspace-safe write profiles. They are now classified
+//     shared-native-sandbox-helper-proven for their Codex/Claude CLI paths.
 //
 // This module performs NO sandbox-policy changes; it only classifies. It never
 // reads or prints private env/auth/session contents.
@@ -202,15 +198,15 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
         "Combined scout+planner. runCliPlanning/runCliPlanRevision spawn the backend " +
         "to produce/revise the plan.",
       backends: {
-        codex: optOutBackend(
+        codex: nativeHelperBackend(
           "codex",
-          "src/goal/cli-planner.ts buildCodexPlanningArgs (`--sandbox workspace-write`, net.allowed=true) + buildCredentialStrippedEnv(stripAuthKeys)",
-          "Codex exec `--sandbox workspace-write`, credential-stripped env",
+          "src/goal/cli-planner.ts writeCodexNativeSandboxConfig(purpose=repo-chat, extraWritablePaths=scout temp dir) + mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv)",
+          "Codex native permission-profile sandbox via shared helper; repo read-only, scout temp dir write-only when artifacts are enabled",
         ),
-        claude_code: optOutBackend(
+        claude_code: nativeHelperBackend(
           "claude_code",
-          "src/goal/cli-planner.ts runCliPlanning + buildClaudeCodeEnv(authMode)",
-          "Claude print mode, credential + subscription-auth stripped env, no native sandbox",
+          "src/goal/cli-planner.ts buildClaudeCodeSandboxLaunchConfig(purpose=repo-chat, extraWritablePaths=scoutDir) + buildClaudeCodeEnv",
+          "Claude Code native fail-closed sandbox settings via shared helper; repo read-only, scout dir write-only when artifacts are enabled",
         ),
       },
     },
@@ -220,15 +216,15 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
       sourceFile: "src/goal/plan-autocheck.ts",
       description: "Plan autocheck/checker/review rounds. runPlanAutocheck spawns the backend.",
       backends: {
-        codex: optOutBackend(
+        codex: nativeHelperBackend(
           "codex",
-          "src/goal/plan-autocheck.ts (`--json --color never --sandbox read-only`) + buildCredentialStrippedEnv(stripAuthKeys)",
-          "Codex exec `--sandbox read-only` (no writes), credential-stripped env",
+          "src/goal/plan-autocheck.ts writeCodexNativeSandboxConfig(purpose=repo-chat) + mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv)",
+          "Codex native permission-profile sandbox (read-only fresh launch) via shared helper; resume remains session-bound",
         ),
-        claude_code: optOutBackend(
+        claude_code: nativeHelperBackend(
           "claude_code",
-          "src/goal/plan-autocheck.ts + buildClaudeCodeEnv(claudeCodeAuth)",
-          "Claude print mode, credential + subscription-auth stripped env, no native sandbox",
+          "src/goal/plan-autocheck.ts buildClaudeCodeSandboxLaunchConfig(purpose=repo-chat) + buildClaudeCodeEnv",
+          "Claude Code native fail-closed sandbox settings (read-only) via shared helper",
         ),
       },
     },
@@ -280,15 +276,15 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
         "Manual-test suggestion generation. Spawns a CLI backend, or uses an in-process " +
         "GoalLlmClient.complete() API path (no filesystem-executing subprocess).",
       backends: {
-        codex: optOutBackend(
+        codex: nativeHelperBackend(
           "codex",
-          "src/goal/manual-tests.ts (`--sandbox`) + buildCredentialStrippedEnv",
-          "Codex exec `--sandbox`, credential-stripped env (or GoalLlmClient API path, no FS)",
+          "src/goal/manual-tests.ts writeCodexNativeSandboxConfig(purpose=repo-chat, requiresNetwork=true) + mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv)",
+          "Codex native permission-profile sandbox (read-only CLI path, model network enabled) via shared helper; GoalLlmClient API path does not spawn a filesystem-executing subprocess",
         ),
-        claude_code: optOutBackend(
+        claude_code: nativeHelperBackend(
           "claude_code",
-          "src/goal/manual-tests.ts + buildClaudeCodeEnv(subscription)",
-          "Claude print mode, subscription-auth stripped env, no native sandbox (or GoalLlmClient API path)",
+          "src/goal/manual-tests.ts buildClaudeCodeSandboxLaunchConfig(purpose=repo-chat) + buildClaudeCodeEnv",
+          "Claude Code native fail-closed sandbox settings (read-only CLI path) via shared helper; GoalLlmClient API path does not spawn a filesystem-executing subprocess",
         ),
       },
     },
@@ -299,15 +295,15 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
       description:
         "Lessons extraction. runClaudeLessonExtraction / runCodexLessonExtraction spawn the backend.",
       backends: {
-        codex: optOutBackend(
+        codex: nativeHelperBackend(
           "codex",
-          "src/goal/lessons.ts runCodexLessonExtraction (`--sandbox read-only`) + buildCredentialStrippedEnv(stripAuthKeys)",
-          "Codex exec `--sandbox read-only`, credential-stripped env",
+          "src/goal/lessons.ts writeCodexNativeSandboxConfig(purpose=repo-chat) + mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv)",
+          "Codex native permission-profile sandbox (read-only) via shared helper",
         ),
-        claude_code: optOutBackend(
+        claude_code: nativeHelperBackend(
           "claude_code",
-          "src/goal/lessons.ts runClaudeLessonExtraction + buildClaudeCodeEnv(subscription)",
-          "Claude print mode, subscription-auth stripped env, no native sandbox",
+          "src/goal/lessons.ts buildClaudeCodeSandboxLaunchConfig(purpose=repo-chat) + buildClaudeCodeEnv",
+          "Claude Code native fail-closed sandbox settings (read-only) via shared helper",
         ),
       },
     },
@@ -340,18 +336,18 @@ export function buildAgentSurfaceAudit(): AgentSurfaceAudit[] {
       description:
         "Goal resume / replan orchestration. Re-invokes the worker (resume) and planner " +
         "(replan) spawn paths; introduces no independent sandbox surface. The replan branch " +
-        "inherits the scout-planner credential-stripped-native-sandbox-opt-out classification.",
+        "inherits the scout-planner shared-helper classification.",
       reusesSurfaces: ["worker", "scout-planner"],
       backends: {
         codex: nativeHelperBackend(
           "codex",
-          "src/goal/goal-resume.ts re-invokes executeTaskWithCliWorker (worker native helper); replan reuses cli-planner opt-out",
-          "Resume reuses the worker native permission-profile sandbox; replan reuses planner opt-out",
+          "src/goal/goal-resume.ts re-invokes executeTaskWithCliWorker (worker native helper); replan reuses cli-planner shared helper",
+          "Resume reuses the worker native permission-profile sandbox; replan reuses planner shared helper",
         ),
         claude_code: nativeHelperBackend(
           "claude_code",
-          "src/goal/goal-resume.ts re-invokes executeTaskWithCliWorker (worker native helper); replan reuses cli-planner opt-out",
-          "Resume reuses the worker native Claude sandbox; replan reuses planner opt-out",
+          "src/goal/goal-resume.ts re-invokes executeTaskWithCliWorker (worker native helper); replan reuses cli-planner shared helper",
+          "Resume reuses the worker native Claude sandbox; replan reuses planner shared helper",
         ),
       },
     },

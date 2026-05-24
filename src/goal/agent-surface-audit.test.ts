@@ -88,9 +88,18 @@ describe("agent surface sandbox/security classification builder", () => {
     expect(piRunner?.exclusionReason).toContain("capability-enforcement");
   });
 
-  it("marks worker and repo-chat as shared-native-sandbox-helper-proven for both backends", () => {
+  it("marks hardened in-scope CLI surfaces as shared-native-sandbox-helper-proven", () => {
     const audit = buildAgentSurfaceAudit();
-    for (const surface of ["worker", "repo-chat"]) {
+    for (const surface of [
+      "scout-planner",
+      "plan-autocheck",
+      "worker",
+      "repo-chat",
+      "manual-tests",
+      "lessons",
+      "repair",
+      "resume-replan",
+    ]) {
       const entry = audit.find((e) => e.surface === surface)!;
       for (const backend of ["codex", "claude_code"] as const) {
         const classification = entry.backends[backend]!;
@@ -108,10 +117,11 @@ describe("agent surface sandbox/security classification builder", () => {
     }
   });
 
-  it("marks single-shot planning/review phases as credential-stripped-native-sandbox-opt-out", () => {
+  it("leaves only excluded Codex/Claude utility callers as credential-stripped opt-out", () => {
     const audit = buildAgentSurfaceAudit();
-    for (const surface of ["scout-planner", "plan-autocheck", "manual-tests", "lessons"]) {
+    for (const surface of ["goal-sending", "nightwatch"]) {
       const entry = audit.find((e) => e.surface === surface)!;
+      expect(entry.inScope).toBe(false);
       for (const backend of ["codex", "claude_code"] as const) {
         const classification = entry.backends[backend]!;
         expect(classification.classification).toBe("credential-stripped-native-sandbox-opt-out");
@@ -130,10 +140,8 @@ describe("agent surface sandbox/security classification builder", () => {
     expect(summary.countByClassification["not-safe-needs-fix"]).toBe(0);
     expect(summary.inScopeSurfaces).toBe(EXPECTED_IN_SCOPE.length);
     expect(summary.excludedCallers.sort()).toEqual([...EXPECTED_EXCLUDED].sort());
-    expect(summary.countByClassification["shared-native-sandbox-helper-proven"]).toBeGreaterThan(0);
-    expect(
-      summary.countByClassification["credential-stripped-native-sandbox-opt-out"],
-    ).toBeGreaterThan(0);
+    expect(summary.countByClassification["shared-native-sandbox-helper-proven"]).toBe(16);
+    expect(summary.countByClassification["credential-stripped-native-sandbox-opt-out"]).toBe(4);
   });
 
   it("classifies audited backends via the GoalBackendId helper", () => {
