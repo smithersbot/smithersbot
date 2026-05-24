@@ -397,3 +397,14 @@ the closing task.
 - **Ready for dev gateway/docs polish:** yes
 - **Replan uses cached scout context:** yes
 - **Fresh scout avoided during normal replan:** yes
+
+---
+
+## 16. Live-smoke feedback repairs
+
+The combined live Stage 2U-F smoke found three follow-up issues after this contract
+work: the scout/planner prompt still exposed the private runtime store as a planning
+artifact target, post-completion manual-test and lessons artifacts were missing from the
+agent-history runtime mirror, and cron mirroring was not wired before the first completed
+cron run. The repairs and verification are summarized in
+`internal/STAGE2U_F_LIVE_SMOKE_FEEDBACK_REPAIR_REPORT.md`.
