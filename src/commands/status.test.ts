@@ -47,6 +47,12 @@ const mocks = vi.hoisted(() => ({
     configSnapshot: null,
   }),
   callGateway: vi.fn().mockResolvedValue({}),
+  buildGatewayConnectionDetails: vi.fn().mockReturnValue({
+    url: "ws://127.0.0.1:18789",
+    urlSource: "local loopback",
+    bindDetail: "Bind: loopback",
+    message: "Gateway target: ws://127.0.0.1:18789",
+  }),
   listAgentsForGateway: vi.fn().mockReturnValue({
     defaultId: "main",
     mainKey: "agent:main:main",
@@ -199,7 +205,11 @@ vi.mock("../gateway/probe.js", () => ({
 }));
 vi.mock("../gateway/call.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../gateway/call.js")>();
-  return { ...actual, callGateway: mocks.callGateway };
+  return {
+    ...actual,
+    buildGatewayConnectionDetails: mocks.buildGatewayConnectionDetails,
+    callGateway: mocks.callGateway,
+  };
 });
 vi.mock("../gateway/session-utils.js", () => ({
   listAgentsForGateway: mocks.listAgentsForGateway,
@@ -246,6 +256,14 @@ vi.mock("../config/config.js", async (importOriginal) => {
     loadConfig: () => ({ session: {} }),
   };
 });
+vi.mock("./onboard-helpers.js", () => ({
+  resolveControlUiLinks: vi.fn(() => ({
+    bindDescription: "127.0.0.1",
+    httpUrl: "http://127.0.0.1:18789/",
+    lanUrls: [],
+    tailscaleUrl: null,
+  })),
+}));
 vi.mock("../daemon/service.js", () => ({
   resolveGatewayService: () => ({
     label: "LaunchAgent",

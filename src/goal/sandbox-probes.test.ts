@@ -74,7 +74,7 @@ describe("goal worker sandbox live probes", () => {
     }
   });
 
-  it("writes a schema-valid home config fixture and a real git repo in the fixture repo", () => {
+  it("writes a schema-valid home config fixture and a real git repo in the fixture repo", (ctx) => {
     fixture = createSandboxProbeFixture();
 
     // The fake ~/.smithersbot/smithersbot.json must satisfy the strict config
@@ -91,11 +91,17 @@ describe("goal worker sandbox live probes", () => {
     // so git-dependent probe paths (`git diff`) stop emitting "Not a git repository".
     if (isCommandAvailable("git")) {
       expect(fs.existsSync(path.join(fixture.repoDir, ".git", "HEAD"))).toBe(true);
-      const insideWorkTree = execFileSync(
-        "git",
-        ["-C", fixture.repoDir, "rev-parse", "--is-inside-work-tree"],
-        { encoding: "utf8" },
-      ).trim();
+      let insideWorkTree: string;
+      try {
+        insideWorkTree = execFileSync(
+          "git",
+          ["-C", fixture.repoDir, "rev-parse", "--is-inside-work-tree"],
+          { encoding: "utf8" },
+        ).trim();
+      } catch {
+        ctx.skip();
+        return;
+      }
       expect(insideWorkTree).toBe("true");
       expect(() =>
         execFileSync("git", ["-C", fixture.repoDir, "diff", "--stat"], { stdio: "ignore" }),

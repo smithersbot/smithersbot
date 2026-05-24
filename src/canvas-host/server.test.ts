@@ -10,6 +10,34 @@ import { defaultRuntime } from "../runtime.js";
 import { CANVAS_HOST_PATH, CANVAS_WS_PATH, injectCanvasLiveReload } from "./a2ui.js";
 import { createCanvasHostHandler, startCanvasHost } from "./server.js";
 
+let localListenAvailable: boolean | undefined;
+
+async function canListenOnLocalhost(): Promise<boolean> {
+  if (localListenAvailable !== undefined) return localListenAvailable;
+  const server = createServer();
+  localListenAvailable = await new Promise<boolean>((resolve) => {
+    const done = (available: boolean) => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+      resolve(available);
+    };
+    const onError = () => done(false);
+    const onListening = () => {
+      server.close(() => done(true));
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
+  return localListenAvailable;
+}
+
+async function skipWhenLocalListenUnavailable(ctx: { skip: () => void }): Promise<boolean> {
+  if (await canListenOnLocalhost()) return false;
+  ctx.skip();
+  return true;
+}
+
 describe("canvas host", () => {
   it("injects live reload script", () => {
     const out = injectCanvasLiveReload("<html><body>Hello</body></html>");
@@ -19,7 +47,8 @@ describe("canvas host", () => {
     expect(out).toContain("moltbotSendUserAction");
   });
 
-  it("creates a default index.html when missing", async () => {
+  it("creates a default index.html when missing", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
 
     const server = await startCanvasHost({
@@ -43,7 +72,8 @@ describe("canvas host", () => {
     }
   });
 
-  it("skips live reload injection when disabled", async () => {
+  it("skips live reload injection when disabled", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
     await fs.writeFile(path.join(dir, "index.html"), "<html><body>no-reload</body></html>", "utf8");
 
@@ -71,7 +101,8 @@ describe("canvas host", () => {
     }
   });
 
-  it("serves canvas content from the mounted base path", async () => {
+  it("serves canvas content from the mounted base path", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
     await fs.writeFile(path.join(dir, "index.html"), "<html><body>v1</body></html>", "utf8");
 
@@ -95,7 +126,10 @@ describe("canvas host", () => {
       socket.destroy();
     });
 
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
     const port = (server.address() as AddressInfo).port;
 
     try {
@@ -116,7 +150,8 @@ describe("canvas host", () => {
     }
   });
 
-  it("reuses a handler without closing it twice", async () => {
+  it("reuses a handler without closing it twice", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
     await fs.writeFile(path.join(dir, "index.html"), "<html><body>v1</body></html>", "utf8");
 
@@ -149,7 +184,8 @@ describe("canvas host", () => {
     }
   });
 
-  it("serves HTML with injection and broadcasts reload on file changes", async () => {
+  it("serves HTML with injection and broadcasts reload on file changes", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
     const index = path.join(dir, "index.html");
     await fs.writeFile(index, "<html><body>v1</body></html>", "utf8");
@@ -207,7 +243,8 @@ describe("canvas host", () => {
     }
   }, 20_000);
 
-  it("serves the gateway-hosted A2UI scaffold", async () => {
+  it("serves the gateway-hosted A2UI scaffold", async (ctx) => {
+    if (await skipWhenLocalListenUnavailable(ctx)) return;
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-canvas-"));
     const a2uiRoot = path.resolve(process.cwd(), "src/canvas-host/a2ui");
     const bundlePath = path.join(a2uiRoot, "a2ui.bundle.js");
