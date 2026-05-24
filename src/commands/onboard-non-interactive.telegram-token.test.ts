@@ -216,9 +216,9 @@ describe("onboard (non-interactive): --telegram-token", () => {
         },
       },
       plugins: {
-        allow: ["discord"],
+        allow: ["memory-core"],
         entries: {
-          discord: {
+          "memory-core": {
             enabled: true,
           },
         },
@@ -242,14 +242,16 @@ describe("onboard (non-interactive): --telegram-token", () => {
     );
 
     const cfg = JSON.parse(await fs.readFile(configPath, "utf8")) as MoltbotConfig;
-    const discordEntry = cfg.plugins?.entries?.discord as { enabled?: boolean } | undefined;
+    const existingEntry = cfg.plugins?.entries?.["memory-core"] as
+      | { enabled?: boolean }
+      | undefined;
 
     expect(cfg.agents?.defaults?.model?.primary).toBe("anthropic/claude-3-7-sonnet");
     expect(cfg.gateway?.bind).toBe("loopback");
     expect(cfg.gateway?.port).toBe(19123);
     expect(cfg.skills?.install?.nodeManager).toBe("pnpm");
-    expect(discordEntry?.enabled).toBe(true);
-    expect(cfg.plugins?.allow).toEqual(expect.arrayContaining(["discord", "telegram"]));
+    expect(existingEntry?.enabled).toBe(true);
+    expect(cfg.plugins?.allow).toEqual(expect.arrayContaining(["memory-core", "telegram"]));
     expect(cfg.channels?.telegram?.botToken).toBe(token);
     expect(cfg.channels?.telegram?.dmPolicy).toBe("pairing");
   }, 60_000);
