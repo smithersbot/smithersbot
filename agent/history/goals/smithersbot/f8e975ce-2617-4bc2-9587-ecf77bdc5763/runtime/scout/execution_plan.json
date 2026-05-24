@@ -1,0 +1,60 @@
+{
+  "workingDir": "/home/matt/smithersbot-goals/agent/workspaces/smithersbot/repo",
+  "summary": "Fix the bug where long Telegram 'Incorporate Feedback' replies that Telegram splits across multiple messages are treated as separate feedback submissions (the second chunk hits the feedback lock and returns 'already being processed'). Reuse the existing /new_goal CommandFragmentBuffer continuation pattern: buffer feedback-reply chunks keyed by chat/thread/sender plus goal-run id, combine them in order (preserving line breaks), and acquire acquireGoalOpLock(runId,'feedback') + call handleGoalFeedback exactly once on flush. Different goals/users/threads never merge; late attempts still respect the lock. Add focused unit + integration tests, run the gate, and write the fix report.",
+  "shortSummary": "Buffer split Telegram Incorporate Feedback replies into one payload",
+  "buildGate": {
+    "commands": ["pnpm build"],
+    "runBetweenSteps": true
+  },
+  "steps": [
+    {
+      "id": "buffer-feedback-multimessage",
+      "description": "Reuse the existing /new_goal CommandFragmentBuffer continuation pattern (src/telegram/command-fragments.ts; templates at goal-commands.ts:2075 and repo-chat-commands.ts:460) to buffer multi-message Incorporate Feedback replies. Extend command-fragments.ts minimally: add a 'feedback' CommandFragmentCommandName and a feedback-scoped key helper (e.g. buildFeedbackFragmentKey) that includes accountId, chatId, resolved thread id, senderId, AND the goal/run id so different goals or different users/chats/threads never merge. In the bot-handlers.ts feedback dispatch path (the feedback runHandler ~line 854 wired from registerTelegramHandlers), stop acquiring the lock / calling handleGoalFeedback on the first chunk: buffer the chunk, append continuation chunks that match the same feedback key within the continuation window (preserve message order and line breaks between chunks), and on flush acquire acquireGoalOpLock(runId,'feedback') and call handleGoalFeedback once with the combined text. Do not reply 'already being processed' to in-window continuation chunks; a new attempt after flush/after processing starts may still receive formatGoalLockedMessage. Scope strictly to GOAL_FEEDBACK; preserve replyToMessageId/sourceMessageId threading. Add focused tests in this same step: extend src/telegram/command-fragments.test.ts (feedback key isolation across runId/sender/chat/thread; append+flush combine order and newline separators) and create src/telegram/bot-handlers.feedback-buffering.test.ts (drive the registered 'message' handler like bot-handlers.repo-chat-routing.test.ts) covering: two split feedback replies -> one combined handleGoalFeedback call and no 'already being processed' for the second chunk; single-message feedback still dispatches once; two different goal ids do not merge; different users/chats/threads do not merge; a late message after the window/after processing starts is a new attempt that may hit the lock. Confirm /new_goal buffering, repo-chat routing, /goal_answer, and Add Details are unchanged.",
+      "shortSummary": "Buffer split feedback replies via /new_goal pattern",
+      "dependsOn": [],
+      "successCriteria": "pnpm vitest run src/telegram/bot-handlers.feedback-buffering.test.ts src/telegram/command-fragments.test.ts passes; the new integration test proves two split feedback chunks produce exactly one handleGoalFeedback call with both chunks combined in order and no 'already being processed' reply for the second chunk, while different goal ids and different users/chats/threads do not merge and a late chunk still hits the existing lock.",
+      "constraints": [
+        "Do not invent an unrelated parallel buffering system unless CommandFragmentBuffer truly cannot be reused; keep extensions minimal and consistent with existing naming/typing.",
+        "Do not change generic CHAT routing, /new_goal, /repo_chat, /goal_answer, Add Details, edit, anchor follow-up UI, or the long-paste textFragmentBuffer beyond what feedback buffering requires.",
+        "Do not change Stage 2U-F runtime mirror logic, sandbox deny policy, /usage_status, /usage_history, resume/display logic (except where feedback already routes to replan), post-exec review, pi, or backend fallback semantics.",
+        "Do not split implementation from its tests; do not verify runtime logic with tsc alone.",
+        "Do not read or print private env/auth/session/secret files; do not restart or build the dev gateway."
+      ],
+      "durationMinutes": 28,
+      "backend": "codex",
+      "requiresNetwork": false,
+      "risk": "high"
+    },
+    {
+      "id": "verify-feedback-buffer-fix",
+      "description": "Run the cross-cutting verification sweep. Execute the focused Telegram suite (at minimum `pnpm vitest run src/telegram`) confirming the new feedback-buffering tests, /new_goal buffering tests, repo-chat routing tests, command-fragment tests, and goal-router tests all pass. Then run the project gate: `pnpm exec tsc -p tsconfig.json`, `pnpm build`, and `pnpm lint`. If anything fails, fix the implementation from the previous step's surfaces and rerun until green. Capture the exact passing commands and their key output so the report step can record real verification results.",
+      "shortSummary": "Run telegram suite + tsc/build/lint sweep",
+      "dependsOn": ["buffer-feedback-multimessage"],
+      "successCriteria": "pnpm vitest run src/telegram passes, and pnpm exec tsc -p tsconfig.json, pnpm build, and pnpm lint all exit 0 with no new failures.",
+      "constraints": [
+        "Do not weaken, skip, or delete tests to make the suite pass.",
+        "Do not introduce unrelated refactors or formatting churn.",
+        "Do not restart or build the dev gateway; do not read or print secrets."
+      ],
+      "durationMinutes": 12,
+      "backend": "claude_code",
+      "requiresNetwork": false,
+      "risk": "low"
+    },
+    {
+      "id": "write-feedback-buffer-report",
+      "description": "Write internal/STAGE2U_F_FEEDBACK_MULTIMESSAGE_BUFFER_FIX_REPORT.md documenting: root cause; the exact existing /new_goal (CommandFragmentBuffer) pattern reused; files/functions changed; the feedback buffer key (chat/thread/sender/goal-run scoping); continuation-window behavior; lock behavior (lock acquired only after the combined payload is dispatched; late/new attempts still hit the existing lock); tests added; and verification results from the verify step (focused tests, tsc, build, lint). Include manual verification steps: restart gateway; open Incorporate Feedback for a completed goal; send feedback in two quick Telegram messages; confirm no 'already being processed' reply to the second chunk; confirm the plan-revision prompt contains both chunks; confirm a truly separate feedback attempt still respects the lock.",
+      "shortSummary": "Write Stage 2U-F feedback buffer fix report",
+      "dependsOn": ["verify-feedback-buffer-fix"],
+      "successCriteria": "internal/STAGE2U_F_FEEDBACK_MULTIMESSAGE_BUFFER_FIX_REPORT.md exists and contains the root cause, reused pattern, files/functions changed, buffer key, continuation-window behavior, lock behavior, tests added, verification results, and manual verification steps.",
+      "constraints": [
+        "Document only; do not modify source or tests in this step.",
+        "Do not include secrets, private env/auth/session contents, or raw statusline JSON."
+      ],
+      "durationMinutes": 10,
+      "backend": "codex",
+      "requiresNetwork": false,
+      "risk": "low"
+    }
+  ]
+}

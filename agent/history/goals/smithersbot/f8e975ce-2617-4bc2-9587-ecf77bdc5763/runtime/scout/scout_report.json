@@ -1,0 +1,36 @@
+{
+  "goal_id": "f8e975ce-2617-4bc2-9587-ecf77bdc5763",
+  "nodes": [
+    {
+      "id": "buffer-feedback-multimessage",
+      "type": "Impl",
+      "objective": "Buffer + combine split Incorporate Feedback replies via the /new_goal CommandFragmentBuffer pattern; lock only after flush",
+      "verification": "pnpm vitest run src/telegram/bot-handlers.feedback-buffering.test.ts src/telegram/command-fragments.test.ts",
+      "effort": 4,
+      "risk": 4,
+      "uncertainty": 3
+    },
+    {
+      "id": "verify-feedback-buffer-fix",
+      "type": "Integration",
+      "objective": "Run telegram test suite plus tsc/build/lint gate sweep",
+      "verification": "pnpm vitest run src/telegram && pnpm exec tsc -p tsconfig.json && pnpm build && pnpm lint",
+      "effort": 2,
+      "risk": 2,
+      "uncertainty": 1
+    },
+    {
+      "id": "write-feedback-buffer-report",
+      "type": "Other",
+      "objective": "Write internal/STAGE2U_F_FEEDBACK_MULTIMESSAGE_BUFFER_FIX_REPORT.md",
+      "verification": "test -f internal/STAGE2U_F_FEEDBACK_MULTIMESSAGE_BUFFER_FIX_REPORT.md",
+      "effort": 2,
+      "risk": 1,
+      "uncertainty": 1
+    }
+  ],
+  "edges": [
+    { "from": "buffer-feedback-multimessage", "to": "verify-feedback-buffer-fix", "why": "the gate/sweep validates the implemented buffering change across the telegram suite" },
+    { "from": "verify-feedback-buffer-fix", "to": "write-feedback-buffer-report", "why": "the report must record real verification results (tests, tsc, build, lint)" }
+  ]
+}
