@@ -29,7 +29,11 @@ import {
   buildCredentialStrippedEnv,
   writeAuthModeArtifact,
 } from "./claude-code-env.js";
-import { WORKER_CONTEXT } from "./worker-context.js";
+import {
+  WORKER_CONTEXT,
+  WORKER_DYNAMIC_CONTEXT_HEADER,
+  WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX,
+} from "./worker-context.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
@@ -800,9 +804,9 @@ export function buildCliWorkerPrompt(params: {
   } = params;
   const lines: string[] = [];
 
-  lines.push(
-    "You are a goal worker: an autonomous coding agent executing one task from a multi-step plan. Complete your assigned task independently, verify your work, then report the result.",
-  );
+  lines.push(WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX);
+  lines.push("");
+  lines.push(WORKER_DYNAMIC_CONTEXT_HEADER);
   lines.push("");
   lines.push(`GOAL: ${goal}`);
   lines.push("");
@@ -876,40 +880,9 @@ export function buildCliWorkerPrompt(params: {
     lines.push("");
   }
 
-  lines.push(
-    "VERIFICATION: Before reporting completion, run the project's build and test commands to verify your changes work. Do not mark complete without verification.",
-  );
-  lines.push("");
-
-  lines.push("RESULT PROTOCOL:");
-  lines.push("When you are done, write your result to this exact file path:");
+  lines.push("RESULT FILE PATH:");
+  lines.push("Write worker_result.json to this exact file path:");
   lines.push(resultPath);
-  lines.push("");
-  lines.push("In worker_result.json, write a concise outcome summary.");
-  lines.push("");
-  lines.push("The file must contain valid JSON with one of these shapes:");
-  lines.push(
-    '  Complete (task done): { "status": "complete", "summary": "<brief summary of what was done>" }',
-  );
-  lines.push("");
-  lines.push(
-    "  Ralph (stuck after genuine attempt — use only when continuing is slower than reverting and retrying with a different strategy):",
-  );
-  lines.push(
-    '  { "status": "ralph", "approachTried": "...", "specificErrors": "...", "keyInsight": "...", "suggestedApproach": "..." }',
-  );
-  lines.push("");
-  lines.push(
-    '  Blocked (need user input): { "status": "blocked", "question": "<what you need from the user>" }',
-  );
-  lines.push("");
-  lines.push(
-    '  Failed (impossible/out of scope): { "status": "failed", "reason": "...", "whatTried": "...", "errorType": "...", "suggestedNext": "...", "needsRevert": false }',
-  );
-  lines.push(
-    "Write the file using your file-writing tool. This is how the orchestrator knows you are done.",
-  );
-  lines.push("Do NOT rely on printing JSON to stdout as your result mechanism.");
 
   return lines.join("\n");
 }

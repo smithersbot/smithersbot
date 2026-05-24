@@ -1700,6 +1700,13 @@ describe("cli-worker", () => {
   });
 
   describe("buildCliWorkerPrompt", () => {
+    function stableWorkerPrefix(prompt: string): string {
+      const marker = "DYNAMIC TASK CONTEXT:";
+      const index = prompt.indexOf(marker);
+      expect(index).toBeGreaterThan(0);
+      return prompt.slice(0, index);
+    }
+
     it("includes hard deny list", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep(),
@@ -1837,6 +1844,85 @@ describe("cli-worker", () => {
       });
 
       expect(prompt).toContain("In worker_result.json, write a concise outcome summary.");
+    });
+
+    it("keeps a byte-identical static prefix across different tasks and attempts", () => {
+      const first = buildCliWorkerPrompt({
+        step: makeStep({
+          id: "step-alpha",
+          description: "Implement alpha feature",
+          successCriteria: "alpha tests pass",
+        }),
+        plan: makePlan(),
+        goal: "Build alpha",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/run-alpha/worker_result.json",
+      });
+      const second = buildCliWorkerPrompt({
+        step: makeStep({
+          id: "step-beta",
+          description: "Implement beta feature",
+          constraints: ["Do not change public API"],
+        }),
+        plan: { ...makePlan(), goal: "Build beta" },
+        goal: "Build beta",
+        hardDenies: HARD_DENIES.slice(0, 3),
+        resultPath: "/tmp/run-beta/worker_result.json",
+        previousAttempt: "Outcome: failed\nError classification: test_failure",
+      });
+
+      expect(stableWorkerPrefix(first)).toBe(stableWorkerPrefix(second));
+      expect(stableWorkerPrefix(first)).toContain("RESULT PROTOCOL:");
+      expect(stableWorkerPrefix(first)).toContain('"status": "complete"');
+      expect(stableWorkerPrefix(first)).toContain('"status": "ralph"');
+      expect(stableWorkerPrefix(first)).toContain('"status": "blocked"');
+      expect(stableWorkerPrefix(first)).toContain('"status": "failed"');
+      expect(stableWorkerPrefix(first)).toContain("Never read, print, summarize, or modify denied");
+
+      expect(first).toContain("GOAL: Build alpha");
+      expect(first).toContain("YOUR TASK: Implement alpha feature");
+      expect(first).toContain("RESULT FILE PATH:");
+      expect(first).toContain("/tmp/run-alpha/worker_result.json");
+      expect(second).toContain("GOAL: Build beta");
+      expect(second).toContain("YOUR TASK: Implement beta feature");
+      expect(second).toContain("PREVIOUS ATTEMPT FAILED:");
+    });
+
+    it("compacts noisy previous attempt history without dropping structure", () => {
+      const repeatedOutput = Array.from({ length: 120 }, (_, index) => {
+        const id = String(index).padStart(3, "0");
+        return `src/file-${id}.ts(1,1): error TS2307: Cannot find module './generated-${id}'`;
+      }).join("\n");
+      const previousBundle: AttemptBundle = {
+        attemptNumber: 4,
+        backend: "codex",
+        outcome: "failed",
+        durationMs: 42_000,
+        errorClassification: "build_failure",
+        buildGateFailure: {
+          failedCommand: "pnpm build",
+          output: repeatedOutput,
+        },
+        logExcerpt: repeatedOutput,
+      };
+      const summary = formatAttemptBundleSummary(previousBundle);
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        previousAttempt: summary,
+      });
+
+      expect(summary.length).toBeLessThan(repeatedOutput.length * 2);
+      expect(prompt).toContain("Attempt: 4");
+      expect(prompt).toContain("Backend: codex");
+      expect(prompt).toContain("Build gate failure:");
+      expect(prompt).toContain("Failed command: pnpm build");
+      expect(prompt).toContain("Log excerpt:");
+      expect(prompt).toContain("chars omitted; showing start and end");
+      expect(prompt).toContain("Try a different approach. Do not repeat what failed.");
     });
   });
 

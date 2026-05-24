@@ -36,6 +36,8 @@ export type AttemptBundle = {
   };
 };
 
+const ATTEMPT_SUMMARY_TEXT_LIMIT = 1200;
+
 export function resolveWorkerDir(runId: string, stepId: string): string {
   return path.join(resolveRunDir(runId), "workers", stepId);
 }
@@ -91,6 +93,8 @@ export function loadAttemptBundles(dir: string): AttemptBundle[] {
 
 export function formatAttemptBundleSummary(bundle: AttemptBundle): string {
   const lines: string[] = [];
+  lines.push(`Attempt: ${bundle.attemptNumber}`);
+  lines.push(`Backend: ${bundle.backend}`);
   lines.push(`Outcome: ${bundle.outcome}`);
   lines.push(`Duration: ${formatDuration(bundle.durationMs)}`);
   if (bundle.changedFiles && bundle.changedFiles.length > 0) {
@@ -105,7 +109,7 @@ export function formatAttemptBundleSummary(bundle: AttemptBundle): string {
   if (bundle.ralphDetail) {
     lines.push("Ralph details:");
     lines.push(`Approach tried: ${bundle.ralphDetail.approachTried}`);
-    lines.push(`Specific errors: ${bundle.ralphDetail.specificErrors}`);
+    lines.push(`Specific errors: ${compactAttemptText(bundle.ralphDetail.specificErrors)}`);
     lines.push(`Key insight: ${bundle.ralphDetail.keyInsight}`);
     lines.push(`Suggested approach: ${bundle.ralphDetail.suggestedApproach}`);
   }
@@ -113,16 +117,28 @@ export function formatAttemptBundleSummary(bundle: AttemptBundle): string {
     lines.push("Build gate failure:");
     lines.push(`Failed command: ${bundle.buildGateFailure.failedCommand}`);
     lines.push("Build gate output:");
-    lines.push(bundle.buildGateFailure.output);
+    lines.push(compactAttemptText(bundle.buildGateFailure.output));
   }
   if (bundle.logExcerpt) {
     lines.push("Log excerpt:");
-    lines.push(bundle.logExcerpt);
+    lines.push(compactAttemptText(bundle.logExcerpt));
   }
   if (bundle.toolCalls && bundle.toolCalls.length > 0) {
     lines.push(`Tool calls: ${bundle.toolCalls.join(", ")}`);
   }
   return lines.join("\n");
+}
+
+function compactAttemptText(text: string): string {
+  const normalized = text.trim();
+  if (normalized.length <= ATTEMPT_SUMMARY_TEXT_LIMIT) return normalized;
+  const headLength = Math.floor(ATTEMPT_SUMMARY_TEXT_LIMIT * 0.35);
+  const tailLength = ATTEMPT_SUMMARY_TEXT_LIMIT - headLength;
+  return [
+    normalized.slice(0, headLength),
+    `...(${normalized.length - ATTEMPT_SUMMARY_TEXT_LIMIT} chars omitted; showing start and end)...`,
+    normalized.slice(-tailLength),
+  ].join("\n");
 }
 
 function formatDuration(durationMs: number): string {
