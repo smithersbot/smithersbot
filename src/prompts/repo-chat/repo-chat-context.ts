@@ -91,8 +91,9 @@ Each runtime run directory contains:
 - \`workers/\` — per-worker attempt artifacts
 - \`plan-raw.txt\` — raw planner output (saved on parse failures)
 
-Agent-history mirror entries contain sanitized summaries only (no raw stdout/stderr
-or raw transcripts unless explicitly opted in).
+Redacted runtime artifacts are mirrored into agent history with generous caps and
+an index, alongside the sanitized run summaries. Forbidden files, private env
+values, gateway config, and credentials are never mirrored.
 
 ## Repo Chat Sessions
 

@@ -40,6 +40,14 @@ import { resolveScoutTemplatePath as resolveScoutTemplatePathFromGoal } from "..
 import { WORKER_CONTEXT as WORKER_CONTEXT_FROM_GOAL } from "../goal/worker-context.js";
 import { REPO_CHAT_CONTEXT as REPO_CHAT_CONTEXT_FROM_CONSUMER } from "../repo-chat/repo-chat-context.js";
 
+// Stage 2U-F cross-cutting audit: build every dynamic agent-facing prompt
+// surface to prove none instructs agents to read/write/output to .clawdbot-dev.
+import { buildCachedScoutSummary } from "../goal/cli-planner.js";
+import { buildAutocheckPrompt } from "../goal/plan-autocheck.js";
+import { buildCliWorkerPrompt, buildCliPromptPayload } from "../goal/cli-worker.js";
+import { renderGroupedHardDenies } from "../goal/hard-deny.js";
+import type { Plan, PlanStep } from "../goal/types.js";
+
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDir, "..", "..");
 const promptsRoot = path.join(repoRoot, "src", "prompts");
@@ -434,6 +442,157 @@ describe("src/prompts/ — no drift in consumer source files", () => {
   });
 });
 
+describe("src/prompts/ — Stage 2U-F: no .clawdbot-dev as an agent-facing target", () => {
+  // The ONLY place a generated agent-facing prompt may name .clawdbot-dev is the
+  // grouped hard-deny bullet (a denied/private runtime-config path). Any other
+  // line naming it would be telling the agent to read/write/output there, which
+  // is exactly what Stage 2U-F removes.
+  const DENY_BULLET = "- ~/.clawdbot-dev/**";
+
+  function assertClawdbotDevDeniedOnly(text: string, surface: string): void {
+    for (const rawLine of text.split("\n")) {
+      if (!rawLine.includes(".clawdbot-dev")) continue;
+      expect(
+        rawLine.trim(),
+        `${surface} must only name .clawdbot-dev in the denied hard-deny context`,
+      ).toBe(DENY_BULLET);
+    }
+  }
+
+  const step: PlanStep = {
+    id: "impl-step",
+    description: "Implement the widget and add focused tests.",
+    shortSummary: "Implement widget",
+    dependsOn: [],
+    status: "pending",
+    durationMinutes: 20,
+    backend: "claude_code",
+    successCriteria: "pnpm vitest run src/widget.test.ts passes.",
+    constraints: ["Do not change the public API."],
+  };
+  const plan: Plan = {
+    goal: "Ship the widget",
+    workingDir: "/tmp/workspace",
+    summary: "Ship the widget end to end",
+    shortSummary: "Ship widget",
+    steps: [step],
+  };
+
+  const workerPrompt = buildCliWorkerPrompt({
+    step,
+    plan,
+    goal: "Ship the widget",
+    resultPath: "/tmp/workspace/.results/worker_result.json",
+  });
+
+  // A deny-file path that does not exist forces the deterministic grouped
+  // hard-deny fallback (renderGroupedHardDenies) — the only surface allowed to
+  // name .clawdbot-dev, and only as a denied path.
+  const missingDenyPath = path.join(repoRoot, "no-such-deny-file-stage2uf.txt");
+  const codexPayload = buildCliPromptPayload({
+    backend: "codex",
+    prompt: workerPrompt,
+    denyFilePath: missingDenyPath,
+    projectConventions: "Use pnpm. Strict TypeScript.",
+  });
+  const claudePayload = buildCliPromptPayload({
+    backend: "claude_code",
+    prompt: workerPrompt,
+    denyFilePath: missingDenyPath,
+  });
+
+  const cachedScout = buildCachedScoutSummary({
+    runId: "run-audit",
+    cwd: "/tmp/workspaces/smithersbot/repo",
+    scoutDir: "/tmp/goals/run-audit/scout",
+    scoutData: {
+      status: "success",
+      report: {
+        goal_id: "run-audit",
+        nodes: [
+          {
+            id: "impl-step",
+            type: "Impl",
+            objective: "Implement widget",
+            verification: "pnpm vitest run src/widget.test.ts",
+            effort: 1,
+            risk: 1,
+            uncertainty: 1,
+          },
+        ],
+        edges: [],
+      },
+      planDraft: "BEGIN_PLAN_DRAFT\nGOAL_ID: run-audit\nEND_PLAN_DRAFT",
+    },
+  });
+
+  const autocheckPrompt = buildAutocheckPrompt({
+    goalText: "Ship the widget",
+    plan,
+    workingDir: "/tmp/workspace",
+    resume: false,
+    priorFeedback: [],
+    contextNotes: [],
+  });
+
+  const surfaces: Array<{ name: string; text: string }> = [
+    { name: "scout template", text: fs.readFileSync(resolveScoutTemplatePath(), "utf8") },
+    {
+      name: "planner system prompt",
+      text: buildPlanSystemPromptFromPrompts(["claude_code", "codex"]),
+    },
+    { name: "cached scout summary (replan)", text: cachedScout },
+    { name: "plan-autocheck reviewer instruction", text: REVIEW_INSTRUCTION },
+    { name: "plan-autocheck dynamic prompt", text: autocheckPrompt },
+    { name: "shared plan-quality rubric", text: PLAN_QUALITY_RUBRIC },
+    { name: "worker context contract", text: WORKER_CONTEXT },
+    { name: "worker dynamic prompt", text: workerPrompt },
+    { name: "worker payload (codex)", text: codexPayload.persistedPrompt },
+    { name: "worker payload (claude_code)", text: claudePayload.persistedPrompt },
+    { name: "manual-tests system prompt", text: MANUAL_TESTS_SYSTEM_PROMPT },
+    {
+      name: "lessons extraction prompt",
+      text: buildLessonExtractionPrompt({
+        runId: "run-audit",
+        workingDir: "/tmp/workspace",
+        existingLessons: [],
+        correctionSummary: "A worker failed; see agent-history runtime mirror.",
+      }),
+    },
+    { name: "repo-chat context", text: REPO_CHAT_CONTEXT },
+    {
+      name: "repo-chat response-file instruction",
+      text: buildResponseFileInstruction({ backend: "codex", filePath: "/tmp/answer.md" }),
+    },
+    { name: "repo-chat repair prompt", text: REPO_CHAT_SANDBOX_REPAIR_PROMPT },
+    { name: "agent-workspace AGENTS template", text: loadAgentWorkspaceTemplate("AGENTS.md") },
+  ];
+
+  it.each(surfaces)(
+    "$name never names .clawdbot-dev as a read/write/output target",
+    ({ name, text }) => {
+      assertClawdbotDevDeniedOnly(text, name);
+    },
+  );
+
+  it("references agent/history where history/artifacts are needed", () => {
+    expect(fs.readFileSync(resolveScoutTemplatePath(), "utf8")).toContain("agent/history");
+    expect(cachedScout).toContain("agent/history");
+    expect(WORKER_CONTEXT).toContain("agent/history");
+    expect(REPO_CHAT_CONTEXT).toContain("agent/history");
+  });
+
+  it("allows .clawdbot-dev only inside the grouped hard-deny (denied) context", () => {
+    const grouped = renderGroupedHardDenies();
+    expect(grouped).toContain(DENY_BULLET);
+    // Worker payloads embed the grouped denies; that bullet is the sole mention.
+    expect(codexPayload.persistedPrompt).toContain(DENY_BULLET);
+    expect(claudePayload.persistedPrompt).toContain(DENY_BULLET);
+    assertClawdbotDevDeniedOnly(codexPayload.persistedPrompt, "worker payload (codex)");
+    assertClawdbotDevDeniedOnly(claudePayload.persistedPrompt, "worker payload (claude_code)");
+  });
+});
+
 describe("src/prompts/ — lifecycle persistence coverage", () => {
   it("documents persistence behavior for every active lifecycle row", () => {
     const readme = fs.readFileSync(promptsReadmePath, "utf8");
@@ -459,11 +618,18 @@ describe("src/prompts/ — lifecycle persistence coverage", () => {
     for (const step of expectedSteps) {
       const row = lifecycleRows.find((line) => line.includes(`| ${step}`));
       expect(row, `missing lifecycle row for ${step}`).toBeDefined();
-      expect(row).toMatch(/summary|metadata|No LLM call|not mirrored|lessons/i);
+      expect(row).toMatch(/summary|metadata|No LLM call|mirror|lessons/i);
     }
 
     expect(readme).toContain("<managed-root>/agent/history/");
-    expect(readme).toContain("Raw stdout/stderr, raw transcripts, private env");
+    // Stage 2U-F: the redacted runtime mirror replaces the old "not mirrored by
+    // default" history claim. The new canonical sentence must be present and the
+    // outdated wording gone.
+    expect(readme).toContain(
+      "Redacted runtime artifacts are mirrored into agent history with generous caps and an index.",
+    );
+    expect(readme).not.toContain("Raw stdout/stderr, raw transcripts, private env");
+    expect(readme).not.toContain("not mirrored to agent history");
     expect(readme).toContain("agent/history/index/all-goals.jsonl");
     expect(readme).toContain("agent/history/index/all-repo-chats.jsonl");
   });
