@@ -9,6 +9,7 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
 import {
   buildClaudeCodeEnv,
   buildCredentialStrippedEnv,
@@ -87,7 +88,7 @@ Requirements:
 
 function buildAgentVisibleScoutDir(runId: string, cwd: string): string {
   const workspaceName = workspaceNameFromWorkingDir(cwd);
-  return `agent/history/goals/${workspaceName}/${runId}/runtime/scout`;
+  return path.join(resolveAgentGoalHistoryDir(workspaceName, runId), "runtime", "scout");
 }
 
 function buildPlanOnlyPrompt(params: {
@@ -436,7 +437,7 @@ function resolveCodexScoutDir(runId: string): string {
   return path.join(os.tmpdir(), "moltbot-goal-planner", safeRunId, "scout");
 }
 
-function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string }): void {
+function copyScoutArtifacts(params: { sourceDir: string; targetDir: string; label: string }): void {
   const { sourceDir, targetDir } = params;
   if (!fs.existsSync(sourceDir)) return;
 
@@ -480,11 +481,22 @@ function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string 
     }
   } catch (err) {
     throw new Error(
-      `Failed to copy Codex planner artifacts from ${sourceDir} to ${targetDir}: ${
+      `Failed to copy ${params.label} planner artifacts from ${sourceDir} to ${targetDir}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
   }
+}
+
+function copyCodexScoutArtifacts(params: { sourceDir: string; targetDir: string }): void {
+  copyScoutArtifacts({ ...params, label: "Codex" });
+}
+
+function reconcileAgentVisibleScoutArtifacts(params: {
+  sourceDir: string;
+  targetDir: string;
+}): void {
+  copyScoutArtifacts({ ...params, label: "agent-visible" });
 }
 
 function buildPlanningPrompt(params: {
@@ -1053,6 +1065,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   const claudeCommand = claudeBin ?? "claude";
 
   const scoutDir = resolveScoutDir(runId, goalsDir);
+  const agentVisibleScoutDir =
+    includeScoutArtifacts && !cachedScoutData
+      ? buildAgentVisibleScoutDir(runId, plannerCwd)
+      : undefined;
   fs.mkdirSync(scoutDir, { recursive: true });
   if (cachedScoutData) {
     clearStaleReplanArtifacts(scoutDir);
@@ -1061,6 +1077,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   }
   if (includeScoutArtifacts && !cachedScoutData) {
     fs.mkdirSync(path.join(scoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
+  }
+  if (agentVisibleScoutDir) {
+    clearStalePlanningArtifacts(agentVisibleScoutDir);
+    fs.mkdirSync(path.join(agentVisibleScoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
   }
   const codexScoutDir =
     includeScoutArtifacts && !cachedScoutData ? resolveCodexScoutDir(runId) : undefined;
@@ -1099,14 +1119,20 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     workingDir: plannerCwd,
     runId: `${runId}-planner`,
     purpose: "repo-chat",
-    extraWritablePaths: includeScoutArtifacts ? [scoutDir] : [],
+    extraWritablePaths: [
+      ...(includeScoutArtifacts ? [scoutDir] : []),
+      ...(agentVisibleScoutDir ? [agentVisibleScoutDir] : []),
+    ],
   });
   const codexPlanningSandbox = plannerBackends.includes("codex")
     ? writeCodexNativeSandboxConfig({
         workingDir: plannerCwd,
         runId: `${runId}-planner`,
         purpose: "repo-chat",
-        extraWritablePaths: codexScoutDir ? [codexScoutDir] : [],
+        extraWritablePaths: [
+          ...(codexScoutDir ? [codexScoutDir] : []),
+          ...(agentVisibleScoutDir ? [agentVisibleScoutDir] : []),
+        ],
         sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
       })
     : undefined;
@@ -1128,6 +1154,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     finalAttemptNumber = attemptNumber;
     const prompt = backend === "codex" ? codexPrompt : claudePrompt;
     const command = backend === "claude_code" ? claudeCommand : "codex";
+    if (agentVisibleScoutDir) {
+      clearStalePlanningArtifacts(agentVisibleScoutDir);
+      fs.mkdirSync(path.join(agentVisibleScoutDir, SCOUT_NODE_SPECS_DIR), { recursive: true });
+    }
     const args =
       backend === "claude_code"
         ? buildClaudePlanningArgs({ sandboxConfig: claudePlanningSandbox })
@@ -1329,6 +1359,9 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
 
   if (includeScoutArtifacts && plannerBackendUsed === "codex" && codexScoutDir) {
     copyCodexScoutArtifacts({ sourceDir: codexScoutDir, targetDir: scoutDir });
+  }
+  if (includeScoutArtifacts && !cachedScoutData && agentVisibleScoutDir) {
+    reconcileAgentVisibleScoutArtifacts({ sourceDir: agentVisibleScoutDir, targetDir: scoutDir });
   }
 
   let scoutData: Extract<ScoutResult, { status: "success" }> | undefined;

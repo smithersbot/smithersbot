@@ -770,7 +770,16 @@ describe("runCliPlanning", () => {
       const match = /Agent-visible planning artifact directory: ([^\n]+)/.exec(prompt);
       if (!match?.[1]) throw new Error("missing agent-visible scout dir in prompt");
       expect(match[1].trim()).toBe(
-        "agent/history/goals/repo/run-codex-scout-sandbox/runtime/scout",
+        path.join(
+          managedRoot,
+          "agent",
+          "history",
+          "goals",
+          "repo",
+          "run-codex-scout-sandbox",
+          "runtime",
+          "scout",
+        ),
       );
       const codexScoutDir = path.dirname(String(params.stdoutPath));
       writeScoutArtifacts(codexScoutDir, "run-codex-scout-sandbox");
@@ -901,6 +910,16 @@ describe("runCliPlanning", () => {
     expect(settings.sandbox.filesystem.allowRead).toContain(process.cwd());
     expect(settings.sandbox.filesystem.allowWrite).toEqual([
       path.join(goalsDir, "run-claude-scout-sandbox", "scout"),
+      path.join(
+        managedRoot,
+        "agent",
+        "history",
+        "goals",
+        "repo",
+        "run-claude-scout-sandbox",
+        "runtime",
+        "scout",
+      ),
     ]);
     expect(settings.sandbox.filesystem.allowWrite).not.toContain(process.cwd());
     expect(procCall.stdin.startsWith("You are a technical planning agent.")).toBe(true);
@@ -1101,12 +1120,96 @@ describe("runCliPlanning", () => {
     expect(prompt).toContain("### Scout Phase");
     expect(prompt).toContain("### Planner Phase");
     expect(prompt).toContain(
-      "agent/history/goals/repo/run-scout-prefix/runtime/scout/execution_plan.json",
+      path.join(
+        managedRoot,
+        "agent",
+        "history",
+        "goals",
+        "repo",
+        "run-scout-prefix",
+        "runtime",
+        "scout",
+        "execution_plan.json",
+      ),
     );
     expect(prompt).toContain("Agent-visible planning artifact directory:");
     expect(prompt).not.toContain("full access to the filesystem");
     expect(prompt).not.toContain(".clawdbot-dev");
     expect(prompt).not.toContain(".clawdbot-dev/goals");
+  });
+
+  it("reconciles Claude scout artifacts written only to the advertised agent-history scout path", async () => {
+    const runId = "run-agent-visible-reconcile";
+    const privateGoalsDir = path.join(managedRoot, ".clawdbot-dev", "goals");
+    const agentVisibleScoutDir = path.join(
+      managedRoot,
+      "agent",
+      "history",
+      "goals",
+      "repo",
+      runId,
+      "runtime",
+      "scout",
+    );
+    fs.mkdirSync(path.join(agentVisibleScoutDir, "node_specs"), { recursive: true });
+    fs.writeFileSync(path.join(agentVisibleScoutDir, "plan_draft.md"), "stale draft", "utf8");
+    fs.writeFileSync(
+      path.join(agentVisibleScoutDir, "node_specs", "stale.md"),
+      "stale node spec",
+      "utf8",
+    );
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const prompt = typeof params.stdin === "string" ? params.stdin : "";
+      expect(prompt).not.toContain(".clawdbot-dev");
+      const match = /Agent-visible planning artifact directory: ([^\n]+)/.exec(prompt);
+      if (!match?.[1]) throw new Error("missing agent-visible scout dir in prompt");
+      const advertisedScoutDir = match[1].trim();
+      expect(advertisedScoutDir).toBe(agentVisibleScoutDir);
+      expect(fs.existsSync(path.join(advertisedScoutDir, "plan_draft.md"))).toBe(false);
+      expect(fs.existsSync(path.join(advertisedScoutDir, "node_specs", "stale.md"))).toBe(false);
+
+      fs.writeFileSync(String(params.stdoutPath), "planner stdout", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeScoutArtifacts(advertisedScoutDir, runId);
+      const plan = {
+        summary: "Reconciled scout artifacts",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "analyze-repo",
+            description: "Inspect repository files and verify with a targeted test run",
+            dependsOn: [],
+            durationMinutes: 45,
+            backend: "claude_code",
+          },
+        ],
+      };
+      fs.writeFileSync(path.join(advertisedScoutDir, EXECUTION_PLAN_FILE), JSON.stringify(plan));
+      return {
+        stdout: JSON.stringify(plan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 52,
+      };
+    });
+
+    const result = await runCliPlanning({
+      runId,
+      goalText: "Plan with agent-visible scout artifacts",
+      goalsDir: privateGoalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.scoutStatus).toBe("success");
+    const canonicalScoutDir = path.join(privateGoalsDir, runId, "scout");
+    expect(fs.existsSync(path.join(canonicalScoutDir, "plan_draft.md"))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalScoutDir, "scout_report.json"))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalScoutDir, EXECUTION_PLAN_FILE))).toBe(true);
+    expect(fs.existsSync(path.join(canonicalScoutDir, "node_specs", "analyze-repo.md"))).toBe(true);
   });
 
   it("redacts known secret values in planner stdout, raw output, and copied scout artifacts", async () => {
@@ -2072,7 +2175,18 @@ describe("runCliPlanning", () => {
         const outDirMatch = /Agent-visible planning artifact directory: ([^\n]+)/.exec(prompt);
         if (!outDirMatch?.[1])
           throw new Error("expected codex prompt to include agent-visible output dir");
-        expect(outDirMatch[1]).toBe("agent/history/goals/repo/run-codex-copy/runtime/scout");
+        expect(outDirMatch[1]).toBe(
+          path.join(
+            managedRoot,
+            "agent",
+            "history",
+            "goals",
+            "repo",
+            "run-codex-copy",
+            "runtime",
+            "scout",
+          ),
+        );
         const codexScoutDir = path.dirname(String(params.stdoutPath));
         writeScoutArtifacts(codexScoutDir, "run-codex-copy");
         fs.writeFileSync(
