@@ -18,6 +18,7 @@ import {
   type GoalBackendId,
 } from "../goal/backend-types.js";
 import { isUsageLimitClassReason } from "../goal/error-patterns.js";
+import { isRetryableBlocked, isUsageLimitedBlocked } from "../goal/execution-status.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
@@ -193,6 +194,50 @@ export function remapDisabledPiSteps(params: {
   }
 
   return { reassigned, rejected, ...(target ? { target } : {}) };
+}
+
+/**
+ * On resume, recompute state for ALL nodes — not just the first task the
+ * scheduler happens to pick — by resetting stale retryable *technical* blocks
+ * back to `pending`. This makes the persisted scheduler state match what
+ * {@link computeDisplayStatuses} renders, so the graph and /goal_status agree
+ * with what the executor will actually do.
+ *
+ * A retryable technical block (see {@link isRetryableBlocked}) is any block whose
+ * reason is set and is not `user_input` — the scheduler already re-runs these on
+ * resume (agent-executor.ts `retryableBlockedIds`). Leaving them persisted as
+ * `blocked` is purely stale visual state, so we clear it here: the step becomes
+ * runnable when its deps are done, or waiting (soft_blocked) when an upstream
+ * blocker is still unresolved. Stale `blockedReason` / `blockedQuestion` /
+ * `failedDetail` and the spent turn counter are cleared so the retry starts fresh
+ * (mirrors how the executor resets a blocked task when it picks it).
+ *
+ * Backend usage-limit blocks are intentionally NOT reset: they have already been
+ * rechecked / retargeted by {@link recheckUsageLimitBackends}, the executor still
+ * re-runs them via its own retryable set, and they keep a distinct visible
+ * `usage_limited` display so a real out-of-credits blocker is never disguised as
+ * a plain runnable step. Hard blocks (user input / no actionable reason) and
+ * every non-blocked status (done / in_progress / pending) are left untouched, so
+ * user-input blockers stay blocked, completed stays done, and non-retryable
+ * failures stay failed.
+ *
+ * Returns the ids of the steps that were reset.
+ */
+export function resetRetryableBlockedSteps(steps: PlanStep[]): string[] {
+  const reset: string[] = [];
+  for (const step of steps) {
+    // Usage-limit blocks are retryable too, so exclude them explicitly — their
+    // recovery is owned by recheckUsageLimitBackends and they keep the
+    // usage_limited display.
+    if (!isRetryableBlocked(step) || isUsageLimitedBlocked(step)) continue;
+    step.status = "pending";
+    step.blockedReason = undefined;
+    step.blockedQuestion = undefined;
+    step.failedDetail = undefined;
+    step.turnsUsed = 0;
+    reset.push(step.id);
+  }
+  return reset;
 }
 
 type ScoutArtifactFiles = {
@@ -730,6 +775,16 @@ export async function goalResumeCommand(
         ...(run.backendOverride ? { backendOverride: run.backendOverride } : {}),
         onProgress: !isJson && !quiet ? (text) => runtime.log(text) : undefined,
       });
+    }
+
+    // Recompute ALL nodes: clear stale retryable technical blocks (kept after an
+    // interruption or a fatal-error cascade) back to pending so independent
+    // runnable steps don't stay blocked because a sibling was, and downstream
+    // steps show waiting rather than hard-blocked. Usage-limit blocks (handled
+    // above) and hard/user-input blocks are intentionally preserved.
+    const resetIds = resetRetryableBlockedSteps(session.plan.steps);
+    if (resetIds.length > 0 && !isJson && !quiet) {
+      runtime.log(`  [resume] Reset ${resetIds.length} stale blocked step(s) to runnable.`);
     }
   }
 

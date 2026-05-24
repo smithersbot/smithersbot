@@ -2118,4 +2118,399 @@ describe("goal-resume command", () => {
       fs.rmSync(workDir, { recursive: true, force: true });
     });
   });
+
+  // --- Resume recompute: reset stale retryable blocks across ALL nodes ---
+
+  describe("resume recompute (resetRetryableBlockedSteps)", () => {
+    it("resets a retryable technical block to pending and clears stale fields", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "error-step",
+          description: "Interrupted with a technical error",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "error",
+          blockedQuestion: "Backend unavailable.",
+          turnsUsed: 3,
+        },
+      ];
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual(["error-step"]);
+      expect(steps[0]!.status).toBe("pending");
+      expect(steps[0]!.blockedReason).toBeUndefined();
+      expect(steps[0]!.blockedQuestion).toBeUndefined();
+      expect(steps[0]!.turnsUsed).toBe(0);
+    });
+
+    it("resets every retryable technical reason back to pending", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const reasons = [
+        "timeout",
+        "auth",
+        "network",
+        "task_failed",
+        "process_lost",
+        "turn_limit",
+        "error",
+        "other",
+      ] as const;
+      const steps: PlanStep[] = reasons.map((reason, i) => ({
+        id: `step-${i}`,
+        description: reason,
+        dependsOn: [],
+        status: "blocked",
+        blockedReason: reason,
+      }));
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual(steps.map((s) => s.id));
+      expect(steps.every((s) => s.status === "pending")).toBe(true);
+      expect(steps.every((s) => s.blockedReason === undefined)).toBe(true);
+    });
+
+    it("leaves usage-limit blocks untouched (owned by the usage-limit recheck)", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "u1",
+          description: "out of credits",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "out_of_credits",
+        },
+        {
+          id: "u2",
+          description: "usage limit",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "usage_limit",
+        },
+        {
+          id: "u3",
+          description: "rate limit",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "rate_limit",
+        },
+      ];
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual([]);
+      expect(steps.every((s) => s.status === "blocked")).toBe(true);
+      expect(steps.map((s) => s.blockedReason)).toEqual([
+        "out_of_credits",
+        "usage_limit",
+        "rate_limit",
+      ]);
+    });
+
+    it("leaves hard blocks (user_input / no reason) untouched", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "ui",
+          description: "needs input",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+          blockedQuestion: "Which DB?",
+        },
+        {
+          id: "noreason",
+          description: "reason-less block",
+          dependsOn: [],
+          status: "blocked",
+        },
+      ];
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual([]);
+      expect(steps[0]!.status).toBe("blocked");
+      expect(steps[0]!.blockedReason).toBe("user_input");
+      expect(steps[0]!.blockedQuestion).toBe("Which DB?");
+      expect(steps[1]!.status).toBe("blocked");
+    });
+
+    it("leaves done / pending / in_progress untouched", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        { id: "d", description: "done", dependsOn: [], status: "done" },
+        { id: "p", description: "pending", dependsOn: [], status: "pending" },
+        { id: "ip", description: "running", dependsOn: [], status: "in_progress" },
+      ];
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual([]);
+      expect(steps.map((s) => s.status)).toEqual(["done", "pending", "in_progress"]);
+    });
+
+    it("keeps only the user-input task blocked while a retryable sibling resets to pending", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "ui",
+          description: "needs input",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+        },
+        {
+          id: "tech",
+          description: "retryable",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "error",
+        },
+      ];
+
+      resetRetryableBlockedSteps(steps);
+
+      expect(steps[0]!.status).toBe("blocked");
+      expect(steps[1]!.status).toBe("pending");
+    });
+
+    it("recomputes display so an independent sibling is pending and a downstream dep waits", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "ui",
+          description: "hard user-input block",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "user_input",
+        },
+        {
+          id: "indep",
+          description: "independent retryable block",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "error",
+        },
+        {
+          id: "down",
+          description: "downstream of the hard block",
+          dependsOn: ["ui"],
+          status: "blocked",
+          blockedReason: "error",
+        },
+      ];
+
+      resetRetryableBlockedSteps(steps);
+      const display = computeDisplayStatuses(steps);
+
+      // Hard block stays blocked; independent retryable becomes runnable; the
+      // downstream of an unresolved hard block waits rather than staying blocked.
+      expect(display.get("ui")).toBe("blocked");
+      expect(display.get("indep")).toBe("pending");
+      expect(display.get("down")).toBe("soft_blocked");
+    });
+
+    it("recomputes ALL node statuses before execution, not just the first picked task", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-recompute-all-ws-"));
+      const runId = "resume-recompute-all-status";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex not found on PATH" },
+        { id: "claude_code", available: true },
+      ];
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Mixed-backend interruption",
+            steps: [
+              {
+                id: "codex-step",
+                description: "Codex usage limit",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "out_of_credits",
+                blockedQuestion: "Codex is out of credits.",
+                executedBackend: "codex",
+              },
+              {
+                id: "indep-error",
+                description: "Independent, stale error block",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted.",
+              },
+              {
+                id: "downstream",
+                description: "Depends on codex-step",
+                dependsOn: ["codex-step"],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted (cascade).",
+              },
+              {
+                id: "indep-pending",
+                description: "Independent pending task",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Run interrupted by Codex usage limit.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured:
+        | Map<string, { status: string; blockedReason?: string; executedBackend?: string }>
+        | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = new Map(
+              params.session.plan.steps.map((s) => [
+                s.id,
+                {
+                  status: s.status,
+                  blockedReason: s.blockedReason,
+                  executedBackend: s.executedBackend,
+                },
+              ]),
+            );
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(captured).toBeDefined();
+      // Usage-limit blocker: still blocked, reason preserved, retargeted to Claude.
+      expect(captured!.get("codex-step")).toEqual({
+        status: "blocked",
+        blockedReason: "out_of_credits",
+        executedBackend: "claude_code",
+      });
+      // Independent + downstream technical blocks are reset to pending (not stale).
+      expect(captured!.get("indep-error")?.status).toBe("pending");
+      expect(captured!.get("indep-error")?.blockedReason).toBeUndefined();
+      expect(captured!.get("downstream")?.status).toBe("pending");
+      expect(captured!.get("downstream")?.blockedReason).toBeUndefined();
+      // Already-pending sibling is unchanged.
+      expect(captured!.get("indep-pending")?.status).toBe("pending");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("leaves a cancelled goal cancelled and does not reset its blocked steps when rejected", async () => {
+      saveRun(
+        makeRun({
+          runId: "resume-recompute-cancelled",
+          state: "cancelled",
+          plan: {
+            goal: "Test goal",
+            summary: "Cancelled with a retryable block",
+            steps: [
+              {
+                id: "blk",
+                description: "Retryable but cancelled",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted.",
+              },
+            ],
+          },
+        }),
+      );
+      mockConfirm.mockResolvedValueOnce(false);
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand("resume-recompute-cancelled", {}, rt);
+
+      expect(result).toEqual({ status: "cancelled" });
+      expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+      const persisted = loadRun("resume-recompute-cancelled", testGoalsDir);
+      expect(persisted?.state).toBe("cancelled");
+      // Rejecting the resume must not resurrect the cancelled goal's blocked step.
+      expect(persisted?.plan?.steps.find((s) => s.id === "blk")?.status).toBe("blocked");
+    });
+
+    it("completes a done goal with no stale blocked nodes left behind", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-recompute-done-ws-"));
+      const runId = "resume-recompute-done";
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "One done step, one stale retryable block",
+            steps: [
+              {
+                id: "done-step",
+                description: "Already done",
+                dependsOn: [],
+                status: "done",
+                durationMinutes: 1,
+              },
+              {
+                id: "stale",
+                description: "Stale retryable block",
+                dependsOn: ["done-step"],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted.",
+              },
+            ],
+          },
+          stepResults: {
+            "done-step": { stepId: "done-step", success: true, output: "Done", durationMs: 1 },
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Run interrupted.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.state).toBe("done");
+      // No node is left in a stale blocked state after completion.
+      expect(persisted?.plan?.steps.every((s) => s.status === "done")).toBe(true);
+      expect(persisted?.blocked).toBeNull();
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+  });
 });
