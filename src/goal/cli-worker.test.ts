@@ -586,6 +586,7 @@ describe("cli-worker", () => {
         "never",
         "exec",
         "--json",
+        "--skip-git-repo-check",
         "--cd",
         workingDir,
         args.at(-1),

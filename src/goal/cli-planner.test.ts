@@ -278,6 +278,7 @@ describe("runCliPlanning", () => {
   let priorCodexSandboxRoot: string | undefined;
   let managedRoot: string;
   let codexSandboxRoot: string;
+  let cwdSpy: { mockRestore: () => void } | undefined;
 
   beforeEach(() => {
     goalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-test-"));
@@ -302,9 +303,21 @@ describe("runCliPlanning", () => {
     codexSandboxRoot = fs.mkdtempSync(path.join(hostTempRoot, "cli-planner-codex-"));
     process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = codexSandboxRoot;
+    // The native-sandbox guards require generated config to live OUTSIDE the agent
+    // root AND the workspace. Under vitest, os.tmpdir() (hence codexSandboxRoot and
+    // the managed root) is redirected into the repo, and on dogfood hosts the repo
+    // is itself under the real agent root — so a planner workingDir of the real
+    // process.cwd() would make the sibling sandbox roots fail the guard. Point cwd at
+    // a fixture checkout that mirrors a normal CI layout: OUTSIDE the (relocated)
+    // agent root, with the workspace name "smithersbot" so path assertions stay valid
+    // and repo-chat executionRoot resolves to the workspace (not the agent root).
+    const plannerWorkingDir = path.join(managedRoot, "checkout", "smithersbot", "repo");
+    fs.mkdirSync(plannerWorkingDir, { recursive: true });
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(plannerWorkingDir);
   });
 
   afterEach(() => {
+    cwdSpy?.mockRestore();
     if (priorApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = priorApiKey;
     if (priorAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;

@@ -29,11 +29,13 @@ describe("git-checkpoint (unit)", () => {
   });
 
   it("findGitRoot returns null when no .git is found", () => {
-    const root = track(fs.mkdtempSync(path.join(os.tmpdir(), "git-root-miss-")));
-    const nested = path.join(root, "x", "y");
-    fs.mkdirSync(nested, { recursive: true });
+    // Walk a synthetic absolute path whose ancestors (down to the filesystem root)
+    // contain no .git. A real temp dir is unsafe here: under vitest os.tmpdir() is
+    // redirected inside this git repo (see vitest.config.ts), so a walk up from it
+    // would find the repo's .git and never reach the null case.
+    const noGitPath = path.join(path.parse(os.tmpdir()).root, `sb-no-git-${Date.now()}`, "x", "y");
 
-    expect(findGitRoot(nested)).toBeNull();
+    expect(findGitRoot(noGitPath)).toBeNull();
   });
 
   it("isGitRepo detects .git directories without calling git", () => {

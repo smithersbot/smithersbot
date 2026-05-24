@@ -36,6 +36,9 @@ export type SandboxProbeFixture = {
   fakeHomeDir: string;
   fakeSmithersbotEnv: string;
   fakeSmithersbotConfig: string;
+  fakeCodexAuth: string;
+  fakeSshKey: string;
+  fakeClaudeCreds: string;
   repoEnvLocal: string;
   envLink: string;
 };
@@ -101,6 +104,22 @@ export function createSandboxProbeFixture(
     "utf8",
   );
 
+  // Fake home auth/session/credential files across the categories the exact-file deny
+  // matrix must cover. These exercise the same gap the live smoke found (sandboxed Bash
+  // could `cat` real-home auth files); the live probe runs with HOME=fakeHomeDir.
+  const fakeCodexDir = path.join(fakeHomeDir, ".codex");
+  const fakeSshDir = path.join(fakeHomeDir, ".ssh");
+  const fakeClaudeDir = path.join(fakeHomeDir, ".claude");
+  fs.mkdirSync(fakeCodexDir, { recursive: true });
+  fs.mkdirSync(fakeSshDir, { recursive: true });
+  fs.mkdirSync(fakeClaudeDir, { recursive: true });
+  const fakeCodexAuth = path.join(fakeCodexDir, "auth.json");
+  const fakeSshKey = path.join(fakeSshDir, "id_ed25519");
+  const fakeClaudeCreds = path.join(fakeClaudeDir, ".credentials.json");
+  fs.writeFileSync(fakeCodexAuth, '{"PROBE_CODEX_AUTH_SECRET":"deny"}\n', "utf8");
+  fs.writeFileSync(fakeSshKey, "PROBE_SSH_KEY_SECRET=deny\n", "utf8");
+  fs.writeFileSync(fakeClaudeCreds, '{"PROBE_CLAUDE_CREDS_SECRET":"deny"}\n', "utf8");
+
   const envLink = path.join(repoDir, "env-link");
   try {
     fs.symlinkSync(privateEnvFile, envLink);
@@ -124,6 +143,9 @@ export function createSandboxProbeFixture(
     fakeHomeDir,
     fakeSmithersbotEnv,
     fakeSmithersbotConfig,
+    fakeCodexAuth,
+    fakeSshKey,
+    fakeClaudeCreds,
     repoEnvLocal: path.join(repoDir, ".env.local"),
     envLink,
   };
@@ -142,6 +164,13 @@ export function buildSandboxProbeCases(fixture: SandboxProbeFixture): SandboxPro
     },
     { kind: "denied", label: "home env", command: "cat ~/.smithersbot/.env" },
     { kind: "denied", label: "home config", command: "cat ~/.smithersbot/smithersbot.json" },
+    { kind: "denied", label: "home codex auth", command: "cat ~/.codex/auth.json" },
+    { kind: "denied", label: "home ssh key", command: "cat ~/.ssh/id_ed25519" },
+    {
+      kind: "denied",
+      label: "home claude credentials",
+      command: "cat ~/.claude/.credentials.json",
+    },
     { kind: "denied", label: "repo env local", command: "cat .env.local" },
     { kind: "denied", label: "repo env production", command: "cat .env.production" },
     { kind: "denied", label: "repo env test", command: "cat .env.test" },
@@ -149,6 +178,11 @@ export function buildSandboxProbeCases(fixture: SandboxProbeFixture): SandboxPro
       kind: "denied",
       label: "bash managed private env",
       command: `bash -c ${shellQuote(`cat ${shellQuote(fixture.privateEnvFile)}`)}`,
+    },
+    {
+      kind: "denied",
+      label: "bash home codex auth",
+      command: `bash -c ${shellQuote("cat ~/.codex/auth.json")}`,
     },
     {
       kind: "denied",

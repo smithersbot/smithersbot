@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const mockExecFileSync = vi.fn();
 const mockSpawnSync = vi.fn();
@@ -81,6 +81,36 @@ function mockCommandPaths(): void {
     if (joined === "claude --version") return "2.1.143 (Claude Code)\n";
     throw new Error(`unexpected command: ${joined}`);
   });
+}
+
+type IsolatedSandboxRoots = { managedRoot: string; workingDir: string; sandboxRoot: string };
+
+/**
+ * Provide host-independent sandbox roots for offline status/probe tests.
+ *
+ * The native-sandbox guards require generated config to live OUTSIDE the agent root
+ * AND outside the workspace. Under vitest, os.tmpdir() is redirected into the repo
+ * (see vitest.config.ts), and on dogfood hosts the repo itself lives under the real
+ * agent root — so tests must NOT pass process.cwd()/os.tmpdir() straight through or
+ * the guard fail-closes as `*-generation-failed`. This points SMITHERSBOT_GOALS_ROOT
+ * at a fresh managed root, places workingDir under it, and returns a sibling
+ * sandboxRoot (outside the agent root, not a parent of workingDir). Cleanup and env
+ * restoration run via onTestFinished, so the test body stays flat.
+ */
+function setupIsolatedSandboxRoots(): IsolatedSandboxRoots {
+  const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sbx-managed-"));
+  const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sbx-root-"));
+  const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+  fs.mkdirSync(workingDir, { recursive: true });
+  const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+  onTestFinished(() => {
+    if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+  });
+  return { managedRoot, workingDir, sandboxRoot };
 }
 
 describe("Codex native permission-profile sandbox config", () => {
@@ -194,7 +224,7 @@ describe("Codex native permission-profile sandbox config", () => {
   });
 
   it("writes config and makes codex-linux-sandbox visible through a per-run helper directory", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const fakeInstall = fs.mkdtempSync(path.join(os.tmpdir(), "codex-install-"));
     const binDir = path.join(fakeInstall, "bin");
     const nativeDir = path.join(
@@ -219,7 +249,7 @@ describe("Codex native permission-profile sandbox config", () => {
 
     try {
       const config = writeCodexNativeSandboxConfig({
-        workingDir: process.cwd(),
+        workingDir,
         runId: "helper-test",
         purpose: "goal-worker",
         sandboxRoot,
@@ -234,7 +264,6 @@ describe("Codex native permission-profile sandbox config", () => {
       expect(config.env.CODEX_HOME).toBe(config.codexHome);
       expect(config.env.PATH.startsWith(`${config.helperDir}${path.delimiter}`)).toBe(true);
     } finally {
-      fs.rmSync(sandboxRoot, { recursive: true, force: true });
       fs.rmSync(fakeInstall, { recursive: true, force: true });
     }
   });
@@ -251,10 +280,11 @@ describe("Codex native permission-profile sandbox config", () => {
       throw new Error(`unexpected command: ${joined}`);
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = codexNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "status-test",
-      sandboxRoot: HOST_TEMP_ROOT,
+      sandboxRoot,
       env: {},
     });
 
@@ -285,10 +315,11 @@ describe("Codex native permission-profile sandbox config", () => {
       stderr: "",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = codexNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "live-ok",
-      sandboxRoot: HOST_TEMP_ROOT,
+      sandboxRoot,
       env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -302,7 +333,7 @@ describe("Codex native permission-profile sandbox config", () => {
       "codex",
       expect.arrayContaining(["sandbox", "linux", "--permissions-profile", "smithersbot"]),
       expect.objectContaining({
-        cwd: process.cwd(),
+        cwd: workingDir,
         env: expect.objectContaining({
           CODEX_HOME: expect.stringContaining("smithersbot-codex-live-ok"),
           PATH: expect.stringContaining("smithersbot-codex-live-ok/bin"),
@@ -331,10 +362,11 @@ describe("Codex native permission-profile sandbox config", () => {
       stderr: "",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = codexNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "real-auth-leak",
-      sandboxRoot: HOST_TEMP_ROOT,
+      sandboxRoot,
       env: { SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -518,14 +550,14 @@ describe("Codex native sandbox auth continuity", () => {
   // (g) The control plane authenticates via a real symlink (not a copy) at the
   // generated auth reference, while that reference stays denied to the sandbox.
   it("symlinks the generated auth.json to the real auth source for control-plane auth", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const fakeCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-"));
     const install = createFakeCodexInstall();
     fs.writeFileSync(path.join(fakeCodexHome, "auth.json"), '{"OPENAI_API_KEY":"placeholder"}\n');
     try {
       withEnv({ CODEX_HOME: fakeCodexHome }, () => {
         const config = writeCodexNativeSandboxConfig({
-          workingDir: process.cwd(),
+          workingDir,
           runId: "auth-link",
           purpose: "goal-worker",
           sandboxRoot,
@@ -542,20 +574,19 @@ describe("Codex native sandbox auth continuity", () => {
         expect(config.deniedReadPaths).toContain(config.authSourcePath);
       });
     } finally {
-      fs.rmSync(sandboxRoot, { recursive: true, force: true });
       fs.rmSync(fakeCodexHome, { recursive: true, force: true });
       install.cleanup();
     }
   });
 
   it("skips the auth symlink (no copy) when the real auth source is absent", () => {
-    const sandboxRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "codex-native-sandbox-"));
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const emptyCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-empty-"));
     const install = createFakeCodexInstall();
     try {
       withEnv({ CODEX_HOME: emptyCodexHome }, () => {
         const config = writeCodexNativeSandboxConfig({
-          workingDir: process.cwd(),
+          workingDir,
           runId: "auth-missing",
           purpose: "goal-worker",
           sandboxRoot,
@@ -565,7 +596,6 @@ describe("Codex native sandbox auth continuity", () => {
         expect(fs.existsSync(config.authReferencePath)).toBe(false);
       });
     } finally {
-      fs.rmSync(sandboxRoot, { recursive: true, force: true });
       fs.rmSync(emptyCodexHome, { recursive: true, force: true });
       install.cleanup();
     }
@@ -652,8 +682,16 @@ describe("Claude Code native sandbox settings", () => {
         purpose: "goal-worker",
         settingsRoot,
         // Deterministic deny generation: treat every candidate as present and not a
-        // symlink so the asserted shape does not depend on the isolated test HOME.
-        denyReadDeps: { pathExists: () => true, realPath: (candidate) => candidate },
+        // symlink, and scan no home directories, so the asserted shape does not depend
+        // on (or read) the real test HOME. (Exact sensitive-file discovery is covered
+        // by its own fake-home fixture test below.)
+        denyReadDeps: {
+          pathExists: () => true,
+          realPath: (candidate) => candidate,
+          readDir: () => [],
+          isRegularFile: () => false,
+          isDirectory: () => false,
+        },
       });
       const parsed = JSON.parse(
         fs.readFileSync(config.settingsPath, "utf8"),
@@ -696,7 +734,7 @@ describe("Claude Code native sandbox settings", () => {
     }
   });
 
-  it("emits only the minimal proven-safe deny matrix, filtered to existing real paths", () => {
+  it("filters deny entries to existing real paths and emits no ** globs (empty home scan)", () => {
     const home = "/home/testuser";
     const config = buildClaudeCodeSandboxSettingsConfig({
       workingDir: "/ws/repo",
@@ -716,6 +754,11 @@ describe("Claude Code native sandbox settings", () => {
           if (candidate === path.join(home, ".clawdbot")) return path.join(home, ".moltbot");
           return candidate;
         },
+        // No sensitive home files exist for this case: exact-file discovery finds nothing,
+        // so only the dir/literal deny matrix remains. (Population is covered separately.)
+        readDir: () => [],
+        isRegularFile: () => false,
+        isDirectory: () => false,
       },
     });
     const deny = config.settings.sandbox.filesystem.denyRead;
@@ -731,7 +774,8 @@ describe("Claude Code native sandbox settings", () => {
     expect(deny).toContain(path.join("/ws/repo", ".env"));
     expect(deny).toContain(path.join("/ws/repo", ".env.local"));
     expect(deny).toContain(path.join("/ws/repo", ".env.test"));
-    // Trimmed to the minimal set — no large/extra protected dirs that hung bwrap.
+    // With an empty home scan no credential-dir files are discovered, so the deny set
+    // is exactly the dir/literal matrix (no `~/.ssh`/`~/.gnupg`/`~/.codex`/legacy entries).
     for (const dropped of [
       ".ssh",
       ".gnupg",
@@ -779,6 +823,10 @@ describe("Claude Code native sandbox settings", () => {
           if (candidate === "/managed/private") return "/managed/private";
           return candidate;
         },
+        // Scan no home files: this case asserts the dir/literal denies and Read-tool rules.
+        readDir: () => [],
+        isRegularFile: () => false,
+        isDirectory: () => false,
       },
     });
 
@@ -804,13 +852,136 @@ describe("Claude Code native sandbox settings", () => {
     expect(config.settings.permissions.deny).toContain(`Read(${path.join(home, ".ssh")}/**)`);
   });
 
+  it("denies exact existing sensitive home/credential files via metadata-bounded discovery", () => {
+    // Canonicalize the fixture root so emitted realpath()s match our expected paths
+    // even when os.tmpdir() resolves through a symlink.
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "claude-deny-home-")));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const mkfile = (filePath: string, body = "secret\n"): string => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, body);
+      return filePath;
+    };
+    try {
+      const home = path.join(root, "home");
+      const workingDir = path.join(root, "agent", "workspaces", "smithersbot", "repo");
+
+      // Repo: secret env files + safe files + a decoy node_modules subtree.
+      mkfile(path.join(workingDir, ".env"));
+      const repoEnvLocal = mkfile(path.join(workingDir, ".env.local"));
+      const repoEnvStaging = mkfile(path.join(workingDir, ".env.staging"));
+      mkfile(path.join(workingDir, ".env.example"), "TOKEN=placeholder\n");
+      mkfile(path.join(workingDir, "README.md"), "safe\n");
+      mkfile(path.join(workingDir, "node_modules", "pkg", ".env"), "must-not-be-walked\n");
+
+      // Managed private env (workspace name = basename(dirname(workingDir)) = "smithersbot").
+      const privateEnv = mkfile(path.join(root, "private", "env", "smithersbot", ".env"));
+
+      // Home credential files across categories.
+      const claudeCreds = mkfile(path.join(home, ".claude", ".credentials.json"));
+      mkfile(path.join(home, ".claude", "settings.json"));
+      const codexAuth = mkfile(path.join(home, ".codex", "auth.json"));
+      mkfile(path.join(home, ".codex", "config.toml"));
+      const sshKey = mkfile(path.join(home, ".ssh", "id_ed25519"));
+      const sshPub = mkfile(path.join(home, ".ssh", "id_ed25519.pub"), "ssh-ed25519 AAAA\n");
+      const gpgKeyring = mkfile(path.join(home, ".gnupg", "pubring.kbx"));
+      const gpgPrivKey = mkfile(path.join(home, ".gnupg", "private-keys-v1.d", "ABCD.key"));
+      const netrc = mkfile(path.join(home, ".netrc"));
+
+      // Legacy `.clawdbot -> .moltbot` symlink: the deny must resolve to the real moltbot
+      // target, never the symlink path (bwrap cannot mount over a symlink).
+      const moltbotCreds = mkfile(path.join(home, ".moltbot", "clawdbot.json"));
+      let symlinkCreated = true;
+      try {
+        fs.symlinkSync(path.join(home, ".moltbot"), path.join(home, ".clawdbot"));
+      } catch {
+        symlinkCreated = false;
+      }
+
+      // Decoy large tree outside the scan set that must never be walked.
+      mkfile(path.join(home, ".cache", "huge", "deep", "secret.json"), "decoy\n");
+
+      const readDirCalls: string[] = [];
+      const config = buildClaudeCodeSandboxSettingsConfig({
+        workingDir,
+        runId: "deny-home",
+        purpose: "goal-worker",
+        denyReadDeps: {
+          homedir: () => home,
+          privateRoot: () => path.join(root, "private"),
+          // pathExists/realPath/isRegularFile/isDirectory default to real fs (exercising the
+          // production defaults); readDir is wrapped only to observe traversal bounds.
+          readDir: (dir) => {
+            readDirCalls.push(dir);
+            return fs.readdirSync(dir);
+          },
+        },
+      });
+      const deny = config.settings.sandbox.filesystem.denyRead;
+
+      // Exact existing sensitive regular files are denied (the reliable Bash mechanism),
+      // including a discovered `.env.*` variant and a private-keys-v1.d depth-2 key.
+      for (const expected of [
+        claudeCreds,
+        codexAuth,
+        sshKey,
+        gpgKeyring,
+        gpgPrivKey,
+        netrc,
+        privateEnv,
+        repoEnvLocal,
+        repoEnvStaging,
+      ]) {
+        expect(deny).toContain(expected);
+      }
+
+      // Directory deny is NOT the only coverage: the ~/.claude dir AND files under it appear.
+      expect(deny).toContain(path.join(home, ".claude"));
+      expect(deny).toContain(claudeCreds);
+
+      // Safe files stay readable; the public SSH key is not a secret.
+      expect(deny).not.toContain(path.join(workingDir, "README.md"));
+      expect(deny).not.toContain(path.join(workingDir, ".env.example"));
+      expect(deny).not.toContain(sshPub);
+
+      // Nonexistent sensitive path is skipped.
+      expect(deny).not.toContain(path.join(home, ".aws", "credentials"));
+
+      // No recursive globs in the filesystem denyRead.
+      expect(deny.some((entry) => entry.includes("**"))).toBe(false);
+
+      // Symlinks resolve to the real target; the symlink path is never emitted.
+      if (symlinkCreated) {
+        expect(deny).toContain(moltbotCreds);
+        expect(deny.some((entry) => entry.startsWith(path.join(home, ".clawdbot")))).toBe(false);
+      }
+
+      // Bounded traversal: the repo node_modules and the decoy ~/.cache tree are never walked.
+      expect(readDirCalls).not.toContain(path.join(workingDir, "node_modules"));
+      expect(readDirCalls.some((dir) => dir.includes("node_modules"))).toBe(false);
+      expect(readDirCalls.some((dir) => dir.includes(".cache"))).toBe(false);
+
+      // Defense-in-depth Read-tool denies remain.
+      const perm = config.settings.permissions.deny;
+      expect(perm).toContain(`Read(${repoEnvLocal})`);
+      expect(perm).toContain(`Read(${path.join(home, ".codex")}/**)`);
+      expect(perm).toContain(`Read(${path.join(home, ".ssh")}/**)`);
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns a structured fail-closed blocker until the live probe is explicitly enabled", () => {
     mockCommandPaths();
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "status-test",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: {},
     });
 
@@ -842,10 +1013,11 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "live-ok",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: {
         SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1",
         ANTHROPIC_API_KEY: "placeholder-api-key",
@@ -872,7 +1044,7 @@ describe("Claude Code native sandbox settings", () => {
         "Bash",
       ]),
       expect.objectContaining({
-        cwd: process.cwd(),
+        cwd: workingDir,
         env: expect.not.objectContaining({
           ANTHROPIC_API_KEY: expect.any(String),
           ANTHROPIC_AUTH_TOKEN: expect.any(String),
@@ -906,10 +1078,11 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "deny-leak",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -939,10 +1112,11 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "allow-fail",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -960,10 +1134,11 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "Not logged in · Please run /login\n",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "not-logged-in",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -1036,10 +1211,11 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory\n",
     });
 
+    const { workingDir, sandboxRoot } = setupIsolatedSandboxRoots();
     const status = claudeCodeNativeSandboxStatus({
-      workingDir: process.cwd(),
+      workingDir,
       runId: "libx32-fail",
-      settingsRoot: HOST_TEMP_ROOT,
+      settingsRoot: sandboxRoot,
       env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1" },
     });
 
@@ -1113,10 +1289,10 @@ describe("Claude Code native sandbox settings", () => {
       stderr: "",
     });
 
-    const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-auth-probes-"));
+    const { workingDir, sandboxRoot: settingsRoot } = setupIsolatedSandboxRoots();
     try {
       const report = runClaudeSubscriptionAuthDifferentialProbes({
-        workingDir: process.cwd(),
+        workingDir,
         runId: "auth-ok",
         settingsRoot,
         env: {
@@ -1192,10 +1368,10 @@ describe("Claude Code native sandbox settings", () => {
         stderr: "Not logged in. Please run /login\n",
       });
 
-    const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-auth-probes-"));
+    const { workingDir, sandboxRoot: settingsRoot } = setupIsolatedSandboxRoots();
     try {
       const report = runClaudeSubscriptionAuthDifferentialProbes({
-        workingDir: process.cwd(),
+        workingDir,
         runId: "auth-hidden",
         settingsRoot,
         env: { SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES: "1", PATH: process.env.PATH },

@@ -34,10 +34,14 @@ describe("goal worker sandbox live probes", () => {
       "managed private env",
       "home env",
       "home config",
+      "home codex auth",
+      "home ssh key",
+      "home claude credentials",
       "repo env local",
       "repo env production",
       "repo env test",
       "bash managed private env",
+      "bash home codex auth",
       "python managed private env",
       "private symlink escape",
     ]);
@@ -57,6 +61,16 @@ describe("goal worker sandbox live probes", () => {
     expect(fs.readFileSync(path.join(fixture.historyDir, "summary.md"), "utf8")).toContain(
       "safe prior goal text",
     );
+
+    // Fake home auth/session/credential files exist so the denied probes have real
+    // sentinel targets to confirm they cannot be read from sandboxed Bash.
+    for (const credentialFile of [
+      fixture.fakeCodexAuth,
+      fixture.fakeSshKey,
+      fixture.fakeClaudeCreds,
+    ]) {
+      expect(fs.existsSync(credentialFile)).toBe(true);
+    }
   });
 
   it("writes a schema-valid home config fixture and a real git repo in the fixture repo", () => {

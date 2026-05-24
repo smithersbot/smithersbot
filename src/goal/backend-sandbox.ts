@@ -497,49 +497,55 @@ export type ClaudeDenyReadDeps = {
   privateRoot?: () => string;
   pathExists?: (candidate: string) => boolean;
   realPath?: (candidate: string) => string;
+  /** List a directory's entry names. Metadata-only (no contents); defaults to fs.readdirSync. */
+  readDir?: (dir: string) => string[];
+  /** True when the path is a regular file (follows symlinks); defaults to fs.statSync().isFile(). */
+  isRegularFile?: (candidate: string) => boolean;
+  /** True when the path is a directory (follows symlinks); defaults to fs.statSync().isDirectory(). */
+  isDirectory?: (candidate: string) => boolean;
+};
+
+type ResolvedClaudeDenyDeps = {
+  homedir: () => string;
+  privateRoot: () => string;
+  pathExists: (candidate: string) => boolean;
+  realPath: (candidate: string) => string;
+  readDir: (dir: string) => string[];
+  isRegularFile: (candidate: string) => boolean;
+  isDirectory: (candidate: string) => boolean;
 };
 
 /**
  * Build the native-sandbox `filesystem.denyRead` entries for sandboxed Bash.
  *
- * This is the MINIMAL deny matrix that was proven live (control-plane auth works
- * while sandboxed Bash is denied every secret below, README.md/.env.example stay
- * readable, sandbox starts in ~tens of seconds). It was trimmed to this set after
- * a broader deny list was shown to hang bubblewrap startup in a clean session.
+ * Claude Code 2.1.x enforces `filesystem.denyRead` for sandboxed Bash via per-entry
+ * bubblewrap mounts. Live differential probing established two key facts:
+ *   - EXACT regular-file entries are mounted reliably and DO block Bash child reads
+ *     (the repo `.env*` denies worked).
+ *   - DIRECTORY/prefix entries (and `permissions.deny Read(.../**)` rules) do NOT
+ *     reliably block Bash child content reads recursively — a live smoke test could
+ *     still `cat ~/.codex/auth.json`, a `~/.ssh` file, and a regular file under
+ *     `~/.claude` from sandboxed Bash with rc=0.
  *
- * Claude Code 2.1.x enforces denyRead via bubblewrap mounts, which imposes three
- * hard constraints learned from live differential probing:
+ * So the reliable mechanism is to deny each sensitive file as its own EXACT existing
+ * regular-file entry (see {@link buildClaudeSensitiveFileDenies}), discovered
+ * metadata-only and bounded. Three bwrap constraints still hold:
  *   1. A recursive/large glob (e.g. `<repo>/**` + `/.env`) is expanded by walking
- *      the matching tree; over `node_modules` that walk hangs sandbox startup. So
- *      we never emit `**` globs.
- *   2. bwrap cannot mount over a path that is absent from the sandbox rootfs or is
- *      a symlink — it fails with "Can't mount tmpfs on /newroot/...: No such file
- *      or directory" (the same family as the known `/newroot/libx32` blocker). So
- *      we filter to existing paths and resolve symlinks to their real targets.
- *   3. Sandbox-startup cost scales with denied DIRECTORY tree size; stacking
- *      several large trees hangs startup. We deny exactly one required large tree
- *      (`~/.claude`, the credential/session/config store) plus small targets.
+ *      the matching tree; over `node_modules` that walk hangs sandbox startup. So we
+ *      never emit `**` globs and the discovery is depth- and budget-bounded.
+ *   2. bwrap cannot mount over a path that is absent from the sandbox rootfs or is a
+ *      symlink — it fails with "Can't mount tmpfs on /newroot/...: No such file or
+ *      directory". So we filter to existing paths, resolve symlinks to their real
+ *      targets, and keep only regular files for the exact-file entries.
+ *   3. Startup cost scales with denied DIRECTORY tree size; stacking several large
+ *      trees hangs startup. Individual file mounts are cheap (one mount target, no
+ *      tree walk), so the exact-file set does not reintroduce that cost.
  *
- * Deny set (each is a real, mountable, existing path):
- *   - managed private root (covers the managed private env AND any symlink-escape
- *     to it, since the link resolves to a denied target);
- *   - literal top-level repo env files (`.env`, `.env.local`, `.env.production`,
- *     `.env.test`);
- *   - `~/.claude` (directory deny transitively covers `~/.claude/.credentials.json`,
- *     `settings.json`, and session files).
- *
- * Defense-in-depth denies for other home credential dirs (`~/.ssh`, `~/.gnupg`,
- * `~/.codex`, legacy state dirs) are intentionally NOT emitted: stacking them hung
- * bwrap startup (fail-closed would block every worker), they are outside this
- * goal's required matrix, and Codex has its own sandbox. They can be revisited if a
- * non-hanging mechanism is found.
+ * The directory denies (`~/.claude`, managed private root) and the broad
+ * `permissions.deny Read(.../**)` rules are kept as defense-in-depth — they are no
+ * longer the only coverage for sensitive child files.
  */
-function resolveClaudeDenyDeps(deps: ClaudeDenyReadDeps): {
-  homedir: () => string;
-  privateRoot: () => string;
-  pathExists: (candidate: string) => boolean;
-  realPath: (candidate: string) => string;
-} {
+function resolveClaudeDenyDeps(deps: ClaudeDenyReadDeps): ResolvedClaudeDenyDeps {
   return {
     homedir: deps.homedir ?? os.homedir,
     privateRoot: deps.privateRoot ?? (() => resolvePrivateRoot()),
@@ -551,6 +557,33 @@ function resolveClaudeDenyDeps(deps: ClaudeDenyReadDeps): {
           return fs.realpathSync(candidate);
         } catch {
           return candidate;
+        }
+      }),
+    readDir:
+      deps.readDir ??
+      ((dir) => {
+        try {
+          return fs.readdirSync(dir);
+        } catch {
+          return [];
+        }
+      }),
+    isRegularFile:
+      deps.isRegularFile ??
+      ((candidate) => {
+        try {
+          return fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      }),
+    isDirectory:
+      deps.isDirectory ??
+      ((candidate) => {
+        try {
+          return fs.statSync(candidate).isDirectory();
+        } catch {
+          return false;
         }
       }),
   };
@@ -569,15 +602,219 @@ function resolveExistingRealPaths(
   return uniqueValues(candidates.filter((c) => deps.pathExists(c)).map((c) => deps.realPath(c)));
 }
 
-function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
-  const { homedir, privateRoot, pathExists, realPath } = resolveClaudeDenyDeps(deps);
+/**
+ * Like {@link resolveExistingRealPaths} but additionally requires the resolved real
+ * target to be a regular file. Symlinks are resolved to their real target first (so
+ * we deny the target, never the link — bwrap cannot mount over a symlink), then
+ * non-regular targets (directories, sockets, fifos, broken links) are dropped so
+ * every emitted exact-file deny is a real, mountable bwrap FILE target.
+ */
+function resolveExistingRealFiles(
+  candidates: string[],
+  deps: {
+    pathExists: (candidate: string) => boolean;
+    realPath: (candidate: string) => string;
+    isRegularFile: (candidate: string) => boolean;
+  },
+): string[] {
+  return uniqueValues(
+    candidates
+      .filter((c) => deps.pathExists(c))
+      .map((c) => deps.realPath(c))
+      .filter((real) => deps.isRegularFile(real)),
+  );
+}
+
+/** Default bounds for {@link discoverSensitiveFilesInDir}; see its doc for rationale. */
+const SENSITIVE_SCAN_MAX_DEPTH = 2;
+const SENSITIVE_SCAN_BUDGET = 1000;
+
+type SensitiveScanDeps = {
+  pathExists: (candidate: string) => boolean;
+  readDir: (dir: string) => string[];
+  isRegularFile: (candidate: string) => boolean;
+  isDirectory: (candidate: string) => boolean;
+};
+
+/**
+ * Shallow, bounded scan of a single directory for sensitive regular files. Reads
+ * directory listings and stat metadata only — never file contents. Bounded by depth
+ * (small per category — e.g. 1 for `~/.codex`, 2 for `~/.gnupg/private-keys-v1.d`)
+ * and a shared global entry budget so it can never walk an unrelated large tree such
+ * as `node_modules`. Returns absolute paths of regular files whose basename matches
+ * `namePredicate`. Subdirectories at the depth limit are detected but NOT descended
+ * into (no readDir call), keeping traversal off large nested trees.
+ */
+function discoverSensitiveFilesInDir(
+  dir: string,
+  options: {
+    namePredicate: (name: string) => boolean;
+    maxDepth?: number;
+    budget?: { remaining: number };
+  },
+  deps: SensitiveScanDeps,
+): string[] {
+  const maxDepth = options.maxDepth ?? SENSITIVE_SCAN_MAX_DEPTH;
+  const budget = options.budget ?? { remaining: SENSITIVE_SCAN_BUDGET };
+  const found: string[] = [];
+  const walk = (current: string, depth: number): void => {
+    if (depth > maxDepth || budget.remaining <= 0) return;
+    if (!deps.pathExists(current) || !deps.isDirectory(current)) return;
+    for (const name of deps.readDir(current)) {
+      if (budget.remaining <= 0) break;
+      budget.remaining -= 1;
+      const child = path.join(current, name);
+      if (deps.isDirectory(child)) {
+        walk(child, depth + 1);
+      } else if (options.namePredicate(name) && deps.isRegularFile(child)) {
+        found.push(child);
+      }
+    }
+  };
+  walk(dir, 1);
+  return found;
+}
+
+/** Top-level repo env files to deny: `.env` and `.env.*`, but keep templates readable. */
+function isRepoEnvFileName(name: string): boolean {
+  if (name === ".env") return true;
+  if (!name.startsWith(".env.")) return false;
+  return name !== ".env.example" && name !== ".env.sample";
+}
+
+/** Known sensitive credential/config/session basenames found inside credential dirs. */
+const SENSITIVE_FILE_BASENAMES = new Set<string>([
+  ".credentials.json",
+  "credentials",
+  "credentials.json",
+  "auth.json",
+  "config.json",
+  "config.toml",
+  "settings.json",
+  "settings.local.json",
+  "config",
+  "known_hosts",
+  "authorized_keys",
+  "trustdb.gpg",
+  ".env",
+  "smithersbot.json",
+  "moltbot.json",
+  "clawdbot.json",
+  ".netrc",
+  ".npmrc",
+  ".pypirc",
+  ".git-credentials",
+]);
+
+/** Sensitive file extensions: keys/certs, GPG keyrings, and service-account/oauth/token JSON. */
+const SENSITIVE_FILE_EXTENSIONS = new Set<string>([
+  ".pem",
+  ".key",
+  ".crt",
+  ".cer",
+  ".p12",
+  ".pfx",
+  ".kbx",
+  ".gpg",
+  ".json",
+  ".toml",
+]);
+
+/** Match a credential/secret filename inside a known credential directory. */
+function isSensitiveCredentialFileName(name: string): boolean {
+  if (SENSITIVE_FILE_BASENAMES.has(name)) return true;
+  // SSH private keys (`id_rsa`, `id_ed25519`, ...) but never the `.pub` public half.
+  if (name.startsWith("id_") && !name.endsWith(".pub")) return true;
+  const ext = path.extname(name);
+  if (ext === ".pub") return false; // public keys are not secret
+  return SENSITIVE_FILE_EXTENSIONS.has(ext);
+}
+
+/**
+ * Discover the exact, existing, sensitive REGULAR FILES that sandboxed Bash must not
+ * read, as absolute real (symlink-resolved) paths. This is the reliable Bash-deny
+ * mechanism: Claude Code mounts each exact-file `denyRead` entry individually,
+ * whereas directory/prefix denies do not reliably block Bash child reads.
+ *
+ * Discovery is metadata-only (directory listings + stat) and bounded: each credential
+ * directory is scanned at a small depth and all scans share one global entry budget,
+ * so node_modules / large unrelated trees are never walked. The "common credential
+ * file" patterns (service-account/oauth/token JSON, `*.pem`/`*.key`/`*.crt`) are
+ * applied ONLY inside these bounded credential dirs and as fixed home files — never a
+ * repo-wide scan — to avoid the node_modules walk and avoid denying repo fixtures.
+ */
+function buildClaudeSensitiveFileDenies(
+  workingDir: string,
+  deps: ResolvedClaudeDenyDeps,
+): string[] {
+  const { homedir, privateRoot, pathExists, realPath, readDir, isRegularFile, isDirectory } = deps;
   const home = homedir();
-  // Minimal proven-safe deny matrix only.
+  const budget = { remaining: SENSITIVE_SCAN_BUDGET };
+  const scanDeps: SensitiveScanDeps = { pathExists, readDir, isRegularFile, isDirectory };
+
+  const workspaceName = path.basename(path.dirname(workingDir));
+  const privateWorkspaceDir = path.join(privateRoot(), "env", workspaceName);
+
+  // Explicit exact-path candidates: the managed private env and fixed home credential
+  // files (no scan needed — they have well-known names).
+  const candidates: string[] = [
+    path.join(privateWorkspaceDir, ".env"),
+    ...[".netrc", ".npmrc", ".pypirc", ".git-credentials"].map((name) => path.join(home, name)),
+  ];
+
+  // Bounded scans: repo top level (env files only, never recursed), the managed
+  // private workspace dir, and the small home credential dirs.
+  const scans: Array<{ dir: string; maxDepth: number; namePredicate: (name: string) => boolean }> =
+    [
+      { dir: workingDir, maxDepth: 1, namePredicate: isRepoEnvFileName },
+      { dir: privateWorkspaceDir, maxDepth: 1, namePredicate: isSensitiveCredentialFileName },
+      {
+        dir: path.join(home, ".claude"),
+        maxDepth: 1,
+        namePredicate: isSensitiveCredentialFileName,
+      },
+      { dir: path.join(home, ".codex"), maxDepth: 1, namePredicate: isSensitiveCredentialFileName },
+      { dir: path.join(home, ".ssh"), maxDepth: 1, namePredicate: isSensitiveCredentialFileName },
+      { dir: path.join(home, ".aws"), maxDepth: 1, namePredicate: isSensitiveCredentialFileName },
+      { dir: path.join(home, ".gnupg"), maxDepth: 2, namePredicate: isSensitiveCredentialFileName },
+      ...[".smithersbot", ".moltbot", ".clawdbot", ".clawdbot-dev"].map((name) => ({
+        dir: path.join(home, name),
+        maxDepth: 1,
+        namePredicate: isSensitiveCredentialFileName,
+      })),
+    ];
+
+  for (const scan of scans) {
+    candidates.push(
+      ...discoverSensitiveFilesInDir(
+        scan.dir,
+        { namePredicate: scan.namePredicate, maxDepth: scan.maxDepth, budget },
+        scanDeps,
+      ),
+    );
+  }
+
+  return resolveExistingRealFiles(candidates, { pathExists, realPath, isRegularFile });
+}
+
+function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+  const resolved = resolveClaudeDenyDeps(deps);
+  const { homedir, privateRoot, pathExists, realPath } = resolved;
+  const home = homedir();
+  // Directory denies kept as defense-in-depth (proven safe for bwrap startup). On their
+  // own these do NOT reliably block sandboxed Bash child reads — see buildClaudeSensitiveFileDenies.
   const protectedDirs = [privateRoot(), path.join(home, ".claude")];
+  // Literal top-level repo env files (kept explicit for back-compat with the proven matrix).
   const protectedFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
     path.join(workingDir, name),
   );
-  return resolveExistingRealPaths([...protectedFiles, ...protectedDirs], { pathExists, realPath });
+  const dirAndLiteralDenies = resolveExistingRealPaths([...protectedFiles, ...protectedDirs], {
+    pathExists,
+    realPath,
+  });
+  // Exact existing sensitive regular files — the reliable Bash-deny mechanism.
+  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved);
+  return uniqueValues([...dirAndLiteralDenies, ...exactFileDenies]);
 }
 
 /**
