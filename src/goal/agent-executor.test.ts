@@ -617,6 +617,58 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.blocked?.requiredInputKey).toBe("task:1:input");
   });
 
+  it("collider: runs both answered user-input parents then the child to completion", async () => {
+    // Two independent parents blocked on user input, each with an operator
+    // answer, plus one child depending on both. The scheduler treats answered
+    // blocked parents as runnable, runs BOTH (not just the first), and only then
+    // runs the child once both are done — finishing with an all-done graph.
+    const parentA = makeStep({
+      id: "collider-parent-a",
+      backend: "codex",
+      status: "blocked",
+      blockedReason: "user_input",
+      blockedQuestion: "Detail for A?",
+    });
+    const parentB = makeStep({
+      id: "collider-parent-b",
+      backend: "codex",
+      status: "blocked",
+      blockedReason: "user_input",
+      blockedQuestion: "Detail for B?",
+    });
+    const child = makeStep({
+      id: "collider-child",
+      backend: "codex",
+      status: "pending",
+      dependsOn: ["collider-parent-a", "collider-parent-b"],
+    });
+    const plan = makePlan([parentA, parentB, child]);
+    const session = makeSession(plan);
+    session.answers = {
+      "task:collider-parent-a:input": "A details",
+      "task:collider-parent-b:input": "B details",
+    };
+
+    mockCliExecute.mockResolvedValue({ status: "complete", summary: "ok", turnsUsed: 1 });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-collider-complete",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(parentA.status).toBe("done");
+    expect(parentB.status).toBe("done");
+    expect(child.status).toBe("done");
+    // All three tasks actually executed (both parents, not just the first).
+    expect(mockCliExecute).toHaveBeenCalledTimes(3);
+    // The scheduler consumed both answers while running the parents.
+    expect(session.answers["task:collider-parent-a:input"]).toBeUndefined();
+    expect(session.answers["task:collider-parent-b:input"]).toBeUndefined();
+  });
+
   it("blocks all pending steps when a fatal auth error triggers global block", async () => {
     const step1 = makeStep({ id: "1", backend: "codex" });
     const step2 = makeStep({ id: "2", backend: "codex", dependsOn: ["1"] });

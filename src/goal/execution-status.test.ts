@@ -7,6 +7,7 @@ import {
   isRetryableBlocked,
   isUsageLimitedBlocked,
 } from "./execution-status.js";
+import { normalizeAnsweredUserInputBlocks } from "./resume-state.js";
 import type { PlanStep } from "./types.js";
 
 function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
@@ -96,6 +97,51 @@ describe("computeDisplayStatuses — resume visual state", () => {
     const m = computeDisplayStatuses(steps);
     expect(m.get("A")).toBe("blocked");
     expect(m.get("B")).toBe("pending");
+  });
+
+  it("collider: both answered user-input parents normalize to runnable, no stale blocked node, child waits then completes", () => {
+    // Two independent parents blocked on user input with answers, plus a child
+    // depending on both. After resume normalization neither parent renders as a
+    // hard `blocked` node, and the child is not needs-input blocked.
+    const steps = [
+      step({
+        id: "collider-parent-a",
+        status: "blocked",
+        blockedReason: "user_input",
+        blockedQuestion: "Detail for A?",
+      }),
+      step({
+        id: "collider-parent-b",
+        status: "blocked",
+        blockedReason: "user_input",
+        blockedQuestion: "Detail for B?",
+      }),
+      step({
+        id: "collider-child",
+        status: "pending",
+        dependsOn: ["collider-parent-a", "collider-parent-b"],
+      }),
+    ];
+    const answers = {
+      "task:collider-parent-a:input": "A details",
+      "task:collider-parent-b:input": "B details",
+    };
+
+    const reset = normalizeAnsweredUserInputBlocks(steps, answers);
+    expect(reset.sort()).toEqual(["collider-parent-a", "collider-parent-b"]);
+
+    const m = computeDisplayStatuses(steps);
+    expect([...m.values()].some((v) => v === "blocked")).toBe(false);
+    expect(m.get("collider-parent-a")).toBe("pending");
+    expect(m.get("collider-parent-b")).toBe("pending");
+    expect(m.get("collider-child")).toBe("pending");
+
+    // Once both parents complete, the child runs and the final graph is all done.
+    steps[0]!.status = "done";
+    steps[1]!.status = "done";
+    steps[2]!.status = "done";
+    const final = computeDisplayStatuses(steps);
+    expect([...final.values()].every((v) => v === "done")).toBe(true);
   });
 
   it("failed step retried: an error-blocked step renders pending, not stale blocked", () => {

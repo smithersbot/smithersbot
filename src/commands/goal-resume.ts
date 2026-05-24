@@ -19,6 +19,7 @@ import {
 } from "../goal/backend-types.js";
 import { isUsageLimitClassReason } from "../goal/error-patterns.js";
 import { isRetryableBlocked, isUsageLimitedBlocked } from "../goal/execution-status.js";
+import { normalizeAnsweredUserInputBlocks } from "../goal/resume-state.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
@@ -785,6 +786,20 @@ export async function goalResumeCommand(
     const resetIds = resetRetryableBlockedSteps(session.plan.steps);
     if (resetIds.length > 0 && !isJson && !quiet) {
       runtime.log(`  [resume] Reset ${resetIds.length} stale blocked step(s) to runnable.`);
+    }
+
+    // Answered user-input blocks are runnable for the scheduler (it picks them
+    // via hasAnswerForTask) but still persist as `blocked` + `user_input`, so the
+    // graph/status renderers would draw them as hard-blocked after resume. Flip
+    // every answered user-input block to `pending` here — the same reset the
+    // scheduler does when it picks one — so the rendered state matches what the
+    // executor will run. The answer is left in place; the scheduler consumes it
+    // when it actually runs the step.
+    const answeredIds = normalizeAnsweredUserInputBlocks(session.plan.steps, session.answers);
+    if (answeredIds.length > 0 && !isJson && !quiet) {
+      runtime.log(
+        `  [resume] Cleared ${answeredIds.length} answered user-input block(s) to runnable.`,
+      );
     }
   }
 

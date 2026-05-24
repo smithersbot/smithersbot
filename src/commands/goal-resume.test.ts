@@ -69,9 +69,15 @@ const mockExecuteGoalWithAgent = vi.fn(
   },
 );
 
-vi.mock("../goal/agent-executor.js", () => ({
-  executeGoalWithAgent: (...args: unknown[]) => mockExecuteGoalWithAgent(...args),
-}));
+// Preserve the real module exports (e.g. hasAnswerForTask, used by the resume
+// normalization in goal-resume.ts) and override only the executor entry point.
+vi.mock("../goal/agent-executor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/agent-executor.js")>();
+  return {
+    ...actual,
+    executeGoalWithAgent: (...args: unknown[]) => mockExecuteGoalWithAgent(...args),
+  };
+});
 
 // Control backend availability without spawning real codex/claude probes.
 // Keep the real isBackendAvailable so the resume recheck + pickFallbackBackend
@@ -2509,6 +2515,216 @@ describe("goal-resume command", () => {
       // No node is left in a stale blocked state after completion.
       expect(persisted?.plan?.steps.every((s) => s.status === "done")).toBe(true);
       expect(persisted?.blocked).toBeNull();
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+  });
+
+  describe("answered user-input normalization (normalizeAnsweredUserInputBlocks)", () => {
+    it("collider: resumes two answered user-input parents to pending before execution, no stale blocked node", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-collider-ws-"));
+      const runId = "resume-collider";
+      const combinedKey = "tasks:collider-parent-a,collider-parent-b:input";
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Collider: two answered user-input parents + one child",
+            steps: [
+              {
+                id: "collider-parent-a",
+                description: "Parent A blocked for operator detail",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "user_input",
+                blockedQuestion: "Detail for A?",
+                turnsUsed: 2,
+              },
+              {
+                id: "collider-parent-b",
+                description: "Parent B blocked for operator detail",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "user_input",
+                blockedQuestion: "Detail for B?",
+                turnsUsed: 2,
+              },
+              {
+                id: "collider-child",
+                description: "Child depends on both parents",
+                dependsOn: ["collider-parent-a", "collider-parent-b"],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Two parent steps need operator details.",
+            requiredInputKey: combinedKey,
+          },
+          answers: { [combinedKey]: "operator details for both" },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured: Map<string, { status: string; blockedReason?: string }> | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = new Map(
+              params.session.plan.steps.map((s) => [
+                s.id,
+                { status: s.status, blockedReason: s.blockedReason },
+              ]),
+            );
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(captured).toBeDefined();
+      // BOTH answered parents were reset to pending before the executor ran —
+      // not just the first — with their user-input block fields cleared.
+      expect(captured!.get("collider-parent-a")).toEqual({
+        status: "pending",
+        blockedReason: undefined,
+      });
+      expect(captured!.get("collider-parent-b")).toEqual({
+        status: "pending",
+        blockedReason: undefined,
+      });
+      expect(captured!.get("collider-child")?.status).toBe("pending");
+      // No node entered the executor in a hard-blocked state.
+      expect([...captured!.values()].some((v) => v.status === "blocked")).toBe(false);
+
+      // The persisted answer is NOT consumed by normalization (scheduler owns that).
+      // Since the executor mock here never consumes it, it must survive resume.
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.state).toBe("done");
+      expect(persisted?.plan?.steps.every((s) => s.status === "done")).toBe(true);
+      expect(persisted?.blocked).toBeNull();
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("leaves an unanswered user-input block hard blocked on resume", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-unanswered-ws-"));
+      const runId = "resume-unanswered-userinput";
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Unanswered user-input block",
+            steps: [
+              {
+                id: "needs-input",
+                description: "Needs operator detail, no answer provided",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "user_input",
+                blockedQuestion: "Which DB?",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Needs operator detail.",
+            requiredInputKey: "task:needs-input:input",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      // Without an answer the run stays blocked and the executor is not invoked.
+      expect(result?.status).toBe("blocked");
+      expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+      const persisted = loadRun(runId, testGoalsDir);
+      const step = persisted?.plan?.steps.find((s) => s.id === "needs-input");
+      expect(step?.status).toBe("blocked");
+      expect(step?.blockedReason).toBe("user_input");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("resume_execution technical auto-retry is unaffected (no fake user input)", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-exec-unaffected-ws-"));
+      const runId = "resume-exec-unaffected";
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Technical block resumed via resume_execution, no answers",
+            steps: [
+              {
+                id: "tech",
+                description: "Interrupted with a technical error",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "error",
+                blockedQuestion: "Interrupted.",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Run interrupted.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured: Map<string, { status: string; blockedReason?: string }> | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = new Map(
+              params.session.plan.steps.map((s) => [
+                s.id,
+                { status: s.status, blockedReason: s.blockedReason },
+              ]),
+            );
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      // The technical block was reset by resetRetryableBlockedSteps (not by the
+      // answered-user-input normalization), exactly as before this change.
+      expect(captured!.get("tech")).toEqual({ status: "pending", blockedReason: undefined });
 
       fs.rmSync(workDir, { recursive: true, force: true });
     });
