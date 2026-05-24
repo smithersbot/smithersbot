@@ -767,9 +767,12 @@ describe("runCliPlanning", () => {
   it("allows Codex scout artifact writes without granting repo writes", async () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const prompt = String((params.args as string[]).at(-1));
-      const match = /Planning artifact directory: ([^\n]+)/.exec(prompt);
-      if (!match?.[1]) throw new Error("missing Codex scout dir in prompt");
-      const codexScoutDir = match[1].trim();
+      const match = /Agent-visible planning artifact directory: ([^\n]+)/.exec(prompt);
+      if (!match?.[1]) throw new Error("missing agent-visible scout dir in prompt");
+      expect(match[1].trim()).toBe(
+        "agent/history/goals/repo/run-codex-scout-sandbox/runtime/scout",
+      );
+      const codexScoutDir = path.dirname(String(params.stdoutPath));
       writeScoutArtifacts(codexScoutDir, "run-codex-scout-sandbox");
       fs.writeFileSync(
         path.join(codexScoutDir, EXECUTION_PLAN_FILE),
@@ -1035,7 +1038,8 @@ describe("runCliPlanning", () => {
     expect(secondPrompt.indexOf("Goal: Add feature B")).toBeGreaterThan(secondStaticPrefix.length);
   });
 
-  it("keeps scout planning schema requirements after the stable prefix", async () => {
+  it("keeps scout planning schema requirements after the stable prefix without exposing private runtime paths", async () => {
+    const privateGoalsDir = path.join(managedRoot, ".clawdbot-dev", "goals");
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const scoutDir = path.dirname(String(params.stdoutPath));
       writeScoutArtifacts(scoutDir, "run-scout-prefix");
@@ -1081,7 +1085,7 @@ describe("runCliPlanning", () => {
     await runCliPlanning({
       runId: "run-scout-prefix",
       goalText: "Use scout planning",
-      goalsDir,
+      goalsDir: privateGoalsDir,
       enabledWorkers: ["claude_code"],
     });
 
@@ -1096,9 +1100,12 @@ describe("runCliPlanning", () => {
     expect(prompt).toContain('backend: "claude_code"');
     expect(prompt).toContain("### Scout Phase");
     expect(prompt).toContain("### Planner Phase");
-    expect(prompt).toContain("agent/history/goals/<workspace>/<goalId>/runtime");
-    expect(prompt).toContain("Planning artifact directory:");
+    expect(prompt).toContain(
+      "agent/history/goals/repo/run-scout-prefix/runtime/scout/execution_plan.json",
+    );
+    expect(prompt).toContain("Agent-visible planning artifact directory:");
     expect(prompt).not.toContain("full access to the filesystem");
+    expect(prompt).not.toContain(".clawdbot-dev");
     expect(prompt).not.toContain(".clawdbot-dev/goals");
   });
 
@@ -2062,10 +2069,11 @@ describe("runCliPlanning", () => {
       .mockImplementationOnce(async (params: Record<string, unknown>) => {
         const args = (params.args as string[]) ?? [];
         const prompt = String(args.at(-1) ?? "");
-        const outDirMatch = /Planning artifact directory: ([^\n]+)/.exec(prompt);
+        const outDirMatch = /Agent-visible planning artifact directory: ([^\n]+)/.exec(prompt);
         if (!outDirMatch?.[1])
-          throw new Error("expected codex prompt to include writable output dir");
-        const codexScoutDir = outDirMatch[1];
+          throw new Error("expected codex prompt to include agent-visible output dir");
+        expect(outDirMatch[1]).toBe("agent/history/goals/repo/run-codex-copy/runtime/scout");
+        const codexScoutDir = path.dirname(String(params.stdoutPath));
         writeScoutArtifacts(codexScoutDir, "run-codex-copy");
         fs.writeFileSync(
           path.join(codexScoutDir, EXECUTION_PLAN_FILE),

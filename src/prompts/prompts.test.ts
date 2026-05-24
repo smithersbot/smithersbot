@@ -73,7 +73,7 @@ describe("src/prompts/ — scout template", () => {
   it("references agent-history mirrors and avoids private runtime output targets", () => {
     const template = fs.readFileSync(resolveScoutTemplatePath(), "utf8");
     expect(template).toContain("agent/history/goals/<workspace>/<goalId>/runtime/scout/");
-    expect(template).toContain("Planning artifact directory:");
+    expect(template).toContain("Agent-visible planning artifact directory:");
     expect(template).not.toContain(".clawdbot-dev/goals");
   });
 });

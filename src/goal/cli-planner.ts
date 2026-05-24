@@ -75,7 +75,7 @@ function buildPlanAndScoutAppendix(enabledWorkers: CliWorkerId[]): string {
     .join(" | ");
   return `## Canonical Execution Plan Output
 
-After scout files, write {{OUTPUT_DIR}}/${EXECUTION_PLAN_FILE} and print that same JSON object as final stdout.
+After scout files, write the execution plan as {{OUTPUT_DIR}}/${EXECUTION_PLAN_FILE} and print that same JSON object as final stdout.
 
 Requirements:
 - Match the stable planning schema above, including DAG dependencies, success criteria, constraints, and backend: ${backendUnion}.
@@ -83,6 +83,11 @@ Requirements:
 - Step ids must map to scout node ids, except bootstrap id "create-conventions".
 - If clarification is required, create ${SCOUT_NEEDS_CLARIFICATION_FILE} and return:
   { "blocked": true, "question": "The specific question you need answered" }`;
+}
+
+function buildAgentVisibleScoutDir(runId: string, cwd: string): string {
+  const workspaceName = workspaceNameFromWorkingDir(cwd);
+  return `agent/history/goals/${workspaceName}/${runId}/runtime/scout`;
 }
 
 function buildPlanOnlyPrompt(params: {
@@ -112,8 +117,8 @@ export function buildCachedScoutSummary(params: {
   scoutData: Extract<ScoutResult, { status: "success" }>;
 }): string {
   const { runId, cwd, scoutDir, scoutData } = params;
-  const workspaceName = workspaceNameFromWorkingDir(cwd);
-  const runtimeMirrorBase = `<managed-root>/agent/history/goals/${workspaceName}/${runId}/runtime/scout`;
+  void scoutDir;
+  const runtimeMirrorBase = buildAgentVisibleScoutDir(runId, cwd);
   const nodes = scoutData.report.nodes.map((node) =>
     [
       `- ${node.id} (${node.type})`,
@@ -133,7 +138,7 @@ export function buildCachedScoutSummary(params: {
     "Use this compact scout context from the previous successful scout. Do not run a fresh scout by default; a fresh-rescout command path is deferred.",
     "",
     "Artifact references:",
-    `- Runtime scout directory: ${scoutDir}`,
+    "- Runtime scout directory: host-internal only; use the agent-history mirror below.",
     `- Agent-history mirror: ${runtimeMirrorBase}/`,
     `- Scout report: ${runtimeMirrorBase}/${SCOUT_REPORT_FILE}`,
     `- Plan draft: ${runtimeMirrorBase}/${SCOUT_PLAN_DRAFT_FILE}`,
@@ -502,6 +507,7 @@ function buildPlanningPrompt(params: {
   }
 
   if (scoutData) {
+    const agentVisibleScoutDir = buildAgentVisibleScoutDir(runId, cwd);
     return [
       buildPlanSystemPrompt(enabledWorkers),
       "",
@@ -515,7 +521,7 @@ function buildPlanningPrompt(params: {
       "## Replan Instructions",
       "- Consume the cached scout facts and artifact references above.",
       "- Do not rerun the Scout Phase or recreate scout artifacts during normal /goal_resume --replan.",
-      `- Write the revised execution plan to ${path.join(scoutDir, EXECUTION_PLAN_FILE)} and print that same JSON object as final stdout.`,
+      `- Write the revised execution plan as ${agentVisibleScoutDir}/${EXECUTION_PLAN_FILE} and print that same JSON object as final stdout.`,
       "- Preserve the scout DAG/dependency structure unless the plan-quality rubric requires correction.",
       "- Respond ONLY with a JSON object matching the schema above.",
     ].join("\n");
@@ -527,11 +533,12 @@ function buildPlanningPrompt(params: {
   }
 
   const template = fs.readFileSync(templatePath, "utf8");
+  const agentVisibleScoutDir = buildAgentVisibleScoutDir(runId, cwd);
   const scoutBrief = renderScoutTemplate({
     template,
     goalId: runId,
     goalText,
-    outputDir: scoutDir,
+    outputDir: agentVisibleScoutDir,
   });
 
   return [
@@ -557,7 +564,7 @@ function buildPlanningPrompt(params: {
     "",
     scoutBrief,
     "",
-    buildPlanAndScoutAppendix(enabledWorkers).replaceAll("{{OUTPUT_DIR}}", scoutDir),
+    buildPlanAndScoutAppendix(enabledWorkers).replaceAll("{{OUTPUT_DIR}}", agentVisibleScoutDir),
   ].join("\n");
 }
 

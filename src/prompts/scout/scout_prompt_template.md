@@ -13,9 +13,9 @@ GOAL_ID: {{GOAL_ID}}
 1. Explore the repository structure, read relevant source files, and understand the codebase.
 2. Produce a plan with milestone-sized nodes. Aim for {{NODE_COUNT_MIN}} to {{NODE_COUNT_MAX}} nodes by default.
    - You may exceed {{NODE_COUNT_MAX}} only if strictly necessary and nodes remain milestone-sized.
-3. Write compact scout artifacts to the provided planning artifact directory (create subdirectories as needed). These artifacts are mirrored for future agents under `<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/scout/`.
+3. Write compact scout artifacts using the agent-history runtime/scout paths shown below (create subdirectories as needed). The host persists the artifacts internally and mirrors them for future agents under `<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/scout/`.
 
-Planning artifact directory: {{OUTPUT_DIR}}
+Agent-visible planning artifact directory: {{OUTPUT_DIR}}
 
 ## How to Explore
 
@@ -165,7 +165,7 @@ Do NOT create any other output files when clarification is required.
 ## Rules
 
 - This is READ-ONLY analysis. Do NOT modify repository source files.
-- Write ALL scout artifacts to the provided planning artifact directory; future agents should use the mirrored `agent/history/.../runtime/scout/` references.
+- Write ALL scout artifacts using the agent-visible `agent/history/.../runtime/scout/` planning paths; future agents should use those mirrored references.
 - Read actual code before making claims.
 - Every node in scout_report.json must have a matching node_specs/<node-id>.md file.
 - Verification must be a single runnable command.
