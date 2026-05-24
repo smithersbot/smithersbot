@@ -1,5 +1,54 @@
 import { hasAnswerForTask } from "./agent-executor.js";
+import { isUsageLimitClassReason } from "./error-patterns.js";
+import { isRetryableBlocked } from "./execution-status.js";
 import type { PlanStep } from "./types.js";
+
+export type ResumeBlockedStepClassification =
+  | "hard_user_input"
+  | "answered_user_input"
+  | "retryable_technical"
+  | "retryable_usage_limit_available"
+  | "usage_limit_no_compatible_backend"
+  | "retryable_auth_resolvable"
+  | "auth_unresolved";
+
+export type ResumeBlockedStepClassificationContext = {
+  answers: Record<string, string>;
+  isUsageLimitBackendAvailable: (step: PlanStep) => boolean;
+  isAuthBackendUsable: (step: PlanStep) => boolean;
+};
+
+/**
+ * Classify a persisted blocked step for resume without mutating it.
+ *
+ * Usage-limit and auth/config blocks are gated by current backend availability;
+ * they must be checked before the broad retryable-block rule, because
+ * isRetryableBlocked intentionally treats every non-user-input reason as
+ * scheduler-retryable.
+ */
+export function classifyBlockedStepForResume(
+  step: PlanStep,
+  context: ResumeBlockedStepClassificationContext,
+): ResumeBlockedStepClassification {
+  const isUserInputBlock = step.blockedReason == null || step.blockedReason === "user_input";
+  if (isUserInputBlock) {
+    return hasAnswerForTask(step.id, context.answers) ? "answered_user_input" : "hard_user_input";
+  }
+
+  if (isUsageLimitClassReason(step.blockedReason)) {
+    return context.isUsageLimitBackendAvailable(step)
+      ? "retryable_usage_limit_available"
+      : "usage_limit_no_compatible_backend";
+  }
+
+  if (step.blockedReason === "auth") {
+    return context.isAuthBackendUsable(step) ? "retryable_auth_resolvable" : "auth_unresolved";
+  }
+
+  if (isRetryableBlocked(step)) return "retryable_technical";
+
+  return "hard_user_input";
+}
 
 /**
  * Normalize answered user-input blocks back to `pending` on resume.

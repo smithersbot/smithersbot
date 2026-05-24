@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAnsweredUserInputBlocks } from "./resume-state.js";
+import { classifyBlockedStepForResume, normalizeAnsweredUserInputBlocks } from "./resume-state.js";
 import { computeDisplayStatuses } from "./execution-status.js";
 import type { PlanStep } from "./types.js";
 
@@ -11,6 +11,88 @@ function step(overrides: Partial<PlanStep> & { id: string }): PlanStep {
     ...overrides,
   };
 }
+
+describe("classifyBlockedStepForResume", () => {
+  function classify(
+    planStep: PlanStep,
+    options: {
+      answers?: Record<string, string>;
+      usageLimitBackendAvailable?: boolean;
+      authBackendUsable?: boolean;
+    } = {},
+  ) {
+    return classifyBlockedStepForResume(planStep, {
+      answers: options.answers ?? {},
+      isUsageLimitBackendAvailable: () => options.usageLimitBackendAvailable ?? false,
+      isAuthBackendUsable: () => options.authBackendUsable ?? false,
+    });
+  }
+
+  it("classifies unanswered user-input blocks as hard_user_input", () => {
+    expect(
+      classify(step({ id: "needs-input", status: "blocked", blockedReason: "user_input" })),
+    ).toBe("hard_user_input");
+  });
+
+  it("classifies answered user-input blocks as answered_user_input", () => {
+    expect(
+      classify(step({ id: "needs-input", status: "blocked", blockedReason: "user_input" }), {
+        answers: { "task:needs-input:input": "answer" },
+      }),
+    ).toBe("answered_user_input");
+  });
+
+  it("classifies missing-reason hard blocks using answer availability", () => {
+    expect(classify(step({ id: "missing", status: "blocked" }))).toBe("hard_user_input");
+    expect(
+      classify(step({ id: "missing", status: "blocked" }), {
+        answers: { "task:missing:input": "answer" },
+      }),
+    ).toBe("answered_user_input");
+  });
+
+  it("classifies retryable technical blockers without duplicating each reason rule", () => {
+    const reasons: PlanStep["blockedReason"][] = [
+      "turn_limit",
+      "timeout",
+      "error",
+      "task_failed",
+      "process_lost",
+      "network",
+      "other",
+    ];
+
+    for (const reason of reasons) {
+      expect(classify(step({ id: reason, status: "blocked", blockedReason: reason }))).toBe(
+        "retryable_technical",
+      );
+    }
+  });
+
+  it("gates usage-limit-class blockers on compatible backend availability", () => {
+    for (const reason of ["usage_limit", "rate_limit", "out_of_credits"] as const) {
+      expect(
+        classify(step({ id: `${reason}-available`, status: "blocked", blockedReason: reason }), {
+          usageLimitBackendAvailable: true,
+        }),
+      ).toBe("retryable_usage_limit_available");
+      expect(
+        classify(step({ id: `${reason}-unavailable`, status: "blocked", blockedReason: reason })),
+      ).toBe("usage_limit_no_compatible_backend");
+    }
+  });
+
+  it("gates auth blockers on backend/config usability", () => {
+    expect(
+      classify(step({ id: "auth-ok", status: "blocked", blockedReason: "auth" }), {
+        authBackendUsable: true,
+      }),
+    ).toBe("retryable_auth_resolvable");
+    expect(classify(step({ id: "auth-still-bad", status: "blocked", blockedReason: "auth" }))).toBe(
+      "auth_unresolved",
+    );
+  });
+});
 
 describe("normalizeAnsweredUserInputBlocks", () => {
   it("resets a single answered user-input block to pending and clears stale fields", () => {
