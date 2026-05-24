@@ -37,6 +37,14 @@ export type CanvasHostServer = {
   port: number;
   rootDir: string;
   close: () => Promise<void>;
+  /**
+   * Test-only hook that drives the same reload-broadcast path the file watcher
+   * fires on a change. fs.watch is unreliable for files under sandboxed temp
+   * areas, so tests trigger the production scheduleReload/broadcast chain
+   * deterministically instead of racing the watcher. Production code never calls
+   * this; the real fs.watch path remains the runtime trigger.
+   */
+  triggerReload: () => void;
 };
 
 export type CanvasHostHandlerOpts = {
