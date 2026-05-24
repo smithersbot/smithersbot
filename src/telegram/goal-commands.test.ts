@@ -1580,7 +1580,7 @@ describe("goal-commands telegram adapter", () => {
         reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
       };
       expect(options.caption).toContain("<b>TASK BLOCKED</b> (test-run): Step 1 needs input");
-      expect(options.caption).toContain("• Step 1: Need a value");
+      expect(options.caption).toContain("• <b>Step 1:</b> Need a value");
       expect(options.reply_markup?.inline_keyboard).toEqual([
         [{ text: "✏️ Add Details", callback_data: "gAD:test-run" }],
         [{ text: "⏹️ Stop Goal", callback_data: "gStop:test-run" }],

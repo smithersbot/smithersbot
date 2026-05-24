@@ -37,7 +37,7 @@ export function buildBlockedCaption(steps: PlanStep[]): string {
   for (const step of blocked.slice(0, 3)) {
     const { attemptHistory } = splitAttemptHistory(step.blockedQuestion);
     if (attemptHistory && !histories.includes(attemptHistory)) histories.push(attemptHistory);
-    lines.push(`• Step ${step.id}: ${describeBlockedStep(step)}`);
+    lines.push(`• **Step ${step.id}:** ${describeBlockedStep(step)}`);
   }
   if (blocked.length > 3) lines.push(`  …and ${blocked.length - 3} more`);
   let caption = lines.join("\n");
