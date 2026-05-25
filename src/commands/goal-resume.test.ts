@@ -1779,6 +1779,7 @@ describe("goal-resume command", () => {
 
       let capturedBackend: string | undefined;
       let capturedReason: string | undefined;
+      let capturedStatus: string | undefined;
       mockExecuteGoalWithAgent.mockImplementationOnce(
         async (params: {
           session: {
@@ -1796,6 +1797,7 @@ describe("goal-resume command", () => {
           const step = params.session.plan?.steps.find((s) => s.id === "codex-step");
           capturedBackend = step?.executedBackend;
           capturedReason = step?.blockedReason;
+          capturedStatus = step?.status;
           for (const s of params.session.plan?.steps ?? []) {
             if (s.status === "pending" || s.status === "blocked") s.status = "done";
           }
@@ -1810,10 +1812,11 @@ describe("goal-resume command", () => {
 
       expect(result?.status).toBe("done");
       expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
-      // Step was retargeted to Claude, and its usage-limit reason was preserved
-      // through resume (not overwritten with a generic "error").
+      // Step was retargeted to Claude and normalized to runnable before the
+      // executor saw it.
       expect(capturedBackend).toBe("claude_code");
-      expect(capturedReason).toBe("out_of_credits");
+      expect(capturedStatus).toBe("pending");
+      expect(capturedReason).toBeUndefined();
 
       fs.rmSync(workDir, { recursive: true, force: true });
     });
@@ -1963,12 +1966,13 @@ describe("goal-resume command", () => {
 
       expect(result?.status).toBe("done");
       expect(capturedDisplay).toBeDefined();
-      // Usage-limit blocker is visibly usage-limited (not pending, not plain blocked).
-      expect(capturedDisplay!.get("codex-step")).toBe("usage_limited");
+      // Usage-limit blocker was retargeted to an available backend and
+      // normalized to runnable before display is computed.
+      expect(capturedDisplay!.get("codex-step")).toBe("pending");
       // Independent stale error block recomputes to runnable (pending), not blocked.
       expect(capturedDisplay!.get("indep-error")).toBe("pending");
-      // Downstream of the usage-limit blocker waits (soft_blocked), not stale-blocked.
-      expect(capturedDisplay!.get("downstream")).toBe("soft_blocked");
+      // Downstream no longer inherits a stale usage-limit block.
+      expect(capturedDisplay!.get("downstream")).toBe("pending");
       // Independent runnable Claude task stays runnable while a sibling is blocked.
       expect(capturedDisplay!.get("indep-pending")).toBe("pending");
       // The codex usage-limit step was retargeted to the available Claude backend.
@@ -2189,7 +2193,6 @@ describe("goal-resume command", () => {
       const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
       const reasons = [
         "timeout",
-        "auth",
         "network",
         "task_failed",
         "process_lost",
@@ -2210,6 +2213,25 @@ describe("goal-resume command", () => {
       expect(reset).toEqual(steps.map((s) => s.id));
       expect(steps.every((s) => s.status === "pending")).toBe(true);
       expect(steps.every((s) => s.blockedReason === undefined)).toBe(true);
+    });
+
+    it("does not reset auth blocks without current backend availability context", async () => {
+      const { resetRetryableBlockedSteps } = await import("./goal-resume.js");
+      const steps: PlanStep[] = [
+        {
+          id: "auth",
+          description: "auth block",
+          dependsOn: [],
+          status: "blocked",
+          blockedReason: "auth",
+        },
+      ];
+
+      const reset = resetRetryableBlockedSteps(steps);
+
+      expect(reset).toEqual([]);
+      expect(steps[0]!.status).toBe("blocked");
+      expect(steps[0]!.blockedReason).toBe("auth");
     });
 
     it("leaves usage-limit blocks untouched (owned by the usage-limit recheck)", async () => {
@@ -2445,19 +2467,392 @@ describe("goal-resume command", () => {
 
       expect(result?.status).toBe("done");
       expect(captured).toBeDefined();
-      // Usage-limit blocker: still blocked, reason preserved, retargeted to Claude.
+      // Usage-limit blocker: retargeted to Claude and normalized to runnable.
       expect(captured!.get("codex-step")).toEqual({
-        status: "blocked",
-        blockedReason: "out_of_credits",
+        status: "pending",
+        blockedReason: undefined,
         executedBackend: "claude_code",
       });
       // Independent + downstream technical blocks are reset to pending (not stale).
       expect(captured!.get("indep-error")?.status).toBe("pending");
       expect(captured!.get("indep-error")?.blockedReason).toBeUndefined();
-      expect(captured!.get("downstream")?.status).toBe("pending");
-      expect(captured!.get("downstream")?.blockedReason).toBeUndefined();
+      // Its dependency is not done yet, so the downstream technical block is not
+      // runnable for the scheduler even though display recomputation renders it
+      // as waiting on normal pending work rather than as a red blocker.
+      expect(captured!.get("downstream")?.status).toBe("blocked");
+      expect(captured!.get("downstream")?.blockedReason).toBe("error");
       // Already-pending sibling is unchanged.
       expect(captured!.get("indep-pending")?.status).toBe("pending");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("normalizes backend-limit sibling blocks to pending when a compatible backend is available", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-usage-siblings-ws-"));
+      const runId = "resume-usage-limit-siblings";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex usage exhausted" },
+        { id: "claude_code", available: true },
+      ];
+      const reasons = [
+        "usage_limit",
+        "rate_limit",
+        "out_of_credits",
+        "usage_limit",
+        "rate_limit",
+        "out_of_credits",
+      ] as const;
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Six sibling backend-limit blocks",
+            steps: [
+              ...reasons.map((reason, i) => ({
+                id: `sibling-${i + 1}`,
+                description: `Backend-limited sibling ${i + 1}`,
+                dependsOn: [],
+                status: "blocked" as const,
+                durationMinutes: 1,
+                blockedReason: reason,
+                blockedQuestion: "Backend limit reached.",
+                failedDetail: {
+                  reason: "Backend limit",
+                  whatTried: "Tried the sticky backend.",
+                  errorType: "usage_limit",
+                  suggestedNext: "Resume after a compatible backend is available.",
+                  needsRevert: false,
+                },
+                turnsUsed: 2,
+                executedBackend: "codex" as const,
+              })),
+              {
+                id: "final-report",
+                description: "Final report",
+                dependsOn: reasons.map((_, i) => `sibling-${i + 1}`),
+                status: "pending" as const,
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Backend usage limit reached.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured:
+        | {
+            blocked: unknown;
+            steps: Map<
+              string,
+              {
+                status: string;
+                blockedReason?: string;
+                blockedQuestion?: string;
+                failedDetail?: unknown;
+                turnsUsed?: number;
+                executedBackend?: string;
+              }
+            >;
+            display: Map<string, string>;
+          }
+        | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: {
+          session: { plan: { steps: PlanStep[] } | null; state: string; blocked: unknown };
+        }) => {
+          if (params.session.plan) {
+            captured = {
+              blocked: params.session.blocked,
+              steps: new Map(
+                params.session.plan.steps.map((s) => [
+                  s.id,
+                  {
+                    status: s.status,
+                    blockedReason: s.blockedReason,
+                    blockedQuestion: s.blockedQuestion,
+                    failedDetail: s.failedDetail,
+                    turnsUsed: s.turnsUsed,
+                    executedBackend: s.executedBackend,
+                  },
+                ]),
+              ),
+              display: computeDisplayStatuses(params.session.plan.steps),
+            };
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(captured).toBeDefined();
+      expect(captured!.blocked).toBeNull();
+      for (let i = 1; i <= 6; i += 1) {
+        const step = captured!.steps.get(`sibling-${i}`);
+        expect(step?.status).toBe("pending");
+        expect(step?.blockedReason).toBeUndefined();
+        expect(step?.blockedQuestion).toBeUndefined();
+        expect(step?.failedDetail).toBeUndefined();
+        expect(step?.turnsUsed).toBe(0);
+        expect(step?.executedBackend).toBe("claude_code");
+        expect(captured!.display.get(`sibling-${i}`)).toBe("pending");
+      }
+      expect(captured!.steps.get("final-report")?.status).toBe("pending");
+      expect(captured!.display.get("final-report")).toBe("pending");
+      expect(
+        [...captured!.display.entries()].filter(([, status]) => status === "usage_limited"),
+      ).toEqual([]);
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("keeps a usage-limit block usage-limited when no compatible backend is available", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-no-backend-ws-"));
+      const runId = "resume-usage-no-compatible";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: false, reason: "codex unavailable" },
+        { id: "claude_code", available: false, reason: "claude unavailable" },
+      ];
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "No compatible backend",
+            steps: [
+              {
+                id: "usage",
+                description: "Usage-limited task",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "usage_limit",
+                blockedQuestion: "Usage limit reached.",
+                executedBackend: "codex",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Usage limit reached.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured: { step?: PlanStep; display?: Map<string, string> } | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = {
+              step: { ...params.session.plan.steps[0]! },
+              display: computeDisplayStatuses(params.session.plan.steps),
+            };
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "Stopped after capture." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(captured?.step?.status).toBe("blocked");
+      expect(captured?.step?.blockedReason).toBe("usage_limit");
+      expect(captured?.display?.get("usage")).toBe("usage_limited");
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("normalizes retryable technical blocks with satisfied dependencies", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-technical-ws-"));
+      const runId = "resume-technical-blocks";
+      const reasons = [
+        "timeout",
+        "turn_limit",
+        "process_lost",
+        "task_failed",
+        "network",
+        "other",
+      ] as const;
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Retryable technical blocks",
+            steps: reasons.map((reason, i) => ({
+              id: `tech-${i + 1}`,
+              description: reason,
+              dependsOn: [],
+              status: "blocked",
+              durationMinutes: 1,
+              blockedReason: reason,
+              blockedQuestion: "Retryable technical block.",
+              turnsUsed: 4,
+            })),
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Retryable technical block.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured:
+        | Map<string, { status: string; blockedReason?: string; turnsUsed?: number }>
+        | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = new Map(
+              params.session.plan.steps.map((s) => [
+                s.id,
+                { status: s.status, blockedReason: s.blockedReason, turnsUsed: s.turnsUsed },
+              ]),
+            );
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "Stopped after capture." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      for (let i = 1; i <= reasons.length; i += 1) {
+        expect(captured!.get(`tech-${i}`)).toEqual({
+          status: "pending",
+          blockedReason: undefined,
+          turnsUsed: 0,
+        });
+      }
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("normalizes auth blocks only when the relevant backend is currently usable", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-auth-ws-"));
+      const runId = "resume-auth-blocks";
+      mockAvailability = [
+        { id: "pi", available: true },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "Claude auth missing" },
+      ];
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Auth blocks",
+            steps: [
+              {
+                id: "auth-ok",
+                description: "Auth fixed",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "auth",
+                blockedQuestion: "Codex auth missing.",
+                turnsUsed: 2,
+                executedBackend: "codex",
+              },
+              {
+                id: "auth-still-bad",
+                description: "Auth still missing",
+                dependsOn: [],
+                status: "blocked",
+                durationMinutes: 1,
+                blockedReason: "auth",
+                blockedQuestion: "Claude auth missing.",
+                turnsUsed: 2,
+                executedBackend: "claude_code",
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Auth unavailable.",
+            requiredInputKey: "resume_execution",
+          },
+          workingDir: workDir,
+        }),
+      );
+
+      let captured:
+        | Map<
+            string,
+            {
+              status: string;
+              blockedReason?: string;
+              blockedQuestion?: string;
+              turnsUsed?: number;
+            }
+          >
+        | undefined;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: { session: { plan: { steps: PlanStep[] } | null; state: string } }) => {
+          if (params.session.plan) {
+            captured = new Map(
+              params.session.plan.steps.map((s) => [
+                s.id,
+                {
+                  status: s.status,
+                  blockedReason: s.blockedReason,
+                  blockedQuestion: s.blockedQuestion,
+                  turnsUsed: s.turnsUsed,
+                },
+              ]),
+            );
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "Stopped after capture." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(captured!.get("auth-ok")).toEqual({
+        status: "pending",
+        blockedReason: undefined,
+        blockedQuestion: undefined,
+        turnsUsed: 0,
+      });
+      expect(captured!.get("auth-still-bad")).toEqual({
+        status: "blocked",
+        blockedReason: "auth",
+        blockedQuestion: "Claude auth missing.",
+        turnsUsed: 2,
+      });
 
       fs.rmSync(workDir, { recursive: true, force: true });
     });

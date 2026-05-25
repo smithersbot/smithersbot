@@ -19,7 +19,10 @@ import {
 } from "../goal/backend-types.js";
 import { isUsageLimitClassReason } from "../goal/error-patterns.js";
 import { isRetryableBlocked, isUsageLimitedBlocked } from "../goal/execution-status.js";
-import { normalizeAnsweredUserInputBlocks } from "../goal/resume-state.js";
+import {
+  classifyBlockedStepForResume,
+  normalizeAnsweredUserInputBlocks,
+} from "../goal/resume-state.js";
 import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
@@ -230,7 +233,9 @@ export function resetRetryableBlockedSteps(steps: PlanStep[]): string[] {
     // Usage-limit blocks are retryable too, so exclude them explicitly — their
     // recovery is owned by recheckUsageLimitBackends and they keep the
     // usage_limited display.
-    if (!isRetryableBlocked(step) || isUsageLimitedBlocked(step)) continue;
+    if (!isRetryableBlocked(step) || isUsageLimitedBlocked(step) || step.blockedReason === "auth") {
+      continue;
+    }
     step.status = "pending";
     step.blockedReason = undefined;
     step.blockedQuestion = undefined;
@@ -238,6 +243,68 @@ export function resetRetryableBlockedSteps(steps: PlanStep[]): string[] {
     step.turnsUsed = 0;
     reset.push(step.id);
   }
+  return reset;
+}
+
+function areDependenciesSatisfied(step: PlanStep, steps: PlanStep[]): boolean {
+  const stepMap = new Map(steps.map((candidate) => [candidate.id, candidate]));
+  return step.dependsOn.every((depId) => stepMap.get(depId)?.status === "done");
+}
+
+function clearBlockedStepForResume(step: PlanStep): void {
+  step.status = "pending";
+  step.blockedReason = undefined;
+  step.blockedQuestion = undefined;
+  step.failedDetail = undefined;
+  step.turnsUsed = 0;
+}
+
+export function normalizeBlockedStepsForResume(params: {
+  steps: PlanStep[];
+  answers: Record<string, string>;
+  availability: BackendAvailability[];
+  enabledWorkers: CliWorkerId[];
+  backendOverride?: GoalBackendId;
+}): string[] {
+  const { steps, answers, availability, enabledWorkers, backendOverride } = params;
+  const reset: string[] = [];
+  const defaultBackend: CliWorkerId =
+    enabledWorkers.length === 1 ? enabledWorkers[0]! : "claude_code";
+
+  const isResolvedBackendAvailable = (step: PlanStep): boolean => {
+    const backend = clampBackendForEnabledWorkers(
+      resolveBackendForStep(step, backendOverride, defaultBackend),
+      enabledWorkers,
+    );
+    return isBackendAvailable(backend, availability).available;
+  };
+
+  for (const step of steps) {
+    if (step.status !== "blocked") continue;
+    if (!areDependenciesSatisfied(step, steps)) continue;
+
+    const classification = classifyBlockedStepForResume(step, {
+      answers,
+      isUsageLimitBackendAvailable: (candidate) => {
+        if (backendOverride) return false;
+        return isResolvedBackendAvailable(candidate);
+      },
+      isAuthBackendUsable: isResolvedBackendAvailable,
+    });
+
+    if (
+      classification !== "retryable_technical" &&
+      classification !== "retryable_usage_limit_available" &&
+      classification !== "retryable_auth_resolvable" &&
+      classification !== "answered_user_input"
+    ) {
+      continue;
+    }
+
+    clearBlockedStepForResume(step);
+    reset.push(step.id);
+  }
+
   return reset;
 }
 
@@ -779,12 +846,18 @@ export async function goalResumeCommand(
       });
     }
 
-    // Recompute ALL nodes: clear stale retryable technical blocks (kept after an
-    // interruption or a fatal-error cascade) back to pending so independent
-    // runnable steps don't stay blocked because a sibling was, and downstream
-    // steps show waiting rather than hard-blocked. Usage-limit blocks (handled
-    // above) and hard/user-input blocks are intentionally preserved.
-    const resetIds = resetRetryableBlockedSteps(session.plan.steps);
+    // Recompute runnable blocked nodes after backend availability has been
+    // rechecked: clear retryable technical blocks, usage-limit blocks with a
+    // currently usable backend, auth blocks with a currently usable backend, and
+    // answered user-input blocks. Persisting this before execution keeps
+    // /goal_status and the DAG aligned with what the scheduler can run.
+    const resetIds = normalizeBlockedStepsForResume({
+      steps: session.plan.steps,
+      answers: session.answers,
+      availability,
+      enabledWorkers: resolveEnabledWorkers(opts.config?.goal),
+      ...(run.backendOverride ? { backendOverride: run.backendOverride } : {}),
+    });
     if (resetIds.length > 0 && !isJson && !quiet) {
       runtime.log(`  [resume] Reset ${resetIds.length} stale blocked step(s) to runnable.`);
     }
