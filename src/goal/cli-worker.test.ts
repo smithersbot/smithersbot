@@ -55,6 +55,52 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: vi.fn(() => "before_exec"),
 }));
 
+vi.mock("./backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./backend-sandbox.js")>();
+  const fs = await import("node:fs");
+
+  const buildCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.buildCodexNativeSandboxConfig>[0]) =>
+      actual.buildCodexNativeSandboxConfig({
+        ...params,
+        codexPath: params.codexPath ?? "codex",
+      }),
+  );
+
+  const writeCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.writeCodexNativeSandboxConfig>[0]) => {
+      const config = buildCodexNativeSandboxConfig(params);
+      fs.mkdirSync(config.helperDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(config.configPath, config.configToml, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.writeFileSync(config.helperPath, '#!/bin/sh\nexec codex "$@"\n', {
+        encoding: "utf8",
+        mode: 0o700,
+      });
+      try {
+        if (
+          config.authSourcePath !== config.authReferencePath &&
+          fs.existsSync(config.authSourcePath)
+        ) {
+          fs.rmSync(config.authReferencePath, { force: true });
+          fs.symlinkSync(config.authSourcePath, config.authReferencePath);
+        }
+      } catch {
+        // Mirrors production's best-effort auth reference behavior.
+      }
+      return config;
+    },
+  );
+
+  return {
+    ...actual,
+    buildCodexNativeSandboxConfig,
+    writeCodexNativeSandboxConfig,
+  };
+});
+
 const runCliProcessMock = vi.mocked(runCliProcess);
 const resolveWorkerDirMock = vi.mocked(resolveWorkerDir);
 const writeAttemptBundleMock = vi.mocked(writeAttemptBundle);
@@ -65,6 +111,8 @@ const EARLY_RESULT_PROGRESS_MESSAGE =
 
 let testCodexSandboxRoot: string | undefined;
 let previousCodexSandboxRoot: string | undefined;
+let testClaudeSandboxSettingsRoot: string | undefined;
+let previousClaudeSandboxSettingsRoot: string | undefined;
 let testManagedRoot: string | undefined;
 let previousManagedRoot: string | undefined;
 
@@ -74,6 +122,11 @@ beforeEach(() => {
   previousCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
   testCodexSandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-codex-sandbox-"));
   process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = testCodexSandboxRoot;
+  previousClaudeSandboxSettingsRoot = process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+  testClaudeSandboxSettingsRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "cli-worker-claude-sandbox-"),
+  );
+  process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = testClaudeSandboxSettingsRoot;
   previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
   testManagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-managed-"));
   process.env.SMITHERSBOT_GOALS_ROOT = testManagedRoot;
@@ -84,11 +137,21 @@ afterEach(() => {
   if (previousCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
   else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = previousCodexSandboxRoot;
   if (testCodexSandboxRoot) fs.rmSync(testCodexSandboxRoot, { recursive: true, force: true });
+  if (previousClaudeSandboxSettingsRoot === undefined) {
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+  } else {
+    process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = previousClaudeSandboxSettingsRoot;
+  }
+  if (testClaudeSandboxSettingsRoot) {
+    fs.rmSync(testClaudeSandboxSettingsRoot, { recursive: true, force: true });
+  }
   if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
   else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
   if (testManagedRoot) fs.rmSync(testManagedRoot, { recursive: true, force: true });
   testCodexSandboxRoot = undefined;
   previousCodexSandboxRoot = undefined;
+  testClaudeSandboxSettingsRoot = undefined;
+  previousClaudeSandboxSettingsRoot = undefined;
   testManagedRoot = undefined;
   previousManagedRoot = undefined;
 });

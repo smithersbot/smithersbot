@@ -45,6 +45,52 @@ vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
 }));
 
+vi.mock("./backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./backend-sandbox.js")>();
+  const fs = await import("node:fs");
+
+  const buildCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.buildCodexNativeSandboxConfig>[0]) =>
+      actual.buildCodexNativeSandboxConfig({
+        ...params,
+        codexPath: params.codexPath ?? "codex",
+      }),
+  );
+
+  const writeCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.writeCodexNativeSandboxConfig>[0]) => {
+      const config = buildCodexNativeSandboxConfig(params);
+      fs.mkdirSync(config.helperDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(config.configPath, config.configToml, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.writeFileSync(config.helperPath, '#!/bin/sh\nexec codex "$@"\n', {
+        encoding: "utf8",
+        mode: 0o700,
+      });
+      try {
+        if (
+          config.authSourcePath !== config.authReferencePath &&
+          fs.existsSync(config.authSourcePath)
+        ) {
+          fs.rmSync(config.authReferencePath, { force: true });
+          fs.symlinkSync(config.authSourcePath, config.authReferencePath);
+        }
+      } catch {
+        // Mirrors production's best-effort auth reference behavior.
+      }
+      return config;
+    },
+  );
+
+  return {
+    ...actual,
+    buildCodexNativeSandboxConfig,
+    writeCodexNativeSandboxConfig,
+  };
+});
+
 const FORBIDDEN_AGENT_ENV_KEYS = [
   "TELEGRAM_BOT_TOKEN",
   "SMITHERSBOT_GATEWAY_TOKEN",
@@ -278,8 +324,10 @@ describe("runCliPlanning", () => {
   let priorBaseUrl: string | undefined;
   let priorManagedRoot: string | undefined;
   let priorCodexSandboxRoot: string | undefined;
+  let priorClaudeSandboxSettingsRoot: string | undefined;
   let managedRoot: string;
   let codexSandboxRoot: string;
+  let claudeSandboxSettingsRoot: string;
   let cwdSpy: { mockRestore: () => void } | undefined;
 
   beforeEach(() => {
@@ -297,14 +345,17 @@ describe("runCliPlanning", () => {
     priorBaseUrl = process.env.ANTHROPIC_BASE_URL;
     priorManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     priorCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
+    priorClaudeSandboxSettingsRoot = process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
     managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-managed-"));
     const hostTempRoot = process.env.CODEX_HOME
       ? path.join(process.env.CODEX_HOME, "memories")
       : os.tmpdir();
     fs.mkdirSync(hostTempRoot, { recursive: true });
     codexSandboxRoot = fs.mkdtempSync(path.join(hostTempRoot, "cli-planner-codex-"));
+    claudeSandboxSettingsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-claude-"));
     process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
     process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = codexSandboxRoot;
+    process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = claudeSandboxSettingsRoot;
     // The native-sandbox guards require generated config to live OUTSIDE the agent
     // root AND the workspace. Under vitest, os.tmpdir() (hence codexSandboxRoot and
     // the managed root) is redirected into the repo, and on dogfood hosts the repo
@@ -332,8 +383,14 @@ describe("runCliPlanning", () => {
     else process.env.SMITHERSBOT_GOALS_ROOT = priorManagedRoot;
     if (priorCodexSandboxRoot === undefined) delete process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
     else process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT = priorCodexSandboxRoot;
+    if (priorClaudeSandboxSettingsRoot === undefined) {
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
+    } else {
+      process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT = priorClaudeSandboxSettingsRoot;
+    }
     fs.rmSync(managedRoot, { recursive: true, force: true });
     fs.rmSync(codexSandboxRoot, { recursive: true, force: true });
+    fs.rmSync(claudeSandboxSettingsRoot, { recursive: true, force: true });
     fs.rmSync(goalsDir, { recursive: true, force: true });
   });
 
