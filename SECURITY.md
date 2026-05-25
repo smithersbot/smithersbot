@@ -21,16 +21,20 @@ SmithersBot's web interface is intended for local use only. Do **not** bind it t
 
 ### Node.js Version
 
-SmithersBot requires **Node.js 22.12.0 or later** (LTS). This version includes important security patches:
-
-- CVE-2025-59466: async_hooks DoS vulnerability
-- CVE-2026-21636: Permission model bypass vulnerability
+SmithersBot requires **Node.js 22.12.0 or later**.
+For security, use the latest available Node 22 LTS patch release rather than an older 22.x build.
 
 Verify your Node.js version:
 
 ```bash
 node --version  # Should be v22.12.0 or later
 ```
+
+## Operational Safety
+
+Run SmithersBot in an isolated environment, such as a VM, VPS, dedicated machine, or isolated development machine.
+Anything agents should read or edit must live inside a managed workspace repo: `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`.
+Private env, config, auth, and session files must stay outside the workspace and are not agent-visible.
 
 ## Security Scanning
 
