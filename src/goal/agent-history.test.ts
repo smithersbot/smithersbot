@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mirrorGoalRunToAgentHistory } from "./agent-history.js";
+import { mirrorGoalRunToAgentHistory, workspaceNameFromWorkingDir } from "./agent-history.js";
 import type { SerializedRun } from "./types.js";
 
 describe("agent history goal summary", () => {
@@ -84,5 +84,28 @@ describe("agent history goal summary", () => {
     expect(summary.githubPushOutcome?.prUrl).toContain("[REDACTED]");
     expect(summary.githubPushOutcome?.message).toContain("[REDACTED]");
     expect(summaryText).not.toContain(plantedToken);
+  });
+
+  it("extracts workspace names from new workspace-root working dirs", () => {
+    const workingDir = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "workspaces",
+      "smithersbot",
+    );
+
+    expect(workspaceNameFromWorkingDir(workingDir)).toBe("smithersbot");
+  });
+
+  it("extracts workspace names from legacy repo working dirs", () => {
+    const workingDir = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "workspaces",
+      "smithersbot",
+      "repo",
+    );
+
+    expect(workspaceNameFromWorkingDir(workingDir)).toBe("smithersbot");
   });
 });

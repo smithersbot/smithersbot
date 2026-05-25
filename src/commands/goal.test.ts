@@ -531,15 +531,18 @@ describe("goal command — early failure persistence", () => {
 
 describe("resolveWorkingDir — 4-level precedence", () => {
   const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  let managedRoot: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.SMITHERSBOT_GOALS_ROOT = "/tmp/smithersbot-goals-test";
+    managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "smithersbot-goals-test-"));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
   });
 
   afterEach(() => {
     if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
     else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    fs.rmSync(managedRoot, { recursive: true, force: true });
   });
 
   it("explicit --working-dir wins over everything", async () => {
@@ -564,18 +567,18 @@ describe("resolveWorkingDir — 4-level precedence", () => {
     expect(result).toBe("/config/dir");
   });
 
-  it("falls back to managed workspace repo named after git toplevel", async () => {
+  it("falls back to managed workspace project named after git toplevel", async () => {
     const { resolveWorkingDir } = await import("./goal.js");
     mockIsGitRepo.mockReturnValue(true);
     const result = resolveWorkingDir(undefined, undefined, "/my/repo");
-    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/repo/repo");
+    expect(result).toBe(path.join(managedRoot, "agent", "workspaces", "repo"));
   });
 
   it("falls back to managed default workspace when cwd is not a git repo", async () => {
     const { resolveWorkingDir } = await import("./goal.js");
     mockIsGitRepo.mockReturnValue(false);
     const result = resolveWorkingDir(undefined, undefined, "/some/dir");
-    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/default/repo");
+    expect(result).toBe(path.join(managedRoot, "agent", "workspaces", "default"));
   });
 
   it("uses config.goal.defaultWorkspaceName for managed default workspace", async () => {
@@ -586,7 +589,7 @@ describe("resolveWorkingDir — 4-level precedence", () => {
       { goal: { defaultWorkspaceName: "smithersbot" } },
       "/my/repo",
     );
-    expect(result).toBe("/tmp/smithersbot-goals-test/agent/workspaces/smithersbot/repo");
+    expect(result).toBe(path.join(managedRoot, "agent", "workspaces", "smithersbot"));
   });
 
   it("resolves relative --working-dir to absolute", async () => {

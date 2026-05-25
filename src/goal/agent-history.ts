@@ -71,7 +71,7 @@ export function workspaceNameFromWorkingDir(workingDir: string): string {
   const agentRoot = resolveAgentRoot();
   const rel = path.relative(agentRoot, resolved);
   const parts = rel.split(path.sep).filter(Boolean);
-  if (parts[0] === "workspaces" && parts[1] && parts[2] === "repo") {
+  if (parts[0] === "workspaces" && parts[1]) {
     return slugifyWorkspaceName(parts[1]);
   }
   return slugifyWorkspaceName(path.basename(resolved) || "default");

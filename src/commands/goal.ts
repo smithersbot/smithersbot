@@ -73,7 +73,7 @@ function resolveDiagramMode(opts: GoalCommandOptions, outputFormat: OutputFormat
  * 1. Explicit --working-dir flag
  * 2. config.goal.defaultWorkingDir
  * 3. parsed user instruction (handled by channel-specific callers before this helper)
- * 4. managed workspace repo: <root>/agent/workspaces/<workspace-name>/repo
+ * 4. managed workspace project: <root>/agent/workspaces/<workspace-name>
  *
  * Stage 2S is transitional: explicit/configured legacy workingDir values remain
  * supported by worker launch policy unless goal.allowLegacyWorkingDir is false.

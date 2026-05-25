@@ -130,14 +130,60 @@ export function slugifyWorkspaceName(input: unknown): string {
   return slug.slice(0, WORKSPACE_NAME_MAX_LENGTH);
 }
 
-/** Workspace repo path: <root>/agent/workspaces/<name>/repo. */
+function isGitDir(candidate: string): boolean {
+  try {
+    return fs.statSync(path.join(candidate, ".git")).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isNonEmptyDir(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory() && fs.readdirSync(candidate).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function workspaceRootHasProject(candidate: string): boolean {
+  try {
+    if (!fs.statSync(candidate).isDirectory()) return true;
+  } catch {
+    return false;
+  }
+
+  if (isGitDir(candidate)) return true;
+
+  const entries = fs.readdirSync(candidate);
+  if (entries.length === 0) return false;
+
+  const nonLegacyEntries = entries.filter((entry) => entry !== "repo");
+  return nonLegacyEntries.length > 0;
+}
+
+/** Workspace project path: <root>/agent/workspaces/<name>, with legacy <name>/repo fallback. */
 export function resolveWorkspaceRepoDir(
   workspaceName: string,
   env: NodeJS.ProcessEnv = process.env,
   homedir: () => string = os.homedir,
 ): string {
   const slug = slugifyWorkspaceName(workspaceName);
-  return path.join(resolveAgentRoot(env, homedir), "workspaces", slug, "repo");
+  const workspaceRoot = path.join(resolveAgentRoot(env, homedir), "workspaces", slug);
+  if (!isPathInsideAgentRoot(workspaceRoot, env, homedir)) {
+    throw new Error("resolved workspace path must stay inside the managed agent root");
+  }
+
+  const legacyRepo = path.join(workspaceRoot, "repo");
+  if (
+    !workspaceRootHasProject(workspaceRoot) &&
+    isPathInsideAgentRoot(legacyRepo, env, homedir) &&
+    (isGitDir(legacyRepo) || isNonEmptyDir(legacyRepo))
+  ) {
+    return legacyRepo;
+  }
+
+  return workspaceRoot;
 }
 
 /** Agent-readable goal history dir: <root>/agent/history/goals/<workspace>/<goal-id>. */
