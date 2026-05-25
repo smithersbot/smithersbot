@@ -410,9 +410,15 @@ Other reasonable options include dedicated hardware, a VPS, or another isolated 
 
 The planner chooses a working directory. The goal only makes changes downstream from that working directory.
 
-### Per-task git checkpoints
+### Git across workspaces
 
-Before each task begins, SmithersBot creates a local checkpoint. If a worker gets into a bad state, SmithersBot can revert to the checkpoint and retry.
+SmithersBot can run goals in any workspace repo. Git behavior follows the goal's working directory, not the SmithersBot install repo. After you approve a plan and execution starts, SmithersBot creates a goal branch named like `claw/run/<timestamp>-<goal-id>`.
+
+Checkpoints are normal local Git commits on that branch. SmithersBot first autosaves a dirty tree when needed, then records per-task checkpoint commits. If a task must be retried or recovered, SmithersBot uses Git reset to return to that task's base SHA before trying again. There is no separate final "goal complete" commit; the final state is the last task commit.
+
+Local-only workspaces are valid. Non-git folders may be initialized locally so checkpointing can work.
+
+`/goal_github_push` is a global setting and is off by default. When enabled, SmithersBot attempts to push completed goal branches only when that goal's working directory is eligible for GitHub push. If no eligible GitHub remote or auth exists, the goal still completes locally and the push skip or failure is recorded. GitHub CI only runs when a branch is actually pushed to GitHub and that repo has CI configured. SmithersBot's local verification gates are separate from GitHub CI, and you should still review branches and PRs before merging.
 
 ### External build/test gate
 
