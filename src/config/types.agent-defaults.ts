@@ -2,6 +2,7 @@ import type {
   BlockStreamingChunkConfig,
   BlockStreamingCoalesceConfig,
   HumanDelayConfig,
+  IdentityConfig,
   TypingMode,
 } from "./types.base.js";
 import type { ChannelId } from "../channels/plugins/types.js";
@@ -108,6 +109,8 @@ export type AgentDefaultsConfig = {
   bootstrapMaxChars?: number;
   /** Optional IANA timezone for the user (used in system prompt; defaults to host timezone). */
   userTimezone?: string;
+  /** Optional identity defaults inherited by configured agents. */
+  identity?: IdentityConfig;
   /** Time format in system prompt: auto (OS preference), 12-hour, or 24-hour. */
   timeFormat?: "auto" | "12" | "24";
   /**

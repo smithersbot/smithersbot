@@ -246,7 +246,8 @@ export function applyAgentDefaults(cfg: MoltbotConfig): MoltbotConfig {
   const hasSubMax =
     typeof defaults?.subagents?.maxConcurrent === "number" &&
     Number.isFinite(defaults.subagents.maxConcurrent);
-  if (hasMax && hasSubMax) return cfg;
+  const defaultIdentity = defaults?.identity;
+  const agentList = agents?.list;
 
   let mutated = false;
   const nextDefaults = defaults ? { ...defaults } : {};
@@ -261,12 +262,34 @@ export function applyAgentDefaults(cfg: MoltbotConfig): MoltbotConfig {
     mutated = true;
   }
 
+  let nextList = agentList;
+  if (defaultIdentity && Array.isArray(agentList)) {
+    nextList = agentList.map((agent) => {
+      const mergedIdentity = {
+        ...defaultIdentity,
+        ...(agent.identity ?? {}),
+      };
+      const identity = agent.identity as Record<string, unknown> | undefined;
+      const identityUnchanged =
+        identity &&
+        Object.keys(mergedIdentity).length === Object.keys(identity).length &&
+        Object.entries(mergedIdentity).every(([key, value]) => identity[key] === value);
+      if (identityUnchanged) return agent;
+      mutated = true;
+      return {
+        ...agent,
+        identity: mergedIdentity,
+      };
+    });
+  }
+
   if (!mutated) return cfg;
 
   return {
     ...cfg,
     agents: {
       ...agents,
+      list: nextList,
       defaults: {
         ...nextDefaults,
         subagents: nextSubagents,

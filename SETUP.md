@@ -451,6 +451,11 @@ area that workers never see:
   scratch/<runId>/<taskId>/             # gateway-controlled temp state
 ```
 
+Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
+`~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`. Files outside
+managed workspaces are not part of the agent's normal read/edit surface. Private
+env, config, auth, and session files live outside the workspace and are not agent-visible.
+
 Stage 2S is intentionally transitional:
 
 - New/default goal workspaces resolve inside the managed agent root.

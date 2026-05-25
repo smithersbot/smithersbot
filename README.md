@@ -74,6 +74,11 @@ behavior with `config.goal.allowLegacyWorkingDir = false`).
   goals/  repo-chats/                      # canonical runtime stores
 ```
 
+Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
+`~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`. Files outside
+managed workspaces are not part of the agent's normal read/edit surface. Private
+env, config, auth, and session files live outside the workspace and are not agent-visible.
+
 Portability rule for project code: read configuration through standard
 environment variables — for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
 `os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). The repo-root `.env.example` is
