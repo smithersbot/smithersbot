@@ -6,7 +6,6 @@ Good options:
 
 - VirtualBox VM
 - VPS
-- Docker container
 - dedicated machine
 - isolated development machine
 
@@ -53,7 +52,7 @@ npm --version
 Expected:
 
 ```text
-v22.x.x
+v22.12.0 or newer
 ```
 
 ## 3. Install pnpm
@@ -306,6 +305,18 @@ Then:
 Then:
 
 ```text
+/gateway_status
+```
+
+Then:
+
+```text
+/usage_status
+```
+
+Then:
+
+```text
 /goal_list
 ```
 
@@ -336,6 +347,9 @@ Test a tiny goal:
 ```
 
 Approve the plan only if it is harmless and read-only.
+
+If the goal blocks with a question, answer by replying to the bot, tapping
+**Add Details**, or sending `/goal_answer <runId> <answer>`.
 
 ## 11. Restart test
 
@@ -464,6 +478,9 @@ Workers do NOT receive raw secrets in env by default. Real env files at
 `~/smithersbot-goals/private/env/<workspace-name>/.env` may only be loaded by
 trusted host-side commands (gateway-side flows) with an explicit, narrowly-scoped
 opt-in. Worker subprocesses never see those values unless that opt-in is set.
+Runtime artifacts are mirrored in redacted form under `agent/history`, including
+prompt artifacts, events, and runtime indexes that make runs inspectable without
+exposing private gateway config, env, auth, or session data.
 
 ### Initial setup order
 
@@ -504,6 +521,12 @@ agent-visible and is loaded only by trusted host-side commands. Project code
 inside `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo` should read
 configuration through normal environment variables and document variable names
 in the repo's `.env.example`.
+
+Goal and repo-chat history under `~/smithersbot-goals/agent/history` is a
+redacted audit trail for prompts, events, and runtime indexes. It is meant for
+inspection, not secret storage. Native backend sandboxing is used only where
+SmithersBot has implemented and live-probed it; prompts, convention files, and
+managed workspace paths are not kernel security boundaries.
 
 ## Troubleshooting
 
