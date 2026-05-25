@@ -32,22 +32,6 @@ Verify your Node.js version:
 node --version  # Should be v22.12.0 or later
 ```
 
-### Docker Security
-
-When running SmithersBot in Docker:
-
-1. The official image runs as a non-root user (`node`) for reduced attack surface
-2. Use `--read-only` flag when possible for additional filesystem protection
-3. Limit container capabilities with `--cap-drop=ALL`
-
-Example secure Docker run:
-
-```bash
-docker run --read-only --cap-drop=ALL \
-  -v smithersbot-data:/app/data \
-  smithersbot:latest
-```
-
 ## Security Scanning
 
 This project uses `detect-secrets` for automated secret detection in CI/CD.
