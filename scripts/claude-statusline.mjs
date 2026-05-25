@@ -62,32 +62,68 @@ function pickNumber(obj, keys) {
   return undefined;
 }
 
-function formatStatusLine(raw) {
+function pickString(obj, keys) {
+  if (!obj || typeof obj !== "object") return undefined;
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
+function pickWindow(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const usedPercentage = pickNumber(value, [
+    "used_percentage",
+    "used_percent",
+    "usedPercentage",
+    "usedPercent",
+  ]);
+  const resetsAt = pickString(value, ["resets_at", "reset_at", "resetsAt", "reset"]);
+  if (usedPercentage == null || !resetsAt) return undefined;
+  return { usedPercentage, resetsAt };
+}
+
+function parseCompleteStatusline(raw) {
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return "";
+    return undefined;
   }
+  if (!parsed || typeof parsed !== "object") return undefined;
   const limits = parsed?.rate_limits;
-  if (!limits || typeof limits !== "object") return "";
-  const fiveHour = pickNumber(limits.five_hour, ["used_percentage"]);
-  const sevenDay = pickNumber(limits.seven_day, ["used_percentage"]);
+  if (!limits || typeof limits !== "object") return undefined;
+  const fiveHour = pickWindow(limits.five_hour ?? limits.fiveHour);
+  const sevenDay = pickWindow(limits.seven_day ?? limits.sevenDay);
+  if (!fiveHour || !sevenDay) return undefined;
+  return { fiveHour, sevenDay };
+}
+
+function formatStatusLine(statusline) {
   const parts = [];
-  if (typeof fiveHour === "number") parts.push(`5h ${Math.round(fiveHour)}%`);
-  if (typeof sevenDay === "number") parts.push(`7d ${Math.round(sevenDay)}%`);
+  parts.push(`5h ${Math.round(statusline.fiveHour.usedPercentage)}%`);
+  parts.push(`7d ${Math.round(statusline.sevenDay.usedPercentage)}%`);
   return parts.length ? `Claude usage: ${parts.join(" · ")}` : "";
 }
 
 function main() {
   const raw = readStdin();
-  if (raw.trim()) {
+  const statusline = raw.trim() ? parseCompleteStatusline(raw) : undefined;
+  if (statusline) {
     // Store only the JSON Claude itself passes us — no auth, env, or config.
     writeCache(resolveCacheFile(), raw);
   }
   // Echo a compact status line back to Claude Code for display.
-  const line = formatStatusLine(raw);
-  if (line) process.stdout.write(line);
+  const line = statusline ? formatStatusLine(statusline) : "";
+  if (line) {
+    try {
+      fs.writeSync(1, line);
+    } catch {
+      // Display is best-effort, just like caching.
+    }
+  }
 }
 
 main();
