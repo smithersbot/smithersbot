@@ -1,3 +1,0 @@
-src/cli/daemon-cli/status.print.ts:86:      `${label("Working dir:")} ${infoText(shortenHomePath(service.command.workingDirectory))}`,
-src/cli/node-cli/daemon.ts:533:    defaultRuntime.log(`${label("Working dir:")} ${infoText(command.workingDirectory)}`);
-src/goal/format-output.test.ts:159:      expect(out).not.toContain("**Working dir:**");

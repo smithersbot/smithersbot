@@ -1,5 +1,0 @@
-{
-  "ok": false,
-  "error": "Repo chat worker completed but did not write a response file, even after repair attempt.",
-  "stack": "Error: Repo chat worker completed but did not write a response file, even after repair attempt.\n    at runRepoChatWorker (file:///home/matt/moltbot/dist/repo-chat/repo-chat-worker.js:445:19)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async file:///tmp/stage2o-redteam-repochat-driver.mjs:22:18"
-}

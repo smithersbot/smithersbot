@@ -1,6 +1,7 @@
 node_modules
 **/node_modules/
-.env
+.env*
+!.env.example
 .codex
 docker-compose.extra.yml
 /.clawdbot-dev/
@@ -30,7 +31,6 @@ bin/docs-list
 src/canvas-host/a2ui/*.bundle.js
 src/canvas-host/a2ui/*.map
 .bundle.hash
-.env
 
 # Local untracked files
 .local/
