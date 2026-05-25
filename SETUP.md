@@ -246,9 +246,9 @@ The setup script will:
   or a repo URL to clone
 - ask for a workspace name, defaulting to the repo basename
 - create an isolated agent workspace at
-  `<managedRoot>/agent/workspaces/<workspaceName>/repo`
+  `<managedRoot>/agent/workspaces/<workspaceName>`
 - create `<managedRoot>/private/env/<workspaceName>/.env` outside the workspace
-  repo with placeholder-only content and mode `600`
+  with placeholder-only content and mode `600`
 - ask how SmithersBot should address you, defaulting to `sir`
 - ask for your Telegram bot token
 - verify the token
@@ -412,14 +412,14 @@ View logs:
 journalctl --user -u smithersbot-gateway.service -f
 ```
 
-## Where files live
+## Where Files Live
 
 SmithersBot uses two roots: a gateway-private state directory and a managed
-agent root. Stage 2S introduces the managed agent root as the new default for
-new goal workspaces; existing installs that still use only `~/.smithersbot`
-continue to work without changes.
+agent root. The gateway-private state directory stores SmithersBot's own
+credentials and runtime state. The managed agent root stores project workspaces,
+redacted history, and host-side project secrets outside the agent-readable tree.
 
-### Gateway-private state (unchanged)
+### Gateway-Private State
 
 Gateway credentials, the Telegram bot token, and the canonical runtime stores
 for goals and repo-chats live here:
@@ -434,7 +434,7 @@ for goals and repo-chats live here:
 
 Workers never read this tree directly.
 
-### Managed agent root (Stage 2S, transitional)
+### Managed Agent Root
 
 The managed root defaults to `~/smithersbot-goals` and is overridable with
 `SMITHERSBOT_GOALS_ROOT`. It separates the agent-readable area from a private
@@ -443,7 +443,7 @@ area that workers never see:
 ```text
 ~/smithersbot-goals/
   agent/
-    workspaces/<workspace-name>/repo/   # where goal workers run
+    workspaces/<workspace-name>/        # project files agents can read/edit
     history/
       goals/<workspace>/<goalId>/       # sanitized goal-run summaries
       repo-chats/<workspace>/           # sanitized repo-chat sessions
@@ -456,26 +456,24 @@ area that workers never see:
   scratch/<runId>/<taskId>/             # gateway-controlled temp state
 ```
 
-Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
-`~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`. Files outside
-managed workspaces are not part of the agent's normal read/edit surface. Private
-env, config, auth, and session files live outside the workspace and are not agent-visible.
+Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace:
+`~/smithersbot-goals/agent/workspaces/<workspace-name>`. Files outside managed
+workspaces are not part of the agent's normal read/edit surface. Keep separate
+projects in separate workspace folders. Keep a redacted `.env.example` in each
+project workspace, and never put API keys or secrets anywhere under `agent/`.
+Existing legacy `workspaces/<workspace-name>/repo` workspaces are still
+supported.
 
-Stage 2S is intentionally transitional:
+Secret model: `~/.smithersbot/.env` is for SmithersBot/gateway secrets such as
+the Telegram bot token. Project/workspace secrets belong in
+`~/smithersbot-goals/private/env/<workspace-name>/.env`, which is not
+agent-visible. Private env, config, auth, and session files live outside the
+workspace.
 
-- New/default goal workspaces resolve inside the managed agent root.
-- Managed workspaces organize access for workers and repo chat, but are not by
-  themselves a kernel boundary.
-- Legacy `workingDir` values (including `~/moltbot` or any path outside the
-  managed root) are still supported and emit a one-line warning. You can opt
-  into fail-closed behavior with `config.goal.allowLegacyWorkingDir = false`.
-- Native backend sandboxing is used only where SmithersBot implements and
-  verifies it for the selected backend. Codex and Claude Code secret-read
-  isolation is claimed only after backend-specific live probes pass on the host;
-  otherwise that backend remains unproven or blocked on the reported operator
-  action. Codex `--sandbox workspace-write` alone is not enough evidence of
-  secret-read isolation, and Claude sandboxing requires its native sandbox to
-  start successfully. Prompts and convention files are not security boundaries.
+Managed workspaces organize access for workers and repo chat, but are not by
+themselves a kernel boundary. Native backend sandboxing is used only where
+SmithersBot implements and verifies it for the selected backend. Prompts and
+convention files are not security boundaries.
 
 ### Portability rule for project code
 
@@ -499,7 +497,7 @@ exposing private gateway config, env, auth, or session data.
 `private/{env,config,auth,sessions}`, and `scratch`, and applies `chmod 0700` to
 the managed root and `private/*` where practical. If you run setup from a repo
 outside the managed root, the script prints the recommended managed workspace
-path (`~/smithersbot-goals/agent/workspaces/<repo>/repo`).
+path (`~/smithersbot-goals/agent/workspaces/<workspace-name>`).
 
 ### Permission check
 
@@ -528,7 +526,7 @@ The gateway needs the Telegram token, but worker processes should not receive Te
 Real env files for managed workspaces live at
 `~/smithersbot-goals/private/env/<workspace-name>/.env`. That tree is not
 agent-visible and is loaded only by trusted host-side commands. Project code
-inside `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo` should read
+inside `~/smithersbot-goals/agent/workspaces/<workspace-name>` should read
 configuration through normal environment variables and document variable names
 in the repo's `.env.example`.
 

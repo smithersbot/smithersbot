@@ -48,18 +48,16 @@ smithersbot goal "<task>" --plan-only
 
 Goal state is persisted on disk. Set the state directory environment variable when you need to redirect that state for local testing or inspection.
 
-### Where files live (Stage 2S, transitional)
+### Where Files Live
 
-Stage 2S introduces a managed agent root that separates the agent-readable
-workspace from a private area workers never see. New/default goal workspaces
-resolve inside the managed agent root; existing installs at legacy paths still
-work and are supported during this stage with a warning (opt into fail-closed
-behavior with `config.goal.allowLegacyWorkingDir = false`).
+SmithersBot keeps project files agents can read and edit separate from private
+host-side secrets. Keep each project in its own workspace folder under the
+managed agent root, and keep real credentials out of `agent/`.
 
 ```text
 ~/smithersbot-goals/                       # managed root (override: SMITHERSBOT_GOALS_ROOT)
   agent/
-    workspaces/<workspace-name>/repo/      # goal worker cwd
+    workspaces/<workspace-name>/           # project files agents can read/edit
     history/
       goals/<workspace>/<goalId>/          # sanitized goal-run summaries
       repo-chats/<workspace>/              # sanitized repo-chat sessions
@@ -74,10 +72,17 @@ behavior with `config.goal.allowLegacyWorkingDir = false`).
   goals/  repo-chats/                      # canonical runtime stores
 ```
 
-Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
-`~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`. Files outside
-managed workspaces are not part of the agent's normal read/edit surface. Private
-env, config, auth, and session files live outside the workspace and are not agent-visible.
+Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace:
+`~/smithersbot-goals/agent/workspaces/<workspace-name>`. Files outside managed
+workspaces are not part of the agent's normal read/edit surface. Keep a redacted
+`.env.example` in the project workspace and never put API keys or secrets under
+`agent/`. Existing legacy `workspaces/<workspace-name>/repo` workspaces are
+still supported.
+
+Secret model: `~/.smithersbot/.env` is for SmithersBot/gateway secrets such as
+the Telegram bot token. Project/workspace secrets belong in
+`~/smithersbot-goals/private/env/<workspace-name>/.env`, which is not
+agent-visible.
 
 Portability rule for project code: read configuration through standard
 environment variables — for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
@@ -88,10 +93,7 @@ trusted host-side commands with an explicit opt-in. Native backend sandboxing
 is used only where SmithersBot implements and verifies it for the selected
 backend; prompts and convention files are not security boundaries. Managed
 workspaces organize which trees workers should use, but are not by themselves a
-kernel boundary. Codex and Claude Code secret-read isolation is claimed only
-after backend-specific live probes pass on the host. Codex `--sandbox
-workspace-write` alone is not enough evidence of secret-read isolation, and
-Claude sandboxing requires its native sandbox to start successfully.
+kernel boundary.
 
 ## Fresh isolated setup
 
@@ -122,7 +124,7 @@ The setup script is a launch shell wizard, not a TUI. It checks Node 22.12.0+,
 installs dependencies; builds the project; creates the managed agent root
 (default `~/smithersbot-goals`); asks which repo agents should work on; creates
 an isolated agent workspace at
-`<managedRoot>/agent/workspaces/<workspaceName>/repo`; creates the per-workspace
+`<managedRoot>/agent/workspaces/<workspaceName>`; creates the per-workspace
 private env file at `<managedRoot>/private/env/<workspaceName>/.env`; asks how
 SmithersBot should address you; configures Telegram; writes `~/.smithersbot/.env`
 and `~/.smithersbot/smithersbot.json`; and restricts private files to mode
@@ -132,7 +134,7 @@ The honorific prompt defaults to `sir`. You can enter a first name, `boss`, or
 leave it blank for no honorific. The generated config stores this as
 `agents.defaults.identity.operatorHonorific`.
 
-Anything agents should read or edit must be inside the managed workspace repo.
+Anything agents should read or edit must be inside the managed workspace.
 Private env, config, auth, and session files stay outside that workspace and are
 not agent-visible.
 
