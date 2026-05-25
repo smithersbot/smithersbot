@@ -9,17 +9,38 @@ The gateway was not restarted.
 ## Files changed
 
 - `README.md` — command list, Telegram controls, smoke tests, Node floor,
-  safety/auditability note, Docker mentions removed. (task `update-readme-launch-docs`)
+  safety/auditability note, managed-workspace read/edit rule, Docker mentions
+  removed. (tasks `update-readme-launch-docs`, `add-managed-workspace-rule`)
 - `SETUP.md` — Node floor, smoke tests, blocked-goal answering, security-notes
-  framing, Docker mentions removed. (task `update-setup-docs`)
+  framing, managed-workspace read/edit rule, Docker mentions removed.
+  (tasks `update-setup-docs`, `add-managed-workspace-rule`)
 - `SECURITY.md` — unsupported Docker image/deployment/hardening claims removed;
-  Node 22.12.0 requirement and CVE rationale preserved. (task `cleanup-security-changelog`)
+  Node/CVE wording corrected; Operational Safety section added. (tasks
+  `cleanup-security-changelog`, `fix-security-node-cve-and-safety`)
 - `CHANGELOG.md` — dated 2026 launch-prep entry added. (task `cleanup-security-changelog`)
 - `internal/launch-inputs/creative-direction.md` — portrait reference fixed to
   `.jpeg`; missing `screenshots/` directory marked TODO. (task `reconcile-launch-input-assets`)
 - `internal/launch-inputs/demo-brief.md` — `screenshots/` reference marked TODO.
   (task `reconcile-launch-input-assets`)
-- `internal/LAUNCH_DOCS_SETUP_POLISH_REPORT.md` — this report. (task `write-polish-report`)
+- `internal/LAUNCH_DOCS_SETUP_POLISH_REPORT.md` — this report. (tasks
+  `write-polish-report`, `update-polish-report-and-verify`)
+
+## Feedback revision applied
+
+- SECURITY.md no longer claims Node 22.12.0 includes patches for
+  `CVE-2025-59466` or `CVE-2026-21636`; the CVE bullet list was removed.
+- SECURITY.md keeps the floor at Node.js 22.12.0 or later and now says to use
+  the latest available Node 22 LTS patch release rather than an older 22.x build.
+- SECURITY.md now includes `## Operational Safety`, covering isolated
+  VM/VPS/dedicated-machine operation, managed workspace repo placement for
+  agent-readable/editable files, and keeping private env/config/auth/session
+  files outside agent-visible history.
+- README.md and SETUP.md now explicitly state that anything agents should read
+  or edit must live inside a managed workspace repo:
+  `~/smithersbot-goals/agent/workspaces/<workspace-name>/repo`.
+- No onboarding-wizard CHANGELOG entry was added, because that implementation
+  has not landed.
+- Docker claims were not reintroduced.
 
 ## Audit items applied (checklist)
 
@@ -47,6 +68,9 @@ README & SETUP smoke tests:
 Node version consistency:
 - [x] README and SETUP say Node 22.12.0 or newer, matching `package.json`
       (`engines.node >=22.12.0`) and SECURITY.md.
+- [x] SECURITY.md keeps the requirement at Node.js 22.12.0 or later, removes the
+      CVE-specific patch claim/bullets, and uses the safer "latest available Node
+      22 LTS patch release" rationale.
 
 Safety/auditability note:
 - [x] Concise launch-facing note covering: runtime artifacts mirrored redacted
@@ -55,6 +79,9 @@ Safety/auditability note:
       history; workers do not receive raw secrets by default; sandboxing exists
       where implemented/probed but prompts and managed workspaces are not
       themselves kernel security boundaries.
+- [x] SECURITY.md includes an `Operational Safety` section covering isolated
+      operation and the agent-visible/private-file boundary.
+- [x] README and SETUP include an explicit managed-workspace read/edit rule.
 
 CHANGELOG launch entry:
 - [x] Dated 2026 launch-prep entry added (fork-start entry preserved) summarizing:
@@ -101,74 +128,69 @@ Post-launch marking:
    hardening claims were deleted from SECURITY.md (and any README/SETUP mentions)
    rather than reworded, so the docs do not imply an official Docker image or
    deployment path exists.
+4. **No onboarding-wizard CHANGELOG entry added.** That implementation has not
+   landed, so this docs pass did not add a launch note for it.
 
 ## Verification commands run (with results)
 
 All grep alternation is escaped as `\|` (plain grep treats a bare `|` literally).
 
 ```
-$ grep -n "gateway_status\|usage_status\|goal_answer\|Add Details" README.md
-120:- `/gateway_status`
-121:- `/usage_status`
-180:- `/gateway_status`
-181:- `/usage_status`
-320:- Reply to a blocked question, tap **Add Details**, or use `/goal_answer <runId> <answer>` to unblock the run.
-332:- `/goal_answer <runId> <answer>` answers a blocked goal question. You can also reply to the question in Telegram.
-336:- `/gateway_status` shows gateway process and service status.
-337:- `/usage_status` shows Claude Code and Codex usage/quota status.
-```
-PASS — all README additions present.
-
-```
-$ grep -rn "usage_history" README.md SETUP.md CHANGELOG.md SECURITY.md || true
-CHANGELOG.md:5:- Removed the `/usage_history` command from the launch-facing operator surface.
-```
-PASS — only the CHANGELOG "removed" mention appears; `/usage_history` is not
-advertised as a live command.
-
-```
-$ grep -rn "post-exec\|post execution\|diff review" README.md SETUP.md SECURITY.md || true
+$ grep -n "CVE-2025-59466\|CVE-2026-21636" SECURITY.md || true
 (no output)
 ```
-PASS — post-exec LLM diff review is not advertised.
+PASS — the CVE-specific Node 22.12.0 patch claim and bullet list are gone.
 
 ```
-$ grep -rn "pi" README.md SETUP.md SECURITY.md || true
-README.md:19: ...compaction...expansion...
-README.md:20: ...
-README.md:322: ...scoped to the chat and topic thread...
-README.md:445: ...skipping code review...
-README.md:450: ...strips Anthropic credential env vars...
-SETUP.md:163:sudo npm install -g @anthropic-ai/claude-code
-SETUP.md:351:If the goal blocks with a question, answer by replying to the bot, tapping
-SETUP.md:629:sudo npm install -g @anthropic-ai/claude-code
-SECURITY.md:43:pip install detect-secrets==1.5.0
+$ grep -n "22.12.0 or later" SECURITY.md
+24:SmithersBot requires **Node.js 22.12.0 or later**.
+30:node --version  # Should be v22.12.0 or later
 ```
-PASS — every hit is an unrelated substring (com**pi**lation/com**pi**, ex**pi**...
-no: compaction/expansion, "scoped"/"topic", "skipping", "Anthropic", "tapping",
-"pip install"). None advertise `pi` as a launch-supported backend.
+PASS — SECURITY.md keeps the Node 22.12.0-or-later requirement.
 
 ```
-$ grep -rn "Docker\|docker\|smithersbot:latest" README.md SETUP.md SECURITY.md || true
+$ grep -n "Operational Safety" SECURITY.md
+33:## Operational Safety
+```
+PASS — SECURITY.md contains the new Operational Safety section.
+
+```
+$ grep -n "must live inside a managed workspace repo" README.md SETUP.md
+README.md:77:Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
+SETUP.md:454:Agent read/edit rule: anything you want SmithersBot agents to read or edit must live inside a managed workspace repo:
+```
+PASS — README.md and SETUP.md both contain the explicit managed-workspace
+read/edit rule.
+
+```
+$ grep -in "docker\|smithersbot:latest" README.md SETUP.md SECURITY.md || true
 (no output)
 ```
-PASS — no unsupported Docker launch/deployment/hardening claim remains in any of
-the three files.
+PASS — no Docker claim or `smithersbot:latest` reference was reintroduced.
 
 ```
 $ grep -rn "22.12.0" README.md SETUP.md package.json SECURITY.md
-README.md:97:- Node 22.12.0 or newer
+README.md:102:- Node 22.12.0 or newer
 SETUP.md:55:v22.12.0 or newer
 package.json:121:    "node": ">=22.12.0"
-SECURITY.md:24:SmithersBot requires **Node.js 22.12.0 or later** (LTS). ...
-SECURITY.md:32:node --version  # Should be v22.12.0 or later
+SECURITY.md:24:SmithersBot requires **Node.js 22.12.0 or later**.
+SECURITY.md:30:node --version  # Should be v22.12.0 or later
 ```
-PASS — Node 22.12.0 floor consistent across README, SETUP, package.json, SECURITY.
+PASS — Node 22.12.0 floor remains consistent across README, SETUP, package.json,
+and SECURITY.
 
 ```
 $ test -f internal/LAUNCH_DOCS_SETUP_POLISH_REPORT.md
 ```
 PASS — this report exists.
+
+Additional confirmation:
+
+```
+$ grep -in "onboarding" CHANGELOG.md || true
+(no output)
+```
+PASS — no onboarding-wizard CHANGELOG entry was added.
 
 ## Remaining docs/setup TODOs before launch
 
