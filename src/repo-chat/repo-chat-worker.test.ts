@@ -34,6 +34,52 @@ vi.mock("../goal/claude-code-env.js", async () => {
   };
 });
 
+vi.mock("../goal/backend-sandbox.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/backend-sandbox.js")>();
+  const fs = await import("node:fs");
+
+  const buildCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.buildCodexNativeSandboxConfig>[0]) =>
+      actual.buildCodexNativeSandboxConfig({
+        ...params,
+        codexPath: params.codexPath ?? "codex",
+      }),
+  );
+
+  const writeCodexNativeSandboxConfig = vi.fn(
+    (params: Parameters<typeof actual.writeCodexNativeSandboxConfig>[0]) => {
+      const config = buildCodexNativeSandboxConfig(params);
+      fs.mkdirSync(config.helperDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(config.configPath, config.configToml, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.writeFileSync(config.helperPath, '#!/bin/sh\nexec codex "$@"\n', {
+        encoding: "utf8",
+        mode: 0o700,
+      });
+      try {
+        if (
+          config.authSourcePath !== config.authReferencePath &&
+          fs.existsSync(config.authSourcePath)
+        ) {
+          fs.rmSync(config.authReferencePath, { force: true });
+          fs.symlinkSync(config.authSourcePath, config.authReferencePath);
+        }
+      } catch {
+        // Mirrors production's best-effort auth reference behavior.
+      }
+      return config;
+    },
+  );
+
+  return {
+    ...actual,
+    buildCodexNativeSandboxConfig,
+    writeCodexNativeSandboxConfig,
+  };
+});
+
 vi.mock("../logging/logger.js", () => ({
   getLogger: () => ({
     warn: (...args: unknown[]) => loggerWarnMock(...args),

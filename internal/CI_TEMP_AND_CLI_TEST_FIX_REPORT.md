@@ -90,8 +90,35 @@ These defaults stay unchanged because they are part of runtime sandbox and loggi
 
 ## Verification Results
 
+### Follow-up: repo-chat Codex sandbox helper mock
+
+The earlier Codex CLI availability fix covered `src/goal/cli-planner.test.ts` and
+`src/goal/cli-worker.test.ts`, but missed `src/repo-chat/repo-chat-worker.test.ts`.
+Repo-chat has the same unit-test shape: mocked backend output and command/event
+assertions, with no need to discover a real Codex binary.
+
+`src/repo-chat/repo-chat-worker.test.ts` now uses a test-only partial
+`backend-sandbox` mock that preserves real exports while overriding
+`buildCodexNativeSandboxConfig` and `writeCodexNativeSandboxConfig` with
+deterministic config/helper generation. The mock supplies a stable Codex path
+when the test did not pass one, writes the expected generated files, and never
+probes `PATH`.
+
+`src/goal/cli-worker.test.ts` already reflects the intended Claude native
+sandbox behavior in this checkout: without a live probe, native filesystem
+sandbox support is not reported as proven, and the blocker assertion accepts
+`live-probe-required` instead of requiring `claude-not-found`.
+
+Production sandbox defaults and runtime behavior remain unchanged. Live
+Codex/Claude probes remain gated behind explicit live-probe environment flags.
+
 Verification was rerun after writing this report:
 
+- `pnpm vitest run src/repo-chat/repo-chat-worker.test.ts src/goal/cli-worker.test.ts`: passed, 2 files and 147 tests.
+- `pnpm exec tsc -p tsconfig.json`: passed.
+- `pnpm build`: passed.
+- `pnpm lint`: passed with 0 warnings and 0 errors.
+- `pnpm format`: passed.
 - `pnpm vitest run src/telegram/sticker-cache.test.ts src/browser/profiles-service.test.ts src/logger.test.ts`: passed, 3 files and 26 tests.
 - `pnpm vitest run src/telegram/bot.create-telegram-bot.accepts-group-messages-mentionpatterns-match-without-botusername.test.ts src/telegram/bot.create-telegram-bot.applies-topic-skill-filters-system-prompts.test.ts src/telegram/bot.create-telegram-bot.blocks-all-group-messages-grouppolicy-is.test.ts src/telegram/bot.create-telegram-bot.dedupes-duplicate-callback-query-updates-by-update.test.ts src/telegram/bot.create-telegram-bot.installs-grammy-throttler.test.ts src/telegram/bot.create-telegram-bot.matches-tg-prefixed-allowfrom-entries-case-insensitively.test.ts src/telegram/bot.create-telegram-bot.matches-usernames-case-insensitively-grouppolicy-is.test.ts src/telegram/bot.create-telegram-bot.routes-dms-by-telegram-accountid-binding.test.ts src/telegram/bot.create-telegram-bot.sends-replies-without-native-reply-threading.test.ts`: passed, 9 files and 58 tests.
 - `pnpm vitest run src/goal/cli-planner.test.ts src/goal/cli-worker.test.ts src/goal/backend-sandbox.test.ts`: passed, 3 files and 157 tests.
