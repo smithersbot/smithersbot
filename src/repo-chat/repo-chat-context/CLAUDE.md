@@ -51,11 +51,13 @@ Each goal run persists its state to disk under the active SmithersBot state dire
 - Deprecated fallbacks: `~/.moltbot/goals/<runId>/` and `~/.clawdbot/goals/<runId>/` may exist for older installs.
 
 Check all candidate directories when looking for runs:
+
 - `ls -lt ~/.smithersbot/goals/` (canonical default)
 - `ls -lt ~/.moltbot/goals/` (deprecated fallback)
 - `ls -lt ~/.clawdbot/goals/` (deprecated fallback)
 
 Each run directory contains:
+
 - `run.json` — full run state (plan, tasks, results, metadata)
 - `sessions/` — agent session transcripts
 - `workers/` — per-worker attempt artifacts

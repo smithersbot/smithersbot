@@ -333,8 +333,12 @@ const MAX_OPERATOR_HONORIFIC_CHARS = 48;
 const TELEGRAM_MARKUP_DANGEROUS_CHARS = /[`*_~[\]()<>#+\-=|{}.!]/g;
 
 export function sanitizeOperatorHonorific(value: string): string {
-  return value
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+  const withoutControlChars = Array.from(value, (char) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159) ? " " : char;
+  }).join("");
+
+  return withoutControlChars
     .replace(TELEGRAM_MARKUP_DANGEROUS_CHARS, "")
     .replace(/\s+/g, " ")
     .trim()

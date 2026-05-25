@@ -28,11 +28,13 @@ Before calling mark_task_complete (or writing your final result), briefly evalua
 Ralph means "this approach is fundamentally wrong — revert and try differently."
 
 **DO ralph when:**
+
 - You've genuinely attempted fixes and discovered the approach won't work
 - Continuing would be slower than starting over with a different strategy
 - You learned something important that changes what approach is needed
 
 **DO NOT ralph when:**
+
 - The task is hard but your approach is sound
 - You have many errors (e.g., 50 build errors) but they're individually fixable
 - You haven't actually tried to fix the problems yet

@@ -55,7 +55,6 @@ Do NOT use single-letter ids like A, B, C.
 - Also note whether `AGENTS.md` exists at the project root.
 - If `CLAUDE.md` does not exist, include exactly: `No CLAUDE.md found — recommend creating it as the first execution step.`
 
-
 ## Required Output Files
 
 You MUST create all three files below unless clarification is required.
@@ -70,24 +69,25 @@ GOAL_ID: {{GOAL_ID}}
 ## Mermaid Dependency Graph
 
 graph TD
-  add-health-endpoint["Add /health endpoint"] --> add-health-tests["Add /health HTTP tests"]
-  add-health-endpoint --> update-api-docs["Update API docs for /health"]
-  add-health-tests --> run-full-suite["Run full test suite"]
-  update-api-docs --> run-full-suite
+add-health-endpoint["Add /health endpoint"] --> add-health-tests["Add /health HTTP tests"]
+add-health-endpoint --> update-api-docs["Update API docs for /health"]
+add-health-tests --> run-full-suite["Run full test suite"]
+update-api-docs --> run-full-suite
 
 Notes on the example:
+
 - update-api-docs is parallel to add-health-tests because it does not depend on tests.
 - run-full-suite depends on BOTH branches, so the final validation happens after everything is ready.
 - This allows progress even if the tests node fails: the docs node can still complete.
 
 ## Node Summary
 
-| Node ID | Type | Objective | Verification | Effort | Risk | Uncertainty |
-|--------|------|-----------|--------------|--------|------|-------------|
-| add-health-endpoint | Impl | Add /health endpoint | pnpm build | 3 | 2 | 1 |
-| add-health-tests | Impl | Add HTTP tests for /health | pnpm test path/to/test-file.test.ts | 3 | 2 | 2 |
-| update-api-docs | Other | Document /health endpoint | rg "/health" -n docs && echo "docs updated" | 2 | 1 | 2 |
-| run-full-suite | Integration | Run full suite | pnpm test | 2 | 2 | 1 |
+| Node ID             | Type        | Objective                  | Verification                                | Effort | Risk | Uncertainty |
+| ------------------- | ----------- | -------------------------- | ------------------------------------------- | ------ | ---- | ----------- |
+| add-health-endpoint | Impl        | Add /health endpoint       | pnpm build                                  | 3      | 2    | 1           |
+| add-health-tests    | Impl        | Add HTTP tests for /health | pnpm test path/to/test-file.test.ts         | 3      | 2    | 2           |
+| update-api-docs     | Other       | Document /health endpoint  | rg "/health" -n docs && echo "docs updated" | 2      | 1    | 2           |
+| run-full-suite      | Integration | Run full suite             | pnpm test                                   | 2      | 2    | 1           |
 
 ### Calibration Anchors
 
@@ -113,10 +113,12 @@ Type: short label (recommended: Spec | Impl | Integration | Hardening, but other
 Objective: short phrase describing what this node achieves
 
 Requirements:
+
 1. First requirement
 2. Second requirement
 
 Constraints:
+
 - Any constraints or limitations
 
 Verification: exactly one command (for example: pnpm test src/foo.test.ts)
@@ -124,21 +126,21 @@ Verification: exactly one command (for example: pnpm test src/foo.test.ts)
 ### 3. scout_report.json
 
 {
-  "goal_id": "{{GOAL_ID}}",
-  "nodes": [
-    {
-      "id": "node-id",
-      "type": "Impl",
-      "objective": "Short objective",
-      "verification": "pnpm test src/foo.test.ts",
-      "effort": 3,
-      "risk": 2,
-      "uncertainty": 1
-    }
-  ],
-  "edges": [
-    { "from": "node-a", "to": "node-b", "why": "reason this edge exists" }
-  ]
+"goal_id": "{{GOAL_ID}}",
+"nodes": [
+{
+"id": "node-id",
+"type": "Impl",
+"objective": "Short objective",
+"verification": "pnpm test src/foo.test.ts",
+"effort": 3,
+"risk": 2,
+"uncertainty": 1
+}
+],
+"edges": [
+{ "from": "node-a", "to": "node-b", "why": "reason this edge exists" }
+]
 }
 
 ## Granularity Rules
@@ -158,6 +160,7 @@ plan_needs_clarification.md
 This file must contain exactly ONE question that must be answered before planning can proceed.
 
 Special rule:
+
 - If the goal references "our standard approach", "our usual pattern", or similar language and you cannot find a concrete reference in the repository (docs, config, examples), you MUST ask where that standard is defined.
 
 Do NOT create any other output files when clarification is required.
