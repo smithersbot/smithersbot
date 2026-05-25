@@ -5,6 +5,7 @@ import type { ReactionTypeEmoji } from "grammy/types";
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { warn } from "../globals.js";
 import { type ChatAction, logTyping, startTypingLoop } from "./typing-loop.js";
+import { resolveAgentRoute } from "../routing/resolve-route.js";
 import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
@@ -60,6 +61,7 @@ import type { RuntimeEnv } from "../runtime.js";
 import {
   buildGoalDoneInlineKeyboard,
   buildOnStatusChange,
+  buildPlanningPreface,
   buildDoneSummaryWithManualTests,
   formatGoalLockedMessage,
   formatManualTestDetails,
@@ -74,6 +76,7 @@ import {
   parseWorkingDirInstruction,
   PLANNING_PREFACE,
   RESUME_PREFACE,
+  resolveGoalOperatorHonorific,
   resolveBlockedRequiredInputKey,
   serializedStepResultsToMap,
   START_PREFACE,
@@ -1468,8 +1471,18 @@ export function registerTelegramGoalCommands({
 
     const messageThreadId = (msg as { message_thread_id?: number }).message_thread_id;
     const threadIdForSend = auth.isGroup ? auth.resolvedThreadId : messageThreadId;
+    const route = resolveAgentRoute({
+      cfg,
+      channel: "telegram",
+      accountId,
+      peer: {
+        kind: auth.isGroup ? "group" : "dm",
+        id: String(auth.chatId),
+      },
+    });
+    const operatorHonorific = resolveGoalOperatorHonorific(cfg, route.agentId);
 
-    return { chatId: auth.chatId, threadIdForSend };
+    return { chatId: auth.chatId, threadIdForSend, operatorHonorific };
   }
 
   /** Send a GoalPlanResult: plan message with keyboard or plain reply. */
@@ -1579,7 +1592,7 @@ export function registerTelegramGoalCommands({
       threadId,
       runtime,
       label: backgroundLabel,
-      preface: getGoalExecutionPreface(run.state),
+      preface: getGoalExecutionPreface(run.state, resolveGoalOperatorHonorific(cfg)),
       replyToMessageId,
       releaseGoalLock: lockResult.release,
       fn: () => handleGoalApprove(rawId, statusCb, cfg),
@@ -2049,7 +2062,7 @@ export function registerTelegramGoalCommands({
         threadId,
         runtime,
         label: "reaction:approve",
-        preface: getGoalExecutionPreface(run.state),
+        preface: getGoalExecutionPreface(run.state, resolveGoalOperatorHonorific(cfg)),
         replyToMessageId: messageId,
         releaseGoalLock: lockResult.release,
         fn: () => handleGoalApprove(run.runId, statusCb, cfg),
@@ -2090,6 +2103,7 @@ export function registerTelegramGoalCommands({
         threadId: resolved.threadIdForSend,
         runtime,
         label: "goal",
+        preface: buildPlanningPreface(resolved.operatorHonorific),
         replyToMessageId,
         fn: () => handleGoal(goalText, cfg),
         onResult: async (result) => {
@@ -2653,6 +2667,7 @@ export function registerTelegramGoalCommands({
       threadId: resolved.threadIdForSend,
       runtime,
       label: "goal_edit",
+      preface: buildPlanningPreface(resolved.operatorHonorific),
       replyToMessageId,
       releaseGoalLock: editLock.release,
       fn: () => handleGoalEdit(editRunIdRaw, instructions, cfg),
@@ -2765,6 +2780,7 @@ export function registerTelegramGoalCommands({
         threadId: resolved.threadIdForSend,
         runtime,
         label: "goal_answer",
+        preface: buildPlanningPreface(resolved.operatorHonorific),
         replyToMessageId,
         releaseGoalLock: answerLock.release,
         fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
@@ -2853,6 +2869,7 @@ export function registerTelegramGoalCommands({
         threadId: resolved.threadIdForSend,
         runtime,
         label: "goal_feedback",
+        preface: buildPlanningPreface(resolved.operatorHonorific),
         replyToMessageId,
         releaseGoalLock: feedbackLock.release,
         fn: () => {

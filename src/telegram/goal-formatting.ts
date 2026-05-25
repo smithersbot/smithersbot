@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import type { Bot } from "grammy";
 
+import { resolveAgentConfig, resolveDefaultAgentId } from "../agents/agent-scope.js";
+import type { MoltbotConfig } from "../config/types.js";
 import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import { formatAge } from "../infra/channel-summary.js";
 import type { GoalStatusChangeEvent, ManualTestsStatus } from "../goal/agent-executor.js";
@@ -326,15 +328,57 @@ export function isPlanAutocheckBackend(
   return mode === "codex" || mode === "claude_code";
 }
 
-export const PLANNING_PREFACE = "Right away, sir.";
-export const START_PREFACE = "Right away, sir. Starting the goal now.";
-export const RESUME_PREFACE = "Right away, sir. Resuming the goal now.";
+const DEFAULT_OPERATOR_HONORIFIC = "sir";
+const MAX_OPERATOR_HONORIFIC_CHARS = 48;
+const TELEGRAM_MARKUP_DANGEROUS_CHARS = /[`*_~[\]()<>#+\-=|{}.!]/g;
 
-export function getGoalExecutionPreface(state: SerializedRun["state"] | undefined): string {
+export function sanitizeOperatorHonorific(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(TELEGRAM_MARKUP_DANGEROUS_CHARS, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_OPERATOR_HONORIFIC_CHARS)
+    .trim();
+}
+
+export function resolveOperatorHonorific(value: string | undefined): string {
+  if (value === undefined) return DEFAULT_OPERATOR_HONORIFIC;
+  return sanitizeOperatorHonorific(value);
+}
+
+export function resolveGoalOperatorHonorific(cfg: MoltbotConfig, agentId?: string): string {
+  const resolvedAgentId = agentId?.trim() || resolveDefaultAgentId(cfg);
+  const agentHonorific = resolveAgentConfig(cfg, resolvedAgentId)?.identity?.operatorHonorific;
+  const defaultHonorific = cfg.agents?.defaults?.identity?.operatorHonorific;
+  return resolveOperatorHonorific(agentHonorific ?? defaultHonorific);
+}
+
+export function buildPlanningPreface(operatorHonorific?: string): string {
+  const honorific = resolveOperatorHonorific(operatorHonorific);
+  return honorific ? `Right away, ${honorific}.` : "Right away.";
+}
+
+export function buildStartPreface(operatorHonorific?: string): string {
+  return `${buildPlanningPreface(operatorHonorific)} Starting the goal now.`;
+}
+
+export function buildResumePreface(operatorHonorific?: string): string {
+  return `${buildPlanningPreface(operatorHonorific)} Resuming the goal now.`;
+}
+
+export const PLANNING_PREFACE = buildPlanningPreface();
+export const START_PREFACE = buildStartPreface();
+export const RESUME_PREFACE = buildResumePreface();
+
+export function getGoalExecutionPreface(
+  state: SerializedRun["state"] | undefined,
+  operatorHonorific?: string,
+): string {
   if (state === "awaiting_approval" || state === "cancelled") {
-    return START_PREFACE;
+    return buildStartPreface(operatorHonorific);
   }
-  return RESUME_PREFACE;
+  return buildResumePreface(operatorHonorific);
 }
 
 export function resolveBlockedRequiredInputKey(run: SerializedRun): string | undefined {
