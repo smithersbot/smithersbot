@@ -81,11 +81,14 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - Follow the conventions you see in surrounding code (naming, structure, error handling).
 - Keep changes minimal and focused on the task. Do not refactor unrelated code.
 
-## Workspace (Stage 2S/2T — transitional)
+## Workspace
 
 - The managed workspace cwd is the new default for new/default goal runs:
-  `<managed-root>/agent/workspaces/<workspace-name>/repo`, where `<managed-root>`
+  `<managed-root>/agent/workspaces/<workspace-name>`, where `<managed-root>`
   defaults to `~/smithersbot-goals` (override via `SMITHERSBOT_GOALS_ROOT`).
+- Existing legacy workspaces at
+  `<managed-root>/agent/workspaces/<workspace-name>/repo` remain supported when
+  configured or resolved by SmithersBot.
 - Project code must read configuration through standard environment variables —
   for example `process.env.GOOGLE_DRIVE_API_KEY` (Node) or
   `os.environ["GOOGLE_DRIVE_API_KEY"]` (Python). Do NOT generate code that opens
@@ -105,11 +108,11 @@ Do not ralph with the same approach — explain what went wrong and what to do d
   live-probed, and verified it for the selected backend. Managed workspaces
   organize access but are not by themselves a kernel boundary. Do not treat
   prompts, `CLAUDE.md`, or this contract as a security boundary.
-- Stage 2S/2T is transitional: backend secret-read isolation is claimed only
-  after backend-specific sandbox probes have actually passed. Legacy
-  `workingDir` values outside the managed agent root remain supported during
-  this stage and emit a one-line warning; operators can opt into fail-closed
-  behavior by setting `config.goal.allowLegacyWorkingDir = false`.
+- Backend secret-read isolation is claimed only after backend-specific sandbox
+  probes have actually passed. Legacy `workingDir` values outside the managed
+  agent root remain supported and emit a one-line warning; operators can opt
+  into fail-closed behavior by setting
+  `config.goal.allowLegacyWorkingDir = false`.
 - If you need a real credential to test something, request it through the trusted
   host-side opt-in path instead of trying to read private env files yourself.
 

@@ -36,7 +36,7 @@ export const PLAN_QUALITY_RUBRIC = [
   "- Native backend sandboxing may be described only where implemented and verified by SmithersBot; do not rely on prompts/CLAUDE.md as a security boundary, and do not treat convention files or managed workspaces as security boundaries by themselves.",
   "",
   "Managed workspace, secrets, and conventions:",
-  "- Prefer work inside `<managed-root>/agent/workspaces/<workspace-name>/repo`.",
+  "- Prefer work inside `<managed-root>/agent/workspaces/<workspace-name>`.",
   "- Generated project code reads standard environment variables, and `.env.example` is the safe variable-name contract.",
   "- Real env files stay under `<managed-root>/private/env/<workspace-name>/.env` and `<managed-root>/private/` must not be read, printed, or referenced by generated code.",
   "- Workers do not receive raw secrets by default; raw secrets are not passed to workers by default.",

@@ -89,7 +89,8 @@ describe("src/prompts/ — planner system prompt", () => {
     expect(prompt).toContain("technical planning agent");
     expect(prompt).toContain("BACKEND SELECTION RULES");
     expect(prompt).toContain("MANAGED WORKSPACE AND SECRET RULES");
-    expect(prompt).toContain("<managed-root>/agent/workspaces/<workspace-name>/repo");
+    expect(prompt).toContain("<managed-root>/agent/workspaces/<workspace-name>");
+    expect(prompt).not.toContain("<managed-root>/agent/workspaces/<workspace-name>/repo");
     expect(prompt).toContain(".env.example");
     expect(prompt).toContain("Workers do not receive raw secrets by default");
     expect(prompt).toContain("only where implemented and verified");
@@ -207,10 +208,13 @@ describe("src/prompts/ — worker context", () => {
     }
   });
 
-  it("contains the Stage 2S Workspace section (transitional managed-workspace contract)", () => {
+  it("contains the managed Workspace section", () => {
     const needles = [
-      "## Workspace (Stage 2S/2T — transitional)",
+      "## Workspace",
+      "<managed-root>/agent/workspaces/<workspace-name>",
       "<managed-root>/agent/workspaces/<workspace-name>/repo",
+      "Existing legacy workspaces",
+      "remain supported when",
       "~/smithersbot-goals",
       "SMITHERSBOT_GOALS_ROOT",
       "process.env.GOOGLE_DRIVE_API_KEY",
@@ -229,7 +233,7 @@ describe("src/prompts/ — worker context", () => {
       "not by themselves a kernel boundary",
       "Do not treat",
       "prompts, `CLAUDE.md`, or this contract as a security boundary",
-      "backend secret-read isolation is claimed only",
+      "Backend secret-read isolation is claimed only",
       "`workingDir` values outside",
       "allowLegacyWorkingDir",
     ];
