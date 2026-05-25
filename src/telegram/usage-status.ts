@@ -19,6 +19,13 @@ import {
   type UsageLimitEvent,
 } from "../goal/usage-limit-message.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import {
+  refreshCodexQuota,
+  resetCodexQuotaRunnerForTest,
+  type CodexQuota,
+  type CodexQuotaProbeResult,
+  type UsageWindow,
+} from "./codex-quota-runner.js";
 import { renderTelegramHtmlText } from "./format.js";
 import { boldLabel, formatStatusMessage } from "./status-format.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
@@ -34,10 +41,6 @@ const CLAUDE_STATUSLINE_CACHE_REL = path.join("claude-code", "statusline.json");
 const STALE_THRESHOLD_MS = 15 * 60 * 1000;
 const CLAUDE_REFRESH_TIMEOUT_MS = 20_000;
 const CLAUDE_REFRESH_POLL_MS = 250;
-// External usage CLIs are invoked synchronously; cap each to keep the command
-// responsive even when offline or when npx must resolve a package.
-const CODEX_LIMIT_TIMEOUT_MS = 15_000;
-const EXTERNAL_CLI_MAX_BUFFER = 4 * 1024 * 1024;
 const CLAUDE_REFRESH_OUTPUT_MAX_BYTES = 128 * 1024;
 
 const USAGE_STATUS_TITLE = "SmithersBot usage status";
@@ -73,6 +76,14 @@ export type ClaudeStatuslineRefresher = (
   params: ClaudeStatuslineRefreshParams,
 ) => ClaudeStatuslineRefreshResult;
 
+export type CodexQuotaRefresher = (params: {
+  env: NodeJS.ProcessEnv;
+  homeDir: string;
+  nowMs: number;
+  spawnSync?: SpawnSyncLike;
+  cachePath?: string;
+}) => CodexQuotaProbeResult;
+
 export type BuildUsageStatusOptions = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -81,26 +92,16 @@ export type BuildUsageStatusOptions = {
   spawn?: SpawnLike;
   readCache?: StatuslineCacheReader;
   cachePath?: string;
+  codexCachePath?: string;
   refreshClaudeStatusline?: ClaudeStatuslineRefresher | false;
+  refreshCodexQuota?: CodexQuotaRefresher | false;
   sleepMs?: (ms: number) => void;
 };
 
-type UsageWindow = { usedPercentage?: number; resetsAt?: string; windowDurationMins?: number };
 type ClaudeQuota = { fiveHour: UsageWindow; sevenDay: UsageWindow };
-type CodexQuota = {
-  primary?: UsageWindow;
-  secondary?: UsageWindow;
-  credits?: { hasCredits?: boolean; balance?: number };
-  planType?: string;
-  rateLimitReachedType?: string;
-};
-type CliOutcome = { ok: true; stdout: string } | { ok: false; reason: string };
-type CachedValue<T> = { value: T; cachedAtMs: number };
-
-let codexQuotaCache: CachedValue<CodexQuota> | undefined;
 
 export function clearUsageStatusCachesForTest(): void {
-  codexQuotaCache = undefined;
+  resetCodexQuotaRunnerForTest();
 }
 
 export function resolveClaudeStatuslineCachePath(
@@ -388,71 +389,6 @@ export function refreshClaudeStatuslineCache(
   }
 }
 
-function parseCredits(value: unknown): CodexQuota["credits"] | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const obj = value as Record<string, unknown>;
-  const hasCredits = typeof obj.hasCredits === "boolean" ? obj.hasCredits : undefined;
-  const balance = pickNumber(obj, ["balance", "creditBalance"]);
-  if (hasCredits == null && balance == null) return undefined;
-  return { ...(hasCredits != null ? { hasCredits } : {}), ...(balance != null ? { balance } : {}) };
-}
-
-function parseCodexLimit(raw: string): CodexQuota | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return undefined;
-  }
-  if (!parsed || typeof parsed !== "object") return undefined;
-  const root = parsed as Record<string, unknown>;
-  const nested = root.rate_limits;
-  const container =
-    nested && typeof nested === "object" ? (nested as Record<string, unknown>) : root;
-  const primary = firstWindow(container, ["primary", "burst", "five_hour", "fiveHour"]);
-  const secondary = firstWindow(container, ["secondary", "weekly", "seven_day", "sevenDay"]);
-  const credits = parseCredits(root.credits);
-  const planType = pickString(root, ["planType", "plan_type"]);
-  const rateLimitReachedType = pickString(root, [
-    "rateLimitReachedType",
-    "rate_limit_reached_type",
-  ]);
-  if (!primary && !secondary && !credits && !planType && !rateLimitReachedType) return undefined;
-  return {
-    ...(primary ? { primary } : {}),
-    ...(secondary ? { secondary } : {}),
-    ...(credits ? { credits } : {}),
-    ...(planType ? { planType } : {}),
-    ...(rateLimitReachedType ? { rateLimitReachedType } : {}),
-  };
-}
-
-function runCli(
-  spawnSyncImpl: SpawnSyncLike,
-  command: string,
-  args: string[],
-  timeoutMs: number,
-): CliOutcome {
-  let result: ReturnType<SpawnSyncLike>;
-  try {
-    result = spawnSyncImpl(command, args, {
-      encoding: "utf8",
-      timeout: timeoutMs,
-      maxBuffer: EXTERNAL_CLI_MAX_BUFFER,
-    });
-  } catch {
-    return { ok: false, reason: "unavailable" };
-  }
-  const error = result.error as NodeJS.ErrnoException | undefined;
-  if (error) {
-    if (error.code === "ENOENT") return { ok: false, reason: "command not found" };
-    if (error.code === "ETIMEDOUT") return { ok: false, reason: "timed out" };
-    return { ok: false, reason: "unavailable" };
-  }
-  if (result.status !== 0) return { ok: false, reason: "command failed" };
-  return { ok: true, stdout: typeof result.stdout === "string" ? result.stdout : "" };
-}
-
 function formatPercent(value: number | undefined): string {
   return value == null ? "?" : `${Math.round(value)}%`;
 }
@@ -604,42 +540,41 @@ function buildCodexLines(quota: CodexQuota): string[] {
   return lines;
 }
 
-function buildCodexSection(outcome: CliOutcome, nowMs: number): string[] {
-  if (!outcome.ok) {
-    if (codexQuotaCache) {
-      return [
-        boldLabel(
-          "Codex",
-          `stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; codex-limit ${
-            outcome.reason
-          })`,
-        ),
-        ...buildCodexLines(codexQuotaCache.value),
-      ];
-    }
+function classifyCodexLimitHeading(rateLimitReachedType: string): "rate limited" | "exhausted" {
+  return /(?:exhaust|credit|quota|usage)/i.test(rateLimitReachedType)
+    ? "exhausted"
+    : "rate limited";
+}
+
+function buildCodexSection(outcome: CodexQuotaProbeResult, nowMs: number): string[] {
+  if (outcome.ok) {
+    const status = outcome.quota.rateLimitReachedType
+      ? classifyCodexLimitHeading(outcome.quota.rateLimitReachedType)
+      : "current";
+    return [boldLabel("Codex", status), ...buildCodexLines(outcome.quota)];
+  }
+
+  if (outcome.cachedQuota) {
     return [
-      boldLabel("Codex", "unavailable"),
-      boldLabel("Note", `Live quota unavailable (codex-limit ${outcome.reason}).`),
+      boldLabel("Codex", "stale"),
+      boldLabel(
+        "Note",
+        `Last known quota shown (${formatCacheAge(
+          outcome.cachedQuota.cachedAtMs,
+          nowMs,
+        )}); refresh ${outcome.reason}.`,
+      ),
+      ...buildCodexLines(outcome.cachedQuota.quota),
     ];
   }
-  const quota = parseCodexLimit(outcome.stdout);
-  if (!quota) {
-    if (codexQuotaCache) {
-      return [
-        boldLabel(
-          "Codex",
-          `stale (${formatCacheAge(codexQuotaCache.cachedAtMs, nowMs)}; unrecognized codex-limit output)`,
-        ),
-        ...buildCodexLines(codexQuotaCache.value),
-      ];
-    }
-    return [
-      boldLabel("Codex", "unavailable"),
-      boldLabel("Note", "Live quota unavailable (unrecognized codex-limit output)."),
-    ];
-  }
-  codexQuotaCache = { value: quota, cachedAtMs: nowMs };
-  return [boldLabel("Codex", "current"), ...buildCodexLines(quota)];
+
+  return [
+    boldLabel("Codex quota", "unavailable"),
+    boldLabel(
+      "Note",
+      `Quota probe ${outcome.reason}; Codex may still be usable because telemetry is separate from backend execution.`,
+    ),
+  ];
 }
 
 function collectTokenLikeEnvValues(env: NodeJS.ProcessEnv): string[] {
@@ -690,11 +625,17 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
     nowMs,
     claudeRefreshResult,
   );
-  // -y keeps npx non-interactive so it never blocks waiting on an install prompt.
-  const codexLines = buildCodexSection(
-    runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"], CODEX_LIMIT_TIMEOUT_MS),
-    nowMs,
-  );
+  const codexRefresh =
+    options.refreshCodexQuota === false
+      ? ({ ok: false, reason: "unavailable", durationMs: 0, cachePath: "" } as const)
+      : (options.refreshCodexQuota ?? refreshCodexQuota)({
+          env,
+          homeDir,
+          nowMs,
+          spawnSync: spawnSyncImpl,
+          cachePath: options.codexCachePath,
+        });
+  const codexLines = buildCodexSection(codexRefresh, nowMs);
   const text = formatStatusMessage({
     title: USAGE_STATUS_TITLE,
     lines: [...claudeLines, "", ...codexLines],

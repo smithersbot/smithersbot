@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -15,6 +18,7 @@ import {
   type StatuslineCacheEntry,
 } from "./usage-status.js";
 import { PUBLIC_TELEGRAM_MENU } from "./public-menu.js";
+import type { CodexQuota, CodexQuotaProbeResult } from "./codex-quota-runner.js";
 
 // bot-native-commands pulls in plugins/delivery/dispatch; mock the same surface
 // the gateway_status native test does so the registry can be exercised.
@@ -93,6 +97,36 @@ const CODEX_LIMIT = JSON.stringify({
   planType: "pro",
   rateLimitReachedType: null,
 });
+
+const CODEX_QUOTA: CodexQuota = {
+  primary: { usedPercentage: 30, windowDurationMins: 240, resetsAt: "1779552000" },
+  secondary: { usedPercentage: 5, windowDurationMins: 10080, resetsAt: "1779926400" },
+  credits: { hasCredits: true, balance: 12.5 },
+  planType: "pro",
+};
+
+function codexOk(quota: CodexQuota = CODEX_QUOTA): CodexQuotaProbeResult {
+  return {
+    ok: true,
+    quota,
+    cachedAtMs: NOW,
+    durationMs: 25,
+    cachePath: "/tmp/codex-quota.json",
+  };
+}
+
+function codexFailure(
+  reason: "command not found" | "timed out" | "command failed" | "unavailable",
+  cachedQuota?: { quota: CodexQuota; cachedAtMs: number },
+): CodexQuotaProbeResult {
+  return {
+    ok: false,
+    reason,
+    durationMs: 25,
+    cachePath: "/tmp/codex-quota.json",
+    ...(cachedQuota ? { cachedQuota } : {}),
+  };
+}
 
 const CCUSAGE_CLAUDE = JSON.stringify({
   daily: [{ date: "2026-05-22" }, { date: "2026-05-23" }],
@@ -368,14 +402,15 @@ describe("buildUsageStatusMessage", () => {
     expect(text).not.toContain("sk-ant-abcdef0123456789");
   });
 
-  it("parses Codex live quota from codex-limit --json", () => {
-    const spawnSync = makeSpawnSync({ codexLimit: okResult(CODEX_LIMIT) });
+  it("renders Codex current quota from the deterministic quota runner", () => {
+    const spawnSync = makeSpawnSync({});
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader(undefined),
       spawnSync,
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () => codexOk(),
     });
 
     expect(text).toContain("**Codex:** current");
@@ -383,79 +418,128 @@ describe("buildUsageStatusMessage", () => {
     expect(text).toContain("**Secondary (7d):** 5% used, resets 2026-05-28T00:00:00.000Z");
     expect(text).toContain("**Plan:** pro");
     expect(text).toContain("**Credits:** available, balance 12.5");
-    // External CLI is invoked with an argv array, never a shell string.
-    const call = (spawnSync as unknown as { mock: { calls: unknown[][] } }).mock.calls.find(
-      (c) => Array.isArray(c[1]) && (c[1] as string[]).includes("codex-limit"),
+    expect(spawnSync).not.toHaveBeenCalledWith(
+      "npx",
+      expect.arrayContaining(["-y", "codex-limit", "--json"]),
+      expect.anything(),
     );
-    expect(call?.[0]).toBe("npx");
-    expect(call?.[1]).toEqual(["-y", "codex-limit", "--json"]);
-    expect(call?.[2]).toMatchObject({ timeout: 15_000 });
   });
 
-  it("shows a concise message when codex-limit is unavailable", () => {
+  it("shows telemetry unavailable without implying Codex backend execution is unavailable", () => {
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: errResult("ENOENT") }),
+      spawnSync: makeSpawnSync({}),
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () => codexFailure("timed out"),
     });
 
-    expect(text).toContain("**Codex:** unavailable");
-    expect(text).toContain("Live quota unavailable (codex-limit command not found)");
+    expect(text).toContain("**Codex quota:** unavailable");
+    expect(text).toContain("Quota probe timed out");
+    expect(text).toContain("Codex may still be usable");
+    expect(text).not.toContain("**Codex:** unavailable");
+    expect(text).not.toContain("**Codex:** exhausted");
   });
 
-  it("uses a stale cached Codex live quota when codex-limit times out", () => {
-    buildUsageStatusMessage({
-      env: {},
-      nowMs: NOW,
-      readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: okResult(CODEX_LIMIT) }),
-      refreshClaudeStatusline: false,
-    });
-
+  it("uses a stale cached Codex live quota when the quota probe times out", () => {
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW + 60_000,
       readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: errResult("ETIMEDOUT") }),
+      spawnSync: makeSpawnSync({}),
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () => codexFailure("timed out", { quota: CODEX_QUOTA, cachedAtMs: NOW }),
     });
 
     expect(text).toContain("**Codex:** stale");
-    expect(text).toContain("cached 2026-05-23T12:00:00.000Z (1m ago); codex-limit timed out");
+    expect(text).toContain("Last known quota shown (cached 2026-05-23T12:00:00.000Z (1m ago))");
+    expect(text).toContain("refresh timed out");
     expect(text).toContain("**Primary (4h):** 30% used, resets 2026-05-23T16:00:00.000Z");
   });
 
-  it("shows codex-limit timeout as unavailable when there is no cached live quota", () => {
-    const text = buildUsageStatusMessage({
-      env: {},
-      nowMs: NOW,
-      readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: errResult("ETIMEDOUT") }),
-      refreshClaudeStatusline: false,
-    });
+  it("survives a gateway restart by reading the file-backed Codex quota cache", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "smithersbot-usage-status-"));
+    const codexCachePath = path.join(tmpDir, "cache", "smithersbot", "codex-quota.json");
+    try {
+      const first = buildUsageStatusMessage({
+        env: {},
+        nowMs: NOW,
+        readCache: cacheReader(undefined),
+        spawnSync: makeSpawnSync({ codexLimit: okResult(CODEX_LIMIT) }),
+        refreshClaudeStatusline: false,
+        codexCachePath,
+      });
+      expect(first).toContain("**Codex:** current");
 
-    expect(text).toContain("Live quota unavailable (codex-limit timed out)");
+      clearUsageStatusCachesForTest();
+      const second = buildUsageStatusMessage({
+        env: {},
+        nowMs: NOW + 60_000,
+        readCache: cacheReader(undefined),
+        spawnSync: makeSpawnSync({ codexLimit: errResult("ETIMEDOUT") }),
+        refreshClaudeStatusline: false,
+        codexCachePath,
+      });
+
+      expect(second).toContain("**Codex:** stale");
+      expect(second).toContain("Last known quota shown (cached 2026-05-23T12:00:00.000Z (1m ago))");
+      expect(second).toContain("**Plan:** pro");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
-  it("renders Codex exhausted state from rateLimitReachedType", () => {
-    const exhausted = JSON.stringify({
-      primary: { usedPercent: 100, windowDurationMins: 240, resetsAt: 1779552000 },
-      secondary: { usedPercent: 84, windowDurationMins: 10080, resetsAt: 1779926400 },
-      rateLimitReachedType: "primary",
-    });
+  it("shows quota timeout as telemetry unavailable when there is no cached live quota", () => {
     const text = buildUsageStatusMessage({
       env: {},
       nowMs: NOW,
       readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: okResult(exhausted) }),
+      spawnSync: makeSpawnSync({}),
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () => codexFailure("timed out"),
     });
 
-    expect(text).toContain("**Codex:** current");
+    expect(text).toContain("**Codex quota:** unavailable");
+    expect(text).toContain("Quota probe timed out");
+    expect(text).not.toContain("**Codex:** unavailable");
+    expect(text).not.toContain("**Codex:** exhausted");
+  });
+
+  it("renders Codex rate-limited and exhausted headings from rateLimitReachedType", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: false,
+      refreshCodexQuota: () =>
+        codexOk({
+          primary: { usedPercentage: 100, windowDurationMins: 240, resetsAt: "1779552000" },
+          secondary: { usedPercentage: 84, windowDurationMins: 10080, resetsAt: "1779926400" },
+          rateLimitReachedType: "primary",
+        }),
+    });
+
+    expect(text).toContain("**Codex:** rate limited");
     expect(text).toContain("**Rate limit:** primary");
     expect(text).toContain("**Primary (4h):** 100% used");
+
+    const exhausted = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: false,
+      refreshCodexQuota: () =>
+        codexOk({
+          primary: { usedPercentage: 100, windowDurationMins: 240, resetsAt: "1779552000" },
+          rateLimitReachedType: "out_of_credits",
+        }),
+    });
+
+    expect(exhausted).toContain("**Codex:** exhausted");
+    expect(exhausted).not.toContain("**Codex:** current");
   });
 
   it("excludes historical ccusage from the default live quota output", () => {
@@ -475,6 +559,7 @@ describe("buildUsageStatusMessage", () => {
       readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 1000 }),
       spawnSync,
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () => codexOk(),
     });
 
     expect(text).not.toContain("Historical usage");
@@ -489,16 +574,17 @@ describe("buildUsageStatusMessage", () => {
 
   it("redacts token-like values that would otherwise leak into the output", () => {
     const leakedToken = "topsecrettokenvalue1234";
-    const codexWithLeak = JSON.stringify({
-      burst: { used_percentage: 30, resets_at: leakedToken },
-      weekly: { used_percentage: 5, resets_at: "sk-ant-abcdef0123456789" },
-    });
     const text = buildUsageStatusMessage({
       env: { CLAWDBOT_GATEWAY_TOKEN: leakedToken },
       nowMs: NOW,
       readCache: cacheReader(undefined),
-      spawnSync: makeSpawnSync({ codexLimit: okResult(codexWithLeak) }),
+      spawnSync: makeSpawnSync({}),
       refreshClaudeStatusline: false,
+      refreshCodexQuota: () =>
+        codexOk({
+          primary: { usedPercentage: 30, resetsAt: leakedToken },
+          secondary: { usedPercentage: 5, resetsAt: "sk-ant-abcdef0123456789" },
+        }),
     });
 
     expect(text).not.toContain(leakedToken);
