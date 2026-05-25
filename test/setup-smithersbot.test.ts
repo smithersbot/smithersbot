@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts/setup-smithersbot.sh");
 const testToken = "1234567890:TEST_TOKEN";
+const execFile = promisify(execFileCallback);
 
 const getMeSuccess = {
   ok: true,
@@ -61,10 +62,8 @@ const getUpdatesConflict = {
 type RouteHandler = (path: string) => unknown;
 
 const tempDirs: string[] = [];
-const servers: Array<{ close: () => Promise<void> }> = [];
 
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -74,31 +73,21 @@ async function mkTempHome() {
   return dir;
 }
 
-async function startTelegramStub(handler: RouteHandler) {
-  const server = createServer((req, res) => {
-    const body = handler(req.url ?? "/");
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(body));
-  });
-
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("stub server did not bind to a TCP port");
-  const close = () => new Promise<void>((resolve) => server.close(() => resolve()));
-  servers.push({ close });
-  return `http://127.0.0.1:${address.port}`;
+async function mkGitFixture(root: string, name = "fixture-repo") {
+  const repo = path.join(root, name);
+  await fs.mkdir(repo, { recursive: true });
+  await fs.writeFile(path.join(repo, "README.md"), `# ${name}\n`, "utf8");
+  await execFile("git", ["init"], { cwd: repo });
+  await execFile("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
+  await execFile("git", ["config", "user.name", "Test User"], { cwd: repo });
+  await execFile("git", ["add", "README.md"], { cwd: repo });
+  await execFile("git", ["commit", "-m", "initial"], { cwd: repo });
+  return repo;
 }
 
-async function runSetup(params: {
-  home: string;
-  apiBase: string;
-  input: string;
-  pollSeconds?: string;
-  pollInterval?: string;
-}) {
+async function runSetupPreflight(params: { home: string; env?: NodeJS.ProcessEnv }) {
   const child = spawn(
-    "bash",
+    "/bin/bash",
     [
       scriptPath,
       "--no-build",
@@ -113,8 +102,95 @@ async function runSetup(params: {
       cwd: repoRoot,
       env: {
         ...process.env,
+        ...params.env,
         HOME: params.home,
-        SMITHERSBOT_TELEGRAM_API_BASE: params.apiBase,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  child.stdin.end("");
+  const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+  return { exitCode, stdout, stderr, output: `${stdout}\n${stderr}` };
+}
+
+async function writeExecutable(filePath: string, content: string) {
+  await fs.writeFile(filePath, content, { mode: 0o755 });
+  await fs.chmod(filePath, 0o755);
+}
+
+async function startTelegramStub(handler: RouteHandler) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "smithersbot-telegram-stub-"));
+  tempDirs.push(dir);
+  await fs.writeFile(path.join(dir, "getMe.json"), JSON.stringify(handler("/getMe")), "utf8");
+  await fs.writeFile(
+    path.join(dir, "getUpdates.1.json"),
+    JSON.stringify(handler("/getUpdates")),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(dir, "getUpdates.2.json"),
+    JSON.stringify(handler("/getUpdates")),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(dir, "getUpdates.json"),
+    JSON.stringify(handler("/getUpdates")),
+    "utf8",
+  );
+  return dir;
+}
+
+async function runSetup(params: {
+  home: string;
+  apiBase: string;
+  input: string;
+  pollSeconds?: string;
+  pollInterval?: string;
+  managedRootInput?: string;
+  repoPromptInput?: string;
+  workspaceNameInput?: string;
+  honorificInput?: string;
+  systemdInput?: string;
+  env?: NodeJS.ProcessEnv;
+}) {
+  const sourceRepo = path.join(params.home, "source-repo");
+  const repoPromptInput = params.repoPromptInput ?? `2\n${sourceRepo}\n`;
+  if (params.repoPromptInput === undefined) {
+    await mkGitFixture(params.home, "source-repo");
+  }
+  const wizardInput = [
+    params.managedRootInput ?? "\n",
+    repoPromptInput,
+    params.workspaceNameInput ?? "\n",
+    params.honorificInput ?? "\n",
+    params.input,
+    params.systemdInput ?? "\n",
+  ].join("");
+  const child = spawn(
+    "/bin/bash",
+    [
+      scriptPath,
+      "--no-build",
+      "--backend",
+      "codex",
+      "--config-dir",
+      path.join(params.home, ".smithersbot"),
+      "--state-dir",
+      path.join(params.home, ".smithersbot"),
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        ...params.env,
+        HOME: params.home,
+        SMITHERSBOT_TELEGRAM_API_STUB_DIR: params.apiBase,
         SMITHERSBOT_SETUP_POLL_SECONDS: params.pollSeconds ?? "1",
         SMITHERSBOT_SETUP_POLL_INTERVAL: params.pollInterval ?? "0.05",
       },
@@ -128,7 +204,7 @@ async function runSetup(params: {
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => (stdout += chunk));
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  child.stdin.end(params.input);
+  child.stdin.end(wizardInput);
 
   const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
   return { exitCode, stdout, stderr, output: `${stdout}\n${stderr}` };
@@ -147,6 +223,8 @@ async function readGeneratedConfig(home: string) {
     config: JSON.parse(configRaw) as {
       channels: { telegram: { allowFrom: string[]; botToken: string; repoChatBackend: string } };
       gateway: { mode: string; auth: { token: string } };
+      agents: { defaults: { workspace: string; identity: { operatorHonorific: string } } };
+      goal: { defaultWorkspaceName: string };
     },
     envRaw,
     configMode: configStat.mode & 0o777,
@@ -155,6 +233,36 @@ async function readGeneratedConfig(home: string) {
 }
 
 describe("scripts/setup-smithersbot.sh", () => {
+  it("requires Node.js >= 22.12.0", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    await fs.mkdir(bin);
+    await writeExecutable(path.join(bin, "node"), "#!/bin/bash\nprintf 'v22.11.0\\n'\n");
+    const result = await runSetupPreflight({
+      home,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain("Node.js >= 22.12.0 is required; found v22.11.0");
+  });
+
+  it("requires pnpm even with --no-build", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    await fs.mkdir(bin);
+    await writeExecutable(path.join(bin, "node"), "#!/bin/bash\nprintf 'v22.12.0\\n'\n");
+    for (const cmd of ["grep", "git"]) {
+      const resolved = (await execFile("command", ["-v", cmd], { shell: true })).stdout.trim();
+      await fs.symlink(resolved, path.join(bin, cmd));
+    }
+
+    const result = await runSetupPreflight({ home, env: { PATH: bin } });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain("pnpm is required but was not found");
+  });
+
   it("accepts a valid getMe token, discovers a private chat ID, and writes usable private files without echoing the token", async () => {
     const home = await mkTempHome();
     const apiBase = await startTelegramStub((requestPath) => {
@@ -180,6 +288,8 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(generated.config.channels.telegram.repoChatBackend).toBe("codex");
     expect(generated.config.gateway.mode).toBe("local");
     expect(generated.config.gateway.auth.token).toMatch(/^[A-Za-z0-9_-]{32,}$/);
+    expect(generated.config.agents.defaults.identity.operatorHonorific).toBe("sir");
+    expect(generated.config.goal.defaultWorkspaceName).toBe("source-repo");
     expect(generated.configMode).toBe(0o600);
     expect(generated.envMode).toBe(0o600);
 
@@ -207,9 +317,22 @@ describe("scripts/setup-smithersbot.sh", () => {
       expect(stat.mode & 0o777).toBe(0o700);
     }
     expect(result.output).toContain(`Managed root: ${managedRoot}`);
+    const workspaceRepo = path.join(managedRoot, "agent", "workspaces", "source-repo", "repo");
+    expect(generated.config.agents.defaults.workspace).toBe(workspaceRepo);
+    expect((await fs.stat(path.join(workspaceRepo, ".git"))).isDirectory()).toBe(true);
+    await expect(fs.readFile(path.join(workspaceRepo, "README.md"), "utf8")).resolves.toContain(
+      "# source-repo",
+    );
+    const privateEnvPath = path.join(managedRoot, "private", "env", "source-repo", ".env");
+    const privateEnvStat = await fs.stat(privateEnvPath);
+    expect(privateEnvStat.mode & 0o777).toBe(0o600);
+    expect(path.relative(workspaceRepo, privateEnvPath).startsWith("..")).toBe(true);
+    await expect(fs.readFile(privateEnvPath, "utf8")).resolves.toContain("EXAMPLE_API_KEY");
+    expect(result.output).toContain("/gateway_status");
+    expect(result.output).toContain("/usage_status");
   });
 
-  it("honors SMITHERSBOT_GOALS_ROOT override and prints managed-root pointer when run outside it", async () => {
+  it("honors the managed-root prompt", async () => {
     const home = await mkTempHome();
     const customRoot = path.join(home, "custom-managed-root");
     const apiBase = await startTelegramStub((requestPath) => {
@@ -218,47 +341,105 @@ describe("scripts/setup-smithersbot.sh", () => {
       return { ok: false, description: `unexpected path ${requestPath}` };
     });
 
-    const child = spawn(
-      "bash",
-      [
-        scriptPath,
-        "--no-build",
-        "--backend",
-        "codex",
-        "--config-dir",
-        path.join(home, ".smithersbot"),
-        "--state-dir",
-        path.join(home, ".smithersbot"),
-      ],
-      {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          HOME: home,
-          SMITHERSBOT_GOALS_ROOT: customRoot,
-          SMITHERSBOT_TELEGRAM_API_BASE: apiBase,
-          SMITHERSBOT_SETUP_POLL_SECONDS: "1",
-          SMITHERSBOT_SETUP_POLL_INTERVAL: "0.05",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const result = await runSetup({
+      home,
+      apiBase,
+      managedRootInput: `${customRoot}\n`,
+      input: `${testToken}\n\n`,
+    });
 
-    let combined = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => (combined += chunk));
-    child.stderr.on("data", (chunk) => (combined += chunk));
-    child.stdin.end(`${testToken}\n\n`);
-    const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
-
-    expect(exitCode).toBe(0);
+    expect(result.exitCode).toBe(0);
     for (const subdir of ["agent/workspaces", "agent/history/goals", "private/env", "scratch"]) {
       const stat = await fs.stat(path.join(customRoot, subdir));
       expect(stat.isDirectory()).toBe(true);
     }
-    expect(combined).toContain(`Managed root: ${customRoot}`);
-    expect(combined).toContain(`Recommended workspace path: ${customRoot}/agent/workspaces/`);
+    expect(result.output).toContain(`Managed root: ${customRoot}`);
+  });
+
+  it("clones a local repo URL fixture into the managed workspace repo", async () => {
+    const home = await mkTempHome();
+    const source = await mkGitFixture(home, "url-repo");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: `3\nfile://${source}\n`,
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const workspaceRepo = path.join(
+      home,
+      "smithersbot-goals",
+      "agent",
+      "workspaces",
+      "url-repo",
+      "repo",
+    );
+    await expect(fs.readFile(path.join(workspaceRepo, "README.md"), "utf8")).resolves.toContain(
+      "# url-repo",
+    );
+    expect(result.output).toContain("Cloned repo URL into isolated agent workspace");
+  });
+
+  it("copies a local non-git directory as a fallback", async () => {
+    const home = await mkTempHome();
+    const source = path.join(home, "plain-source");
+    await fs.mkdir(source);
+    await fs.writeFile(path.join(source, "notes.txt"), "plain copy\n", "utf8");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: `2\n${source}\n`,
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const workspaceRepo = path.join(
+      home,
+      "smithersbot-goals",
+      "agent",
+      "workspaces",
+      "plain-source",
+      "repo",
+    );
+    await expect(fs.readFile(path.join(workspaceRepo, "notes.txt"), "utf8")).resolves.toBe(
+      "plain copy\n",
+    );
+    expect(result.output).toContain("Local source is not a git repo; copied it");
+  });
+
+  it("rejects unsafe workspace names and accepts the next safe value", async () => {
+    const home = await mkTempHome();
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      workspaceNameInput: "../bad\nsafe-name\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Workspace name must be a single safe path segment");
+    await expect(
+      fs.stat(path.join(home, "smithersbot-goals", "agent", "workspaces", "safe-name", "repo")),
+    ).resolves.toBeTruthy();
   });
 
   it("stops cleanly for an invalid token", async () => {

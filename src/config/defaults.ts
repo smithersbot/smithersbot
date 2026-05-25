@@ -267,7 +267,7 @@ export function applyAgentDefaults(cfg: MoltbotConfig): MoltbotConfig {
     nextList = agentList.map((agent) => {
       const mergedIdentity = {
         ...defaultIdentity,
-        ...(agent.identity ?? {}),
+        ...agent.identity,
       };
       const identity = agent.identity as Record<string, unknown> | undefined;
       const identityUnchanged =

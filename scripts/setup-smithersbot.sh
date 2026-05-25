@@ -133,14 +133,23 @@ write_config_file() {
   local allowed_id=$2
   local backend=$3
   local gateway_token=$4
+  local workspace_name=$5
+  local workspace_repo=$6
+  local operator_honorific=$7
   local tmp
   local escaped_allowed_id
   local escaped_backend
   local escaped_gateway_token
+  local escaped_workspace_name
+  local escaped_workspace_repo
+  local escaped_operator_honorific
 
   escaped_allowed_id=$(json_escape "$allowed_id")
   escaped_backend=$(json_escape "$backend")
   escaped_gateway_token=$(json_escape "$gateway_token")
+  escaped_workspace_name=$(json_escape "$workspace_name")
+  escaped_workspace_repo=$(json_escape "$workspace_repo")
+  escaped_operator_honorific=$(json_escape "$operator_honorific")
   tmp=$(mktemp "${path}.tmp.XXXXXX")
   chmod 600 "$tmp"
   cat >"$tmp" <<JSON
@@ -159,6 +168,17 @@ write_config_file() {
       "dmPolicy": "allowlist",
       "repoChatBackend": "$escaped_backend"
     }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "$escaped_workspace_repo",
+      "identity": {
+        "operatorHonorific": "$escaped_operator_honorific"
+      }
+    }
+  },
+  "goal": {
+    "defaultWorkspaceName": "$escaped_workspace_name"
   }
 }
 JSON
@@ -179,12 +199,16 @@ require_repo_root() {
 require_node_22() {
   command -v node >/dev/null 2>&1 || fail "Node.js 22+ is required but node was not found"
 
-  local version major
+  local version raw major minor patch
   version=$(node -v 2>/dev/null || true)
-  major=${version#v}
-  major=${major%%.*}
-  [[ "$major" =~ ^[0-9]+$ ]] || fail "could not parse Node.js version: $version"
-  (( major >= 22 )) || fail "Node.js 22+ is required; found $version"
+  raw=${version#v}
+  IFS=. read -r major minor patch _ <<<"$raw"
+  patch=${patch%%[^0-9]*}
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] \
+    || fail "could not parse Node.js version: $version"
+  if (( major < 22 || (major == 22 && minor < 12) || (major == 22 && minor == 12 && patch < 0) )); then
+    fail "Node.js >= 22.12.0 is required; found $version"
+  fi
 }
 
 require_git() {
@@ -210,9 +234,41 @@ activate_pnpm() {
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required but was not found"
 }
 
+require_pnpm() {
+  command -v pnpm >/dev/null 2>&1 || fail "pnpm is required but was not found"
+}
+
+warn_backend_availability() {
+  if command -v codex >/dev/null 2>&1 || command -v claude >/dev/null 2>&1 || command -v claude_code >/dev/null 2>&1; then
+    return 0
+  fi
+  info "Warning: no supported agent backend command was found on PATH (codex or claude_code)."
+  info "Setup will continue, but install and log in to Codex or Claude Code before running repo chat or goals."
+}
+
 telegram_api() {
   local method=$1
   local api_base=${SMITHERSBOT_TELEGRAM_API_BASE:-https://api.telegram.org}
+
+  if [[ -n "${SMITHERSBOT_TELEGRAM_API_STUB_DIR:-}" ]]; then
+    TELEGRAM_API_METHOD="$method" TELEGRAM_API_STUB_DIR="$SMITHERSBOT_TELEGRAM_API_STUB_DIR" node --input-type=module <<'NODE'
+import fs from "node:fs";
+import path from "node:path";
+const dir = process.env.TELEGRAM_API_STUB_DIR;
+const method = process.env.TELEGRAM_API_METHOD;
+const counterPath = path.join(dir, `${method}.count`);
+let count = 0;
+try {
+  count = Number.parseInt(fs.readFileSync(counterPath, "utf8"), 10) || 0;
+} catch {}
+count += 1;
+fs.writeFileSync(counterPath, String(count), { mode: 0o600 });
+const numbered = path.join(dir, `${method}.${count}.json`);
+const fallback = path.join(dir, `${method}.json`);
+process.stdout.write(fs.readFileSync(fs.existsSync(numbered) ? numbered : fallback, "utf8"));
+NODE
+    return 0
+  fi
 
   TELEGRAM_API_BASE="$api_base" TELEGRAM_API_METHOD="$method" TELEGRAM_BOT_TOKEN_SETUP="$telegram_token" node --input-type=module <<'NODE'
 const base = process.env.TELEGRAM_API_BASE ?? "https://api.telegram.org";
@@ -442,6 +498,188 @@ prompt_backend() {
   done
 }
 
+prompt_managed_root() {
+  local default_root=$1
+  local answer
+  printf 'Managed agent root [%s]: ' "$default_root" >&2
+  IFS= read -r answer
+  if [[ -z "$answer" ]]; then
+    printf '%s\n' "$default_root"
+  else
+    expand_home "$answer"
+  fi
+}
+
+is_git_repo() {
+  [[ -e "$1/.git" ]] || return 1
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+default_workspace_name_from_source() {
+  local source=$1
+  local base
+  base=$(basename "$source")
+  base=${base%.git}
+  [[ -n "$base" ]] || base="smithersbot"
+  printf '%s\n' "$base"
+}
+
+validate_workspace_name() {
+  local name=$1
+  [[ -n "$name" ]] || return 1
+  [[ ${#name} -le 64 ]] || return 1
+  [[ "$name" != *".."* ]] || return 1
+  [[ "$name" != /* && "$name" != \\* ]] || return 1
+  [[ "$name" != *"/"* && "$name" != *"\\"* ]] || return 1
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ "$name" != "." && "$name" != ".." ]] || return 1
+  return 0
+}
+
+prompt_repo_source() {
+  local choice source
+  while true; do
+    printf 'What repo should agents work on?\n' >&2
+    printf '  1) this SmithersBot checkout\n' >&2
+    printf '  2) another local repo path\n' >&2
+    printf '  3) clone a repo URL\n' >&2
+    printf 'Choose [1/2/3]: ' >&2
+    IFS= read -r choice
+    case "$choice" in
+      ""|1)
+        printf 'local:%s\n' "$(pwd)"
+        return 0
+        ;;
+      2)
+        printf 'Local repo path: ' >&2
+        IFS= read -r source
+        [[ -n "$source" ]] || fail "local repo path cannot be empty"
+        source=$(expand_home "$source")
+        [[ -d "$source" ]] || fail "local repo path does not exist: $source"
+        printf 'local:%s\n' "$source"
+        return 0
+        ;;
+      3)
+        printf 'Git repo URL: ' >&2
+        IFS= read -r source
+        [[ -n "$source" ]] || fail "git repo URL cannot be empty"
+        printf 'url:%s\n' "$source"
+        return 0
+        ;;
+      *)
+        printf 'Please choose 1, 2, or 3.\n' >&2
+        ;;
+    esac
+  done
+}
+
+prompt_workspace_name() {
+  local default_name=$1
+  local answer
+  while true; do
+    printf 'Workspace name [%s]: ' "$default_name" >&2
+    IFS= read -r answer
+    [[ -n "$answer" ]] || answer=$default_name
+    if validate_workspace_name "$answer"; then
+      printf '%s\n' "$answer"
+      return 0
+    fi
+    printf 'Workspace name must be a single safe path segment using letters, numbers, dot, underscore, or dash.\n' >&2
+  done
+}
+
+ensure_empty_or_absent_dir() {
+  local dir=$1
+  if [[ -d "$dir" ]] && [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    fail "workspace repo already exists and is not empty: $dir"
+  fi
+}
+
+materialize_workspace_repo() {
+  local source_kind=$1
+  local source_value=$2
+  local workspace_repo=$3
+  local workspace_parent
+  workspace_parent=$(dirname "$workspace_repo")
+  mkdir -p "$workspace_parent"
+  ensure_empty_or_absent_dir "$workspace_repo"
+
+  if [[ "$source_kind" == "url" ]]; then
+    git clone -- "$source_value" "$workspace_repo"
+    info "Cloned repo URL into isolated agent workspace: $workspace_repo"
+    return 0
+  fi
+
+  if is_git_repo "$source_value"; then
+    git clone -- "$source_value" "$workspace_repo"
+    info "Cloned local git repo into isolated agent workspace: $workspace_repo"
+    return 0
+  fi
+
+  mkdir -p "$workspace_repo"
+  cp -a "$source_value"/. "$workspace_repo"/
+  info "Local source is not a git repo; copied it into isolated agent workspace: $workspace_repo"
+}
+
+create_private_workspace_env() {
+  local managed_root=$1
+  local workspace_name=$2
+  local env_dir="$managed_root/private/env/$workspace_name"
+  local env_file="$env_dir/.env"
+  local tmp
+  mkdir -p "$env_dir"
+  chmod 700 "$env_dir" 2>/dev/null || true
+  if [[ ! -e "$env_file" ]]; then
+    tmp=$(mktemp "$env_file.tmp.XXXXXX")
+    chmod 600 "$tmp"
+    {
+      printf '# SmithersBot per-workspace private environment.\n'
+      printf '# Add real secrets here on the host only; this file is outside the agent workspace.\n'
+      printf '# EXAMPLE_API_KEY=replace-me\n'
+    } >"$tmp"
+    mv "$tmp" "$env_file"
+  fi
+  chmod 600 "$env_file"
+}
+
+prompt_operator_honorific() {
+  local answer
+  printf 'How should SmithersBot address you? [sir] ' >&2
+  IFS= read -r answer
+  if [[ -z "$answer" ]]; then
+    printf 'sir\n'
+  else
+    printf '%s\n' "$answer"
+  fi
+}
+
+print_systemd_commands() {
+  info "To install and start the optional user service later, run:"
+  info "  scripts/install-smithersbot-user-service.sh"
+  info "  systemctl --user start smithersbot.service"
+}
+
+offer_systemd() {
+  local answer
+  printf 'Install and start the optional systemd user service now? [y/N] ' >&2
+  IFS= read -r answer
+  case "$answer" in
+    y|Y|yes|YES)
+      if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user --version >/dev/null 2>&1; then
+        info "Warning: systemctl --user is not available in this environment."
+        print_systemd_commands
+        return 0
+      fi
+      scripts/install-smithersbot-user-service.sh
+      systemctl --user start smithersbot.service
+      info "Started smithersbot.service."
+      ;;
+    *)
+      print_systemd_commands
+      ;;
+  esac
+}
+
 config_dir="~/.smithersbot"
 state_dir="~/.smithersbot"
 run_build=1
@@ -486,6 +724,8 @@ esac
 require_repo_root
 require_node_22
 require_git
+require_pnpm
+warn_backend_availability
 
 if [[ "$run_build" -eq 1 ]]; then
   activate_pnpm
@@ -502,10 +742,25 @@ config_file="$config_dir/smithersbot.json"
 
 mkdir -p "$config_dir" "$state_dir"
 
-managed_root=$(resolve_managed_root)
+managed_root_default=$(resolve_managed_root)
+managed_root=$(prompt_managed_root "$managed_root_default")
 create_managed_tree "$managed_root"
 info "Managed root: $managed_root"
-print_managed_root_pointer "$managed_root"
+
+repo_source=$(prompt_repo_source)
+repo_source_kind=${repo_source%%:*}
+repo_source_value=${repo_source#*:}
+workspace_default=$(default_workspace_name_from_source "$repo_source_value")
+workspace_name=$(prompt_workspace_name "$workspace_default")
+workspace_repo="$managed_root/agent/workspaces/$workspace_name/repo"
+materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
+create_private_workspace_env "$managed_root" "$workspace_name"
+info "Agent-editable workspace repo: $workspace_repo"
+info "Per-workspace private env: $managed_root/private/env/$workspace_name/.env"
+info "Anything agents should read or edit must live inside $workspace_repo."
+info "Private env/config/auth stay under $managed_root/private and are not agent-visible."
+
+operator_honorific=$(prompt_operator_honorific)
 
 printf 'Telegram bot token: ' >&2
 IFS= read -rs telegram_token
@@ -531,17 +786,19 @@ else
 fi
 
 if confirm_overwrite "$config_file"; then
-  write_config_file "$config_file" "$allowed_id" "$backend" "$gateway_token"
+  write_config_file "$config_file" "$allowed_id" "$backend" "$gateway_token" "$workspace_name" "$workspace_repo" "$operator_honorific"
 else
   chmod 600 "$config_file"
   info "Kept existing $config_file"
 fi
 
+offer_systemd
+
 info ""
 info "SmithersBot setup complete."
 info "Config directory: $config_dir"
 info "Managed root: $managed_root (agent area + private host-only area)"
-info "  Workspaces live in $managed_root/agent/workspaces/<name>/repo"
+info "  Workspace repo: $workspace_repo"
 info "  Real env files live in $managed_root/private/env/<name>/.env (not agent-visible)"
 if [[ "$state_dir" != "$config_dir" ]]; then
   info "State directory: $state_dir"
@@ -552,8 +809,7 @@ info "Start the gateway from the repository root:"
 info "  node scripts/run-node.mjs gateway"
 info ""
 info "First Telegram smoke tests:"
-info "  /help"
-info "  /commands"
-info "  /goal_list"
+info "  /gateway_status"
+info "  /usage_status"
 info "  /repo_chat say only: repo chat works"
 info "  /new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files."
