@@ -80,6 +80,10 @@ Expected:
 
 ## 4. Clone SmithersBot
 
+The SmithersBot app checkout can live anywhere on the isolated machine. The
+setup wizard will create a separate managed agent workspace for the repo that
+workers should read or edit.
+
 After SmithersBot is public:
 
 ```bash
@@ -232,6 +236,20 @@ bash scripts/setup-smithersbot.sh
 
 The setup script will:
 
+- verify that it is running from a SmithersBot checkout
+- require Node 22.12.0 or newer, `pnpm`, and `git`
+- warn if neither Codex nor Claude Code is available yet, then continue with
+  install/login-later instructions
+- ask for the managed agent root, defaulting to `~/smithersbot-goals`
+- create the managed tree under that root
+- ask what repo agents should work on: this checkout, another local repo path,
+  or a repo URL to clone
+- ask for a workspace name, defaulting to the repo basename
+- create an isolated agent workspace at
+  `<managedRoot>/agent/workspaces/<workspaceName>/repo`
+- create `<managedRoot>/private/env/<workspaceName>/.env` outside the workspace
+  repo with placeholder-only content and mode `600`
+- ask how SmithersBot should address you, defaulting to `sir`
 - ask for your Telegram bot token
 - verify the token
 - tell you to open `@<your_bot_username>` (your new bot, **not** `@BotFather`) and press **Start**, or send any message
@@ -239,18 +257,30 @@ The setup script will:
 - ask you to confirm the detected ID
 - create `~/.smithersbot/.env`
 - create `~/.smithersbot/smithersbot.json`
+- store the selected workspace and `agents.defaults.identity.operatorHonorific`
+  in the generated config
 - generate a gateway auth token
 - set `gateway.mode` to `local`
 - set file permissions to `600`
-- print the next command to run
+- offer to install/start the user systemd service, or print exact manual
+  commands when systemd is unavailable or declined
 
 When the script tells you to open your bot, go to Telegram and open the bot username you created (the one ending in `bot`, **not** `@BotFather`), then press **Start** or send any message.
 
 Then return to the terminal and continue.
 
-## 9. Install the SmithersBot background service
+The honorific prompt accepts a name, `boss`, or a blank value for no honorific.
+Leaving the prompt at its default writes `operatorHonorific: "sir"` and produces
+the default Telegram preface, `Right away, sir.`
 
-From the SmithersBot repo root:
+The setup wizard is a shell wizard for launch, not a TUI.
+
+## 9. Start SmithersBot
+
+Systemd is recommended for unattended operation, but optional. If you chose
+systemd during setup and `systemctl --user` is available, the script can run the
+installer and start the user service for you. To install it manually from the
+SmithersBot repo root:
 
 ```bash
 bash scripts/install-smithersbot-user-service.sh
@@ -282,6 +312,13 @@ Ctrl-C
 
 That only stops the log view. It does not stop SmithersBot.
 
+If systemd is unavailable or you decline service setup, run the gateway directly
+from the app checkout:
+
+```bash
+node scripts/run-node.mjs gateway
+```
+
 `/gateway_restart` resolves the active user service during the migration. The
 explicit env precedence is `SMITHERSBOT_SYSTEMD_UNIT`, then deprecated
 `MOLTBOT_SYSTEMD_UNIT`, then deprecated `CLAWDBOT_SYSTEMD_UNIT`; otherwise
@@ -291,18 +328,6 @@ legacy `moltbot-gateway-dev.service`.
 ## 10. Run Telegram smoke tests
 
 Open your SmithersBot Telegram bot and send:
-
-```text
-/help
-```
-
-Then:
-
-```text
-/commands
-```
-
-Then:
 
 ```text
 /gateway_status
@@ -315,26 +340,6 @@ Then:
 ```
 
 Then:
-
-```text
-/goal_list
-```
-
-Set your repo chat backend.
-
-For Codex:
-
-```text
-/chat_backend codex
-```
-
-For Claude Code:
-
-```text
-/chat_backend claude_code
-```
-
-Test repo chat:
 
 ```text
 /repo_chat say only: repo chat works

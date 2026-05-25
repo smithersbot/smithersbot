@@ -107,7 +107,8 @@ Prerequisites for either path:
 
 ### Recommended setup script
 
-Clone the repo, run the setup script, answer the prompts, then start the gateway:
+Clone the app checkout anywhere, run the shell setup wizard from that checkout,
+answer the prompts, then start the gateway:
 
 ```bash
 git clone https://github.com/smithersbot/smithersbot.git
@@ -116,15 +117,33 @@ scripts/setup-smithersbot.sh
 node scripts/run-node.mjs gateway
 ```
 
-The script checks Node and git, prepares Corepack/pnpm, installs dependencies, builds the project, creates `~/.smithersbot`, writes `~/.smithersbot/.env`, writes `~/.smithersbot/smithersbot.json`, and restricts both files to mode `600`.
+The setup script is a launch shell wizard, not a TUI. It checks Node 22.12.0+,
+`pnpm`, and `git`; warns if neither Codex nor Claude Code is available yet;
+installs dependencies; builds the project; creates the managed agent root
+(default `~/smithersbot-goals`); asks which repo agents should work on; creates
+an isolated agent workspace at
+`<managedRoot>/agent/workspaces/<workspaceName>/repo`; creates the per-workspace
+private env file at `<managedRoot>/private/env/<workspaceName>/.env`; asks how
+SmithersBot should address you; configures Telegram; writes `~/.smithersbot/.env`
+and `~/.smithersbot/smithersbot.json`; and restricts private files to mode
+`600`.
+
+The honorific prompt defaults to `sir`. You can enter a first name, `boss`, or
+leave it blank for no honorific. The generated config stores this as
+`agents.defaults.identity.operatorHonorific`.
+
+Anything agents should read or edit must be inside the managed workspace repo.
+Private env, config, auth, and session files stay outside that workspace and are
+not agent-visible.
+
+Systemd is recommended for unattended operation, but optional. If `systemctl
+--user` is not available or you decline service setup, the script prints the
+manual commands to run the gateway from the checkout.
 
 First Telegram smoke tests:
 
-- `/help`
-- `/commands`
 - `/gateway_status`
 - `/usage_status`
-- `/goal_list`
 - `/repo_chat say only: repo chat works`
 - `/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.`
 
@@ -154,6 +173,13 @@ Set `TELEGRAM_BOT_TOKEN` in the local env file. Then create `~/.smithersbot/smit
 
 ```json
 {
+  "agents": {
+    "defaults": {
+      "identity": {
+        "operatorHonorific": "sir"
+      }
+    }
+  },
   "channels": {
     "telegram": {
       "enabled": true,
