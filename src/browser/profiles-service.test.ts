@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -135,7 +136,7 @@ describe("BrowserProfilesService", () => {
       },
     });
 
-    const tempDir = fs.mkdtempSync(path.join("/tmp", "clawd-profile-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-profile-"));
     const userDataDir = path.join(tempDir, "work", "user-data");
     fs.mkdirSync(path.dirname(userDataDir), { recursive: true });
     vi.mocked(resolveClawdUserDataDir).mockReturnValue(userDataDir);

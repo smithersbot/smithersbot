@@ -7,11 +7,16 @@ import { withTelegramGoalRouterDisabled } from "./__tests__/telegram-test-config
 let createTelegramBot: typeof import("./bot.js").createTelegramBot;
 let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").resetInboundDedupe;
 
-const { sessionStorePath } = vi.hoisted(() => ({
-  sessionStorePath: `/tmp/moltbot-telegram-reply-threading-${Math.random()
-    .toString(16)
-    .slice(2)}.json`,
-}));
+const { sessionStorePath } = await vi.hoisted(async () => {
+  const os = await import("node:os");
+  const path = await import("node:path");
+  return {
+    sessionStorePath: path.join(
+      os.tmpdir(),
+      `moltbot-telegram-reply-threading-${Math.random().toString(16).slice(2)}.json`,
+    ),
+  };
+});
 
 const setTelegramConfig = (config: Record<string, unknown>) => {
   loadConfig.mockReturnValue(withTelegramGoalRouterDisabled(config));

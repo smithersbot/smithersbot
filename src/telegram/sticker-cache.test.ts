@@ -1,6 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cacheSticker,
   getAllCachedStickers,
@@ -9,13 +8,22 @@ import {
   searchStickers,
 } from "./sticker-cache.js";
 
+const { TEST_STATE_DIR, TEST_CACHE_FILE } = await vi.hoisted(async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "moltbot-sticker-cache-"));
+  const testCacheDir = path.join(testStateDir, "telegram");
+  return {
+    TEST_STATE_DIR: testStateDir,
+    TEST_CACHE_FILE: path.join(testCacheDir, "sticker-cache.json"),
+  };
+});
+
 // Mock the state directory to use a temp location
 vi.mock("../config/paths.js", () => ({
-  STATE_DIR: "/tmp/moltbot-test-sticker-cache",
+  STATE_DIR: TEST_STATE_DIR,
 }));
-
-const TEST_CACHE_DIR = "/tmp/moltbot-test-sticker-cache/telegram";
-const TEST_CACHE_FILE = path.join(TEST_CACHE_DIR, "sticker-cache.json");
 
 describe("sticker-cache", () => {
   beforeEach(() => {
@@ -30,6 +38,10 @@ describe("sticker-cache", () => {
     if (fs.existsSync(TEST_CACHE_FILE)) {
       fs.unlinkSync(TEST_CACHE_FILE);
     }
+  });
+
+  afterAll(() => {
+    fs.rmSync(TEST_STATE_DIR, { recursive: true, force: true });
   });
 
   describe("getCachedSticker", () => {
