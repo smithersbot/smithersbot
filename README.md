@@ -91,9 +91,9 @@ the portable variable-name contract with placeholder values only. Workers do
 not receive raw secrets in env by default; real env files are loaded only by
 trusted host-side commands with an explicit opt-in. Native backend sandboxing
 is used only where SmithersBot implements and verifies it for the selected
-backend; prompts and convention files are not security boundaries. Managed
-workspaces organize which trees workers should use, but are not by themselves a
-kernel boundary.
+backend through backend-specific live probes; prompts and convention files are
+not security boundaries. Managed workspaces organize which trees workers should
+use, but are not by themselves a kernel boundary. Codex `--sandbox workspace-write` alone is not treated as a complete security boundary. Claude sandboxing requires its native sandbox support to be available and verified.
 
 ## Fresh isolated setup
 

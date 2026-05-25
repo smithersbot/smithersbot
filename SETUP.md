@@ -472,8 +472,11 @@ workspace.
 
 Managed workspaces organize access for workers and repo chat, but are not by
 themselves a kernel boundary. Native backend sandboxing is used only where
-SmithersBot implements and verifies it for the selected backend. Prompts and
-convention files are not security boundaries.
+SmithersBot implements and verifies it for the selected backend through
+backend-specific live probes. Prompts and convention files are not security
+boundaries. Codex `--sandbox workspace-write` alone is not treated as a complete
+security boundary. Claude sandboxing requires its native sandbox support to be
+available and verified.
 
 ### Portability rule for project code
 
