@@ -100,6 +100,8 @@ const CCUSAGE_CLAUDE = JSON.stringify({
 });
 
 const NOW = Date.parse("2026-05-23T12:00:00Z");
+const CLAUDE_USAGE_LIMIT_TEXT =
+  "Claude Code hit a 5-hour usage limit. Resets at 2026-05-23T17:50:00-04:00.";
 
 function cacheReader(entry: StatuslineCacheEntry | undefined) {
   return () => entry;
@@ -156,6 +158,130 @@ describe("buildUsageStatusMessage", () => {
     expect(text).toContain("**5-hour:** 42% used");
   });
 
+  it("renders Claude usage-limit refresh signal with last known quota instead of unavailable", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 }),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({
+        status: "rate_limited_with_reset",
+        reason: "usage limited",
+        event: {
+          backend: "claude_code",
+          kind: "usage_limit",
+          limitType: "five_hour",
+          resetHint: "Resets at 2026-05-23T17:50:00-04:00",
+        },
+      }),
+    });
+
+    expect(text).toContain("**Claude Code:** rate limited");
+    expect(text).toContain(
+      "**Note:** Claude Code hit a usage limit (5-hour limit, resets at 2026-05-23T17:50:00-04:00).",
+    );
+    expect(text).toContain("**Last known quota:** stale values shown; refresh is usage-limited.");
+    expect(text).toContain("**5-hour:** 42% used");
+    expect(text).not.toContain("**Claude Code:** unavailable");
+  });
+
+  it("renders classifiable Claude timeout output as rate limited with last known quota", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 }),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({
+        status: "rate_limited_with_reset",
+        reason: "rate limited",
+        event: {
+          backend: "claude_code",
+          kind: "rate_limit",
+          limitType: "unknown",
+          resetHint: "Resets in 45 minutes",
+        },
+      }),
+    });
+
+    expect(text).toContain("**Claude Code:** rate limited");
+    expect(text).toContain("Claude Code hit a rate limit (resets in 45 minutes).");
+    expect(text).toContain("**5-hour:** 42% used");
+    expect(text).not.toContain("**Claude Code:** unavailable");
+  });
+
+  it("renders Claude usage-limit signal even when no valid cache exists", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({
+        status: "rate_limited_with_reset",
+        reason: "usage limited",
+        event: {
+          backend: "claude_code",
+          kind: "usage_limit",
+          limitType: "five_hour",
+          resetHint: "Resets at 2026-05-23T17:50:00-04:00",
+        },
+      }),
+    });
+
+    expect(text).toContain("**Claude Code:** rate limited");
+    expect(text).toContain("Claude Code hit a usage limit");
+    expect(text).toContain("**Last known quota:** not available.");
+    expect(text).not.toContain("**Claude Code:** unavailable");
+    expect(text).not.toContain("**5-hour:**");
+  });
+
+  it("does not render an invalid Claude cache as quota when usage-limited", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader({
+        raw: JSON.stringify({ rate_limits: { five_hour: { used_percentage: 99 } } }),
+        mtimeMs: NOW - 1000,
+      }),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({
+        status: "rate_limited_with_reset",
+        reason: "usage limited",
+        event: {
+          backend: "claude_code",
+          kind: "usage_limit",
+          limitType: "five_hour",
+          resetHint: "Resets on 2026-05-24",
+        },
+      }),
+    });
+
+    expect(text).toContain("**Claude Code:** rate limited");
+    expect(text).toContain("Claude Code hit a usage limit");
+    expect(text).toContain("**Last known quota:** not available.");
+    expect(text).not.toContain("99% used");
+  });
+
+  it("keeps a valid Claude cache when refresh rereads invalid statusline output", () => {
+    const stale = { raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 };
+    const invalid = {
+      raw: JSON.stringify({ rate_limits: { five_hour: { used_percentage: 99 } } }),
+      mtimeMs: NOW + 1,
+    };
+    let reads = 0;
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: () => (reads++ === 0 ? stale : invalid),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({ status: "timeout", reason: "refresh timed out" }),
+    });
+
+    expect(text).toContain("**Claude Code:** stale");
+    expect(text).toContain("Refresh failed: refresh timed out.");
+    expect(text).toContain("**5-hour:** 42% used");
+    expect(text).not.toContain("99% used");
+  });
+
   it("reports gracefully when the Claude cache is missing", () => {
     const text = buildUsageStatusMessage({
       env: {},
@@ -171,6 +297,19 @@ describe("buildUsageStatusMessage", () => {
     expect(text).toContain("**Claude Code:** unavailable");
     expect(text).toContain("pseudo-TTY refresh unavailable");
     expect(text).toContain("No live quota cache found");
+  });
+
+  it("renders no-cache unknown Claude timeout as unavailable", () => {
+    const text = buildUsageStatusMessage({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader(undefined),
+      spawnSync: makeSpawnSync({}),
+      refreshClaudeStatusline: () => ({ status: "timeout", reason: "refresh timed out" }),
+    });
+
+    expect(text).toContain("**Claude Code:** unavailable");
+    expect(text).toContain("No live quota cache found (refresh timed out).");
   });
 
   it("refreshes a stale Claude cache and shows reset times from epoch seconds", () => {
@@ -379,17 +518,41 @@ describe("buildUsageStatusMessage", () => {
 
 describe("Claude statusline active refresh", () => {
   function makeChild(pid = 1234) {
-    const listeners: Record<string, Array<(err: Error) => void>> = {};
+    const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+    const stdoutListeners: Array<(chunk: string) => void> = [];
+    const stderrListeners: Array<(chunk: string) => void> = [];
     return {
       pid,
       kill: vi.fn(),
       unref: vi.fn(),
-      once: vi.fn((event: string, handler: (err: Error) => void) => {
+      stdout: {
+        on: vi.fn((event: string, handler: (chunk: string) => void) => {
+          if (event === "data") stdoutListeners.push(handler);
+          return undefined;
+        }),
+      },
+      stderr: {
+        on: vi.fn((event: string, handler: (chunk: string) => void) => {
+          if (event === "data") stderrListeners.push(handler);
+          return undefined;
+        }),
+      },
+      once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
         listeners[event] = [...(listeners[event] ?? []), handler];
         return undefined;
       }),
       emitError: (err: Error) => {
         for (const handler of listeners.error ?? []) handler(err);
+      },
+      emitExit: (code: number | null, signal: NodeJS.Signals | null = null) => {
+        for (const handler of listeners.exit ?? []) handler(code, signal);
+        for (const handler of listeners.close ?? []) handler(code, signal);
+      },
+      emitStdout: (chunk: string) => {
+        for (const handler of stdoutListeners) handler(chunk);
+      },
+      emitStderr: (chunk: string) => {
+        for (const handler of stderrListeners) handler(chunk);
       },
     };
   }
@@ -474,6 +637,38 @@ describe("Claude statusline active refresh", () => {
     expect(result).toEqual({ status: "timeout", reason: "refresh timed out" });
     expect(kill).toHaveBeenCalledWith(-4321, "SIGTERM");
     expect(kill).toHaveBeenCalledWith(-4321, "SIGKILL");
+  });
+
+  it("classifies captured Claude usage-limit output on timeout", () => {
+    const child = makeChild(2468);
+    const spawn = vi.fn(() => child);
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+    const sleepMs = vi.fn(() => {
+      child.emitStderr(CLAUDE_USAGE_LIMIT_TEXT);
+    });
+
+    const result = refreshClaudeStatuslineCache({
+      cachePath: "/tmp/statusline.json",
+      beforeMtimeMs: NOW,
+      env: {},
+      nowMs: NOW,
+      readCache: () => undefined,
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      sleepMs,
+      timeoutMs: 200,
+      pollMs: 100,
+    });
+
+    expect(result).toMatchObject({
+      status: "rate_limited_with_reset",
+      reason: "usage limited",
+      event: {
+        backend: "claude_code",
+        kind: "usage_limit",
+        limitType: "five_hour",
+        resetHint: "Resets at 2026-05-23T17:50:00-04:00",
+      },
+    });
   });
 
   it("unsets Anthropic API credential env vars for the refresh process", () => {

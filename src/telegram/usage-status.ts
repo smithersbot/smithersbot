@@ -12,6 +12,12 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
+import { classifyUsageLimitEvent } from "../goal/usage-limit-classifier.js";
+import {
+  describeUsageLimitEvent,
+  formatResetSummary,
+  type UsageLimitEvent,
+} from "../goal/usage-limit-message.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { renderTelegramHtmlText } from "./format.js";
 import { boldLabel, formatStatusMessage } from "./status-format.js";
@@ -32,6 +38,7 @@ const CLAUDE_REFRESH_POLL_MS = 250;
 // responsive even when offline or when npx must resolve a package.
 const CODEX_LIMIT_TIMEOUT_MS = 15_000;
 const EXTERNAL_CLI_MAX_BUFFER = 4 * 1024 * 1024;
+const CLAUDE_REFRESH_OUTPUT_MAX_BYTES = 128 * 1024;
 
 const USAGE_STATUS_TITLE = "SmithersBot usage status";
 
@@ -47,8 +54,11 @@ export type StatuslineCacheEntry = { raw: string; mtimeMs: number };
 export type StatuslineCacheReader = (cachePath: string) => StatuslineCacheEntry | undefined;
 export type ClaudeStatuslineRefreshResult =
   | { status: "refreshed" }
+  | { status: "rate_limited_with_reset"; event: UsageLimitEvent; reason: string }
   | { status: "timeout"; reason: string }
   | { status: "unavailable"; reason: string }
+  | { status: "auth_missing"; reason: string }
+  | { status: "binary_missing"; reason: string }
   | { status: "failed"; reason: string };
 
 export type ClaudeStatuslineRefreshParams = {
@@ -197,6 +207,14 @@ function hasCompleteClaudeStatusline(entry: StatuslineCacheEntry | undefined): b
   return isCompleteClaudeQuota(entry ? parseClaudeStatusline(entry.raw) : undefined);
 }
 
+function readCompleteClaudeStatusline(
+  entry: StatuslineCacheEntry | undefined,
+): { entry: StatuslineCacheEntry; quota: ClaudeQuota } | undefined {
+  const quota = entry ? parseClaudeStatusline(entry.raw) : undefined;
+  if (!entry || !isCompleteClaudeQuota(quota)) return undefined;
+  return { entry, quota };
+}
+
 export function buildClaudeStatuslineRefreshCommand(): { command: string; args: string[] } {
   return {
     command: "script",
@@ -253,6 +271,39 @@ function terminateProcessGroup(proc: ChildProcess): void {
   }
 }
 
+function appendBoundedOutput(current: string, chunk: unknown): string {
+  const next = current + String(chunk);
+  if (next.length <= CLAUDE_REFRESH_OUTPUT_MAX_BYTES) return next;
+  return next.slice(next.length - CLAUDE_REFRESH_OUTPUT_MAX_BYTES);
+}
+
+const BINARY_MISSING_TEXT_RE =
+  /\b(?:enoent|command not found|not recognized as (?:an internal|a) command|executable file not found|no such file or directory)\b/i;
+const AUTH_MISSING_TEXT_RE =
+  /\b(?:not logged in|login required|please log in|authentication required|auth(?:entication)? missing|missing (?:api )?key|invalid (?:api )?key|unauthorized|forbidden)\b/i;
+
+function classifyClaudeRefreshFailure(params: {
+  outputText: string;
+  fallbackStatus: "timeout" | "failed" | "unavailable";
+  fallbackReason: string;
+}): ClaudeStatuslineRefreshResult {
+  const event = classifyUsageLimitEvent({ backend: "claude_code", text: params.outputText });
+  if (event) {
+    return {
+      status: "rate_limited_with_reset",
+      event,
+      reason: event.kind === "rate_limit" ? "rate limited" : "usage limited",
+    };
+  }
+  if (BINARY_MISSING_TEXT_RE.test(params.outputText)) {
+    return { status: "binary_missing", reason: "Claude Code command not found" };
+  }
+  if (AUTH_MISSING_TEXT_RE.test(params.outputText)) {
+    return { status: "auth_missing", reason: "Claude Code authentication is missing" };
+  }
+  return { status: params.fallbackStatus, reason: params.fallbackReason };
+}
+
 export function refreshClaudeStatuslineCache(
   params: ClaudeStatuslineRefreshParams & {
     spawn?: SpawnLike;
@@ -267,10 +318,14 @@ export function refreshClaudeStatuslineCache(
   const pollMs = params.pollMs ?? CLAUDE_REFRESH_POLL_MS;
   const { command, args } = buildClaudeStatuslineRefreshCommand();
   let proc: ChildProcess;
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null | undefined;
+  let exitSignal: NodeJS.Signals | null | undefined;
   try {
     proc = spawnImpl(command, args, {
       detached: true,
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       env: buildClaudeRefreshEnv(params.env),
     });
     proc.unref?.();
@@ -285,6 +340,20 @@ export function refreshClaudeStatuslineCache(
   proc.once?.("error", (err: Error) => {
     spawnFailed = err.message || "spawn failed";
   });
+  proc.once?.("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+    exitCode = code;
+    exitSignal = signal;
+  });
+  proc.once?.("close", (code: number | null, signal: NodeJS.Signals | null) => {
+    exitCode = code;
+    exitSignal = signal;
+  });
+  proc.stdout?.on?.("data", (chunk: unknown) => {
+    stdout = appendBoundedOutput(stdout, chunk);
+  });
+  proc.stderr?.on?.("data", (chunk: unknown) => {
+    stderr = appendBoundedOutput(stderr, chunk);
+  });
 
   try {
     while (nowMs <= deadline) {
@@ -292,11 +361,28 @@ export function refreshClaudeStatuslineCache(
       if (current && current.mtimeMs > beforeMtimeMs && hasCompleteClaudeStatusline(current)) {
         return { status: "refreshed" };
       }
-      if (spawnFailed) return { status: "unavailable", reason: "pseudo-TTY refresh unavailable" };
+      if (spawnFailed) {
+        return classifyClaudeRefreshFailure({
+          outputText: [stdout, stderr, spawnFailed].filter(Boolean).join("\n"),
+          fallbackStatus: "unavailable",
+          fallbackReason: "pseudo-TTY refresh unavailable",
+        });
+      }
+      if (exitCode != null || exitSignal != null) {
+        return classifyClaudeRefreshFailure({
+          outputText: [stdout, stderr].filter(Boolean).join("\n"),
+          fallbackStatus: "failed",
+          fallbackReason: "refresh failed",
+        });
+      }
       sleep(pollMs);
       nowMs += pollMs;
     }
-    return { status: "timeout", reason: "refresh timed out" };
+    return classifyClaudeRefreshFailure({
+      outputText: [stdout, stderr].filter(Boolean).join("\n"),
+      fallbackStatus: "timeout",
+      fallbackReason: "refresh timed out",
+    });
   } finally {
     terminateProcessGroup(proc);
   }
@@ -423,36 +509,70 @@ function buildClaudeSection(
 ): string[] {
   const refreshFailureReason =
     refreshResult && refreshResult.status !== "refreshed" ? refreshResult.reason : undefined;
-  if (!entry) {
-    const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
+  const complete = readCompleteClaudeStatusline(entry);
+  const quotaLines =
+    complete != null
+      ? [
+          formatWindowLine("5-hour", complete.quota.fiveHour),
+          formatWindowLine("7-day", complete.quota.sevenDay),
+          boldLabel(
+            "Updated",
+            `${formatUpdatedAt(complete.entry.mtimeMs)} (${formatAge(nowMs - complete.entry.mtimeMs)} ago)`,
+          ),
+        ]
+      : [];
+
+  if (refreshResult?.status === "rate_limited_with_reset") {
+    const lines = [
+      boldLabel("Claude Code", "rate limited"),
+      boldLabel("Note", `${describeUsageLimitEvent(refreshResult.event)}.`),
+    ];
+    const resetSummary = formatResetSummary([refreshResult.event]);
+    if (resetSummary) lines.push(boldLabel("Reset", resetSummary.replace(/\.$/, "")));
+    if (complete) {
+      lines.push(boldLabel("Last known quota", "stale values shown; refresh is usage-limited."));
+      lines.push(...quotaLines);
+    } else {
+      lines.push(boldLabel("Last known quota", "not available."));
+    }
+    return lines;
+  }
+
+  if (refreshResult?.status === "auth_missing") {
     return [
-      boldLabel("Claude Code", "unavailable"),
-      boldLabel("Note", `No live quota cache found${reason}.`),
+      boldLabel("Claude Code", "auth missing"),
+      boldLabel("Note", `${refreshResult.reason}.`),
+      ...quotaLines,
     ];
   }
-  const quota = parseClaudeStatusline(entry.raw);
-  if (!quota) {
-    const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
+
+  if (refreshResult?.status === "binary_missing") {
     return [
-      boldLabel("Claude Code", "unavailable"),
-      boldLabel("Note", `Live quota cache is present but unreadable${reason}.`),
+      boldLabel("Claude Code", "binary missing"),
+      boldLabel("Note", `${refreshResult.reason}.`),
+      ...quotaLines,
     ];
   }
-  const ageMs = nowMs - entry.mtimeMs;
+
+  if (!complete) {
+    const reason = refreshFailureReason ? ` (${refreshFailureReason})` : "";
+    const cacheNote = entry
+      ? `Live quota cache is present but unreadable${reason}.`
+      : `No live quota cache found${reason}.`;
+    return [boldLabel("Claude Code", "unavailable"), boldLabel("Note", cacheNote)];
+  }
+  const ageMs = nowMs - complete.entry.mtimeMs;
   const freshness =
     refreshResult?.status === "refreshed" || ageMs <= STALE_THRESHOLD_MS
       ? "current"
       : ageMs > STALE_THRESHOLD_MS
         ? "stale"
         : "current";
-  const lines = [
-    boldLabel("Claude Code", freshness),
-    formatWindowLine("5-hour", quota.fiveHour),
-    formatWindowLine("7-day", quota.sevenDay),
-    boldLabel("Updated", `${formatUpdatedAt(entry.mtimeMs)} (${formatAge(ageMs)} ago)`),
-  ];
+  const lines = [boldLabel("Claude Code", freshness), ...quotaLines];
   if (freshness === "stale") {
-    const reason = refreshFailureReason ? ` Refresh failed: ${refreshFailureReason}.` : "";
+    const reason = refreshFailureReason
+      ? ` Refresh failed: ${refreshFailureReason}.`
+      : " Refresh failed: unknown.";
     lines.push(boldLabel("Note", `stale values shown; Claude Code may not be running.${reason}`));
   }
   return lines;
@@ -538,7 +658,9 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
   const cachePath = options.cachePath ?? resolveClaudeStatuslineCachePath(homeDir, env);
 
   let claudeEntry = readCache(cachePath);
-  const cacheIsStale = !claudeEntry || nowMs - claudeEntry.mtimeMs > STALE_THRESHOLD_MS;
+  let lastValidClaudeEntry = readCompleteClaudeStatusline(claudeEntry)?.entry;
+  const cacheIsStale =
+    !lastValidClaudeEntry || nowMs - lastValidClaudeEntry.mtimeMs > STALE_THRESHOLD_MS;
   let claudeRefreshResult: ClaudeStatuslineRefreshResult | undefined;
   if (cacheIsStale && options.refreshClaudeStatusline !== false) {
     const refresher =
@@ -556,9 +678,18 @@ export function buildUsageStatusMessage(options: BuildUsageStatusOptions = {}): 
       nowMs,
       readCache,
     });
-    claudeEntry = readCache(cachePath);
+    const rereadEntry = readCache(cachePath);
+    if (claudeRefreshResult.status === "refreshed") {
+      lastValidClaudeEntry =
+        readCompleteClaudeStatusline(rereadEntry)?.entry ?? lastValidClaudeEntry;
+    }
+    claudeEntry = lastValidClaudeEntry ?? rereadEntry;
   }
-  const claudeLines = buildClaudeSection(claudeEntry, nowMs, claudeRefreshResult);
+  const claudeLines = buildClaudeSection(
+    lastValidClaudeEntry ?? claudeEntry,
+    nowMs,
+    claudeRefreshResult,
+  );
   // -y keeps npx non-interactive so it never blocks waiting on an install prompt.
   const codexLines = buildCodexSection(
     runCli(spawnSyncImpl, "npx", ["-y", "codex-limit", "--json"], CODEX_LIMIT_TIMEOUT_MS),
