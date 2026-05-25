@@ -32,7 +32,7 @@ The planned demo will show the real operator loop: repo chat creating or refinin
 
 ## Quick start
 
-**Strongly Recommended:** run SmithersBot in an isolated environment such as a VirtualBox VM, VPS, Docker container, dedicated machine, or isolated development machine, not directly on your primary personal computer.
+**Strongly Recommended:** run SmithersBot in an isolated environment such as a VirtualBox VM, VPS, dedicated machine, or isolated development machine, not directly on your primary personal computer.
 
 Start with Telegram. Send this to your configured SmithersBot chat:
 
@@ -90,11 +90,11 @@ Claude sandboxing requires its native sandbox to start successfully.
 
 ## Fresh isolated setup
 
-Use a fresh isolated machine for real operation: a VirtualBox VM, VPS, Docker container, dedicated machine, or isolated development machine. Do not run SmithersBot directly on your primary personal computer.
+Use a fresh isolated machine for real operation: a VirtualBox VM, VPS, dedicated machine, or isolated development machine. Do not run SmithersBot directly on your primary personal computer.
 
 Prerequisites for either path:
 
-- Node 22 or newer
+- Node 22.12.0 or newer
 - `git`
 - Claude Code CLI and/or Codex CLI installed, on `PATH`, and logged in as the operator
 - A Telegram bot token from BotFather
@@ -117,6 +117,8 @@ First Telegram smoke tests:
 
 - `/help`
 - `/commands`
+- `/gateway_status`
+- `/usage_status`
 - `/goal_list`
 - `/repo_chat say only: repo chat works`
 - `/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.`
@@ -175,6 +177,8 @@ First Telegram smoke tests:
 
 - `/help`
 - `/commands`
+- `/gateway_status`
+- `/usage_status`
 - `/goal_list`
 - `/repo_chat say only: repo chat works`
 - `/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.`
@@ -313,7 +317,7 @@ Technical interruptions — a failed attempt, an interrupted/lost worker (missin
 
 - Plan messages carry inline buttons for **Approve**, **Plan Detail**, **Request changes**, and **Reject**.
 - Reply to the plan to revise it.
-- Reply to a blocked question to unblock the run.
+- Reply to a blocked question, tap **Add Details**, or use `/goal_answer <runId> <answer>` to unblock the run.
 - Reply to the done message to suggest follow-up work via **Incorporate Feedback**.
 - Routing is scoped to the chat and topic thread the run was started in.
 
@@ -325,9 +329,12 @@ Telegram commands:
 - `/goal_status` shows the current state of the flowchart/DAG for a goal.
 - `/goal_list` shows a summary of all goals.
 - `/goal_resume <runId>` resumes an interrupted goal run.
+- `/goal_answer <runId> <answer>` answers a blocked goal question. You can also reply to the question in Telegram.
 - `/goal_stop` stops a running goal.
 - `/repo_chat <question>` asks repo and active-goal context questions.
 - `/chat_backend` configures repo chat to use Codex or Claude Code.
+- `/gateway_status` shows gateway process and service status.
+- `/usage_status` shows Claude Code and Codex usage/quota status.
 - `/goal_lessons` shows or manages goal lessons.
 - `/goal_plan_autocheck` toggles automatic plan checks.
 - `/goal_semgrep` configures Semgrep checks for goals.
@@ -366,7 +373,7 @@ SmithersBot routes work to local Codex or Claude Code CLI workers. Whichever bac
 
 SmithersBot should not be run directly on your primary personal machine. The recommended setup is to run it in an isolated environment. I personally run it in a VirtualBox VM.
 
-Other reasonable options include dedicated hardware, a VPS, Docker, or another isolated development machine. The point is simple: give the agent useful access to a working directory, not unnecessary access to your whole life. This does not make it risk-free, but it creates a practical safety boundary.
+Other reasonable options include dedicated hardware, a VPS, or another isolated development machine. The point is simple: give the agent useful access to a working directory, not unnecessary access to your whole life. This does not make it risk-free, but it creates a practical safety boundary.
 
 ### Working directory boundary
 
@@ -403,6 +410,8 @@ Each working directory can also have its own skills or plugins added. SmithersBo
 Every plan, worker prompt, stdout/stderr capture, attempt bundle, journal note, run state file, and checkpoint lives on disk under the goals state directory and can be inspected after the fact.
 
 **This sounds simple, but it is one of the most powerful features: full transparency means repo chat can answer questions about what happened and goal workers can see why upstream decisions were made.**
+
+Runtime artifacts are also mirrored into `agent/history` with redaction so prompt artifacts, events, and runtime indexes are inspectable without exposing gateway-private state. Private gateway config, env, auth, and session files stay outside agent-visible history, and workers do not receive raw secrets by default. Native sandboxing is used where SmithersBot has implemented and probed it, but prompts, convention files, and managed workspaces are not kernel security boundaries.
 
 The execution trail is also what makes recovery and memory useful. When a task fails, SmithersBot can assess whether there is a lesson to learn from the failure. It can extract scoped lessons. Later workers in the same working directory or globally automatically receive relevant lessons in their prompt under a labelled lesson section.
 
