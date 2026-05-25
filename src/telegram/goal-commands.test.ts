@@ -4661,6 +4661,10 @@ describe("goal-commands telegram adapter", () => {
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("GitHub push is currently");
       expect(sentText).toContain("on");
+      expect(sentText).toContain("global setting");
+      expect(sentText).toContain("only when that goal's working directory is eligible");
+      expect(sentText).toContain("Local-only workspaces still keep local branches and checkpoints");
+      expect(sentText).toContain("skipped and recorded");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
       expect(mockWriteConfigFile).not.toHaveBeenCalled();
     });
@@ -4689,6 +4693,35 @@ describe("goal-commands telegram adapter", () => {
       );
       const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
       expect(sentText).toContain("GitHub push enabled");
+      expect(sentText).toContain("global setting");
+      expect(sentText).toContain("only when that goal's working directory is eligible");
+      expect(sentText).toContain("Local-only workspaces still keep local branches and checkpoints");
+      expect(sentText).toContain("skipped and recorded");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("persists disabled GitHub push mode with global behavior wording", async () => {
+      const cfg = { goal: { githubPush: { enabled: true } } };
+      mockLoadConfig.mockReturnValue({ goal: { githubPush: { enabled: true } } });
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_github_push?.(makeCommandCtx("off"));
+
+      expect(mockWriteConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          goal: expect.objectContaining({
+            githubPush: expect.objectContaining({ enabled: false }),
+          }),
+        }),
+      );
+      expect((cfg.goal as { githubPush: { enabled: boolean } }).githubPush.enabled).toBe(false);
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("GitHub push disabled");
+      expect(sentText).toContain("global setting");
+      expect(sentText).toContain("only when that goal's working directory is eligible");
+      expect(sentText).toContain("Local-only workspaces still keep local branches and checkpoints");
+      expect(sentText).toContain("skipped and recorded");
       expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
     });
 

@@ -151,7 +151,7 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_stop", description: "Stop a running goal" },
   { command: "goal_list", description: "List recent goal runs" },
   { command: "goal_lessons", description: "List or clear persistent goal lessons" },
-  { command: "goal_github_push", description: "Toggle auto GitHub push + PR for completed runs" },
+  { command: "goal_github_push", description: "Toggle global GitHub push for completed goals" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -251,6 +251,8 @@ function formatGoalWorkersStatus(params: {
   ].join("\n");
 }
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
+const GOAL_GITHUB_PUSH_BEHAVIOR =
+  "This is a global setting. When enabled, SmithersBot tries to push completed goal branches only when that goal's working directory is eligible for GitHub push. Local-only workspaces still keep local branches and checkpoints; GitHub push is skipped and recorded.";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
 function describeEffectivePlanAutocheckMode(configured: PlanAutocheckMode | undefined): string {
@@ -2457,7 +2459,7 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        `GitHub push is currently \`${current}\`.\n${GOAL_GITHUB_PUSH_USAGE}`,
+        `GitHub push is currently \`${current}\`.\n${GOAL_GITHUB_PUSH_BEHAVIOR}\n${GOAL_GITHUB_PUSH_USAGE}`,
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
@@ -2516,9 +2518,7 @@ export function registerTelegramGoalCommands({
     cfg.goal ??= {};
     cfg.goal.githubPush = { ...cfg.goal.githubPush, enabled };
 
-    const confirmation = enabled
-      ? "GitHub push enabled. Completed runs will push branch + open PR."
-      : "GitHub push disabled.";
+    const confirmation = `GitHub push ${enabled ? "enabled" : "disabled"}.\n${GOAL_GITHUB_PUSH_BEHAVIOR}`;
     await sendGoalReply(
       bot,
       resolved.chatId,
