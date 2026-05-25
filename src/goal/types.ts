@@ -38,6 +38,7 @@ export type GoalSession = {
       timestamp: string;
     };
   };
+  githubPushOutcome?: GithubPushOutcome;
 };
 
 export type FailedDetail = {
@@ -176,6 +177,18 @@ export type TaskCheckpoint = {
   afterCommit?: string;
 };
 
+export type GithubPushOutcome = {
+  enabled: boolean;
+  branch: string;
+  remote?: string;
+  attempted: boolean;
+  succeeded: boolean;
+  pushedSha?: string;
+  prUrl?: string;
+  message?: string;
+  timestamp: string;
+};
+
 export type DiagramMode = "none" | "ascii" | "mermaid" | "both";
 export type OutputFormat = "md" | "json";
 
@@ -292,6 +305,8 @@ export type SerializedRun = {
       timestamp: string;
     };
   };
+  /** GitHub push result recorded at completed goal finalization. */
+  githubPushOutcome?: GithubPushOutcome;
 };
 
 /** Result of executing a single task with the agent. */

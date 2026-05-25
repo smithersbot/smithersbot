@@ -481,6 +481,7 @@ export function sessionToSerialized(params: {
       ? { buildGateFixSignatures: session.buildGateFixSignatures }
       : {}),
     ...(session.buildGateResults ? { buildGateResults: session.buildGateResults } : {}),
+    ...(session.githubPushOutcome ? { githubPushOutcome: session.githubPushOutcome } : {}),
   };
   const previous = params.previousRun;
   if (!previous) return serialized;
@@ -536,5 +537,6 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     buildGateFixCounts: run.buildGateFixCounts ?? {},
     buildGateFixSignatures: run.buildGateFixSignatures ?? {},
     buildGateResults: run.buildGateResults ?? {},
+    githubPushOutcome: run.githubPushOutcome,
   };
 }

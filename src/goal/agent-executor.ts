@@ -74,6 +74,7 @@ import {
 import { loadRun, resolveRunDir } from "./run-store.js";
 import type {
   GitCheckpointConfig,
+  GithubPushOutcome,
   GoalLlmClient,
   GoalOutcome,
   GoalSession,
@@ -1022,25 +1023,66 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     let prUrl: string | undefined;
     const githubPushConfig = config?.goal?.githubPush;
-    if (gitCheckpointConfig?.enabled && githubPushConfig?.enabled) {
+    const githubPushRemote = githubPushConfig?.remote ?? "origin";
+    const setGithubPushOutcome = (outcome: Omit<GithubPushOutcome, "timestamp">): void => {
+      session.githubPushOutcome = { ...outcome, timestamp: new Date().toISOString() };
+    };
+    if (!githubPushConfig?.enabled) {
+      setGithubPushOutcome({
+        enabled: false,
+        branch: runBranchName,
+        attempted: false,
+        succeeded: false,
+        message: "GitHub push is disabled.",
+      });
+    } else if (!gitCheckpointConfig?.enabled) {
+      setGithubPushOutcome({
+        enabled: true,
+        branch: runBranchName,
+        remote: githubPushRemote,
+        attempted: false,
+        succeeded: false,
+        message: "GitHub push skipped: git checkpoints are disabled.",
+      });
+    } else {
       let isPrivateRepo = false;
+      let privacySkipMessage: string | undefined;
       try {
         isPrivateRepo = isRepoPrivate(workingDir);
       } catch (error) {
-        onProgress?.(
-          `  [warn] GitHub push skipped: failed to verify repository privacy (${formatExecError(error)})`,
-        );
+        privacySkipMessage = `GitHub push skipped: failed to verify repository privacy (${formatExecError(error)})`;
+        onProgress?.(`  [warn] ${privacySkipMessage}`);
       }
 
       if (!isPrivateRepo) {
-        onProgress?.("  [warn] GitHub push skipped: working repository is not private.");
+        const message =
+          privacySkipMessage ?? "GitHub push skipped: working repository is not private.";
+        if (!privacySkipMessage) onProgress?.(`  [warn] ${message}`);
+        setGithubPushOutcome({
+          enabled: true,
+          branch: runBranchName,
+          remote: githubPushRemote,
+          attempted: false,
+          succeeded: false,
+          message,
+        });
       } else {
-        const remote = githubPushConfig.remote ?? "origin";
-        const pushResult = pushRunBranch(workingDir, runId, remote, runBranchName);
+        const pushResult = pushRunBranch(workingDir, runId, githubPushRemote, runBranchName);
         if (!pushResult.success) {
           onProgress?.(`  [warn] GitHub push failed: ${pushResult.error}`);
+          setGithubPushOutcome({
+            enabled: true,
+            branch: runBranchName,
+            remote: githubPushRemote,
+            attempted: true,
+            succeeded: false,
+            message: `GitHub push failed: ${pushResult.error}`,
+          });
         } else {
-          onProgress?.(`  [git] Run branch pushed to ${remote} (${pushResult.sha.slice(0, 7)})`);
+          const pushedMessage = `Run branch pushed to ${githubPushRemote} (${pushResult.sha.slice(0, 7)})`;
+          onProgress?.(`  [git] ${pushedMessage}`);
+          let message = pushedMessage;
+          let succeeded = true;
           if (githubPushConfig.createPr ?? true) {
             const baseBranch = githubPushConfig.baseBranch ?? "main";
             const pullRequestResult = createRunPullRequest(
@@ -1055,8 +1097,20 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               onProgress?.(`  [git] Pull request created: ${pullRequestResult.prUrl}`);
             } else {
               onProgress?.(`  [warn] GitHub PR creation failed: ${pullRequestResult.error}`);
+              message = `GitHub PR creation failed: ${pullRequestResult.error}`;
+              succeeded = false;
             }
           }
+          setGithubPushOutcome({
+            enabled: true,
+            branch: runBranchName,
+            remote: githubPushRemote,
+            attempted: true,
+            succeeded,
+            pushedSha: pushResult.sha,
+            prUrl,
+            message,
+          });
         }
       }
     }

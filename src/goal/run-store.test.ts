@@ -1125,6 +1125,42 @@ describe("session serialization", () => {
     expect(restored.buildGateResults?.["step-1"]?.output).toBe("Cannot find module");
   });
 
+  it("round-trips GitHub push outcome through serialization", () => {
+    const session: GoalSession = {
+      goal: "Persist push outcome",
+      state: "done",
+      plan: null,
+      stepResults: new Map(),
+      blocked: null,
+      answers: {},
+      githubPushOutcome: {
+        enabled: true,
+        branch: "claw/run/20260525-120000Z-run-push",
+        remote: "origin",
+        attempted: true,
+        succeeded: true,
+        pushedSha: "feedfacecafebeef1234567890abcdef12345678",
+        prUrl: "https://github.com/smithers/test-private/pull/42",
+        message: "Run branch pushed to origin (feedfac)",
+        timestamp: "2026-05-25T12:34:56.000Z",
+      },
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "push-outcome-rt",
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-05-25T12:00:00.000Z",
+    });
+
+    expect(serialized.githubPushOutcome).toEqual(session.githubPushOutcome);
+
+    const restored = serializedToSession(serialized);
+    expect(restored.githubPushOutcome).toEqual(session.githubPushOutcome);
+  });
+
   it("defaults ralph/build-gate maps to empty objects when missing", () => {
     const serialized: SerializedRun = {
       runId: "empty-ralph-buildgate",

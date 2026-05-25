@@ -183,6 +183,50 @@ function getGitResetCalls() {
   });
 }
 
+function makeGitWorkingDir(name: string): string {
+  const root = testManagedRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "agent-executor-git-"));
+  const workingDir = path.join(root, "workspaces", name, "repo");
+  fs.mkdirSync(path.join(workingDir, ".git"), { recursive: true });
+  return workingDir;
+}
+
+function mockGithubPushGit(params: {
+  privateRepo: boolean;
+  pushedSha?: string;
+  prUrl?: string;
+  pushError?: string;
+}): void {
+  mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+    if (command !== "git" && command !== "gh") return "";
+    const argv = Array.isArray(args) ? args.map(String) : [];
+    const joined = argv.join(" ");
+    if (command === "git" && joined === "--version") return "git version 2.50.0";
+    if (command === "git" && joined.includes("status --porcelain")) return "";
+    if (command === "git" && joined.includes("checkout -B")) return "";
+    if (command === "git" && joined.includes("remote get-url origin")) {
+      return "git@github.com:smithers/test-private.git\n";
+    }
+    if (command === "git" && joined.includes("push -u")) {
+      if (params.pushError) {
+        const error = new Error(params.pushError) as Error & { stderr: string };
+        error.stderr = params.pushError;
+        throw error;
+      }
+      return "";
+    }
+    if (command === "git" && joined.includes("rev-parse HEAD")) {
+      return `${params.pushedSha ?? "feedfacecafebeef1234567890abcdef12345678"}\n`;
+    }
+    if (command === "gh" && joined.includes("api repos/smithers/test-private --jq .private")) {
+      return params.privateRepo ? "true\n" : "false\n";
+    }
+    if (command === "gh" && joined.includes("pr create")) {
+      return `${params.prUrl ?? "https://github.com/smithers/test-private/pull/7"}\n`;
+    }
+    return "";
+  });
+}
+
 function readGoalHistoryEvents(workingDir: string, runId: string): Array<Record<string, unknown>> {
   const eventsPath = resolveAgentHistoryEventsPath({
     kind: "goal",
@@ -316,6 +360,171 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     // Stale blocker/lastError must be cleared so /goal_status renders no blocker.
     expect(session.blocked).toBeNull();
     expect(session.lastError).toBeUndefined();
+  });
+
+  it("persists successful GitHub push outcome before run-state persistence", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("github-push-success");
+    const pushedSha = "feedfacecafebeef1234567890abcdef12345678";
+    const prUrl = "https://github.com/smithers/test-private/pull/42";
+    let outcomeAtPersist: GoalSession["githubPushOutcome"] | undefined;
+
+    mockGithubPushGit({ privateRepo: true, pushedSha, prUrl });
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-github-push-success",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true } } },
+      serializedRun: {
+        createdAt: "2026-05-25T12:00:00.000Z",
+      } as SerializedRun,
+      onRunStatePersist: () => {
+        outcomeAtPersist = session.githubPushOutcome;
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(outcomeAtPersist).toMatchObject({
+      enabled: true,
+      branch: "claw/run/20260525-120000Z-run-github-push-success",
+      remote: "origin",
+      attempted: true,
+      succeeded: true,
+      pushedSha,
+      prUrl,
+      message: "Run branch pushed to origin (feedfac)",
+    });
+    expect(session.githubPushOutcome?.timestamp).toEqual(expect.any(String));
+  });
+
+  it("persists GitHub push skip outcome when the repo is not private", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("github-push-skip");
+    let outcomeAtPersist: GoalSession["githubPushOutcome"] | undefined;
+
+    mockGithubPushGit({ privateRepo: false });
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-github-push-skip",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true, remote: "origin" } } },
+      serializedRun: {
+        createdAt: "2026-05-25T12:00:00.000Z",
+      } as SerializedRun,
+      onRunStatePersist: () => {
+        outcomeAtPersist = session.githubPushOutcome;
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(outcomeAtPersist).toMatchObject({
+      enabled: true,
+      branch: "claw/run/20260525-120000Z-run-github-push-skip",
+      remote: "origin",
+      attempted: false,
+      succeeded: false,
+      message: "GitHub push skipped: working repository is not private.",
+    });
+  });
+
+  it("persists GitHub push failure outcome", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("github-push-failure");
+    let outcomeAtPersist: GoalSession["githubPushOutcome"] | undefined;
+
+    mockGithubPushGit({
+      privateRepo: true,
+      pushError: "Permission denied (publickey)",
+    });
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-github-push-failure",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true, remote: "origin" } } },
+      serializedRun: {
+        createdAt: "2026-05-25T12:00:00.000Z",
+      } as SerializedRun,
+      onRunStatePersist: () => {
+        outcomeAtPersist = session.githubPushOutcome;
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(outcomeAtPersist).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        branch: "claw/run/20260525-120000Z-run-github-push-failure",
+        remote: "origin",
+        attempted: true,
+        succeeded: false,
+      }),
+    );
+    expect(outcomeAtPersist?.message).toContain("GitHub push failed: Permission denied");
+  });
+
+  it("persists disabled GitHub push outcome before run-state persistence", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    let outcomeAtPersist: GoalSession["githubPushOutcome"] | undefined;
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-github-push-disabled",
+      workingDir: "/tmp/moltbot-goal-test",
+      serializedRun: {
+        createdAt: "2026-05-25T12:00:00.000Z",
+      } as SerializedRun,
+      onRunStatePersist: () => {
+        outcomeAtPersist = session.githubPushOutcome;
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(outcomeAtPersist).toMatchObject({
+      enabled: false,
+      branch: "claw/run/20260525-120000Z-run-github-push-disabled",
+      attempted: false,
+      succeeded: false,
+      message: "GitHub push is disabled.",
+    });
   });
 
   it("allows legacy workingDir by default with a warning", async () => {

@@ -92,6 +92,25 @@ function sanitizeBuildGateResults(run: SerializedRun): SerializedRun["buildGateR
   );
 }
 
+function sanitizeGithubPushOutcome(
+  run: SerializedRun,
+): SerializedRun["githubPushOutcome"] | undefined {
+  if (!run.githubPushOutcome) return undefined;
+  return {
+    ...run.githubPushOutcome,
+    branch: redactSecretValues(run.githubPushOutcome.branch),
+    remote: run.githubPushOutcome.remote
+      ? truncateSafeExcerpt(run.githubPushOutcome.remote)
+      : undefined,
+    prUrl: run.githubPushOutcome.prUrl
+      ? truncateSafeExcerpt(run.githubPushOutcome.prUrl)
+      : undefined,
+    message: run.githubPushOutcome.message
+      ? truncateSafeExcerpt(run.githubPushOutcome.message)
+      : undefined,
+  };
+}
+
 export function mirrorGoalRunToAgentHistory(run: SerializedRun): void {
   const workspace = workspaceNameFromWorkingDir(run.workingDir);
   const historyDir = resolveAgentGoalHistoryDir(workspace, run.runId);
@@ -127,6 +146,7 @@ export function mirrorGoalRunToAgentHistory(run: SerializedRun): void {
       : null,
     lastError: run.lastError ? truncateSafeExcerpt(run.lastError) : undefined,
     buildGateResults: sanitizeBuildGateResults(run),
+    githubPushOutcome: sanitizeGithubPushOutcome(run),
   };
 
   atomicWriteJson(summaryPath, summary);
