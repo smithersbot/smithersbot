@@ -317,12 +317,15 @@ describe("scripts/setup-smithersbot.sh", () => {
       expect(stat.mode & 0o777).toBe(0o700);
     }
     expect(result.output).toContain(`Managed root: ${managedRoot}`);
-    const workspaceRepo = path.join(managedRoot, "agent", "workspaces", "source-repo", "repo");
+    const workspaceRepo = path.join(managedRoot, "agent", "workspaces", "source-repo");
     expect(generated.config.agents.defaults.workspace).toBe(workspaceRepo);
     expect((await fs.stat(path.join(workspaceRepo, ".git"))).isDirectory()).toBe(true);
     await expect(fs.readFile(path.join(workspaceRepo, "README.md"), "utf8")).resolves.toContain(
       "# source-repo",
     );
+    await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     const privateEnvPath = path.join(managedRoot, "private", "env", "source-repo", ".env");
     const privateEnvStat = await fs.stat(privateEnvPath);
     expect(privateEnvStat.mode & 0o777).toBe(0o600);
@@ -373,17 +376,13 @@ describe("scripts/setup-smithersbot.sh", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    const workspaceRepo = path.join(
-      home,
-      "smithersbot-goals",
-      "agent",
-      "workspaces",
-      "url-repo",
-      "repo",
-    );
+    const workspaceRepo = path.join(home, "smithersbot-goals", "agent", "workspaces", "url-repo");
     await expect(fs.readFile(path.join(workspaceRepo, "README.md"), "utf8")).resolves.toContain(
       "# url-repo",
     );
+    await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(result.output).toContain("Cloned repo URL into isolated agent workspace");
   });
 
@@ -412,11 +411,13 @@ describe("scripts/setup-smithersbot.sh", () => {
       "agent",
       "workspaces",
       "plain-source",
-      "repo",
     );
     await expect(fs.readFile(path.join(workspaceRepo, "notes.txt"), "utf8")).resolves.toBe(
       "plain copy\n",
     );
+    await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(result.output).toContain("Local source is not a git repo; copied it");
   });
 
@@ -438,7 +439,7 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain("Workspace name must be a single safe path segment");
     await expect(
-      fs.stat(path.join(home, "smithersbot-goals", "agent", "workspaces", "safe-name", "repo")),
+      fs.stat(path.join(home, "smithersbot-goals", "agent", "workspaces", "safe-name")),
     ).resolves.toBeTruthy();
   });
 

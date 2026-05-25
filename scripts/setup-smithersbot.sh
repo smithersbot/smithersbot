@@ -83,7 +83,7 @@ print_managed_root_pointer() {
   if [[ "$cwd" != "$managed_root"* ]]; then
     local repo_name
     repo_name=$(basename "$cwd")
-    info "Recommended workspace path: $managed_root/agent/workspaces/$repo_name/repo"
+    info "Recommended workspace path: $managed_root/agent/workspaces/$repo_name"
   fi
 }
 
@@ -752,7 +752,7 @@ repo_source_kind=${repo_source%%:*}
 repo_source_value=${repo_source#*:}
 workspace_default=$(default_workspace_name_from_source "$repo_source_value")
 workspace_name=$(prompt_workspace_name "$workspace_default")
-workspace_repo="$managed_root/agent/workspaces/$workspace_name/repo"
+workspace_repo="$managed_root/agent/workspaces/$workspace_name"
 materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
 create_private_workspace_env "$managed_root" "$workspace_name"
 info "Agent-editable workspace repo: $workspace_repo"
