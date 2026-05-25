@@ -277,10 +277,9 @@ The setup wizard is a shell wizard for launch, not a TUI.
 
 ## 9. Start SmithersBot
 
-Systemd is recommended for unattended operation, but optional. If you chose
-systemd during setup and `systemctl --user` is available, the script can run the
-installer and start the user service for you. To install it manually from the
-SmithersBot repo root:
+Systemd is recommended for unattended operation, but optional. If setup already
+installed and started the user service, skip to the status check below.
+Otherwise, install it manually from the SmithersBot repo root:
 
 ```bash
 bash scripts/install-smithersbot-user-service.sh
@@ -330,6 +329,18 @@ legacy `moltbot-gateway-dev.service`.
 Open your SmithersBot Telegram bot and send:
 
 ```text
+/help
+```
+
+Then:
+
+```text
+/commands
+```
+
+Then:
+
+```text
 /gateway_status
 ```
 
@@ -337,6 +348,12 @@ Then:
 
 ```text
 /usage_status
+```
+
+Then:
+
+```text
+/goal_list
 ```
 
 Then:
@@ -363,6 +380,9 @@ Restart the gateway:
 ```bash
 systemctl --user restart smithersbot-gateway.service
 ```
+
+If you are running foreground mode, stop it with `Ctrl-C`, start
+`node scripts/run-node.mjs gateway` again, then send `/goal_list`.
 
 Then in Telegram:
 
@@ -472,11 +492,13 @@ workspace.
 
 Managed workspaces organize access for workers and repo chat, but are not by
 themselves a kernel boundary. Native backend sandboxing is used only where
-SmithersBot implements and verifies it for the selected backend through
-backend-specific live probes. Prompts and convention files are not security
-boundaries. Codex `--sandbox workspace-write` alone is not treated as a complete
-security boundary. Claude sandboxing requires its native sandbox support to be
-available and verified.
+SmithersBot implements and verifies backend-native sandboxing for the selected
+backend. Backend-native sandboxing is configured per worker; if it cannot be
+established, workers fail and escalate to the user by blocking the task. The
+backend-specific live probes can confirm sandbox behavior on a host. Prompts and
+convention files are not security boundaries. Codex `--sandbox workspace-write` alone is
+not treated as a complete security boundary. Claude sandboxing requires its native sandbox
+support to be available and verified.
 
 ### Portability rule for project code
 
@@ -535,9 +557,11 @@ in the repo's `.env.example`.
 
 Goal and repo-chat history under `~/smithersbot-goals/agent/history` is a
 redacted audit trail for prompts, events, and runtime indexes. It is meant for
-inspection, not secret storage. Native backend sandboxing is used only where
-SmithersBot has implemented and live-probed it; prompts, convention files, and
-managed workspace paths are not kernel security boundaries.
+inspection, not secret storage. Native backend sandboxing is configured per
+worker, and workers fail and block the task if backend-native sandboxing cannot
+be established. The backend-specific live probes can confirm sandbox behavior on a
+host; prompts, convention files, and managed workspace paths are not kernel
+security boundaries.
 
 ## Troubleshooting
 
