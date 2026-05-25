@@ -609,7 +609,12 @@ describe("cli-worker", () => {
       });
       expect(status.supported).toBe(false);
       if (!status.supported) {
-        expect(["live-probe-required", "settings-generation-failed"]).toContain(status.blocker);
+        expect(["live-probe-required", "settings-generation-failed", "claude-not-found"]).toContain(
+          status.blocker,
+        );
+        if (status.blocker === "live-probe-required") {
+          expect(status.reason).toContain("live probe");
+        }
       }
     });
 

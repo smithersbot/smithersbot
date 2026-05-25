@@ -109,6 +109,12 @@ sandbox behavior in this checkout: without a live probe, native filesystem
 sandbox support is not reported as proven, and the blocker assertion accepts
 `live-probe-required` instead of requiring `claude-not-found`.
 
+Follow-up CI showed the same test can also run on hosts where the `claude`
+binary is absent, which returns `claude-not-found` before the function reaches
+the live-probe gate. The assertion now accepts that host-prerequisite blocker
+without requiring it, while still checking that native sandbox support is not
+reported as proven without a live probe.
+
 Production sandbox defaults and runtime behavior remain unchanged. Live
 Codex/Claude probes remain gated behind explicit live-probe environment flags.
 
