@@ -145,9 +145,9 @@ Use only real assets from `launch-inputs/`.
 
 Expected inputs:
 
-- `launch-inputs/assets/smithersbot-portrait.png`
+- `launch-inputs/assets/smithersbot-portrait.jpeg`
 - `launch-inputs/assets/smithersbot-jingle.mp3`
-- `launch-inputs/screenshots/`
+- `launch-inputs/screenshots/` — TODO: directory does not exist yet; no screenshots have been captured
 
 Do not generate fake flowcharts.
 

@@ -34,7 +34,7 @@ Use assets from:
 
 ```text
 launch-inputs/assets/
-launch-inputs/screenshots/
+launch-inputs/screenshots/  # TODO: not yet created — no screenshots available
 
 ## Intro video
 
