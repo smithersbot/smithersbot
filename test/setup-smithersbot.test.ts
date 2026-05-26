@@ -150,6 +150,7 @@ async function runSetup(params: {
   home: string;
   apiBase: string;
   input: string;
+  noBuild?: boolean;
   pollSeconds?: string;
   pollInterval?: string;
   managedRootInput?: string;
@@ -173,17 +174,19 @@ async function runSetup(params: {
     params.input,
     params.systemdInput ?? "n\n",
   ].join("");
-  const args = [
-    scriptPath,
-    "--no-build",
+  const args = [scriptPath];
+  if (params.noBuild !== false) {
+    args.push("--no-build");
+  }
+  if (params.backendArg !== null) {
+    args.push("--backend", params.backendArg ?? "codex");
+  }
+  args.push(
     "--config-dir",
     path.join(params.home, ".smithersbot"),
     "--state-dir",
     path.join(params.home, ".smithersbot"),
-  ];
-  if (params.backendArg !== null) {
-    args.splice(2, 0, "--backend", params.backendArg ?? "codex");
-  }
+  );
   const child = spawn("/bin/bash", args, {
     cwd: repoRoot,
     env: {
@@ -193,6 +196,7 @@ async function runSetup(params: {
       SMITHERSBOT_TELEGRAM_API_STUB_DIR: params.apiBase,
       SMITHERSBOT_SETUP_POLL_SECONDS: params.pollSeconds ?? "1",
       SMITHERSBOT_SETUP_POLL_INTERVAL: params.pollInterval ?? "0.05",
+      SMITHERSBOT_SETUP_SERVICE_WAIT_SECONDS: "0",
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -262,6 +266,88 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(result.output).toContain("pnpm is required but was not found");
   });
 
+  it("suppresses successful install/build logs behind concise status lines", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    await fs.mkdir(bin);
+    await writeExecutable(path.join(bin, "corepack"), "#!/bin/bash\nexit 0\n");
+    await writeExecutable(
+      path.join(bin, "pnpm"),
+      `#!/bin/bash
+if [[ "$1" == "install" ]]; then
+  echo "NOISY_INSTALL_OUTPUT"
+  exit 0
+fi
+if [[ "$1" == "build" ]]; then
+  echo "NOISY_BUILD_OUTPUT"
+  exit 0
+fi
+exit 0
+`,
+    );
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      noBuild: false,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Checking system requirements...");
+    expect(result.output).toMatch(/✓ Node \d+\.\d+\.\d+ or newer/);
+    expect(result.output).toContain("✓ pnpm");
+    expect(result.output).toContain("✓ git");
+    expect(result.output).toContain("Installing dependencies...");
+    expect(result.output).toContain("✓ Dependencies installed");
+    expect(result.output).toContain("Building SmithersBot...");
+    expect(result.output).toContain("✓ Build completed");
+    expect(result.output).not.toContain("NOISY_INSTALL_OUTPUT");
+    expect(result.output).not.toContain("NOISY_BUILD_OUTPUT");
+  });
+
+  it("prints captured install/build failure logs before exiting non-zero", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    await fs.mkdir(bin);
+    await writeExecutable(path.join(bin, "corepack"), "#!/bin/bash\nexit 0\n");
+    await writeExecutable(
+      path.join(bin, "pnpm"),
+      `#!/bin/bash
+if [[ "$1" == "install" ]]; then
+  echo "useful install stdout"
+  echo "useful install stderr" >&2
+  exit 27
+fi
+exit 0
+`,
+    );
+    const apiBase = await startTelegramStub(() => getMeSuccess);
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      noBuild: false,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain("Installing dependencies...");
+    expect(result.output).toContain("Installing dependencies failed. Last log lines:");
+    expect(result.output).toContain("useful install stdout");
+    expect(result.output).toContain("useful install stderr");
+    expect(result.output).not.toContain("Step 1 of 6: SmithersBot home");
+  });
+
   it("accepts a valid getMe token, discovers a private chat ID, and writes usable private files without echoing the token", async () => {
     const home = await mkTempHome();
     const apiBase = await startTelegramStub((requestPath) => {
@@ -273,10 +359,21 @@ describe("scripts/setup-smithersbot.sh", () => {
     const result = await runSetup({ home, apiBase, input: `${testToken}\n\n` });
 
     expect(result.exitCode).toBe(0);
-    expect(result.output).toContain("Telegram bot verified: @smithersbot2_test_bot");
+    for (const header of [
+      "Step 1 of 6: SmithersBot home",
+      "Step 2 of 6: How SmithersBot addresses you",
+      "Step 3 of 6: First workspace",
+      "Step 4 of 6: Telegram bot",
+      "Step 5 of 6: Repo chat backend",
+      "Step 6 of 6: Run SmithersBot",
+    ]) {
+      expect(result.output).toContain(header);
+    }
+    expect(result.output).toContain("✓ Telegram bot verified:\n@smithersbot2_test_bot");
     expect(result.output).toContain(
       "Open @smithersbot2_test_bot in Telegram and press Start, or send any message.",
     );
+    expect(result.output).toContain("Waiting for your Telegram message...");
     expect(result.output).toContain("Use this Telegram private chat ID for allowFrom? [Y/n]");
     expect(result.output).not.toContain(testToken);
 
@@ -315,7 +412,7 @@ describe("scripts/setup-smithersbot.sh", () => {
       const stat = await fs.stat(path.join(managedRoot, privSub));
       expect(stat.mode & 0o777).toBe(0o700);
     }
-    expect(result.output).toContain(`Using SmithersBot home: ${managedRoot}`);
+    expect(result.output).toContain(`✓ Using SmithersBot home:\n${managedRoot}`);
     const workspaceRepo = path.join(managedRoot, "agent", "workspaces", "source-repo");
     expect(generated.config.agents.defaults.workspace).toBe(workspaceRepo);
     expect((await fs.stat(path.join(workspaceRepo, ".git"))).isDirectory()).toBe(true);
@@ -330,13 +427,22 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(privateEnvStat.mode & 0o777).toBe(0o600);
     expect(path.relative(workspaceRepo, privateEnvPath).startsWith("..")).toBe(true);
     await expect(fs.readFile(privateEnvPath, "utf8")).resolves.toContain("EXAMPLE_API_KEY");
-    expect(result.output).toContain("Cloned local git repo into isolated agent workspace:");
+    expect(result.output).toContain("Cloning local git repo into isolated agent workspace...");
+    expect(result.output).toContain(`✓ Workspace ready:\n${workspaceRepo}`);
     expect(result.output).toContain(
       "Make sure to put all files you want SmithersBot to read and edit in that workspace.",
     );
     expect(result.output).not.toContain("SmithersBot setup complete.");
+    expect(result.output).toContain("Setup complete");
+    expect(result.output).toContain("/help");
+    expect(result.output).toContain("/commands");
     expect(result.output).toContain("/gateway_status");
     expect(result.output).toContain("/usage_status");
+    expect(result.output).toContain("/goal_list");
+    expect(result.output).toContain("/repo_chat say only: repo chat works");
+    expect(result.output).toContain(
+      "/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.",
+    );
   });
 
   it("honors the managed-root prompt", async () => {
@@ -360,7 +466,7 @@ describe("scripts/setup-smithersbot.sh", () => {
       const stat = await fs.stat(path.join(customRoot, subdir));
       expect(stat.isDirectory()).toBe(true);
     }
-    expect(result.output).toContain(`Using SmithersBot home: ${customRoot}`);
+    expect(result.output).toContain(`✓ Using SmithersBot home:\n${customRoot}`);
   });
 
   it("supports choosing no first workspace while still writing usable config", async () => {
@@ -380,9 +486,30 @@ describe("scripts/setup-smithersbot.sh", () => {
 
     expect(result.exitCode).toBe(0);
     const managedRoot = path.join(home, "smithersbot-goals");
-    expect(result.output).toContain("No first workspace created.");
-    expect(result.output).toContain(`${managedRoot}/agent/workspaces/<workspace-name>`);
-    expect(result.output).toContain(`${managedRoot}/private/env/<workspace-name>/.env`);
+    expect(result.output).toContain(`Is there a repo you would like SmithersBot to work on first?
+1) This SmithersBot checkout
+Copy this checkout into a new agent-editable workspace.
+
+2) Another local repo path
+Copy or clone an existing local repo into a new agent-editable workspace.
+
+3) Clone a repo URL
+Clone a GitHub or Git repo URL into a new agent-editable workspace.
+
+4) No thanks
+I will add workspaces myself later.
+Choose [1/2/3/4]:`);
+    expect(result.output).toContain(`✓ No first workspace created.
+To add a workspace later:
+1. Copy or clone your project into:
+${managedRoot}/agent/workspaces/<workspace-name>
+2. Put real project secrets in:
+${managedRoot}/private/env/<workspace-name>/.env
+3. Keep a redacted .env.example in the workspace.
+Agents can see which variables the project expects without seeing real secrets.
+Anything under agent/workspaces can be read and edited by SmithersBot agents.
+Private env/config/auth should stay under:
+${managedRoot}/private`);
     const generated = await readGeneratedConfig(home);
     expect(generated.config.agents.defaults.workspace).toBeUndefined();
     expect(generated.config.goal.defaultWorkspaceName).toBeUndefined();
@@ -412,7 +539,7 @@ describe("scripts/setup-smithersbot.sh", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain(`A workspace named source-repo already exists:\n${workspace}`);
-    expect(result.output).toContain("Using existing agent workspace:");
+    expect(result.output).toContain(`✓ Using existing agent workspace:\n${workspace}`);
     await expect(fs.readFile(path.join(workspace, "sentinel.txt"), "utf8")).resolves.toBe(
       "keep me\n",
     );
@@ -448,6 +575,7 @@ describe("scripts/setup-smithersbot.sh", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain(`A legacy workspace already exists:\n${legacyRepo}`);
+    expect(result.output).toContain(`✓ Using existing legacy workspace:\n${legacyRepo}`);
     const generated = await readGeneratedConfig(home);
     expect(generated.config.agents.defaults.workspace).toBe(legacyRepo);
     await expect(fs.readFile(path.join(legacyRepo, "sentinel.txt"), "utf8")).resolves.toBe(
@@ -506,7 +634,8 @@ describe("scripts/setup-smithersbot.sh", () => {
     await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect(result.output).toContain("Cloned repo URL into isolated agent workspace:");
+    expect(result.output).toContain("Cloning repo URL into isolated agent workspace...");
+    expect(result.output).toContain(`✓ Workspace ready:\n${workspaceRepo}`);
   });
 
   it("defaults this checkout workspace name to the package name", async () => {
@@ -588,7 +717,8 @@ describe("scripts/setup-smithersbot.sh", () => {
     await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect(result.output).toContain("Copied local directory into isolated agent workspace:");
+    expect(result.output).toContain("Copying local directory into isolated agent workspace...");
+    expect(result.output).toContain(`✓ Workspace ready:\n${workspaceRepo}`);
   });
 
   it("rejects unsafe workspace names and accepts the next safe value", async () => {
@@ -671,12 +801,57 @@ describe("scripts/setup-smithersbot.sh", () => {
 
     expect(result.exitCode).toBe(0);
     const argv = await fs.readFile(argvLog, "utf8");
-    expect(argv).toContain("--user start smithersbot-gateway.service");
+    expect(argv).toContain("--user daemon-reload");
+    expect(argv).toContain("--user enable --now smithersbot-gateway.service");
+    expect(argv).toContain("--user is-active smithersbot-gateway.service");
     expect(argv).not.toMatch(/(^|\s)smithersbot\.service(\s|$)/);
-    expect(result.output).toContain("Started SmithersBot:");
+    expect(result.output).toContain("✓ SmithersBot is running in the background.");
+    expect(result.output).toContain("✓ SmithersBot is running:\nsmithersbot-gateway.service");
+    expect(result.output).toContain("journalctl --user -u smithersbot-gateway.service -f");
+    expect((result.output.match(/Next commands:/g) ?? []).length).toBe(0);
+  });
+
+  it("prints a service-start failure block without setup complete when systemd never becomes active", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    const argvLog = path.join(home, "systemctl-argv.log");
+    await fs.mkdir(bin);
+    await writeExecutable(
+      path.join(bin, "systemctl"),
+      `#!/bin/bash
+printf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}
+if [[ "$*" == "--user --version" ]]; then exit 0; fi
+if [[ "$*" == "--user is-active smithersbot-gateway.service" ]]; then exit 3; fi
+exit 0
+`,
+    );
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      input: `${testToken}\n\n`,
+      systemdInput: "\n",
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    const argv = await fs.readFile(argvLog, "utf8");
+    expect(argv).toContain("--user daemon-reload");
+    expect(argv).toContain("--user enable --now smithersbot-gateway.service");
+    expect(argv).toContain("--user is-active smithersbot-gateway.service");
+    expect(result.output).toContain("SmithersBot did not start");
     expect(result.output).toContain(
       "systemctl --user status smithersbot-gateway.service --no-pager",
     );
+    expect(result.output).toContain(
+      "journalctl --user -u smithersbot-gateway.service -n 120 --no-pager",
+    );
+    expect(result.output).not.toContain("Setup complete");
   });
 
   it("stops cleanly for an invalid token", async () => {

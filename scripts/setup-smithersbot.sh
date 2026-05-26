@@ -18,6 +18,18 @@ info() {
   printf '%s\n' "$*"
 }
 
+print_separator() {
+  info "────────────────────────────────────────"
+}
+
+print_step_header() {
+  local number=$1
+  local title=$2
+  print_separator
+  info "Step $number of 6: $title"
+  print_separator
+}
+
 expand_home() {
   case "$1" in
     \~) printf '%s\n' "$HOME" ;;
@@ -231,6 +243,7 @@ require_node_22() {
 
   local version raw major minor patch
   version=$(node -v 2>/dev/null || true)
+  NODE_VERSION_FOUND=$version
   raw=${version#v}
   IFS=. read -r major minor patch _ <<<"$raw"
   patch=${patch%%[^0-9]*}
@@ -266,6 +279,30 @@ activate_pnpm() {
 
 require_pnpm() {
   command -v pnpm >/dev/null 2>&1 || fail "pnpm is required but was not found"
+}
+
+print_system_requirements() {
+  info "Checking system requirements..."
+  info "✓ Node ${NODE_VERSION_FOUND#v} or newer"
+  info "✓ pnpm"
+  info "✓ git"
+}
+
+run_captured_command() {
+  local label=$1
+  shift
+  local log_file
+  log_file=$(mktemp)
+  if "$@" >"$log_file" 2>&1; then
+    rm -f "$log_file"
+    return 0
+  fi
+
+  info ""
+  info "$label failed. Last log lines:"
+  tail -n 80 "$log_file" >&2 || true
+  rm -f "$log_file"
+  return 1
 }
 
 warn_backend_availability() {
@@ -412,7 +449,8 @@ confirm_detected_telegram_id() {
   local detected_id=$1
   local answer manual_id
 
-  printf 'Detected Telegram private chat ID: %s\n' "$detected_id" >&2
+  printf '✓ Detected Telegram private chat ID:\n' >&2
+  printf '%s\n' "$detected_id" >&2
   printf 'Use this Telegram private chat ID for allowFrom? [Y/n] ' >&2
   IFS= read -r answer
   case "$answer" in
@@ -466,6 +504,8 @@ detect_telegram_allowed_id() {
   local start now deadline response description detected chat_id from_id selected_id
 
   printf 'Open @%s in Telegram and press Start, or send any message.\n' "$bot_username" >&2
+  printf 'Do not use @BotFather here.\n' >&2
+  printf 'Waiting for your Telegram message...\n' >&2
 
   while true; do
     start=$(date +%s)
@@ -599,10 +639,13 @@ prompt_repo_source() {
     printf 'Is there a repo you would like SmithersBot to work on first?\n' >&2
     printf '1) This SmithersBot checkout\n' >&2
     printf 'Copy this checkout into a new agent-editable workspace.\n' >&2
+    printf '\n' >&2
     printf '2) Another local repo path\n' >&2
     printf 'Copy or clone an existing local repo into a new agent-editable workspace.\n' >&2
+    printf '\n' >&2
     printf '3) Clone a repo URL\n' >&2
     printf 'Clone a GitHub or Git repo URL into a new agent-editable workspace.\n' >&2
+    printf '\n' >&2
     printf '4) No thanks\n' >&2
     printf 'I will add workspaces myself later.\n' >&2
     printf 'Choose [1/2/3/4]: ' >&2
@@ -719,22 +762,25 @@ materialize_workspace_repo() {
   mkdir -p "$workspace_parent"
 
   if [[ "$source_kind" == "url" ]]; then
+    info "Cloning repo URL into isolated agent workspace..."
     git clone -- "$source_value" "$workspace_repo"
-    info "Cloned repo URL into isolated agent workspace:"
+    info "✓ Workspace ready:"
     info "$workspace_repo"
     return 0
   fi
 
   if is_git_repo "$source_value"; then
+    info "Cloning local git repo into isolated agent workspace..."
     git clone -- "$source_value" "$workspace_repo"
-    info "Cloned local git repo into isolated agent workspace:"
+    info "✓ Workspace ready:"
     info "$workspace_repo"
     return 0
   fi
 
+  info "Copying local directory into isolated agent workspace..."
   mkdir -p "$workspace_repo"
   cp -a "$source_value"/. "$workspace_repo"/
-  info "Copied local directory into isolated agent workspace:"
+  info "✓ Workspace ready:"
   info "$workspace_repo"
 }
 
@@ -772,15 +818,17 @@ print_workspace_private_pointers() {
 
 print_no_first_workspace() {
   local managed_root=$1
-  info "No first workspace created."
+  info "✓ No first workspace created."
   info "To add a workspace later:"
   info "1. Copy or clone your project into:"
   info "$managed_root/agent/workspaces/<workspace-name>"
   info "2. Put real project secrets in:"
   info "$managed_root/private/env/<workspace-name>/.env"
-  info "3. Keep a redacted .env.example in the workspace so agents can see which variables the project expects."
+  info "3. Keep a redacted .env.example in the workspace."
+  info "Agents can see which variables the project expects without seeing real secrets."
   info "Anything under agent/workspaces can be read and edited by SmithersBot agents."
-  info "Private env/config/auth should stay under $managed_root/private and are not agent-visible."
+  info "Private env/config/auth should stay under:"
+  info "$managed_root/private"
 }
 
 prompt_operator_honorific() {
@@ -798,10 +846,40 @@ prompt_operator_honorific() {
 print_systemd_commands() {
   info "You can start SmithersBot manually from this checkout:"
   info "node scripts/run-node.mjs gateway"
+  info "SmithersBot must be running before Telegram commands will work."
+}
+
+print_service_start_failed() {
+  print_separator
+  info "SmithersBot did not start"
+  print_separator
+  info "The setup files were written, but the background service did not start."
+  info "Check status:"
+  info "systemctl --user status smithersbot-gateway.service --no-pager"
+  info "View logs:"
+  info "journalctl --user -u smithersbot-gateway.service -n 120 --no-pager"
+  info "You can also start SmithersBot manually from this checkout:"
+  info "node scripts/run-node.mjs gateway"
+}
+
+wait_for_gateway_service() {
+  local deadline now wait_seconds
+  wait_seconds=${SMITHERSBOT_SETUP_SERVICE_WAIT_SECONDS:-10}
+  deadline=$(($(date +%s) + wait_seconds))
+  while true; do
+    if systemctl --user is-active smithersbot-gateway.service >/dev/null 2>&1; then
+      return 0
+    fi
+    now=$(date +%s)
+    (( now >= deadline )) && break
+    sleep 1
+  done
+  return 1
 }
 
 offer_systemd() {
-  local answer service_path
+  local answer service_path install_log
+  SETUP_RUN_MODE="manual"
   printf 'Do you want SmithersBot to run in the background and keep working after you close this terminal?\n' >&2
   printf 'This installs and starts the user service: smithersbot-gateway.service\n' >&2
   printf '[Y/n]: ' >&2
@@ -813,20 +891,88 @@ offer_systemd() {
         print_systemd_commands
         return 0
       fi
-      scripts/install-smithersbot-user-service.sh
-      systemctl --user start smithersbot-gateway.service
+      info "Installing user service..."
+      install_log=$(mktemp)
+      if ! scripts/install-smithersbot-user-service.sh >"$install_log" 2>&1; then
+        info "Installing user service failed. Last log lines:"
+        tail -n 80 "$install_log" >&2 || true
+        rm -f "$install_log"
+        SETUP_RUN_MODE="failed"
+        print_service_start_failed
+        return 0
+      fi
+      rm -f "$install_log"
       service_path="$HOME/.config/systemd/user/smithersbot-gateway.service"
-      info "Wrote user service:"
+      info "✓ Wrote user service:"
       info "$service_path"
-      info "Started SmithersBot:"
-      info "systemctl --user status smithersbot-gateway.service --no-pager"
-      info "View logs:"
-      info "journalctl --user -u smithersbot-gateway.service -f"
+      if ! run_captured_command "Reloading user service manager" systemctl --user daemon-reload; then
+        SETUP_RUN_MODE="failed"
+        print_service_start_failed
+        return 0
+      fi
+      info "Starting SmithersBot..."
+      if ! run_captured_command "Starting SmithersBot" systemctl --user enable --now smithersbot-gateway.service; then
+        SETUP_RUN_MODE="failed"
+        print_service_start_failed
+        return 0
+      fi
+      if ! wait_for_gateway_service; then
+        SETUP_RUN_MODE="failed"
+        print_service_start_failed
+        return 0
+      fi
+      SETUP_RUN_MODE="service"
+      info "✓ SmithersBot is running in the background."
+      info "SmithersBot may take 10-30 seconds to answer the first Telegram message."
       ;;
     *)
       print_systemd_commands
       ;;
   esac
+}
+
+backend_label() {
+  case "$1" in
+    claude_code) printf 'Claude Code\n' ;;
+    *) printf 'Codex\n' ;;
+  esac
+}
+
+print_setup_complete() {
+  local managed_root=$1
+  local bot_username=$2
+  local allowed_id=$3
+  local run_mode=$4
+  print_separator
+  info "Setup complete"
+  print_separator
+  info "✓ SmithersBot home:"
+  info "$managed_root"
+  info "✓ Telegram bot:"
+  info "@$bot_username"
+  info "✓ Authorized Telegram chat ID:"
+  info "$allowed_id"
+  if [[ "$run_mode" == "service" ]]; then
+    info "✓ SmithersBot is running:"
+    info "smithersbot-gateway.service"
+    info "Open Telegram and send:"
+  else
+    info "Start SmithersBot from this checkout:"
+    info "node scripts/run-node.mjs gateway"
+    info "After it starts, open Telegram and send:"
+  fi
+  info "/help"
+  info "/commands"
+  info "/gateway_status"
+  info "/usage_status"
+  info "/goal_list"
+  info "/repo_chat say only: repo chat works"
+  info "Optional tiny goal test:"
+  info "/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files."
+  if [[ "$run_mode" == "service" ]]; then
+    info "View logs:"
+    info "journalctl --user -u smithersbot-gateway.service -f"
+  fi
 }
 
 config_dir="~/.smithersbot"
@@ -874,12 +1020,21 @@ require_repo_root
 require_node_22
 require_git
 require_pnpm
+print_system_requirements
 warn_backend_availability
 
 if [[ "$run_build" -eq 1 ]]; then
   activate_pnpm
-  pnpm install --frozen-lockfile
-  pnpm build
+  info "Installing dependencies..."
+  if ! run_captured_command "Installing dependencies" pnpm install --frozen-lockfile; then
+    exit 1
+  fi
+  info "✓ Dependencies installed"
+  info "Building SmithersBot..."
+  if ! run_captured_command "Building SmithersBot" pnpm build; then
+    exit 1
+  fi
+  info "✓ Build completed"
 else
   info "Skipping pnpm install and pnpm build because --no-build was provided."
 fi
@@ -892,11 +1047,18 @@ config_file="$config_dir/smithersbot.json"
 mkdir -p "$config_dir" "$state_dir"
 
 managed_root_default=$(resolve_managed_root)
+print_step_header 1 "SmithersBot home"
 managed_root=$(prompt_managed_root "$managed_root_default")
 create_managed_tree "$managed_root"
-info "Using SmithersBot home: $managed_root"
+info "✓ Using SmithersBot home:"
+info "$managed_root"
 
+print_step_header 2 "How SmithersBot addresses you"
 operator_honorific=$(prompt_operator_honorific)
+info "✓ SmithersBot will address you as:"
+info "$operator_honorific"
+
+print_step_header 3 "First workspace"
 repo_source=$(prompt_repo_source)
 repo_source_kind=${repo_source%%:*}
 repo_source_value=${repo_source#*:}
@@ -915,26 +1077,38 @@ else
   if [[ "$workspace_status" == "new" ]]; then
     materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
   else
-    info "Using existing agent workspace:"
+    if [[ "$workspace_status" == "legacy" ]]; then
+      info "✓ Using existing legacy workspace:"
+    else
+      info "✓ Using existing agent workspace:"
+    fi
     info "$workspace_repo"
   fi
   create_private_workspace_env "$managed_root" "$workspace_name"
   print_workspace_private_pointers "$managed_root" "$workspace_name" "$workspace_repo"
 fi
 
+print_step_header 4 "Telegram bot"
+info "Paste your Telegram bot token."
+info "You can get this from @BotFather."
 printf 'Telegram bot token: ' >&2
 IFS= read -rs telegram_token
 printf '\n' >&2
 [[ -n "$telegram_token" ]] || fail "Telegram bot token cannot be empty"
 
+info "Verifying Telegram bot..."
 bot_username=$(verify_telegram_token)
-info "Telegram bot verified: @$bot_username"
+info "✓ Telegram bot verified:"
+info "@$bot_username"
 allowed_id=$(detect_telegram_allowed_id "$bot_username")
 [[ -n "$allowed_id" ]] || fail "Telegram private chat ID cannot be empty"
 
+print_step_header 5 "Repo chat backend"
 if [[ -z "$backend" ]]; then
   backend=$(prompt_backend)
 fi
+info "✓ Repo chat backend:"
+info "$(backend_label "$backend")"
 
 gateway_token=$(generate_gateway_token)
 
@@ -952,14 +1126,13 @@ else
   info "Kept existing $config_file"
 fi
 
+print_step_header 6 "Run SmithersBot"
 offer_systemd
+if [[ "${SETUP_RUN_MODE:-manual}" == "failed" ]]; then
+  exit 1
+fi
 if [[ "$state_dir" != "$config_dir" ]]; then
   info "State directory: $state_dir"
   info "Set SMITHERSBOT_STATE_DIR=$state_dir before starting if you want to use this state directory."
 fi
-info ""
-info "First Telegram smoke tests:"
-info "  /gateway_status"
-info "  /usage_status"
-info "  /repo_chat say only: repo chat works"
-info "  /new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files."
+print_setup_complete "$managed_root" "$bot_username" "$allowed_id" "${SETUP_RUN_MODE:-manual}"
