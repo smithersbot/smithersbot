@@ -152,7 +152,8 @@ write_config_file() {
   escaped_operator_honorific=$(json_escape "$operator_honorific")
   tmp=$(mktemp "${path}.tmp.XXXXXX")
   chmod 600 "$tmp"
-  cat >"$tmp" <<JSON
+  if [[ -n "$workspace_name" && -n "$workspace_repo" ]]; then
+    cat >"$tmp" <<JSON
 {
   "gateway": {
     "mode": "local",
@@ -182,6 +183,35 @@ write_config_file() {
   }
 }
 JSON
+  else
+    cat >"$tmp" <<JSON
+{
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "token": "$escaped_gateway_token"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "\${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": ["$escaped_allowed_id"],
+      "dmPolicy": "allowlist",
+      "repoChatBackend": "$escaped_backend"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "identity": {
+        "operatorHonorific": "$escaped_operator_honorific"
+      }
+    }
+  },
+  "goal": {}
+}
+JSON
+  fi
   mv "$tmp" "$path"
   chmod 600 "$path"
 }
@@ -408,7 +438,7 @@ manual_or_retry_telegram_id() {
 
   while true; do
     printf 'No private Telegram message was detected before the setup timeout.\n' >&2
-    printf 'Open @%s (your new bot, NOT @BotFather) in Telegram and press Start, or send any message. Then choose retry, or enter the private chat ID manually.\n' "$bot_username" >&2
+    printf 'Open @%s in Telegram and press Start, or send any message. Then choose retry, or enter the private chat ID manually.\n' "$bot_username" >&2
     printf 'Retry detection or enter ID manually? [r/m] ' >&2
     IFS= read -r answer
     case "$answer" in
@@ -435,7 +465,7 @@ detect_telegram_allowed_id() {
   local poll_interval=${SMITHERSBOT_SETUP_POLL_INTERVAL:-2}
   local start now deadline response description detected chat_id from_id selected_id
 
-  printf 'Open @%s (your new bot, NOT @BotFather) in Telegram and press Start, or send any message.\n' "$bot_username" >&2
+  printf 'Open @%s in Telegram and press Start, or send any message.\n' "$bot_username" >&2
 
   while true; do
     start=$(date +%s)
@@ -484,15 +514,22 @@ detect_telegram_allowed_id() {
 prompt_backend() {
   local answer
   while true; do
-    printf 'Repo-chat backend [codex/claude_code]: ' >&2
+    printf 'Which backend should repo chat use by default?\n' >&2
+    printf '1) Codex\n' >&2
+    printf '2) Claude Code\n' >&2
+    printf 'Choose [ENTER for default: Codex]: ' >&2
     IFS= read -r answer
     case "$answer" in
-      codex|claude_code)
-        printf '%s\n' "$answer"
+      ""|1|codex)
+        printf 'codex\n'
+        return 0
+        ;;
+      2|claude_code)
+        printf 'claude_code\n'
         return 0
         ;;
       *)
-        printf 'Please enter codex or claude_code.\n' >&2
+        printf 'Please choose 1, 2, codex, or claude_code.\n' >&2
         ;;
     esac
   done
@@ -501,7 +538,8 @@ prompt_backend() {
 prompt_managed_root() {
   local default_root=$1
   local answer
-  printf 'Managed agent root [%s]: ' "$default_root" >&2
+  printf 'Where should SmithersBot store workspaces, redacted history, and private project env files?\n' >&2
+  printf '[ENTER for default: %s]: ' "$default_root" >&2
   IFS= read -r answer
   if [[ -z "$answer" ]]; then
     printf '%s\n' "$default_root"
@@ -515,10 +553,29 @@ is_git_repo() {
   git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
+package_workspace_name() {
+  local source=$1
+  [[ -f "$source/package.json" ]] || return 1
+  PACKAGE_JSON_PATH="$source/package.json" node --input-type=module <<'NODE'
+import fs from "node:fs";
+const pkg = JSON.parse(fs.readFileSync(process.env.PACKAGE_JSON_PATH, "utf8"));
+const raw = typeof pkg.name === "string" ? pkg.name : "";
+const name = raw.startsWith("@") ? raw.split("/").pop() : raw;
+if (name) console.log(name);
+NODE
+}
+
 default_workspace_name_from_source() {
   local source=$1
   local base
-  base=$(basename "$source")
+  if [[ -d "$source" ]]; then
+    base=$(package_workspace_name "$source" 2>/dev/null || true)
+    if [[ -n "$base" ]] && validate_workspace_name "$base"; then
+      printf '%s\n' "$base"
+      return 0
+    fi
+  fi
+  base=$(basename "${source%/}")
   base=${base%.git}
   [[ -n "$base" ]] || base="smithersbot"
   printf '%s\n' "$base"
@@ -539,11 +596,16 @@ validate_workspace_name() {
 prompt_repo_source() {
   local choice source
   while true; do
-    printf 'What repo should agents work on?\n' >&2
-    printf '  1) this SmithersBot checkout\n' >&2
-    printf '  2) another local repo path\n' >&2
-    printf '  3) clone a repo URL\n' >&2
-    printf 'Choose [1/2/3]: ' >&2
+    printf 'Is there a repo you would like SmithersBot to work on first?\n' >&2
+    printf '1) This SmithersBot checkout\n' >&2
+    printf 'Copy this checkout into a new agent-editable workspace.\n' >&2
+    printf '2) Another local repo path\n' >&2
+    printf 'Copy or clone an existing local repo into a new agent-editable workspace.\n' >&2
+    printf '3) Clone a repo URL\n' >&2
+    printf 'Clone a GitHub or Git repo URL into a new agent-editable workspace.\n' >&2
+    printf '4) No thanks\n' >&2
+    printf 'I will add workspaces myself later.\n' >&2
+    printf 'Choose [1/2/3/4]: ' >&2
     IFS= read -r choice
     case "$choice" in
       ""|1)
@@ -566,8 +628,12 @@ prompt_repo_source() {
         printf 'url:%s\n' "$source"
         return 0
         ;;
+      4)
+        printf 'none:\n'
+        return 0
+        ;;
       *)
-        printf 'Please choose 1, 2, or 3.\n' >&2
+        printf 'Please choose 1, 2, 3, or 4.\n' >&2
         ;;
     esac
   done
@@ -577,7 +643,7 @@ prompt_workspace_name() {
   local default_name=$1
   local answer
   while true; do
-    printf 'Workspace name [%s]: ' "$default_name" >&2
+    printf 'Workspace name [ENTER for default: %s]: ' "$default_name" >&2
     IFS= read -r answer
     [[ -n "$answer" ]] || answer=$default_name
     if validate_workspace_name "$answer"; then
@@ -588,11 +654,60 @@ prompt_workspace_name() {
   done
 }
 
-ensure_empty_or_absent_dir() {
-  local dir=$1
-  if [[ -d "$dir" ]] && [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-    fail "workspace repo already exists and is not empty: $dir"
-  fi
+dir_is_nonempty() {
+  [[ -d "$1" ]] && [[ -n "$(find "$1" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+}
+
+resolve_workspace_repo() {
+  local managed_root=$1
+  local default_name=$2
+  local workspace_name answer target legacy_repo
+  while true; do
+    workspace_name=$(prompt_workspace_name "$default_name")
+    target="$managed_root/agent/workspaces/$workspace_name"
+    legacy_repo="$target/repo"
+
+    if dir_is_nonempty "$target"; then
+      if [[ -d "$legacy_repo" ]]; then
+        printf 'A legacy workspace already exists:\n' >&2
+        printf '%s\n' "$legacy_repo" >&2
+        printf 'Use this existing legacy workspace, choose another name, or cancel?\n' >&2
+        printf '1) Use existing legacy workspace\n' >&2
+      else
+        printf 'A workspace named %s already exists:\n' "$workspace_name" >&2
+        printf '%s\n' "$target" >&2
+        printf 'Use this existing workspace, choose another name, or cancel?\n' >&2
+        printf '1) Use existing workspace\n' >&2
+      fi
+      printf '2) Choose another workspace name\n' >&2
+      printf '3) Cancel setup\n' >&2
+      printf 'Choose [1/2/3]: ' >&2
+      IFS= read -r answer
+      case "$answer" in
+        1)
+          if [[ -d "$legacy_repo" ]]; then
+            printf '%s|%s|legacy\n' "$workspace_name" "$legacy_repo"
+          else
+            printf '%s|%s|existing\n' "$workspace_name" "$target"
+          fi
+          return 0
+          ;;
+        2)
+          continue
+          ;;
+        3)
+          exit 0
+          ;;
+        *)
+          printf 'Please choose 1, 2, or 3.\n' >&2
+          continue
+          ;;
+      esac
+    fi
+
+    printf '%s|%s|new\n' "$workspace_name" "$target"
+    return 0
+  done
 }
 
 materialize_workspace_repo() {
@@ -602,23 +717,25 @@ materialize_workspace_repo() {
   local workspace_parent
   workspace_parent=$(dirname "$workspace_repo")
   mkdir -p "$workspace_parent"
-  ensure_empty_or_absent_dir "$workspace_repo"
 
   if [[ "$source_kind" == "url" ]]; then
     git clone -- "$source_value" "$workspace_repo"
-    info "Cloned repo URL into isolated agent workspace: $workspace_repo"
+    info "Cloned repo URL into isolated agent workspace:"
+    info "$workspace_repo"
     return 0
   fi
 
   if is_git_repo "$source_value"; then
     git clone -- "$source_value" "$workspace_repo"
-    info "Cloned local git repo into isolated agent workspace: $workspace_repo"
+    info "Cloned local git repo into isolated agent workspace:"
+    info "$workspace_repo"
     return 0
   fi
 
   mkdir -p "$workspace_repo"
   cp -a "$source_value"/. "$workspace_repo"/
-  info "Local source is not a git repo; copied it into isolated agent workspace: $workspace_repo"
+  info "Copied local directory into isolated agent workspace:"
+  info "$workspace_repo"
 }
 
 create_private_workspace_env() {
@@ -642,9 +759,34 @@ create_private_workspace_env() {
   chmod 600 "$env_file"
 }
 
+print_workspace_private_pointers() {
+  local managed_root=$1
+  local workspace_name=$2
+  local workspace_repo=$3
+  info "Make sure to put all files you want SmithersBot to read and edit in that workspace."
+  info "Private .env for this repo that SmithersBot cannot read:"
+  info "$managed_root/private/env/$workspace_name/.env"
+  info "All private env/config/auth should stay under:"
+  info "$managed_root/private"
+}
+
+print_no_first_workspace() {
+  local managed_root=$1
+  info "No first workspace created."
+  info "To add a workspace later:"
+  info "1. Copy or clone your project into:"
+  info "$managed_root/agent/workspaces/<workspace-name>"
+  info "2. Put real project secrets in:"
+  info "$managed_root/private/env/<workspace-name>/.env"
+  info "3. Keep a redacted .env.example in the workspace so agents can see which variables the project expects."
+  info "Anything under agent/workspaces can be read and edited by SmithersBot agents."
+  info "Private env/config/auth should stay under $managed_root/private and are not agent-visible."
+}
+
 prompt_operator_honorific() {
   local answer
-  printf 'How should SmithersBot address you? [sir] ' >&2
+  printf "How should SmithersBot address you? (sir, ma'am, your name, etc.)\n" >&2
+  printf '[ENTER for default: sir]: ' >&2
   IFS= read -r answer
   if [[ -z "$answer" ]]; then
     printf 'sir\n'
@@ -654,25 +796,32 @@ prompt_operator_honorific() {
 }
 
 print_systemd_commands() {
-  info "To install and start the optional user service later, run:"
-  info "  scripts/install-smithersbot-user-service.sh"
-  info "  systemctl --user start smithersbot.service"
+  info "You can start SmithersBot manually from this checkout:"
+  info "node scripts/run-node.mjs gateway"
 }
 
 offer_systemd() {
-  local answer
-  printf 'Install and start the optional systemd user service now? [y/N] ' >&2
+  local answer service_path
+  printf 'Do you want SmithersBot to run in the background and keep working after you close this terminal?\n' >&2
+  printf 'This installs and starts the user service: smithersbot-gateway.service\n' >&2
+  printf '[Y/n]: ' >&2
   IFS= read -r answer
   case "$answer" in
-    y|Y|yes|YES)
+    ""|y|Y|yes|YES)
       if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user --version >/dev/null 2>&1; then
         info "Warning: systemctl --user is not available in this environment."
         print_systemd_commands
         return 0
       fi
       scripts/install-smithersbot-user-service.sh
-      systemctl --user start smithersbot.service
-      info "Started smithersbot.service."
+      systemctl --user start smithersbot-gateway.service
+      service_path="$HOME/.config/systemd/user/smithersbot-gateway.service"
+      info "Wrote user service:"
+      info "$service_path"
+      info "Started SmithersBot:"
+      info "systemctl --user status smithersbot-gateway.service --no-pager"
+      info "View logs:"
+      info "journalctl --user -u smithersbot-gateway.service -f"
       ;;
     *)
       print_systemd_commands
@@ -745,22 +894,33 @@ mkdir -p "$config_dir" "$state_dir"
 managed_root_default=$(resolve_managed_root)
 managed_root=$(prompt_managed_root "$managed_root_default")
 create_managed_tree "$managed_root"
-info "Managed root: $managed_root"
+info "Using SmithersBot home: $managed_root"
 
+operator_honorific=$(prompt_operator_honorific)
 repo_source=$(prompt_repo_source)
 repo_source_kind=${repo_source%%:*}
 repo_source_value=${repo_source#*:}
-workspace_default=$(default_workspace_name_from_source "$repo_source_value")
-workspace_name=$(prompt_workspace_name "$workspace_default")
-workspace_repo="$managed_root/agent/workspaces/$workspace_name"
-materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
-create_private_workspace_env "$managed_root" "$workspace_name"
-info "Agent-editable workspace repo: $workspace_repo"
-info "Per-workspace private env: $managed_root/private/env/$workspace_name/.env"
-info "Anything agents should read or edit must live inside $workspace_repo."
-info "Private env/config/auth stay under $managed_root/private and are not agent-visible."
-
-operator_honorific=$(prompt_operator_honorific)
+workspace_name=""
+workspace_repo=""
+workspace_status="none"
+if [[ "$repo_source_kind" == "none" ]]; then
+  print_no_first_workspace "$managed_root"
+else
+  workspace_default=$(default_workspace_name_from_source "$repo_source_value")
+  workspace_selection=$(resolve_workspace_repo "$managed_root" "$workspace_default")
+  workspace_name=${workspace_selection%%|*}
+  workspace_rest=${workspace_selection#*|}
+  workspace_repo=${workspace_rest%%|*}
+  workspace_status=${workspace_rest#*|}
+  if [[ "$workspace_status" == "new" ]]; then
+    materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
+  else
+    info "Using existing agent workspace:"
+    info "$workspace_repo"
+  fi
+  create_private_workspace_env "$managed_root" "$workspace_name"
+  print_workspace_private_pointers "$managed_root" "$workspace_name" "$workspace_repo"
+fi
 
 printf 'Telegram bot token: ' >&2
 IFS= read -rs telegram_token
@@ -793,20 +953,10 @@ else
 fi
 
 offer_systemd
-
-info ""
-info "SmithersBot setup complete."
-info "Config directory: $config_dir"
-info "Managed root: $managed_root (agent area + private host-only area)"
-info "  Workspace repo: $workspace_repo"
-info "  Real env files live in $managed_root/private/env/<name>/.env (not agent-visible)"
 if [[ "$state_dir" != "$config_dir" ]]; then
   info "State directory: $state_dir"
   info "Set SMITHERSBOT_STATE_DIR=$state_dir before starting if you want to use this state directory."
 fi
-info ""
-info "Start the gateway from the repository root:"
-info "  node scripts/run-node.mjs gateway"
 info ""
 info "First Telegram smoke tests:"
 info "  /gateway_status"

@@ -240,16 +240,22 @@ The setup script will:
 - require Node 22.12.0 or newer, `pnpm`, and `git`
 - warn if neither Codex nor Claude Code is available yet, then continue with
   install/login-later instructions
-- ask for the managed agent root, defaulting to `~/smithersbot-goals`
+- ask "Where should SmithersBot store workspaces, redacted history, and private
+  project env files?", defaulting to `~/smithersbot-goals`
 - create the managed tree under that root
-- ask what repo agents should work on: this checkout, another local repo path,
-  or a repo URL to clone
-- ask for a workspace name, defaulting to the repo basename
-- create an isolated agent workspace at
+- ask how SmithersBot should address you, defaulting to `sir`
+- ask whether there is a repo you would like SmithersBot to work on first:
+  this checkout, another local repo path, a repo URL to clone, or **No thanks**
+  to add workspaces yourself later
+- for a first workspace, ask for a workspace name, defaulting to the actual
+  project or repo name such as `smithersbot` for this checkout or `my-app` for
+  `https://github.com/acme/my-app.git`
+- create or reuse an isolated agent workspace at
   `<managedRoot>/agent/workspaces/<workspaceName>`
 - create `<managedRoot>/private/env/<workspaceName>/.env` outside the workspace
   with placeholder-only content and mode `600`
-- ask how SmithersBot should address you, defaulting to `sir`
+- if you choose **No thanks**, skip creating a first workspace and print the
+  paths to use later for agent-editable workspaces and private project env files
 - ask for your Telegram bot token
 - verify the token
 - tell you to open `@<your_bot_username>` (your new bot, **not** `@BotFather`) and press **Start**, or send any message
@@ -257,13 +263,19 @@ The setup script will:
 - ask you to confirm the detected ID
 - create `~/.smithersbot/.env`
 - create `~/.smithersbot/smithersbot.json`
-- store the selected workspace and `agents.defaults.identity.operatorHonorific`
-  in the generated config
+- store `agents.defaults.identity.operatorHonorific` in the generated config
+  and, when you create or reuse a first workspace, store that workspace as the
+  default
 - generate a gateway auth token
 - set `gateway.mode` to `local`
 - set file permissions to `600`
-- offer to install/start the user systemd service, or print exact manual
-  commands when systemd is unavailable or declined
+- ask whether SmithersBot should run in the background and keep working after
+  you close the terminal, defaulting to yes
+- when accepted, install and start the user service
+  `smithersbot-gateway.service`; when declined, print the manual gateway command
+
+The script proceeds step by step and does not end with an extra setup summary
+screen.
 
 When the script tells you to open your bot, go to Telegram and open the bot username you created (the one ending in `bot`, **not** `@BotFather`), then press **Start** or send any message.
 

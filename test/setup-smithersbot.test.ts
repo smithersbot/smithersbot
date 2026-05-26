@@ -157,6 +157,7 @@ async function runSetup(params: {
   workspaceNameInput?: string;
   honorificInput?: string;
   systemdInput?: string;
+  backendArg?: "codex" | "claude_code" | null;
   env?: NodeJS.ProcessEnv;
 }) {
   const sourceRepo = path.join(params.home, "source-repo");
@@ -166,37 +167,35 @@ async function runSetup(params: {
   }
   const wizardInput = [
     params.managedRootInput ?? "\n",
-    repoPromptInput,
-    params.workspaceNameInput ?? "\n",
     params.honorificInput ?? "\n",
+    repoPromptInput,
+    repoPromptInput.startsWith("4") ? "" : (params.workspaceNameInput ?? "\n"),
     params.input,
-    params.systemdInput ?? "\n",
+    params.systemdInput ?? "n\n",
   ].join("");
-  const child = spawn(
-    "/bin/bash",
-    [
-      scriptPath,
-      "--no-build",
-      "--backend",
-      "codex",
-      "--config-dir",
-      path.join(params.home, ".smithersbot"),
-      "--state-dir",
-      path.join(params.home, ".smithersbot"),
-    ],
-    {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        ...params.env,
-        HOME: params.home,
-        SMITHERSBOT_TELEGRAM_API_STUB_DIR: params.apiBase,
-        SMITHERSBOT_SETUP_POLL_SECONDS: params.pollSeconds ?? "1",
-        SMITHERSBOT_SETUP_POLL_INTERVAL: params.pollInterval ?? "0.05",
-      },
-      stdio: ["pipe", "pipe", "pipe"],
+  const args = [
+    scriptPath,
+    "--no-build",
+    "--config-dir",
+    path.join(params.home, ".smithersbot"),
+    "--state-dir",
+    path.join(params.home, ".smithersbot"),
+  ];
+  if (params.backendArg !== null) {
+    args.splice(2, 0, "--backend", params.backendArg ?? "codex");
+  }
+  const child = spawn("/bin/bash", args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ...params.env,
+      HOME: params.home,
+      SMITHERSBOT_TELEGRAM_API_STUB_DIR: params.apiBase,
+      SMITHERSBOT_SETUP_POLL_SECONDS: params.pollSeconds ?? "1",
+      SMITHERSBOT_SETUP_POLL_INTERVAL: params.pollInterval ?? "0.05",
     },
-  );
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 
   let stdout = "";
   let stderr = "";
@@ -223,8 +222,8 @@ async function readGeneratedConfig(home: string) {
     config: JSON.parse(configRaw) as {
       channels: { telegram: { allowFrom: string[]; botToken: string; repoChatBackend: string } };
       gateway: { mode: string; auth: { token: string } };
-      agents: { defaults: { workspace: string; identity: { operatorHonorific: string } } };
-      goal: { defaultWorkspaceName: string };
+      agents: { defaults: { workspace?: string; identity: { operatorHonorific: string } } };
+      goal: { defaultWorkspaceName?: string };
     },
     envRaw,
     configMode: configStat.mode & 0o777,
@@ -276,7 +275,7 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain("Telegram bot verified: @smithersbot2_test_bot");
     expect(result.output).toContain(
-      "Open @smithersbot2_test_bot (your new bot, NOT @BotFather) in Telegram and press Start, or send any message.",
+      "Open @smithersbot2_test_bot in Telegram and press Start, or send any message.",
     );
     expect(result.output).toContain("Use this Telegram private chat ID for allowFrom? [Y/n]");
     expect(result.output).not.toContain(testToken);
@@ -316,7 +315,7 @@ describe("scripts/setup-smithersbot.sh", () => {
       const stat = await fs.stat(path.join(managedRoot, privSub));
       expect(stat.mode & 0o777).toBe(0o700);
     }
-    expect(result.output).toContain(`Managed root: ${managedRoot}`);
+    expect(result.output).toContain(`Using SmithersBot home: ${managedRoot}`);
     const workspaceRepo = path.join(managedRoot, "agent", "workspaces", "source-repo");
     expect(generated.config.agents.defaults.workspace).toBe(workspaceRepo);
     expect((await fs.stat(path.join(workspaceRepo, ".git"))).isDirectory()).toBe(true);
@@ -331,6 +330,11 @@ describe("scripts/setup-smithersbot.sh", () => {
     expect(privateEnvStat.mode & 0o777).toBe(0o600);
     expect(path.relative(workspaceRepo, privateEnvPath).startsWith("..")).toBe(true);
     await expect(fs.readFile(privateEnvPath, "utf8")).resolves.toContain("EXAMPLE_API_KEY");
+    expect(result.output).toContain("Cloned local git repo into isolated agent workspace:");
+    expect(result.output).toContain(
+      "Make sure to put all files you want SmithersBot to read and edit in that workspace.",
+    );
+    expect(result.output).not.toContain("SmithersBot setup complete.");
     expect(result.output).toContain("/gateway_status");
     expect(result.output).toContain("/usage_status");
   });
@@ -356,7 +360,126 @@ describe("scripts/setup-smithersbot.sh", () => {
       const stat = await fs.stat(path.join(customRoot, subdir));
       expect(stat.isDirectory()).toBe(true);
     }
-    expect(result.output).toContain(`Managed root: ${customRoot}`);
+    expect(result.output).toContain(`Using SmithersBot home: ${customRoot}`);
+  });
+
+  it("supports choosing no first workspace while still writing usable config", async () => {
+    const home = await mkTempHome();
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const managedRoot = path.join(home, "smithersbot-goals");
+    expect(result.output).toContain("No first workspace created.");
+    expect(result.output).toContain(`${managedRoot}/agent/workspaces/<workspace-name>`);
+    expect(result.output).toContain(`${managedRoot}/private/env/<workspace-name>/.env`);
+    const generated = await readGeneratedConfig(home);
+    expect(generated.config.agents.defaults.workspace).toBeUndefined();
+    expect(generated.config.goal.defaultWorkspaceName).toBeUndefined();
+    expect(generated.config.agents.defaults.identity.operatorHonorific).toBe("sir");
+    await expect(fs.readdir(path.join(managedRoot, "agent", "workspaces"))).resolves.toEqual([]);
+    await expect(fs.readdir(path.join(managedRoot, "private", "env"))).resolves.toEqual([]);
+  });
+
+  it("uses an existing new-layout workspace without overwriting it", async () => {
+    const home = await mkTempHome();
+    const managedRoot = path.join(home, "smithersbot-goals");
+    const workspace = path.join(managedRoot, "agent", "workspaces", "source-repo");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(path.join(workspace, "sentinel.txt"), "keep me\n", "utf8");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      workspaceNameInput: "\n1\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain(`A workspace named source-repo already exists:\n${workspace}`);
+    expect(result.output).toContain("Using existing agent workspace:");
+    await expect(fs.readFile(path.join(workspace, "sentinel.txt"), "utf8")).resolves.toBe(
+      "keep me\n",
+    );
+    await expect(fs.stat(path.join(workspace, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
+    const generated = await readGeneratedConfig(home);
+    expect(generated.config.agents.defaults.workspace).toBe(workspace);
+  });
+
+  it("uses an existing legacy workspace repo child when selected", async () => {
+    const home = await mkTempHome();
+    const legacyRepo = path.join(
+      home,
+      "smithersbot-goals",
+      "agent",
+      "workspaces",
+      "source-repo",
+      "repo",
+    );
+    await fs.mkdir(legacyRepo, { recursive: true });
+    await fs.writeFile(path.join(legacyRepo, "sentinel.txt"), "legacy\n", "utf8");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      workspaceNameInput: "\n1\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain(`A legacy workspace already exists:\n${legacyRepo}`);
+    const generated = await readGeneratedConfig(home);
+    expect(generated.config.agents.defaults.workspace).toBe(legacyRepo);
+    await expect(fs.readFile(path.join(legacyRepo, "sentinel.txt"), "utf8")).resolves.toBe(
+      "legacy\n",
+    );
+  });
+
+  it("reprompts when an existing workspace user chooses another name", async () => {
+    const home = await mkTempHome();
+    const existing = path.join(home, "smithersbot-goals", "agent", "workspaces", "source-repo");
+    await fs.mkdir(existing, { recursive: true });
+    await fs.writeFile(path.join(existing, "sentinel.txt"), "keep\n", "utf8");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      workspaceNameInput: "\n2\nnew-name\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generated = await readGeneratedConfig(home);
+    expect(generated.config.goal.defaultWorkspaceName).toBe("new-name");
+    expect(generated.config.agents.defaults.workspace).toBe(
+      path.join(home, "smithersbot-goals", "agent", "workspaces", "new-name"),
+    );
+    await expect(fs.readFile(path.join(existing, "sentinel.txt"), "utf8")).resolves.toBe("keep\n");
   });
 
   it("clones a local repo URL fixture into the managed workspace repo", async () => {
@@ -383,7 +506,54 @@ describe("scripts/setup-smithersbot.sh", () => {
     await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect(result.output).toContain("Cloned repo URL into isolated agent workspace");
+    expect(result.output).toContain("Cloned repo URL into isolated agent workspace:");
+  });
+
+  it("defaults this checkout workspace name to the package name", async () => {
+    const home = await mkTempHome();
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: "1\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Workspace name [ENTER for default: smithersbot]:");
+    const generated = await readGeneratedConfig(home);
+    expect(generated.config.goal.defaultWorkspaceName).toBe("smithersbot");
+    expect(generated.config.agents.defaults.workspace).toBe(
+      path.join(home, "smithersbot-goals", "agent", "workspaces", "smithersbot"),
+    );
+  });
+
+  it("defaults clone URL workspace names from the URL basename", async () => {
+    const home = await mkTempHome();
+    const existing = path.join(home, "smithersbot-goals", "agent", "workspaces", "my-app");
+    await fs.mkdir(existing, { recursive: true });
+    await fs.writeFile(path.join(existing, "sentinel.txt"), "keep\n", "utf8");
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: "3\nhttps://example.invalid/acme/my-app.git\n",
+      workspaceNameInput: "\n3\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Workspace name [ENTER for default: my-app]:");
   });
 
   it("copies a local non-git directory as a fallback", async () => {
@@ -418,7 +588,7 @@ describe("scripts/setup-smithersbot.sh", () => {
     await expect(fs.stat(path.join(workspaceRepo, "repo"))).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect(result.output).toContain("Local source is not a git repo; copied it");
+    expect(result.output).toContain("Copied local directory into isolated agent workspace:");
   });
 
   it("rejects unsafe workspace names and accepts the next safe value", async () => {
@@ -441,6 +611,72 @@ describe("scripts/setup-smithersbot.sh", () => {
     await expect(
       fs.stat(path.join(home, "smithersbot-goals", "agent", "workspaces", "safe-name")),
     ).resolves.toBeTruthy();
+  });
+
+  it("maps repo-chat backend menu choices and keeps --backend working", async () => {
+    const cases: Array<{
+      input: string;
+      expected: string;
+      backendArg?: "codex" | "claude_code" | null;
+    }> = [
+      { input: `${testToken}\n\n\n`, expected: "codex", backendArg: null },
+      { input: `${testToken}\n\n1\n`, expected: "codex", backendArg: null },
+      { input: `${testToken}\n\n2\n`, expected: "claude_code", backendArg: null },
+      { input: `${testToken}\n\n`, expected: "claude_code", backendArg: "claude_code" },
+    ];
+
+    for (const testCase of cases) {
+      const home = await mkTempHome();
+      const apiBase = await startTelegramStub((requestPath) => {
+        if (requestPath.endsWith("/getMe")) return getMeSuccess;
+        if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+        return { ok: false, description: `unexpected path ${requestPath}` };
+      });
+
+      const result = await runSetup({
+        home,
+        apiBase,
+        input: testCase.input,
+        backendArg: testCase.backendArg,
+      });
+
+      expect(result.exitCode).toBe(0);
+      const generated = await readGeneratedConfig(home);
+      expect(generated.config.channels.telegram.repoChatBackend).toBe(testCase.expected);
+    }
+  });
+
+  it("starts the correct systemd user service by default when accepted", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    const argvLog = path.join(home, "systemctl-argv.log");
+    await fs.mkdir(bin);
+    await writeExecutable(
+      path.join(bin, "systemctl"),
+      `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\nif [[ "$*" == "--user --version" ]]; then exit 0; fi\nexit 0\n`,
+    );
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      input: `${testToken}\n\n`,
+      systemdInput: "\n",
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const argv = await fs.readFile(argvLog, "utf8");
+    expect(argv).toContain("--user start smithersbot-gateway.service");
+    expect(argv).not.toMatch(/(^|\s)smithersbot\.service(\s|$)/);
+    expect(result.output).toContain("Started SmithersBot:");
+    expect(result.output).toContain(
+      "systemctl --user status smithersbot-gateway.service --no-pager",
+    );
   });
 
   it("stops cleanly for an invalid token", async () => {
