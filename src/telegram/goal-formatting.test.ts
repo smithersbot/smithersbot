@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { SerializedRun } from "../goal/types.js";
 import {
   buildPlanningPreface,
   buildResumePreface,
@@ -7,9 +8,28 @@ import {
   formatGoalLockedMessage,
   formatManualTestDetails,
   getGoalExecutionPreface,
+  resolveBlockedRequiredInputKey,
   resolveGoalOperatorHonorific,
   sanitizeOperatorHonorific,
 } from "./goal-formatting.js";
+
+function buildRun(overrides: Partial<SerializedRun>): SerializedRun {
+  return {
+    runId: "rrr-fmt",
+    goal: "goal",
+    state: "blocked",
+    plan: null,
+    stepResults: {},
+    blocked: null,
+    answers: {},
+    workingDir: "/tmp",
+    model: undefined,
+    dryRun: false,
+    createdAt: "2026-01-30T00:00:00.000Z",
+    updatedAt: "2026-01-30T00:00:00.000Z",
+    ...overrides,
+  };
+}
 
 describe("formatGoalLockedMessage", () => {
   it("formats the run prefix and lock label", () => {
@@ -67,6 +87,64 @@ describe("goal preface honorifics", () => {
     const sanitized = sanitizeOperatorHonorific("M".repeat(80));
     expect(sanitized).toHaveLength(48);
     expect(buildPlanningPreface("M".repeat(80))).toBe(`Right away, ${"M".repeat(48)}.`);
+  });
+
+  it("resolves blocked-required input key, preferring task:<stepId>:input when stepId is set", () => {
+    // run.blocked.stepId is the canonical routing target. Override stale
+    // 'none' / 'resume_execution' keys so persisted question messages route
+    // replies into the worker's task answer slot.
+    expect(
+      resolveBlockedRequiredInputKey(
+        buildRun({
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Final build gate failed",
+            requiredInputKey: "none",
+            stepId: "done-step",
+          },
+        }),
+      ),
+    ).toBe("task:done-step:input");
+
+    expect(
+      resolveBlockedRequiredInputKey(
+        buildRun({
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Final build gate failed",
+            requiredInputKey: "resume_execution",
+            stepId: "done-step",
+          },
+        }),
+      ),
+    ).toBe("task:done-step:input");
+
+    // When stepId is set and the canonical key is already task:<stepId>:input, preserve it.
+    expect(
+      resolveBlockedRequiredInputKey(
+        buildRun({
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Final build gate failed",
+            requiredInputKey: "task:done-step:input",
+            stepId: "done-step",
+          },
+        }),
+      ),
+    ).toBe("task:done-step:input");
+
+    // No stepId on run.blocked, persisted key is real → use it as-is.
+    expect(
+      resolveBlockedRequiredInputKey(
+        buildRun({
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need creds",
+            requiredInputKey: "creds_key",
+          },
+        }),
+      ),
+    ).toBe("creds_key");
   });
 
   it("resolves honorifics from routed agent identity with a sir fallback", () => {

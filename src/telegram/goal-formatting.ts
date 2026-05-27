@@ -13,7 +13,13 @@ import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { clampCriticality, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
-import type { ManualTestSuggestion, Plan, SerializedRun, StepResult } from "../goal/types.js";
+import type {
+  BlockedDetail,
+  ManualTestSuggestion,
+  Plan,
+  SerializedRun,
+  StepResult,
+} from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { resolveUserPath, shortenHomePath } from "../utils.js";
 import {
@@ -386,8 +392,20 @@ export function getGoalExecutionPreface(
 }
 
 export function resolveBlockedRequiredInputKey(run: SerializedRun): string | undefined {
-  if (run.blocked?.requiredInputKey?.trim()) {
-    return run.blocked.requiredInputKey;
+  // A run-level blocker pinned to a specific step (e.g. final build-gate
+  // escalation) must route replies into that step's answer slot so the worker
+  // retry picks it up. Override stale "none"/"resume_execution" keys when a
+  // canonical stepId is available.
+  const stepId = run.blocked?.stepId;
+  const persisted = run.blocked?.requiredInputKey?.trim();
+  if (stepId) {
+    if (!persisted || persisted === "none" || persisted === "resume_execution") {
+      return `task:${stepId}:input`;
+    }
+    return persisted;
+  }
+  if (persisted) {
+    return persisted;
   }
   const firstBlockedStep = run.plan?.steps.find((step) => step.status === "blocked");
   return firstBlockedStep ? `task:${firstBlockedStep.id}:input` : undefined;
@@ -563,17 +581,42 @@ export function buildOnStatusChange(params: {
         await sendDeliveryFallback(blockedDetail.requiredInputKey);
       }
     } else if (event.type === "fully_blocked") {
+      // Prefer the run-level blocker when it carries a stepId — a final
+      // build-gate escalation blocks a specific completed step and needs the
+      // task-level surface (Add Details → task:<stepId>:input). Otherwise fall
+      // back to the per-step aggregate; if neither yields a blocker, use the
+      // persisted run.blocked rather than misreporting a delivery failure.
       const aggregateDetail = aggregateBlockedDetails(event.steps);
-      if (!aggregateDetail) {
-        await sendDeliveryFallback("resume_execution");
+      const runBlocked = run.blocked;
+      let blockedDetail: BlockedDetail | undefined;
+      if (runBlocked?.stepId) {
+        blockedDetail = {
+          blockedAt: runBlocked.blockedAt,
+          prompt: runBlocked.prompt,
+          requiredInputKey: runBlocked.requiredInputKey,
+          stepId: runBlocked.stepId,
+        };
+      } else if (aggregateDetail) {
+        blockedDetail = {
+          ...aggregateDetail,
+          // No persisted step-level routing — render as a goal-level blocker.
+          stepId: undefined,
+        };
+      } else if (runBlocked && runBlocked.prompt?.trim()) {
+        blockedDetail = {
+          blockedAt: runBlocked.blockedAt,
+          prompt: runBlocked.prompt,
+          requiredInputKey: runBlocked.requiredInputKey,
+        };
+      }
+
+      if (!blockedDetail) {
+        runtime.error?.(
+          `telegram goal fully_blocked: no blocker derivable for run ${prefix} (steps=${event.steps.length}, run.blocked=${runBlocked ? "present-but-empty" : "missing"})`,
+        );
         return;
       }
-      const blockedDetail = {
-        ...aggregateDetail,
-        // fully_blocked events always represent goal-level blockers,
-        // even when only one task is currently blocked.
-        stepId: undefined,
-      };
+
       try {
         await sendBlockedNotification({
           bot,

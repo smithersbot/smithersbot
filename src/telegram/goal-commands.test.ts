@@ -1675,6 +1675,209 @@ describe("goal-commands telegram adapter", () => {
       expect(options.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toMatch(/^gAD:/);
     });
 
+    it("renders fully_blocked with all-done steps via run-level blocker stepId (final build-gate escalation)", async () => {
+      // Final build-gate escalation: every step persists as `done` but the
+      // run-level blocker pins a target step with task:<stepId>:input. The
+      // blocked surface must propagate stepId and requiredInputKey instead of
+      // misfiring as "update delivery failed".
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Final gate escalation",
+            shortSummary: "Final gate escalation",
+            steps: [
+              {
+                id: "done-step",
+                description: "Already done",
+                shortSummary: "Already done",
+                dependsOn: [],
+                status: "done",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          stepResults: {
+            "done-step": {
+              stepId: "done-step",
+              success: true,
+              output: "Done",
+              durationMs: 1,
+            },
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Final build gate failed after 2 retry cycles.",
+            requiredInputKey: "task:done-step:input",
+            stepId: "done-step",
+          },
+        }),
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 142 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 143 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "fully_blocked",
+        steps: [
+          {
+            id: "done-step",
+            description: "Already done",
+            shortSummary: "Already done",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        caption?: string;
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
+      // Task-level surface, not goal-level — stepId is preserved.
+      expect(options.caption).toContain(
+        "<b>TASK BLOCKED</b> (test-run): Step done-step needs input",
+      );
+      // Add-Details button is present (task-level keyboard, no resume button).
+      expect(options.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toMatch(/^gAD:/);
+      const buttonTexts =
+        options.reply_markup?.inline_keyboard?.flat().map((button) => button.text) ?? [];
+      expect(buttonTexts).not.toContain("▶️ Resume Goal");
+      // No "update delivery failed" misfire.
+      const allCalls = sendMessage.mock.calls.map((call) => String(call[1] ?? ""));
+      for (const text of allCalls) {
+        expect(text).not.toContain("update delivery failed");
+      }
+      // The blocked message persists task:<stepId>:input so a reply routes back
+      // through the same answer slot the worker retry consumes.
+      const persisted = loadRun("test-run-id-1234", testGoalsDir);
+      expect(persisted?.telegramQuestionMessages?.[0]?.requiredInputKey).toBe(
+        "task:done-step:input",
+      );
+    });
+
+    it("does not emit 'update delivery failed' when no blocker is derivable; only logs", async () => {
+      // No blocked steps and no run-level blocker: render nothing rather than
+      // misreporting a delivery failure.
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "All done, no blocker",
+            shortSummary: "All done",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "done",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: null,
+        }),
+      );
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 160 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 161 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const errors: string[] = [];
+      const runtime = {
+        log: () => undefined,
+        error: (...args: unknown[]) => errors.push(args.map(String).join(" ")),
+        exit: (() => {
+          throw new Error("exit");
+        }) as never,
+      };
+      const { buildOnStatusChange } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "fully_blocked",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            shortSummary: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      const sentTexts = sendMessage.mock.calls.map((call) => String(call[1] ?? ""));
+      for (const text of sentTexts) {
+        expect(text).not.toContain("update delivery failed");
+      }
+      expect(errors.join("\n")).toContain("no blocker derivable");
+    });
+
+    it("sendDeliveryFallback only emits 'update delivery failed' when sendBlockedNotification actually fails", async () => {
+      // Real send/edit failure path: the DAG send throws, the text fallback
+      // also fails, the inner persistTelegramQuestionMessage never runs — only
+      // then does sendDeliveryFallback emit "update delivery failed".
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Final build gate failed.",
+            requiredInputKey: "task:done-step:input",
+            stepId: "done-step",
+          },
+        }),
+      );
+      mockRenderMermaidToPng.mockImplementationOnce(() => {
+        throw new Error("render kaboom");
+      });
+      const sendPhoto = vi.fn().mockRejectedValue(new Error("photo down"));
+      const sendMessage = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("send down"))
+        .mockRejectedValueOnce(new Error("send down"))
+        .mockResolvedValue({ message_id: 999 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "fully_blocked",
+        steps: makeRun().plan?.steps ?? [],
+      });
+
+      // The fallback message that mentions "update delivery failed" is sent
+      // only after the prior send attempts all failed.
+      const deliveryFailureCalls = sendMessage.mock.calls.filter((call) =>
+        String(call[1] ?? "").includes("update delivery failed"),
+      );
+      expect(deliveryFailureCalls.length).toBe(1);
+    });
+
     it.each([
       {
         eventType: "step_blocked",
