@@ -85,6 +85,19 @@ async function mkGitFixture(root: string, name = "fixture-repo") {
   return repo;
 }
 
+async function mkPnpmGitFixture(root: string, name = "fixture-repo") {
+  const repo = await mkGitFixture(root, name);
+  await fs.writeFile(
+    path.join(repo, "package.json"),
+    JSON.stringify({ name, packageManager: "pnpm@10.0.0" }, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(path.join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+  await execFile("git", ["add", "package.json", "pnpm-lock.yaml"], { cwd: repo });
+  await execFile("git", ["commit", "-m", "add pnpm project"], { cwd: repo });
+  return repo;
+}
+
 async function runSetupPreflight(params: { home: string; env?: NodeJS.ProcessEnv }) {
   const child = spawn(
     "/bin/bash",
@@ -122,6 +135,24 @@ async function runSetupPreflight(params: { home: string; env?: NodeJS.ProcessEnv
 async function writeExecutable(filePath: string, content: string) {
   await fs.writeFile(filePath, content, { mode: 0o755 });
   await fs.chmod(filePath, 0o755);
+}
+
+async function writePnpmRecorder(bin: string, params: { logPath: string; failInstall?: boolean }) {
+  await writeExecutable(
+    path.join(bin, "pnpm"),
+    `#!/bin/bash
+printf '%s|%s\\n' "$PWD" "$*" >> ${JSON.stringify(params.logPath)}
+if [[ "$1" == "install" && "$2" == "--frozen-lockfile" && "${params.failInstall ? "1" : "0"}" == "1" ]]; then
+  echo "workspace install stdout"
+  echo "workspace install stderr" >&2
+  exit 41
+fi
+if [[ "$1" == "install" && "$2" == "--frozen-lockfile" ]]; then
+  echo "NOISY_WORKSPACE_INSTALL"
+fi
+exit 0
+`,
+  );
 }
 
 async function startTelegramStub(handler: RouteHandler) {
@@ -516,6 +547,143 @@ ${managedRoot}/private`);
     expect(generated.config.agents.defaults.identity.operatorHonorific).toBe("sir");
     await expect(fs.readdir(path.join(managedRoot, "agent", "workspaces"))).resolves.toEqual([]);
     await expect(fs.readdir(path.join(managedRoot, "private", "env"))).resolves.toEqual([]);
+  });
+
+  it("installs dependencies in a new pnpm first workspace with concise output", async () => {
+    const home = await mkTempHome();
+    const source = await mkPnpmGitFixture(home, "source-repo");
+    const bin = path.join(home, "bin");
+    const pnpmLog = path.join(home, "pnpm.log");
+    await fs.mkdir(bin);
+    await writePnpmRecorder(bin, { logPath: pnpmLog });
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: `2\n${source}\n`,
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    const workspaceRepo = path.join(
+      home,
+      "smithersbot-goals",
+      "agent",
+      "workspaces",
+      "source-repo",
+    );
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(pnpmLog, "utf8")).resolves.toContain(
+      `${workspaceRepo}|install --frozen-lockfile`,
+    );
+    expect(result.output).toContain("Installing workspace dependencies...");
+    expect(result.output).toContain("✓ Workspace dependencies installed");
+    expect(result.output).not.toContain("NOISY_WORKSPACE_INSTALL");
+  });
+
+  it("prints manual workspace dependency guidance when install fails without aborting", async () => {
+    const home = await mkTempHome();
+    const source = await mkPnpmGitFixture(home, "source-repo");
+    const bin = path.join(home, "bin");
+    const pnpmLog = path.join(home, "pnpm.log");
+    await fs.mkdir(bin);
+    await writePnpmRecorder(bin, { logPath: pnpmLog, failInstall: true });
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: `2\n${source}\n`,
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    const workspaceRepo = path.join(
+      home,
+      "smithersbot-goals",
+      "agent",
+      "workspaces",
+      "source-repo",
+    );
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(pnpmLog, "utf8")).resolves.toContain(
+      `${workspaceRepo}|install --frozen-lockfile`,
+    );
+    expect(result.output).toContain("Installing workspace dependencies failed. Last log lines:");
+    expect(result.output).toContain("workspace install stdout");
+    expect(result.output).toContain("workspace install stderr");
+    expect(result.output).toContain("Workspace was created, but dependency installation failed.");
+    expect(result.output).toContain(`cd ${workspaceRepo} && pnpm install --frozen-lockfile`);
+    expect(result.output).toContain("Setup complete");
+  });
+
+  it("does not auto-install dependencies in an existing workspace", async () => {
+    const home = await mkTempHome();
+    const source = await mkPnpmGitFixture(home, "source-repo");
+    const managedRoot = path.join(home, "smithersbot-goals");
+    const workspace = path.join(managedRoot, "agent", "workspaces", "source-repo");
+    const bin = path.join(home, "bin");
+    const pnpmLog = path.join(home, "pnpm.log");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.writeFile(path.join(workspace, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+    await fs.mkdir(bin);
+    await writePnpmRecorder(bin, { logPath: pnpmLog });
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: `2\n${source}\n`,
+      workspaceNameInput: "\n1\n",
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(pnpmLog, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.output).toContain(`✓ Using existing agent workspace:\n${workspace}`);
+    expect(result.output).toContain(`cd ${workspace} && pnpm install --frozen-lockfile`);
+    expect(result.output).not.toContain("Installing workspace dependencies...");
+  });
+
+  it("skips workspace dependency install when no first workspace is created", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    const pnpmLog = path.join(home, "pnpm.log");
+    await fs.mkdir(bin);
+    await writePnpmRecorder(bin, { logPath: pnpmLog });
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.readFile(pnpmLog, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.output).toContain("✓ No first workspace created.");
+    expect(result.output).not.toContain("Installing workspace dependencies...");
+    expect(result.output).not.toContain("Workspace dependencies installed");
   });
 
   it("uses an existing new-layout workspace without overwriting it", async () => {

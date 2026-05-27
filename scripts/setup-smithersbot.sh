@@ -784,6 +784,33 @@ materialize_workspace_repo() {
   info "$workspace_repo"
 }
 
+install_new_workspace_dependencies() {
+  local workspace_repo=$1
+
+  if [[ ! -f "$workspace_repo/pnpm-lock.yaml" ]]; then
+    return 0
+  fi
+
+  info "Installing workspace dependencies..."
+  if (cd "$workspace_repo" && run_captured_command "Installing workspace dependencies" pnpm install --frozen-lockfile); then
+    info "✓ Workspace dependencies installed"
+    return 0
+  fi
+
+  info "Workspace was created, but dependency installation failed."
+  info "Run this in the workspace before starting goals that use build/test gates:"
+  info "cd $workspace_repo && pnpm install --frozen-lockfile"
+}
+
+print_existing_workspace_dependency_hint() {
+  local workspace_repo=$1
+
+  if [[ -f "$workspace_repo/pnpm-lock.yaml" ]]; then
+    info "This workspace has a pnpm lockfile. Dependencies may need to be installed before goals that use build/test gates:"
+    info "cd $workspace_repo && pnpm install --frozen-lockfile"
+  fi
+}
+
 create_private_workspace_env() {
   local managed_root=$1
   local workspace_name=$2
@@ -1076,6 +1103,7 @@ else
   workspace_status=${workspace_rest#*|}
   if [[ "$workspace_status" == "new" ]]; then
     materialize_workspace_repo "$repo_source_kind" "$repo_source_value" "$workspace_repo"
+    install_new_workspace_dependencies "$workspace_repo"
   else
     if [[ "$workspace_status" == "legacy" ]]; then
       info "✓ Using existing legacy workspace:"
@@ -1083,6 +1111,7 @@ else
       info "✓ Using existing agent workspace:"
     fi
     info "$workspace_repo"
+    print_existing_workspace_dependency_hint "$workspace_repo"
   fi
   create_private_workspace_env "$managed_root" "$workspace_name"
   print_workspace_private_pointers "$managed_root" "$workspace_name" "$workspace_repo"
