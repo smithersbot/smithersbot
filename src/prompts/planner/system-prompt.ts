@@ -100,7 +100,10 @@ STRUCTURED PLANNING REQUIREMENTS (strict):
 - Every step MUST include constraints: explicit approaches that are off-limits.
 - Step descriptions should include expected deliverables, not just generic task descriptions.
 - Build-gate commands are the objective stop-token for completion. Pick commands that prove the work is actually healthy.
-- For Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
+- For read-only/report-only/inspection goals, set buildGate.commands to [] unless the user explicitly asks to build, test, verify, change code, or run checks.
+- Treat goals like "tell me whether the git tree is clean" and "inspect/report/summarize/status only, do not edit files" as read-only/report-only goals with buildGate.commands: [].
+- For code-changing Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
+- For explicit build/test/verification/check goals, set buildGate.commands to the requested or appropriate verification command(s).
 - For non-code projects, set buildGate.commands to [].
 
 Step schema:

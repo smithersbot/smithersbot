@@ -23,6 +23,18 @@ function mockClient(response: string): GoalLlmClient {
 
 const TEST_CWD = "/tmp/moltbot-planner-cwd";
 
+function parsePromptContractPlan(goal: string, plan: Record<string, unknown>) {
+  const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+  expect(prompt).toContain("STRUCTURED PLANNING REQUIREMENTS");
+  expect(prompt).toContain("buildGate.commands");
+  const result = parsePlanResultFromText(JSON.stringify(plan), goal);
+  expect("blocked" in result).toBe(false);
+  if ("blocked" in result) {
+    throw new Error("Expected plan result, got blocked response");
+  }
+  return { prompt, result };
+}
+
 describe("planner", () => {
   describe("buildPlanSystemPrompt", () => {
     it("omits claude_code instructions for Codex-only planning", () => {
@@ -59,6 +71,126 @@ describe("planner", () => {
       expect(() => buildPlanSystemPrompt([])).toThrow(
         "No worker backend available. Install Codex or Claude Code and rerun.",
       );
+    });
+  });
+
+  describe("read-only/report-only build gate prompt contract", () => {
+    it("plans read-only git status queries with an empty build gate", () => {
+      const goal = "tell me whether the git tree is clean";
+      const { prompt, result } = parsePromptContractPlan(goal, {
+        workingDir: TEST_CWD,
+        summary: "Inspect the git working tree and report whether it is clean.",
+        shortSummary: "Report git tree cleanliness",
+        buildGate: {
+          commands: [],
+          runBetweenSteps: false,
+        },
+        steps: [
+          {
+            id: "inspect-git-status",
+            description: "Inspect git status and report whether the working tree is clean.",
+            shortSummary: "Inspect git status",
+            dependsOn: [],
+            successCriteria: "The response states whether the git tree is clean.",
+            constraints: ["Do not edit files."],
+            durationMinutes: 5,
+            backend: "claude_code",
+          },
+        ],
+      });
+
+      expect(prompt).toContain("tell me whether the git tree is clean");
+      expect(prompt).toContain("read-only/report-only goals with buildGate.commands: []");
+      expect(result.buildGate?.commands).toEqual([]);
+    });
+
+    it("plans passive inspect/summarize goals with an empty build gate", () => {
+      const goal = "inspect and summarize the goal system only, do not edit files";
+      const { prompt, result } = parsePromptContractPlan(goal, {
+        workingDir: TEST_CWD,
+        summary: "Inspect the goal system and summarize the relevant behavior without changes.",
+        shortSummary: "Summarize goal system",
+        buildGate: {
+          commands: [],
+          runBetweenSteps: false,
+        },
+        steps: [
+          {
+            id: "summarize-goal-system",
+            description: "Read the goal-system files and summarize the current behavior.",
+            shortSummary: "Summarize behavior",
+            dependsOn: [],
+            successCriteria:
+              "The final answer summarizes the requested behavior without file edits.",
+            constraints: ["Do not edit files.", "Do not run build or test gates."],
+            durationMinutes: 10,
+            backend: "claude_code",
+          },
+        ],
+      });
+
+      expect(prompt).toContain("inspect/report/summarize/status only, do not edit files");
+      expect(prompt).toContain("unless the user explicitly asks to build, test, verify");
+      expect(result.buildGate?.commands).toEqual([]);
+    });
+
+    it("keeps pnpm build for code-changing Node goals", () => {
+      const goal = "fix the Node.js build error in the goal executor";
+      const { prompt, result } = parsePromptContractPlan(goal, {
+        workingDir: TEST_CWD,
+        summary: "Fix the Node.js build error and verify the project still builds.",
+        shortSummary: "Fix Node build error",
+        buildGate: {
+          commands: ["pnpm build"],
+          runBetweenSteps: true,
+        },
+        steps: [
+          {
+            id: "fix-node-build",
+            description:
+              "Update TypeScript source to fix the build error and add focused coverage.",
+            shortSummary: "Fix build error",
+            dependsOn: [],
+            successCriteria:
+              "pnpm vitest run src/goal/agent-executor.test.ts and pnpm build exit 0.",
+            constraints: ["Do not remove tests to make the build pass."],
+            durationMinutes: 20,
+            backend: "codex",
+          },
+        ],
+      });
+
+      expect(prompt).toContain("code-changing Node.js projects");
+      expect(prompt).toContain('set buildGate.commands to ["pnpm build"]');
+      expect(result.buildGate?.commands).toContain("pnpm build");
+    });
+
+    it("keeps non-empty build gates for explicit verification goals", () => {
+      const goal = "verify the planner tests pass";
+      const { prompt, result } = parsePromptContractPlan(goal, {
+        workingDir: TEST_CWD,
+        summary: "Run the requested planner verification command and report the result.",
+        shortSummary: "Verify planner tests",
+        buildGate: {
+          commands: ["pnpm vitest run src/goal/planner.test.ts"],
+          runBetweenSteps: false,
+        },
+        steps: [
+          {
+            id: "run-planner-tests",
+            description: "Run the requested planner test command and summarize the result.",
+            shortSummary: "Run planner tests",
+            dependsOn: [],
+            successCriteria: "pnpm vitest run src/goal/planner.test.ts exits 0.",
+            constraints: ["Do not edit files unless the verification failure requires a fix."],
+            durationMinutes: 10,
+            backend: "claude_code",
+          },
+        ],
+      });
+
+      expect(prompt).toContain("explicit build/test/verification/check goals");
+      expect(result.buildGate?.commands.length).toBeGreaterThan(0);
     });
   });
 
