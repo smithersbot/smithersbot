@@ -655,23 +655,103 @@ function writeCanonicalPlanArtifact(scoutDir: string, plan: Plan): void {
   }
 }
 
-function parsePlanWithFallback(goalText: string, scoutDir: string, stdout: string): PlanResult {
+function parsePlanWithFallbackWithSource(
+  goalText: string,
+  scoutDir: string,
+  stdout: string,
+): { plan: PlanResult; source: "file" | "stdout" } {
   const planPath = path.join(scoutDir, EXECUTION_PLAN_FILE);
   const fileText = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "";
 
   if (fileText.trim().length > 0) {
     try {
-      return parsePlanResultFromText(fileText, goalText);
+      return { plan: parsePlanResultFromText(fileText, goalText), source: "file" };
     } catch (err) {
       // Some runs may write a valid JSON plan only to stdout.
       if (stdout.trim().length > 0) {
-        return parsePlanResultFromText(stdout, goalText);
+        return { plan: parsePlanResultFromText(stdout, goalText), source: "stdout" };
       }
       throw err;
     }
   }
 
-  return parsePlanResultFromText(stdout, goalText);
+  return { plan: parsePlanResultFromText(stdout, goalText), source: "stdout" };
+}
+
+function listDirectoryForDiagnostics(dir: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`)
+      .sort();
+  } catch (error) {
+    return [`<unable to list: ${error instanceof Error ? error.message : String(error)}>`];
+  }
+}
+
+function fileInfoForDiagnostics(filePath: string): { exists: boolean; size?: number } {
+  try {
+    const stat = fs.statSync(filePath);
+    return { exists: true, size: stat.size };
+  } catch {
+    return { exists: false };
+  }
+}
+
+function readTextPreviewForDiagnostics(filePath: string, maxChars = 1000): string {
+  try {
+    if (!fs.existsSync(filePath)) return "";
+    return tailText(fs.readFileSync(filePath, "utf8"), maxChars);
+  } catch (error) {
+    return `<unable to read: ${error instanceof Error ? error.message : String(error)}>`;
+  }
+}
+
+function buildScoutDiagnostic(scoutDir: string): {
+  scoutDir: string;
+  directoryListing: string[];
+  executionPlan: { exists: boolean; size?: number };
+  planningStdout: { exists: boolean; size?: number; preview: string };
+} {
+  const absoluteScoutDir = path.resolve(scoutDir);
+  const stdoutPath = path.join(scoutDir, PLANNER_STDOUT_FILE);
+  return {
+    scoutDir: absoluteScoutDir,
+    directoryListing: listDirectoryForDiagnostics(scoutDir),
+    executionPlan: fileInfoForDiagnostics(path.join(scoutDir, EXECUTION_PLAN_FILE)),
+    planningStdout: {
+      ...fileInfoForDiagnostics(stdoutPath),
+      preview: readTextPreviewForDiagnostics(stdoutPath),
+    },
+  };
+}
+
+function formatInvalidScoutDiagnostic(params: {
+  scoutDir: string;
+  validationError: string;
+}): string {
+  const diagnostic = buildScoutDiagnostic(params.scoutDir);
+  const executionPlanSize =
+    diagnostic.executionPlan.size === undefined ? "n/a" : `${diagnostic.executionPlan.size} bytes`;
+  const planningStdoutSize =
+    diagnostic.planningStdout.size === undefined
+      ? "n/a"
+      : `${diagnostic.planningStdout.size} bytes`;
+  return [
+    `Planning scout artifacts invalid: ${params.validationError}`,
+    `scoutDir: ${diagnostic.scoutDir}`,
+    `directory listing: ${diagnostic.directoryListing.join(", ") || "<empty>"}`,
+    `execution_plan.json: exists=${diagnostic.executionPlan.exists} size=${executionPlanSize}`,
+    `planning_stdout.txt: exists=${diagnostic.planningStdout.exists} size=${planningStdoutSize}`,
+    `planning_stdout.txt preview: ${diagnostic.planningStdout.preview || "<empty>"}`,
+    `scout validation error: ${params.validationError}`,
+  ].join("\n");
+}
+
+function scoutArtifactAdvisoryEventName(validationError: string): string {
+  return /\bnot found\b|\bdirectory not found\b|\bcontains no\b/i.test(validationError)
+    ? "scout_artifacts_missing"
+    : "scout_artifacts_invalid";
 }
 
 function buildPlanRevisionPrompt(params: {
@@ -1367,72 +1447,147 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   let scoutData: Extract<ScoutResult, { status: "success" }> | undefined;
   let scoutStatus: CliPlanningResult["scoutStatus"] = "skipped";
   let scoutSkipReason: string | undefined;
+  let parsedPlan: PlanResult | undefined;
+  let parsedPlanSource: "file" | "stdout" | undefined;
+  let planParseError: unknown;
+
+  try {
+    const parsed = parsePlanWithFallbackWithSource(goalText, scoutDir, procResult.stdout);
+    parsedPlan = parsed.plan;
+    parsedPlanSource = parsed.source;
+  } catch (err) {
+    planParseError = err;
+  }
+  const hasUsableExecutionPlan = parsedPlan !== undefined && !("blocked" in parsedPlan);
 
   if (cachedScoutData) {
+    // Cached replans intentionally reuse scout data only after an earlier strict
+    // validation pass succeeded; first-time scout artifacts below are advisory
+    // when a usable execution plan has already been parsed.
     scoutData = cachedScoutData;
     scoutStatus = "success";
   } else if (includeScoutArtifacts) {
     const scoutResult = validateScoutOutput(scoutDir);
 
     if (scoutResult.status === "error") {
-      writeAttemptBundle(scoutDir, {
-        attemptNumber: finalAttemptNumber,
-        backend: plannerBackendUsed ?? defaultPlannerBackend,
-        outcome: "failed",
-        errorClassification: scoutResult.errorKind,
-        resultFile: SCOUT_REPORT_FILE,
-        logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-        durationMs: procResult.durationMs,
-        tokenUsage: parseBackendUsage(procResult.stdout),
-      });
-      appendPlannerHistoryBestEffort({
-        workingDir: plannerCwd,
-        runId,
-        phase: "planner",
-        backend: plannerBackendUsed ?? defaultPlannerBackend,
-        event: "failure",
-        status: "invalid_scout_artifacts",
-        attemptNumber: finalAttemptNumber,
-        tokenUsage: parseBackendUsage(procResult.stdout),
-        errorClass: scoutResult.errorKind,
-        outputSummary: scoutResult.error,
-        artifactPaths: [SCOUT_REPORT_FILE],
-      });
-      throw new Error(`Planning scout artifacts invalid: ${scoutResult.error}`);
-    }
-
-    if (scoutResult.status === "needs_clarification") {
-      writeAttemptBundle(scoutDir, {
-        attemptNumber: finalAttemptNumber,
-        backend: plannerBackendUsed ?? defaultPlannerBackend,
-        outcome: "blocked",
-        errorClassification: "needs_clarification",
-        resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
-        logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-        durationMs: procResult.durationMs,
-        tokenUsage: parseBackendUsage(procResult.stdout),
-      });
-      appendPlannerHistoryBestEffort({
-        workingDir: plannerCwd,
-        runId,
-        phase: "planner",
-        backend: plannerBackendUsed ?? defaultPlannerBackend,
-        event: "result",
-        status: "needs_clarification",
-        attemptNumber: finalAttemptNumber,
-        tokenUsage: parseBackendUsage(procResult.stdout),
-        outputSummary: tailText(scoutResult.question, LOG_EXCERPT_CHARS),
-        artifactPaths: [SCOUT_NEEDS_CLARIFICATION_FILE],
-      });
-      return {
-        status: "blocked",
-        question: scoutResult.question,
-        scoutStatus: "needs_clarification",
-        ...degradedMetadata,
-      };
-    }
-
-    if (scoutResult.status === "skipped") {
+      if (hasUsableExecutionPlan) {
+        const diagnostic = buildScoutDiagnostic(scoutDir);
+        appendPlannerHistoryBestEffort({
+          workingDir: plannerCwd,
+          runId,
+          phase: "planner",
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          event: scoutArtifactAdvisoryEventName(scoutResult.error),
+          status: "warning",
+          attemptNumber: finalAttemptNumber,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+          errorClass: scoutResult.errorKind,
+          outputSummary: scoutResult.error,
+          artifactPaths: [
+            path.join(scoutDir, PLANNER_STDOUT_FILE),
+            path.join(scoutDir, EXECUTION_PLAN_FILE),
+          ],
+          extra: {
+            validationReason: scoutResult.error,
+            validationError: scoutResult.error,
+            scoutDir: diagnostic.scoutDir,
+            directoryListing: diagnostic.directoryListing,
+            executionPlan: diagnostic.executionPlan,
+            planningStdout: diagnostic.planningStdout,
+            planSource: parsedPlanSource,
+          },
+        });
+        scoutStatus = "skipped";
+        scoutSkipReason = `invalid scout artifacts: ${scoutResult.error}`;
+      } else {
+        writeAttemptBundle(scoutDir, {
+          attemptNumber: finalAttemptNumber,
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          outcome: "failed",
+          errorClassification: scoutResult.errorKind,
+          resultFile: SCOUT_REPORT_FILE,
+          logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+          durationMs: procResult.durationMs,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+        });
+        appendPlannerHistoryBestEffort({
+          workingDir: plannerCwd,
+          runId,
+          phase: "planner",
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          event: "failure",
+          status: "invalid_scout_artifacts",
+          attemptNumber: finalAttemptNumber,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+          errorClass: scoutResult.errorKind,
+          outputSummary: scoutResult.error,
+          artifactPaths: [SCOUT_REPORT_FILE],
+          extra: {
+            ...buildScoutDiagnostic(scoutDir),
+            parseError:
+              planParseError instanceof Error ? planParseError.message : String(planParseError),
+          },
+        });
+        throw new Error(
+          formatInvalidScoutDiagnostic({
+            scoutDir,
+            validationError: scoutResult.error,
+          }),
+        );
+      }
+    } else if (scoutResult.status === "needs_clarification") {
+      if (hasUsableExecutionPlan) {
+        appendPlannerHistoryBestEffort({
+          workingDir: plannerCwd,
+          runId,
+          phase: "planner",
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          event: "scout_artifacts_invalid",
+          status: "warning",
+          attemptNumber: finalAttemptNumber,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+          errorClass: "needs_clarification",
+          outputSummary: tailText(scoutResult.question, LOG_EXCERPT_CHARS),
+          artifactPaths: [SCOUT_NEEDS_CLARIFICATION_FILE],
+          extra: {
+            ...buildScoutDiagnostic(scoutDir),
+            validationReason: "scout requested clarification after a usable plan was parsed",
+            planSource: parsedPlanSource,
+          },
+        });
+        scoutStatus = "skipped";
+        scoutSkipReason = "scout requested clarification after a usable plan was parsed";
+      } else {
+        writeAttemptBundle(scoutDir, {
+          attemptNumber: finalAttemptNumber,
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          outcome: "blocked",
+          errorClassification: "needs_clarification",
+          resultFile: SCOUT_NEEDS_CLARIFICATION_FILE,
+          logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
+          durationMs: procResult.durationMs,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+        });
+        appendPlannerHistoryBestEffort({
+          workingDir: plannerCwd,
+          runId,
+          phase: "planner",
+          backend: plannerBackendUsed ?? defaultPlannerBackend,
+          event: "result",
+          status: "needs_clarification",
+          attemptNumber: finalAttemptNumber,
+          tokenUsage: parseBackendUsage(procResult.stdout),
+          outputSummary: tailText(scoutResult.question, LOG_EXCERPT_CHARS),
+          artifactPaths: [SCOUT_NEEDS_CLARIFICATION_FILE],
+        });
+        return {
+          status: "blocked",
+          question: scoutResult.question,
+          scoutStatus: "needs_clarification",
+          ...degradedMetadata,
+        };
+      }
+    } else if (scoutResult.status === "skipped") {
       scoutStatus = "skipped";
       scoutSkipReason = scoutResult.reason;
     } else {
@@ -1444,10 +1599,8 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     scoutSkipReason = "--no-scout flag";
   }
 
-  let parsedPlan: PlanResult;
-  try {
-    parsedPlan = parsePlanWithFallback(goalText, scoutDir, procResult.stdout);
-  } catch (err) {
+  if (!parsedPlan) {
+    const err = planParseError ?? new Error("Planning did not produce a usable execution plan.");
     writeAttemptBundle(scoutDir, {
       attemptNumber: finalAttemptNumber,
       backend: plannerBackendUsed ?? defaultPlannerBackend,

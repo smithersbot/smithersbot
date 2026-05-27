@@ -13,6 +13,7 @@ import {
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import * as runtimeMirror from "./runtime-mirror.js";
+import { validateScoutOutput } from "./scout.js";
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
@@ -490,6 +491,136 @@ describe("runCliPlanning", () => {
     expect(procCall.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
+  it("accepts a stdout-only execution plan when first-time scout artifacts are missing", async () => {
+    const stdoutPlan = JSON.stringify({
+      summary: "Stdout-only plan",
+      workingDir: "/tmp/test-wd",
+      steps: [
+        {
+          id: "inspect-repo",
+          description: "Inspect repository state and report findings",
+          dependsOn: [],
+          durationMinutes: 10,
+          backend: "codex",
+        },
+      ],
+    });
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      fs.writeFileSync(String(params.stdoutPath), stdoutPlan, "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      return {
+        stdout: stdoutPlan,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 42,
+      };
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-stdout-only-missing-scout",
+      goalText: "Tell me whether the git tree is clean",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.scoutStatus).toBe("skipped");
+    expect(result.scoutSkipReason).toContain("plan_draft.md not found");
+    if (result.status === "success") {
+      expect(result.plan.summary).toBe("Stdout-only plan");
+    }
+  });
+
+  it("records an advisory diagnostic when stdout plan parsing succeeds but scout artifacts are missing", async () => {
+    const stdoutPlan = JSON.stringify({
+      summary: "Advisory diagnostic plan",
+      workingDir: "/tmp/test-wd",
+      steps: [
+        {
+          id: "inspect-repo",
+          description: "Inspect repository state and report findings",
+          dependsOn: [],
+          durationMinutes: 10,
+          backend: "codex",
+        },
+      ],
+    });
+
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      fs.writeFileSync(String(params.stdoutPath), stdoutPlan, "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      return {
+        stdout: stdoutPlan,
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 42,
+      };
+    });
+
+    await runCliPlanning({
+      runId: "run-stdout-only-advisory",
+      goalText: "Tell me whether the git tree is clean",
+      goalsDir,
+    });
+
+    const events = readPlannerHistoryEvents("run-stdout-only-advisory");
+    const advisory = events.find((event) => event.event === "scout_artifacts_missing");
+    expect(advisory).toMatchObject({
+      phase: "planner",
+      status: "warning",
+      validationReason: "plan_draft.md not found",
+      planSource: "stdout",
+      executionPlan: { exists: false },
+      planningStdout: expect.objectContaining({
+        exists: true,
+        preview: expect.stringContaining("Advisory diagnostic plan"),
+      }),
+    });
+    expect(advisory?.scoutDir).toBe(
+      path.resolve(path.join(goalsDir, "run-stdout-only-advisory", "scout")),
+    );
+    expect(advisory?.directoryListing).toContain("node_specs/");
+  });
+
+  it("throws a rich scout diagnostic when plan parsing and first-time scout validation both fail", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      fs.writeFileSync(String(params.stdoutPath), "not a valid plan", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      return {
+        stdout: "not a valid plan",
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 42,
+      };
+    });
+
+    await expect(
+      runCliPlanning({
+        runId: "run-invalid-plan-missing-scout",
+        goalText: "Create a tiny test artifact",
+        goalsDir,
+      }),
+    ).rejects.toThrow(
+      new RegExp(
+        [
+          "Planning scout artifacts invalid: plan_draft\\.md not found",
+          "scoutDir: .*run-invalid-plan-missing-scout.*scout",
+          "directory listing: .*node_specs/",
+          "execution_plan\\.json: exists=false",
+          "planning_stdout\\.txt: exists=true",
+          "planning_stdout\\.txt preview: not a valid plan",
+          "scout validation error: plan_draft\\.md not found",
+        ].join("[\\s\\S]*"),
+      ),
+    );
+  });
+
   it("replans with compact cached scout context without rerunning the scout template", async () => {
     const runId = "run-cached-scout-replan";
     const scoutDir = path.join(goalsDir, runId, "scout");
@@ -557,6 +688,24 @@ describe("runCliPlanning", () => {
     expect(planningCall.stdin).not.toContain("## Conceptual Planning Phases");
     expect(planningCall.stdin).not.toContain("### Scout Phase");
     expect(planningCall.stdin).not.toContain("BEGIN_SCOUT_PROMPT");
+  });
+
+  it("keeps cached-scout replan inputs tied to strict full scout artifacts", () => {
+    const runId = "run-cached-scout-strict";
+    const scoutDir = path.join(goalsDir, runId, "scout");
+    fs.mkdirSync(path.join(scoutDir, "node_specs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(scoutDir, "scout_report.json"),
+      JSON.stringify({ goal_id: runId, nodes: [], edges: [] }),
+      "utf8",
+    );
+
+    // Cached replans are fed by previously validated ScoutResult data; unlike
+    // first-time planning above, missing scout ceremony files remain strict here.
+    expect(validateScoutOutput(scoutDir)).toMatchObject({
+      status: "error",
+      error: "plan_draft.md not found",
+    });
   });
 
   it("keeps planning successful and writes a warning event when runtime mirroring fails", async () => {
