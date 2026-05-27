@@ -1099,7 +1099,7 @@ export async function runCliPlanRevision(
       status: "parse_failed",
       tokenUsage: parseBackendUsage(procResult.stdout),
       errorClass: err instanceof PlanParseError ? "parse" : "validation",
-      outputSummary: err instanceof Error ? err.message : String(err),
+      outputSummary: err instanceof Error ? err.message : "Unknown planning error",
       artifactPaths: [path.join(revisionDir, PLAN_REVISION_RAW_OUTPUT_FILE)],
       extra: { revisionRound },
     });
@@ -1623,7 +1623,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       attemptNumber: finalAttemptNumber,
       tokenUsage: parseBackendUsage(procResult.stdout),
       errorClass: err instanceof PlanParseError ? "parse" : "validation",
-      outputSummary: err instanceof Error ? err.message : String(err),
+      outputSummary: err instanceof Error ? err.message : "Unknown planning error",
       artifactPaths: [
         fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
           ? EXECUTION_PLAN_FILE

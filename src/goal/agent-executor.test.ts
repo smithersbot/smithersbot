@@ -2086,11 +2086,109 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     ]);
   });
 
-  it("blocks on final build gate failure without mutating done step status", async () => {
+  it("retries final build gate failure against the last completed step", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: false };
     const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-final-gate" } };
+
+    const contexts: TaskRunnerContext[] = [];
+    mockCliExecute.mockImplementation(async (context) => {
+      contexts.push(context);
+      return {
+        status: "complete",
+        summary: contexts.length === 1 ? "Initial complete" : "Final gate fix complete",
+        turnsUsed: 1,
+      };
+    });
+    mockSpawnSync
+      .mockReturnValueOnce({
+        status: 1,
+        signal: null,
+        stdout: "",
+        stderr: "Final gate failure",
+      })
+      .mockReturnValueOnce({
+        status: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-final-build-gate",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(mockCliExecute).toHaveBeenCalledTimes(2);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      "git",
+      ["-C", "/tmp/moltbot-goal-test", "reset", "--hard", "base-sha-final-gate"],
+      expect.any(Object),
+    );
+    const retryBundle = contexts[1]?.attemptBundles?.find((bundle) => bundle.buildGateFailure);
+    expect(retryBundle?.buildGateFailure?.failedCommand).toBe("pnpm build");
+    expect(retryBundle?.buildGateFailure?.output).toContain(
+      "The build gate (pnpm build) failed after you reported complete.",
+    );
+    expect(retryBundle?.buildGateFailure?.output).toContain("Final gate failure");
+    expect(session.lastError).toBeUndefined();
+    expect(session.buildGateResults?.__final__?.passed).toBe(true);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks the target step after final build gate retry cycles are exhausted", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: false };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-final-limit" } };
+
+    mockCliExecute.mockResolvedValue({
+      status: "complete",
+      summary: "Reported complete",
+      turnsUsed: 1,
+    });
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "TS2307 final failure",
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-final-build-gate-limit",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.requiredInputKey).toBe("task:1:input");
+    expect(session.blocked?.requiredInputKey).toBe("task:1:input");
+    expect(session.blocked?.stepId).toBe("1");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("task_failed");
+    expect(step.blockedQuestion).toContain("Final build gate failed after 2 retry cycles.");
+    expect(step.blockedQuestion).toContain("TS2307 final failure");
+    expect(mockCliExecute).toHaveBeenCalledTimes(3);
+    expect(getGitResetCalls()).toHaveLength(2);
+    expect(session.buildGateResults?.__final__?.passed).toBe(false);
+  });
+
+  it("surfaces checkpoint reset errors from final build gate retry as a target-step blocker", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = { commands: ["pnpm build"], runBetweenSteps: false };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "1": { baseSha: "base-sha-reset-fails" } };
 
     mockCliExecute.mockResolvedValueOnce({
       status: "complete",
@@ -2103,23 +2201,65 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       stdout: "",
       stderr: "Final gate failure",
     });
+    mockExecFileSync.mockImplementationOnce(() => {
+      const err = new Error("reset failed") as Error & { stderr: string };
+      err.stderr = "fatal: bad revision base-sha-reset-fails";
+      throw err;
+    });
 
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
-      runId: "run-final-build-gate",
+      runId: "run-final-build-gate-reset-fails",
       workingDir: "/tmp/moltbot-goal-test",
       config: { goal: { semgrep: "off" } },
     });
 
     expect(outcome.status).toBe("blocked");
-    expect(step.status).toBe("done");
-    expect(step.blockedReason).toBeUndefined();
-    expect(step.blockedQuestion).toBeUndefined();
-    expect(outcome.question).toContain("Final build gate failed.");
-    expect(session.lastError).toContain("Final build gate failed on pnpm build.");
-    expect(session.buildGateResults?.__final__?.passed).toBe(false);
-    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    expect(outcome.requiredInputKey).toBe("task:1:input");
+    expect(session.blocked?.stepId).toBe("1");
+    expect(outcome.question).toContain("Final build gate reset failed");
+    expect(outcome.question).toContain("fatal: bad revision base-sha-reset-fails");
+    expect(step.status).toBe("blocked");
+  });
+
+  it("resumes a final build gate escalation with the answer and failure context", async () => {
+    const step = makeStep({
+      backend: "codex",
+      status: "blocked",
+      blockedReason: "task_failed",
+      blockedQuestion:
+        "Final build gate failed after 2 retry cycles.\nThe build gate (pnpm build) failed after you reported complete.\nFix TS2307.",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.answers["task:1:input"] = "Regenerate the missing client first.";
+
+    let capturedContext: TaskRunnerContext | undefined;
+    mockCliExecute.mockImplementationOnce(async (context) => {
+      capturedContext = context;
+      return {
+        status: "complete",
+        summary: "Fixed after answer",
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-final-build-gate-answer",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(capturedContext?.resumeAnswer).toBe("Regenerate the missing client first.");
+    expect(capturedContext?.resumeQuestion).toContain(
+      "Final build gate failed after 2 retry cycles.",
+    );
+    expect(capturedContext?.resumeQuestion).toContain("Fix TS2307.");
+    expect(session.answers["task:1:input"]).toBeUndefined();
   });
 
   it("does not spawn the LLM post-execution review after a completed goal", async () => {

@@ -80,6 +80,7 @@ import type {
   GoalSession,
   ManualTestSuggestion,
   PlanStep,
+  BlockedDetail,
   RetryConfig,
   SerializedRun,
   TaskExecutionResult,
@@ -386,7 +387,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   let stopAllTasks = false;
   let globalBlock: { kind: PlanStep["blockedReason"]; message: string } | null = null;
   let globalBlockApplied = false;
-  let finalBuildGateFailurePrompt: string | null = null;
+  let finalBuildGateBlockedDetail: BlockedDetail | null = null;
 
   const availability = detectBackendAvailability();
   const backendOverride = params.serializedRun?.backendOverride;
@@ -993,10 +994,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
   }
   if (allDone && finalGateCommands.length > 0) {
+    const finalGateSignature = finalGateCommands.join("\n");
     const finalGateResult = runBuildGateCommands(finalGateCommands, workingDir);
     const timestamp = new Date().toISOString();
     if (finalGateResult.passed) {
       session.buildGateResults["__final__"] = { passed: true, timestamp };
+      buildGateFixCounts.delete("__final__");
+      persistBuildGateFixState();
     } else {
       session.buildGateResults["__final__"] = {
         passed: false,
@@ -1008,12 +1012,129 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         finalGateResult.failedCommand,
         finalGateResult.output,
       );
-      finalBuildGateFailurePrompt = `Final build gate failed.\n${detail}`;
       session.lastError = `Final build gate failed on ${finalGateResult.failedCommand}.`;
+
+      const targetStep =
+        orderedSteps.find((step) => step.id === lastExecutedId) ??
+        orderedSteps
+          .slice()
+          .reverse()
+          .find((step) => step.status === "done");
+
+      if (!targetStep) {
+        finalBuildGateBlockedDetail = {
+          blockedAt: "execution",
+          prompt: `Final build gate failed, but no completed step could be selected for retry.\n${detail}`,
+          requiredInputKey: "resume_execution",
+        };
+      } else {
+        const targetWorkerDir = resolveWorkerDir(runId, targetStep.id);
+        const previousGateSignature = buildGateFixSignatures.get("__final__");
+        if (previousGateSignature && previousGateSignature !== finalGateSignature) {
+          buildGateFixCounts.delete("__final__");
+        }
+        buildGateFixSignatures.set("__final__", finalGateSignature);
+        const fixCount = (buildGateFixCounts.get("__final__") ?? 0) + 1;
+        buildGateFixCounts.set("__final__", fixCount);
+        persistBuildGateFixState();
+
+        if (fixCount > DEFAULT_MAX_BUILD_GATE_FIX_CYCLES) {
+          const question = `Final build gate failed after ${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES} retry cycles.\n${detail}`;
+          targetStep.status = "blocked";
+          targetStep.blockedReason = "task_failed";
+          targetStep.blockedQuestion = question;
+          targetStep.failedDetail = {
+            whatTried: detail,
+            errorType: "build_gate_failed",
+            suggestedNext:
+              "Review the build-gate output and provide guidance for the next attempt.",
+            needsRevert: false,
+          };
+          finalBuildGateBlockedDetail = {
+            blockedAt: "execution",
+            prompt: question,
+            requiredInputKey: `task:${targetStep.id}:input`,
+            stepId: targetStep.id,
+          };
+          appendGoalWorkingEntry(
+            runId,
+            targetStep.id,
+            "build-gate",
+            `Final build gate failed after ${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES} retry cycles on ${finalGateResult.failedCommand}.`,
+          );
+        } else {
+          const checkpointSha = session.taskCheckpoints?.[targetStep.id]?.baseSha;
+          const reset = checkpointSha
+            ? resetToTaskBaseSha(workingDir, checkpointSha)
+            : ({ success: true } as const);
+          if (!reset.success) {
+            const question = `Final build gate reset failed: ${reset.error}\n${detail}`;
+            targetStep.status = "blocked";
+            targetStep.blockedReason = "task_failed";
+            targetStep.blockedQuestion = question;
+            targetStep.failedDetail = {
+              whatTried: detail,
+              errorType: "build_gate_reset_failed",
+              suggestedNext: "Fix git checkpoint state and retry the task.",
+              needsRevert: false,
+            };
+            finalBuildGateBlockedDetail = {
+              blockedAt: "execution",
+              prompt: question,
+              requiredInputKey: `task:${targetStep.id}:input`,
+              stepId: targetStep.id,
+            };
+          } else {
+            const attemptNumber =
+              (loadAttemptBundles(targetWorkerDir).at(-1)?.attemptNumber ?? 0) + 1;
+            const syntheticBundle: AttemptBundle = {
+              attemptNumber,
+              backend: targetStep.executedBackend ?? targetStep.backend ?? defaultBackend,
+              outcome: "failed",
+              errorClassification: "build_gate_failure",
+              durationMs: 0,
+              buildGateFailure: {
+                failedCommand: finalGateResult.failedCommand,
+                output: detail,
+              },
+              logExcerpt: truncateForPrompt(detail),
+            };
+            writeAttemptBundle(targetWorkerDir, syntheticBundle);
+            appendRetryContext(
+              runId,
+              targetStep.id,
+              formatAttemptBundleSummary(syntheticBundle),
+              syntheticBundle.attemptNumber,
+            );
+            appendGoalWorkingEntry(
+              runId,
+              targetStep.id,
+              "build-gate",
+              `Final build gate failed (${fixCount}/${DEFAULT_MAX_BUILD_GATE_FIX_CYCLES}) on ${finalGateResult.failedCommand}. ${
+                checkpointSha ? "Retrying after reset." : "Retrying target step."
+              }`,
+            );
+            targetStep.status = "pending";
+            targetStep.blockedReason = undefined;
+            targetStep.blockedQuestion = undefined;
+            targetStep.failedDetail = undefined;
+            targetStep.taskSummary = undefined;
+            lastExecutedId = targetStep.id;
+            return executeGoalWithAgent({
+              ...params,
+              serializedRun: {
+                ...params.serializedRun,
+                buildGateFixCounts: session.buildGateFixCounts,
+                buildGateFixSignatures: session.buildGateFixSignatures,
+              } as SerializedRun,
+            });
+          }
+        }
+      }
     }
   }
 
-  if (allDone && !finalBuildGateFailurePrompt) {
+  if (allDone && !finalBuildGateBlockedDetail) {
     session.state = "done";
     // A completed run must carry no blocker. Clear any stale blocker/lastError
     // left over from an interruption earlier in this run so /goal_status and the
@@ -1187,13 +1308,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   }
 
   const aggregated =
-    (finalBuildGateFailurePrompt
-      ? ({
-          blockedAt: "execution",
-          prompt: finalBuildGateFailurePrompt,
-          requiredInputKey: "none",
-        } as const)
-      : aggregateBlockedDetails(orderedSteps)) ??
+    finalBuildGateBlockedDetail ??
+    aggregateBlockedDetails(orderedSteps) ??
     (() => {
       const nonDoneStepIds = orderedSteps
         .filter((step) => step.status !== "done")

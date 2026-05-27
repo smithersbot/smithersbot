@@ -546,6 +546,75 @@ describe("goal-resume command", () => {
     fs.rmSync(workDir, { recursive: true, force: true });
   });
 
+  it("routes final build gate escalation answers to the target step on resume", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-final-gate-answer-ws-"));
+    const runId = "blocked-final-gate-answer-run";
+    saveRun(
+      makeRun({
+        runId,
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Final gate needs guidance",
+          steps: [
+            {
+              id: "done-step",
+              description: "Already done",
+              dependsOn: [],
+              status: "blocked",
+              blockedReason: "task_failed",
+              blockedQuestion:
+                "Final build gate failed after 2 retry cycles.\nThe build gate (pnpm build) failed after you reported complete.\nBuild failed",
+              durationMinutes: 1,
+            },
+          ],
+        },
+        stepResults: {
+          "done-step": {
+            stepId: "done-step",
+            success: true,
+            output: "Done",
+            durationMs: 1,
+          },
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt:
+            "Final build gate failed after 2 retry cycles.\nThe build gate (pnpm build) failed after you reported complete.\nBuild failed",
+          requiredInputKey: "task:done-step:input",
+          stepId: "done-step",
+        },
+        buildGateResults: {
+          __final__: {
+            passed: false,
+            failedCommand: "pnpm build",
+            output: "Build failed",
+            timestamp: "2026-01-30T00:00:00.000Z",
+          },
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { goalAnswerCommand } = await import("./goal-answer.js");
+    const rt = mockRuntime();
+    const result = await goalAnswerCommand(
+      runId,
+      { key: "task:done-step:input", value: "Regenerate generated files first.", quiet: true },
+      rt,
+    );
+
+    expect(result?.status).toBe("done");
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+    const capturedSession = mockExecuteGoalWithAgent.mock.calls[0]?.[0].session;
+    expect(capturedSession.answers["task:done-step:input"]).toBe(
+      "Regenerate generated files first.",
+    );
+    expect(capturedSession.plan?.steps[0]?.status).toBe("done");
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("blocked run in JSON mode outputs strict JSON", async () => {
     saveRun(
       makeRun({
