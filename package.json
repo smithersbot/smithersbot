@@ -143,7 +143,7 @@
     "chokidar": "^5.0.0",
     "chromium-bidi": "13.0.1",
     "cli-highlight": "^2.1.11",
-    "commander": "^14.0.2",
+    "commander": "^14.0.3",
     "croner": "^9.1.0",
     "detect-libc": "^2.1.2",
     "discord-api-types": "^0.38.37",
