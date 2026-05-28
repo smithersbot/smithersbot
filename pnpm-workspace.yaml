@@ -1,0 +1,13 @@
+packages:
+  - .
+  - ui
+  - extensions/memory-core
+  - extensions/telegram
+
+onlyBuiltDependencies:
+  - '@lydell/node-pty'
+  - authenticate-pam
+  - esbuild
+  - protobufjs
+  - puppeteer
+  - sharp

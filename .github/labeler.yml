@@ -1,0 +1,82 @@
+"channel: googlechat":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/googlechat/**"
+"channel: mattermost":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/mattermost/**"
+"channel: msteams":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/msteams/**"
+"channel: telegram":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/telegram/**"
+          - "extensions/telegram/**"
+"channel: zalo":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/zalo/**"
+"app: web-ui":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "ui/**"
+          - "src/gateway/control-ui.ts"
+          - "src/gateway/control-ui-shared.ts"
+          - "src/gateway/protocol/**"
+          - "src/gateway/server-methods/chat.ts"
+          - "src/infra/control-ui-assets.ts"
+
+"gateway":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/gateway/**"
+          - "src/daemon/**"
+
+"cli":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/cli/**"
+
+"commands":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/commands/**"
+
+"scripts":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "scripts/**"
+
+"docker":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/config/**/*sandbox*"
+
+"agents":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/agents/**"
+
+"extensions: copilot-proxy":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/copilot-proxy/**"
+"extensions: google-antigravity-auth":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/google-antigravity-auth/**"
+"extensions: google-gemini-cli-auth":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/google-gemini-cli-auth/**"
+"extensions: memory-core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/memory-core/**"
+"extensions: qwen-portal-auth":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "internal/extensions/qwen-portal-auth/**"

@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart SmithersBot gateway from trigger requests
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -lc 'status=0; /usr/bin/systemctl --user restart smithersbot-gateway.service || status=$?; /usr/bin/find %h/.smithersbot/gateway-restart-triggers -maxdepth 1 -type f -name "*.req" -delete; exit "$status"'

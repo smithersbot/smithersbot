@@ -1,0 +1,17 @@
+{
+  "name": "@moltbot/memory-core",
+  "version": "2026.1.29",
+  "type": "module",
+  "description": "SmithersBot core memory search plugin",
+  "moltbot": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "smithersbot": ">=2026.1.26"
+  },
+  "devDependencies": {
+    "smithersbot": "workspace:*"
+  }
+}

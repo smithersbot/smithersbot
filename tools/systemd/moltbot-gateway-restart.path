@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for SmithersBot gateway restart requests
+
+[Path]
+DirectoryNotEmpty=%h/.smithersbot/gateway-restart-triggers
+MakeDirectory=yes
+Unit=moltbot-gateway-restart.service
+
+[Install]
+WantedBy=default.target

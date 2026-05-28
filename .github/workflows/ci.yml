@@ -1,0 +1,43 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack and activate pinned pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.23.0 --activate
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc -p tsconfig.json
+
+      - name: Build
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test (telegram, hooks, goal, repo-chat, memory)
+        run: pnpm vitest run src/telegram/ src/hooks/ src/goal/ src/repo-chat/ src/memory/
+
+      - name: Test (auto-reply)
+        run: pnpm vitest run src/auto-reply/
+
+      - name: Test (cli)
+        run: pnpm vitest run src/cli/
+
+      - name: Test (infra outbound)
+        run: pnpm vitest run src/infra/outbound/

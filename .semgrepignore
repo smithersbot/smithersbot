@@ -1,0 +1,19 @@
+# Semgrep ignore file — exclude non-source paths from SAST scans.
+# Source code findings are suppressed inline with // nosemgrep: <rule-id>.
+
+# Documentation and changelogs
+docs/
+CHANGELOG.md
+appcast.xml
+
+# macOS app (Swift; separate build pipeline)
+apps/
+
+# Docker and e2e test scripts (CI-only infrastructure)
+scripts/docker/
+scripts/e2e/
+
+# Vendored third-party code
+vendor/
+# Goal worker result artifacts (not source code)
+.moltbot-goal-worker-results/

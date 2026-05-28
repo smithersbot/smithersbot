@@ -1,0 +1,332 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { loadConfig } from "../config/config.js";
+
+export const SECRET_PATH_DENY_REASON =
+  "is a local secret/config file. Workers cannot read SmithersBot config; ask the user to relay any required value.";
+
+export const SECRET_PATH_PATTERNS = [
+  "~/.smithersbot/**",
+  "~/.smithersbot/.env",
+  "~/.smithersbot/smithersbot.json",
+  "~/.smithersbot/credentials/**",
+  "~/.smithersbot/sessions/**",
+  "~/.moltbot/**",
+  "~/.moltbot/.env",
+  "~/.moltbot/moltbot.json",
+  "~/.clawdbot/**",
+  "~/.clawdbot/.env",
+  "~/.clawdbot/clawdbot.json",
+  "~/.clawdbot/credentials/**",
+  "~/.clawdbot-dev/**",
+  "~/.claude/**",
+  "~/.codex/**",
+  ".env",
+  ".env.*",
+  "*.env",
+  "**/.env",
+  "**/.env.*",
+  "smithersbot.json",
+  "moltbot.json",
+  "clawdbot.json",
+  "goal-lessons.json",
+  "oauth.json",
+  "credentials*.json",
+  "*.token",
+  "*.pem",
+  "*.key",
+  "*.crt",
+  "*.cer",
+  "*.p12",
+  "*.pfx",
+  "*.jks",
+  "*.keystore",
+  ".ssh/**",
+  ".gnupg/**",
+  ".aws/**",
+  "*id_rsa*",
+  "*id_ed25519*",
+  "*id_ecdsa*",
+  "*id_dsa*",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  "service-account*.json",
+  "gcloud*.json",
+  "*.tfvars",
+  ".tfstate",
+  "kubeconfig",
+] as const;
+
+export type SecretPathPattern = (typeof SECRET_PATH_PATTERNS)[number];
+
+export interface IsSecretPathOptions {
+  cwd?: string;
+  homeDir?: string;
+}
+
+export interface RedactSecretValuesOptions {
+  secretValues?: readonly (string | null | undefined)[];
+  replacement?: string;
+  includeConfigSecrets?: boolean;
+}
+
+const HOME_SECRET_DIRS = [
+  ".smithersbot",
+  ".moltbot",
+  ".clawdbot",
+  ".clawdbot-dev",
+  ".claude",
+  ".codex",
+] as const;
+
+const SECRET_DIR_NAMES = new Set([".ssh", ".gnupg", ".aws"]);
+const SECRET_FILE_NAMES = new Set([
+  ".env",
+  "smithersbot.json",
+  "moltbot.json",
+  "clawdbot.json",
+  "goal-lessons.json",
+  "oauth.json",
+  ".npmrc",
+  ".pypirc",
+  ".netrc",
+  ".git-credentials",
+  ".tfstate",
+  "kubeconfig",
+]);
+
+const SECRET_FILE_EXTENSIONS = new Set([
+  ".env",
+  ".token",
+  ".pem",
+  ".key",
+  ".crt",
+  ".cer",
+  ".p12",
+  ".pfx",
+  ".jks",
+  ".keystore",
+  ".tfvars",
+]);
+
+const DEFAULT_SECRET_REPLACEMENT = "[REDACTED]";
+
+const PREFIX_SECRET_PATTERNS = [
+  /\bsk-[A-Za-z0-9_-]{8,}\b/g,
+  /\bghp_[A-Za-z0-9_]{8,}\b/g,
+  /\bxoxb-[A-Za-z0-9-]{8,}\b/g,
+  /\bAKIA[0-9A-Z]{16}\b/g,
+  /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){0,2}\b/g,
+] as const;
+
+const SENSITIVE_CONFIG_KEY_RE = /(?:token|password|secret|apiKey|botToken|signingSecret)$/i;
+const SENSITIVE_ENV_KEY_RE =
+  /(?:TOKEN|PASSWORD|SECRET|API_KEY|BOT_TOKEN|SIGNING_SECRET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)$/;
+
+function normalizePath(filePath: string): string {
+  return path.resolve(filePath).replace(/\\/g, "/");
+}
+
+function expandHome(filePath: string, homeDir: string): string {
+  if (filePath === "~") {
+    return homeDir;
+  }
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return path.join(homeDir, filePath.slice(2));
+  }
+  return filePath;
+}
+
+function resolveInputPath(filePath: string, options: Required<IsSecretPathOptions>): string {
+  const expanded = expandHome(filePath, options.homeDir);
+  return path.isAbsolute(expanded) ? expanded : path.resolve(options.cwd, expanded);
+}
+
+function tryRealpath(filePath: string): string | undefined {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+function getResolvedPathCandidates(filePath: string): string[] {
+  const resolved = path.resolve(filePath);
+  const candidates = new Set<string>([normalizePath(resolved)]);
+
+  const leafRealpath = tryRealpath(resolved);
+  if (leafRealpath) {
+    candidates.add(normalizePath(leafRealpath));
+  }
+
+  const parsed = path.parse(resolved);
+  const relativeParts = path.relative(parsed.root, resolved).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+
+  for (let index = 0; index < relativeParts.length; index += 1) {
+    current = path.join(current, relativeParts[index]!);
+    const realAncestor = tryRealpath(current);
+    if (!realAncestor) {
+      continue;
+    }
+
+    const remainingParts = relativeParts.slice(index + 1);
+    candidates.add(normalizePath(path.join(realAncestor, ...remainingParts)));
+  }
+
+  return [...candidates];
+}
+
+function isWithinDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function hasSecretHomePrefix(candidate: string, homeDir: string): boolean {
+  return HOME_SECRET_DIRS.some((dirName) =>
+    isWithinDirectory(candidate, path.join(homeDir, dirName)),
+  );
+}
+
+function hasSecretDirectorySegment(parts: string[]): boolean {
+  return parts.some((part) => SECRET_DIR_NAMES.has(part));
+}
+
+function hasSecretFileName(baseName: string): boolean {
+  const lower = baseName.toLowerCase();
+  // .env.example is the portable, agent-readable variable-name contract for
+  // Stage 2S. Other .env.* files (.env.local, .env.production, .env.test, ...)
+  // remain denied below.
+  if (lower === ".env.example") {
+    return false;
+  }
+  if (SECRET_FILE_NAMES.has(lower)) {
+    return true;
+  }
+  if (lower.startsWith(".env.")) {
+    return true;
+  }
+  if (lower.startsWith("credentials") && lower.endsWith(".json")) {
+    return true;
+  }
+  if (lower.startsWith("service-account") && lower.endsWith(".json")) {
+    return true;
+  }
+  if (lower.startsWith("gcloud") && lower.endsWith(".json")) {
+    return true;
+  }
+  if (
+    lower.includes("id_rsa") ||
+    lower.includes("id_ed25519") ||
+    lower.includes("id_ecdsa") ||
+    lower.includes("id_dsa")
+  ) {
+    return true;
+  }
+  return SECRET_FILE_EXTENSIONS.has(path.extname(lower));
+}
+
+function matchesSecretPath(candidate: string, homeDir: string): boolean {
+  const normalizedCandidate = path.normalize(candidate);
+  if (hasSecretHomePrefix(normalizedCandidate, path.resolve(homeDir))) {
+    return true;
+  }
+
+  const parts = normalizedCandidate.split(path.sep).filter(Boolean);
+  if (hasSecretDirectorySegment(parts)) {
+    return true;
+  }
+
+  return hasSecretFileName(path.basename(normalizedCandidate));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeSecretValues(values: readonly (string | null | undefined)[]): string[] {
+  const normalized = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.length < 8) continue;
+    normalized.add(trimmed);
+  }
+  return [...normalized].sort((a, b) => b.length - a.length);
+}
+
+function collectConfigSecretValues(value: unknown, values: string[] = [], key = ""): string[] {
+  if (typeof value === "string") {
+    if (SENSITIVE_CONFIG_KEY_RE.test(key)) {
+      values.push(value);
+    }
+    return values;
+  }
+  if (!value || typeof value !== "object") {
+    return values;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectConfigSecretValues(item, values, key);
+    }
+    return values;
+  }
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    collectConfigSecretValues(childValue, values, childKey);
+  }
+  return values;
+}
+
+function loadConfigSecretValues(): string[] {
+  try {
+    return collectConfigSecretValues(loadConfig());
+  } catch {
+    return [];
+  }
+}
+
+function loadEnvSecretValues(): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && SENSITIVE_ENV_KEY_RE.test(key)) {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+export function isSecretPath(filePath: string, options: IsSecretPathOptions = {}): boolean {
+  const resolvedOptions: Required<IsSecretPathOptions> = {
+    cwd: options.cwd ?? process.cwd(),
+    homeDir: options.homeDir ?? os.homedir(),
+  };
+  const resolvedPath = resolveInputPath(filePath, resolvedOptions);
+  return getResolvedPathCandidates(resolvedPath).some((candidate) =>
+    matchesSecretPath(candidate, resolvedOptions.homeDir),
+  );
+}
+
+export function redactSecretValues(text: string, options: RedactSecretValuesOptions = {}): string {
+  const replacement = options.replacement ?? DEFAULT_SECRET_REPLACEMENT;
+  let redacted = text;
+
+  const configuredSecretValues =
+    options.includeConfigSecrets === false
+      ? []
+      : [...loadConfigSecretValues(), ...loadEnvSecretValues()];
+  for (const secretValue of normalizeSecretValues([
+    ...configuredSecretValues,
+    ...(options.secretValues ?? []),
+  ])) {
+    redacted = redacted.replace(new RegExp(escapeRegExp(secretValue), "g"), replacement);
+  }
+
+  for (const pattern of PREFIX_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, replacement);
+  }
+
+  return redacted;
+}
