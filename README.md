@@ -330,9 +330,9 @@ After SmithersBot finishes the work it can run itself, it tells the user what it
 
 Nightwatch is a scheduled daily code review that runs in the background and delivers a summary plan to your configured Telegram chat; schedule and chat are configurable through `/nightwatch`.
 
-## Demo
+## Demo Video
 
-Demo coming soon.
+Demo video coming soon.
 
 ## Status and limitations
 
