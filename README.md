@@ -125,23 +125,24 @@ A node is red only when the goal truly cannot proceed without you.
 
 ## Example operator flows
 
+
 ### Smooth path: approve and let it run
 
 * You write and send `/new_goal <description>` through Telegram.
-<p align="left">
-  <img src="assets/goal.jpg" alt="SmithersBot goal screenshot" width="480">
-</p>
+
+<img src="assets/goal.jpg" alt="SmithersBot goal screenshot" width="480">
+
 * Claude Code drafts the plan.
 * Codex reviews and accepts it.
 * You approve the plan.
-<p align="left">
-  <img src="assets/plan.jpg" alt="SmithersBot plan screenshot" width="480">
-</p>
-* SmithersBot runs task by task.
+
+<img src="assets/plan.jpg" alt="SmithersBot plan screenshot" width="480">
+
+* SmithersBot runs task by task until all tasks are completed.
 * SmithersBot suggests a manual test it could not run itself.
-<p align="left">
-  <img src="assets/done.jpg" alt="SmithersBot done screenshot" width="480">
-</p>
+
+<img src="assets/done.jpg" alt="SmithersBot done screenshot" width="480">
+
 * You run the test and it passes.
 * Your goal is achieved.
 
