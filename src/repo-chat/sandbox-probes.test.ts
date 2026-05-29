@@ -8,6 +8,8 @@ import {
   buildClaudeCodeSandboxSettingsConfig,
   buildCodexNativeSandboxConfig,
 } from "../goal/backend-sandbox.js";
+import { checkPathDeny } from "../goal/hard-deny.js";
+import { SECRET_PATH_DENY_REASON } from "../security/secret-paths.js";
 import { validateConfigObject } from "../config/config.js";
 import {
   buildSandboxProbePrompt,
@@ -240,6 +242,34 @@ describe("observed dev surface sandbox read roots", () => {
         sandboxRoot: path.join(home, "codex-sandbox"),
       }),
     ).toThrow(/private paths/);
+  });
+
+  it("denies stable-worker enumeration and content reads of the dev private roots via hard-deny", () => {
+    // os.homedir() is mocked to `home`, so the static deny policy (used by the
+    // stable worker / repo-chat path check) resolves the dev-instance private
+    // roots under the fixture home. Child enumeration (ls / find) and content
+    // reads must be blocked.
+    expect(checkPathDeny(devSecretEnv)?.reason).toBe(SECRET_PATH_DENY_REASON);
+    expect(checkPathDeny(path.join(devPrivateRoot, "env"))?.reason).toBe(SECRET_PATH_DENY_REASON);
+    expect(checkPathDeny(path.join(devPrivateRoot, "config"))?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    expect(checkPathDeny(path.join(devPrivateRoot, "auth"))?.reason).toBe(SECRET_PATH_DENY_REASON);
+    expect(checkPathDeny(path.join(devPrivateRoot, "sessions"))?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    expect(checkPathDeny(path.join(devStateDir, "smithersbot.json"))?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+
+    // Exact-path metadata of the known roots remains visible (ls -ld is allowed).
+    expect(checkPathDeny(devPrivateRoot)).toBeNull();
+    expect(checkPathDeny(devStateDir)).toBeNull();
+
+    // The dev agent-visible surface stays inspectable.
+    expect(checkPathDeny(devAgentRoot)).toBeNull();
+    expect(checkPathDeny(devWorkspace)).toBeNull();
+    expect(checkPathDeny(path.join(devAgentRoot, "history"))).toBeNull();
   });
 
   it("leaves the current process's own surface unchanged without opt-in", () => {

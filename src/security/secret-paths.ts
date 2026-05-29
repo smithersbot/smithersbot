@@ -20,6 +20,8 @@ export const SECRET_PATH_PATTERNS = [
   "~/.clawdbot/clawdbot.json",
   "~/.clawdbot/credentials/**",
   "~/.clawdbot-dev/**",
+  "~/.smithersbot-dev/**",
+  "~/smithersbot-dev-home/private/**",
   "~/.claude/**",
   "~/.codex/**",
   ".env",
@@ -75,12 +77,19 @@ export interface RedactSecretValuesOptions {
 
 const HOME_SECRET_DIRS = [
   ".smithersbot",
+  ".smithersbot-dev",
   ".moltbot",
   ".clawdbot",
   ".clawdbot-dev",
   ".claude",
   ".codex",
 ] as const;
+
+// Managed-instance private roots that live under $HOME but are NOT dot-dirs.
+// The dev instance keeps its secrets under ~/smithersbot-dev-home/private. A
+// stable worker must not enumerate or read those, while the sibling
+// ~/smithersbot-dev-home/agent tree stays inspectable.
+const HOME_NESTED_SECRET_DIRS = ["smithersbot-dev-home/private"] as const;
 
 const SECRET_DIR_NAMES = new Set([".ssh", ".gnupg", ".aws"]);
 const SECRET_FILE_NAMES = new Set([
@@ -186,8 +195,13 @@ function isWithinDirectory(candidate: string, directory: string): boolean {
 }
 
 function hasSecretHomePrefix(candidate: string, homeDir: string): boolean {
-  return HOME_SECRET_DIRS.some((dirName) =>
-    isWithinDirectory(candidate, path.join(homeDir, dirName)),
+  if (
+    HOME_SECRET_DIRS.some((dirName) => isWithinDirectory(candidate, path.join(homeDir, dirName)))
+  ) {
+    return true;
+  }
+  return HOME_NESTED_SECRET_DIRS.some((relativeDir) =>
+    isWithinDirectory(candidate, path.join(homeDir, ...relativeDir.split("/"))),
   );
 }
 
