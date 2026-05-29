@@ -2,9 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { HardDeny } from "./capability-types.js";
+import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
 
 export type HardDenyList = HardDeny[];
+
+// Service unit identities (lowercased for token-aware command matching). The
+// resolver — never a hardcoded string — is the single source of truth.
+const STABLE_GATEWAY_SERVICE_UNIT =
+  resolveGatewayInstanceIdentity("stable").serviceUnit.toLowerCase();
+const DEV_GATEWAY_SERVICE_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit.toLowerCase();
 
 const SECRET_PATH_HARD_DENIES: HardDeny[] = SECRET_PATH_PATTERNS.map((pattern) => ({
   pattern,
@@ -72,6 +79,55 @@ export const HARD_DENIES: HardDeny[] = [
   { pattern: "serverless deploy", reason: "Deployment not permitted", type: "command" },
   { pattern: "gh release create", reason: "Release creation not permitted", type: "command" },
 ];
+
+export const DEV_GATEWAY_WORKSPACE_DENY_REASON =
+  "Only smithersbot-dev-gateway.service may be managed from the dev workspace; the stable gateway is protected";
+
+// Dev-workspace command-deny patterns. These replace the blanket
+// "systemctl --user restart" deny so a dev worker may manage ONLY the dev unit.
+const DEV_GATEWAY_RESTART_NON_DEV_PATTERN = "systemctl restart non-dev gateway";
+const DEV_GATEWAY_MANAGE_STABLE_PATTERN = "systemctl manage stable gateway";
+
+function normalizeSystemdUnitToken(token: string): string {
+  return token.endsWith(".service") ? token : `${token}.service`;
+}
+
+function isDevGatewayUnitToken(token: string | undefined): boolean {
+  if (!token) return false;
+  return normalizeSystemdUnitToken(token) === DEV_GATEWAY_SERVICE_UNIT;
+}
+
+function referencesStableGatewayUnit(args: string[]): boolean {
+  return args.some((token) => normalizeSystemdUnitToken(token) === STABLE_GATEWAY_SERVICE_UNIT);
+}
+
+/**
+ * Build the hard-deny list for a worker running in the SmithersBot dev workspace
+ * with the dev gateway present. The blanket "systemctl --user restart" deny is
+ * replaced with dev-aware command denies that permit ONLY
+ * smithersbot-dev-gateway.service while keeping the stable gateway protected.
+ * Every other deny (secret/config paths including ~/.smithersbot mutation,
+ * publish/deploy, `moltbot gateway restart`, etc.) is preserved unchanged.
+ */
+export function buildDevWorkspaceHardDenies(base: HardDenyList = HARD_DENIES): HardDeny[] {
+  return base.flatMap((deny) => {
+    if (deny.type === "command" && deny.pattern === "systemctl --user restart") {
+      return [
+        {
+          pattern: DEV_GATEWAY_RESTART_NON_DEV_PATTERN,
+          reason: DEV_GATEWAY_WORKSPACE_DENY_REASON,
+          type: "command" as const,
+        },
+        {
+          pattern: DEV_GATEWAY_MANAGE_STABLE_PATTERN,
+          reason: DEV_GATEWAY_WORKSPACE_DENY_REASON,
+          type: "command" as const,
+        },
+      ];
+    }
+    return [deny];
+  });
+}
 
 const HARD_DENY_ENFORCEMENT_LINE =
   "These are enforced by SmithersBot policy and, where available, backend sandbox settings.";
@@ -1317,6 +1373,22 @@ function checkCommandDenyTokens(tokens: string[], hardDenies: HardDenyList): Har
         break;
       case "systemctl --user restart":
         if (cmd === "systemctl" && args[0] === "--user" && args[1] === "restart") return deny;
+        break;
+      case DEV_GATEWAY_RESTART_NON_DEV_PATTERN:
+        // Dev workspace: deny restarting any unit that is not the dev gateway
+        // (covers stable, unknown, and unit-less restarts); allow the dev unit.
+        if (cmd === "systemctl") {
+          const verbIndex = args[0] === "--user" ? 1 : 0;
+          if (args[verbIndex] === "restart" && !isDevGatewayUnitToken(args[verbIndex + 1])) {
+            return deny;
+          }
+        }
+        break;
+      case DEV_GATEWAY_MANAGE_STABLE_PATTERN:
+        // Dev workspace: deny any systemctl subcommand targeting the stable unit
+        // (enable/start/stop/disable/reload/restart) — the stable install/manage
+        // path stays protected.
+        if (cmd === "systemctl" && referencesStableGatewayUnit(args)) return deny;
         break;
       case "moltbot gateway restart":
         if (cmd === "moltbot" && args[0] === "gateway" && args[1] === "restart") return deny;

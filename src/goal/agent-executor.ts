@@ -48,7 +48,8 @@ import {
 } from "./build-gate.js";
 import type { GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
-import { HARD_DENIES } from "./hard-deny.js";
+import { buildDevWorkspaceHardDenies, HARD_DENIES } from "./hard-deny.js";
+import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
 import {
   autosaveIfDirty,
   buildGitHubBranchUrl,
@@ -424,6 +425,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
   }
 
+  // Dev-gateway workspace workers get a dev-aware hard-deny policy (allowing only
+  // the dev unit's systemctl/journalctl commands) while stable stays protected.
+  // Detection is checkout/cwd-based guidance and never alters runtime config.
+  const goalDenyPolicy = resolveDevGatewayWorkerContext({ workingDir }).active
+    ? buildDevWorkspaceHardDenies(HARD_DENIES)
+    : HARD_DENIES;
+
   const piRunner = new PiTaskRunner({
     workingDir,
     runId,
@@ -571,7 +579,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         goal: session.goal,
         workingDir,
         runId,
-        denyPolicy: HARD_DENIES,
+        denyPolicy: goalDenyPolicy,
         completedSummaries,
         resumeAnswer,
         resumeQuestion,
