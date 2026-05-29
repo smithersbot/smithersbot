@@ -40,9 +40,23 @@ function initSubmoduleRepo(): string {
  * ensureWorkingDir only auto-initializes a *fresh* (non-git) directory. Under
  * vitest, os.tmpdir() is redirected inside this repository (.tmp/vitest), so any
  * dir created there is detected as part of this repo and would never be inited.
- * Find a writable temp base that is NOT inside any git repo — CI runners
- * (RUNNER_TEMP) and the local sandbox (CLAUDE_CODE_TMPDIR) both expose one.
+ * Find a writable temp base where git discovery does not see a parent repo.
+ * GIT_CEILING_DIRECTORIES lets Vitest's repo-local temp dir behave like an
+ * isolated non-repo for git's own rev-parse checks.
  */
+function gitDiscoversRepo(cwd: string): boolean {
+  try {
+    execSync("git rev-parse --show-toplevel", {
+      cwd,
+      encoding: "utf8",
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function tempBaseOutsideRepo(): string {
   const candidates = [
     process.env.RUNNER_TEMP,
@@ -53,7 +67,7 @@ function tempBaseOutsideRepo(): string {
   for (const base of candidates) {
     try {
       const probe = mkdtempSync(path.join(base, "git-checkpoint-probe-"));
-      const insideRepo = isGitRepo(probe);
+      const insideRepo = gitDiscoversRepo(probe);
       fs.rmSync(probe, { recursive: true, force: true });
       if (!insideRepo) return base;
     } catch {
@@ -64,6 +78,7 @@ function tempBaseOutsideRepo(): string {
 }
 
 const dirs: string[] = [];
+const repoRoot = fs.realpathSync(process.cwd());
 
 // Safe defaults the generated .gitignore must include (extras are allowed).
 const SAFE_GITIGNORE_DEFAULTS = [
@@ -79,8 +94,13 @@ const SAFE_GITIGNORE_DEFAULTS = [
 
 let managedRoot: string;
 let savedGoalsRoot: string | undefined;
+let savedGitCeiling: string | undefined;
 
 beforeEach(() => {
+  savedGitCeiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = savedGitCeiling
+    ? `${repoRoot}${path.delimiter}${savedGitCeiling}`
+    : repoRoot;
   managedRoot = fs.realpathSync(
     mkdtempSync(path.join(tempBaseOutsideRepo(), "git-checkpoint-managed-")),
   );
@@ -94,6 +114,11 @@ afterEach(() => {
     delete process.env.SMITHERSBOT_GOALS_ROOT;
   } else {
     process.env.SMITHERSBOT_GOALS_ROOT = savedGoalsRoot;
+  }
+  if (savedGitCeiling === undefined) {
+    delete process.env.GIT_CEILING_DIRECTORIES;
+  } else {
+    process.env.GIT_CEILING_DIRECTORIES = savedGitCeiling;
   }
   for (const dir of dirs) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -276,7 +301,7 @@ describeGit("git-checkpoint", () => {
     expect(() => ensureWorkingDir(outside)).toThrow(/managed workspaces root/);
     expect(() => ensureWorkingDir(outside)).toThrow(/git init/);
     // Never auto-initialized outside the managed root.
-    expect(isGitRepo(outside)).toBe(false);
+    expect(fs.existsSync(path.join(outside, ".git"))).toBe(false);
     // Never surfaces the raw git error.
     try {
       ensureWorkingDir(outside);

@@ -1449,7 +1449,9 @@ describe("goal workflow integration tests", () => {
       const { saveRun, loadRun } = await import("./run-store.js");
 
       const step = makeStep({ id: "resume-1", backend: "codex" });
-      const plan = makePlan([step]);
+      const managedRoot = path.join(testGoalsDir, "managed-root");
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "resume-from-cancelled");
+      const plan = { ...makePlan([step]), workingDir };
       const runId = "resume-from-cancelled";
       saveRun(
         makeSerializedRun({
@@ -1457,7 +1459,7 @@ describe("goal workflow integration tests", () => {
           state: "cancelled",
           plan,
           stepResults: {},
-          workingDir: "/tmp/moltbot-goal-integration-test",
+          workingDir,
         }),
       );
 
@@ -1470,7 +1472,9 @@ describe("goal workflow integration tests", () => {
       const statusEvents: string[] = [];
       const runtime = makeRuntime();
       const prevNoGitCheckpoints = process.env.MOLTBOT_NO_GIT_CHECKPOINTS;
+      const prevGoalsRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       process.env.MOLTBOT_NO_GIT_CHECKPOINTS = "1";
+      process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
       let outcome;
       try {
         outcome = await goalResumeCommand(
@@ -1487,6 +1491,8 @@ describe("goal workflow integration tests", () => {
       } finally {
         if (prevNoGitCheckpoints == null) delete process.env.MOLTBOT_NO_GIT_CHECKPOINTS;
         else process.env.MOLTBOT_NO_GIT_CHECKPOINTS = prevNoGitCheckpoints;
+        if (prevGoalsRoot == null) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = prevGoalsRoot;
       }
 
       expect(outcome?.status).toBe("done");
