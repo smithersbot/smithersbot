@@ -36,6 +36,10 @@ import {
 } from "./worker-context.js";
 import { buildDevWorkspaceHardDenies, renderGroupedHardDenies } from "./hard-deny.js";
 import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
+import {
+  DEV_GATEWAY_OPERATION_UNIT,
+  describeDevGatewayMediatedActions,
+} from "./dev-gateway-operation.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
@@ -70,15 +74,20 @@ const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n
 // Dynamic dev-gateway worker guidance. Injected only when the goal works in the
 // smithersbot-dev checkout AND the dev gateway service is present. This is
 // guidance, not runtime config — it never changes which instance the gateway is.
+//
+// The advertised tool availability is derived from the mediated-operation policy
+// (describeDevGatewayMediatedActions), so the three actions a worker is told it
+// may use always match what executeDevGatewayOperation actually enforces: exactly
+// restart/status/logs, fixed to the dev unit, never the stable unit.
 export const DEV_GATEWAY_WORKER_INSTRUCTION = [
   "SMITHERSBOT DEV GATEWAY WORKSPACE:",
-  "You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (smithersbot-dev-gateway.service) is installed.",
-  "- Never restart, reinstall, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
-  "- You may restart and inspect ONLY the dev gateway, using exactly these commands:",
-  "  - systemctl --user restart smithersbot-dev-gateway.service",
-  "  - systemctl --user status smithersbot-dev-gateway.service --no-pager",
-  "  - journalctl --user -u smithersbot-dev-gateway.service -n 80 --no-pager",
-  "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, rebuild, restart smithersbot-dev-gateway.service, and smoke-test the changed behavior against the dev gateway before reporting completion.",
+  `You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (${DEV_GATEWAY_OPERATION_UNIT}) is installed.`,
+  "- Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
+  "- Do NOT run raw `systemctl --user ...` or `journalctl --user ...` for the dev gateway: the worker sandbox cannot reach the user systemd bus, so those commands fail. They are also blocked for every unit except the dev gateway.",
+  `- Manage the dev gateway ONLY through the safe gateway-mediated dev-gateway operation. It is fixed to ${DEV_GATEWAY_OPERATION_UNIT} and supports EXACTLY these three actions (no service name is ever accepted from you):`,
+  ...describeDevGatewayMediatedActions().map((line) => `  - ${line}`),
+  "- The mediated operation can never target smithersbot-gateway.service or any other unit, and exposes no stop/enable/disable/reinstall.",
+  "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, use the mediated restart action and then the status/logs actions to smoke-test the changed behavior against the dev gateway before reporting completion.",
   "- For docs-only or tests-only changes, do not force a gateway restart unless it is needed to verify the requested behavior.",
 ].join("\n");
 
