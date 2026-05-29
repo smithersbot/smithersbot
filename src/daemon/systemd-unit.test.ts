@@ -104,6 +104,62 @@ describe("install-smithersbot-user-service.sh", () => {
     expect(stdout).toContain("RestartSec=5\n");
     expect(stdout).toContain("KillMode=mixed\n");
     expect(stdout).not.toContain("Restart=on-failure");
+    expect(stdout).not.toContain("SMITHERSBOT_INSTANCE=dev");
+    expect(stdout).not.toContain("SMITHERSBOT_GATEWAY_PORT=18790");
     expect(stdout).not.toContain("moltbot-gateway-dev.service");
+  });
+
+  it("dry-runs an isolated dev user service with explicit instance wiring", async () => {
+    const { stdout } = await execFileAsync(
+      "bash",
+      ["scripts/install-smithersbot-user-service.sh", "--dry-run", "--instance", "dev"],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          HOME: "/Users/test",
+          PATH: process.env.PATH,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(stdout).toContain(
+      "Dry run: would write /Users/test/.config/systemd/user/smithersbot-dev-gateway.service",
+    );
+    expect(stdout).toContain("Description=SmithersBot gateway\n");
+    expect(stdout).toContain("EnvironmentFile=%h/.smithersbot-dev/.env\n");
+    expect(stdout).toContain("Environment=SMITHERSBOT_INSTANCE=dev\n");
+    expect(stdout).toContain("Environment=SMITHERSBOT_GATEWAY_PORT=18790\n");
+    expect(stdout).toContain(`WorkingDirectory=${repoRoot}\n`);
+    expect(stdout).toContain("ExecStart=");
+    expect(stdout).toContain(" scripts/run-node.mjs gateway\n");
+    expect(stdout).toContain("systemctl --user enable --now smithersbot-dev-gateway.service");
+    expect(stdout).toContain("systemctl --user status smithersbot-dev-gateway.service --no-pager");
+    expect(stdout).toContain("journalctl --user -u smithersbot-dev-gateway.service -f");
+    expect(stdout).not.toContain("enable --now smithersbot-gateway.service");
+    expect(stdout).not.toContain("EnvironmentFile=%h/.smithersbot/.env\n");
+  });
+
+  it("rejects unknown install-script instance names", async () => {
+    await expect(
+      execFileAsync(
+        "bash",
+        ["scripts/install-smithersbot-user-service.sh", "--dry-run", "--instance", "prod"],
+        {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            HOME: "/Users/test",
+            PATH: process.env.PATH,
+          },
+          encoding: "utf8",
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        'Unknown SmithersBot gateway instance "prod". Allowed values: default, stable, dev.',
+      ),
+    });
   });
 });
