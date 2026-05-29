@@ -3,12 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  isObservedAgentPathAllowed,
   isPathInsideAgentRoot,
   isPathInsideManagedRoot,
   isPathInsidePrivateRoot,
   isPathInsideWorkspacesRoot,
   resolveAgentRoot,
   resolveManagedRoot,
+  resolveObservedAgentRoot,
+  resolveObservedWorkspacesRoot,
   resolvePrivateEnvFile,
   resolvePrivateRoot,
   resolveWorkspaceRepoDir,
@@ -172,5 +175,67 @@ describe("managed paths", () => {
     fs.symlinkSync(privateTarget, workspacePath);
 
     expect(() => resolveWorkspaceRepoDir("escape", env, homedir)).toThrow(/managed agent root/);
+  });
+
+  describe("observed-instance surface", () => {
+    let devAgentRoot: string;
+    let devPrivateRoot: string;
+    let devStateDir: string;
+    // Root the observed instance under the real temp dir so fixtures are writable.
+    let devHome: () => string;
+    const observed = () => ({ observedInstances: ["dev"], homedir: devHome });
+
+    beforeEach(() => {
+      devHome = () => tmpDir;
+      const devManagedRoot = path.join(tmpDir, "smithersbot-dev-home");
+      devAgentRoot = path.join(devManagedRoot, "agent");
+      devPrivateRoot = path.join(devManagedRoot, "private");
+      devStateDir = path.join(tmpDir, ".smithersbot-dev");
+      for (const dir of [
+        path.join(devAgentRoot, "workspaces"),
+        path.join(devAgentRoot, "history", "goals"),
+        path.join(devAgentRoot, "history", "repo-chats"),
+        path.join(devAgentRoot, "history", "index"),
+        path.join(devPrivateRoot, "env"),
+        devStateDir,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
+
+    it("resolves the dev agent surface from the explicit identity mapping", () => {
+      expect(resolveObservedAgentRoot("dev", observed())).toBe(devAgentRoot);
+      expect(resolveObservedWorkspacesRoot("dev", observed())).toBe(
+        path.join(devAgentRoot, "workspaces"),
+      );
+    });
+
+    it("allows agent workspaces/history and rejects private/state", () => {
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "workspaces", "ws"), "dev", observed()),
+      ).toBe(true);
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "history", "index"), "dev", observed()),
+      ).toBe(true);
+      expect(isObservedAgentPathAllowed(devPrivateRoot, "dev", observed())).toBe(false);
+      expect(isObservedAgentPathAllowed(devStateDir, "dev", observed())).toBe(false);
+    });
+
+    it("rejects symlinks under the agent root that escape into private", () => {
+      const secret = path.join(devPrivateRoot, "env", ".env");
+      fs.writeFileSync(secret, "TOKEN=secret");
+      const link = path.join(devAgentRoot, "workspaces", "leak");
+      fs.symlinkSync(secret, link);
+      expect(isObservedAgentPathAllowed(link, "dev", observed())).toBe(false);
+    });
+
+    it("denies everything with no opt-in and leaves own resolution unchanged", () => {
+      const noOptIn = { observedInstances: [] as string[], homedir };
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "workspaces"), "dev", noOptIn),
+      ).toBe(false);
+      // Own managed-root resolution is unaffected by observation opt-in.
+      expect(resolveManagedRoot(env, homedir)).toBe(path.join(tmpDir, "managed"));
+    });
   });
 });

@@ -79,3 +79,62 @@ export function resolveGatewayInstanceFromEnv(
 ): GatewayInstanceIdentity {
   return resolveGatewayInstanceIdentity(env.SMITHERSBOT_INSTANCE, homedir);
 }
+
+/**
+ * Explicit opt-in signal naming which OTHER instances the running gateway may
+ * observe (read-only) for repo chat, diagnostics, and context. Comma-separated
+ * list of instance names, e.g. `SMITHERSBOT_OBSERVED_INSTANCES=dev`.
+ *
+ * Observation is NEVER inferred from the checkout/working directory: with no
+ * explicit opt-in, nothing is observable.
+ */
+export const OBSERVED_INSTANCES_ENV = "SMITHERSBOT_OBSERVED_INSTANCES";
+
+/**
+ * Options for resolving the set of explicitly-observed instances.
+ *
+ * - `observedInstances`: explicit list (e.g. fed from a `gateway.observedInstances`
+ *   config field). When provided (even as an empty array) it is authoritative and
+ *   the env signal is NOT consulted.
+ * - otherwise the {@link OBSERVED_INSTANCES_ENV} env signal is parsed.
+ */
+export type ObservedInstanceOptions = {
+  observedInstances?: Iterable<string> | null;
+  env?: NodeJS.ProcessEnv;
+  homedir?: () => string;
+};
+
+/**
+ * Resolve the set of instances the current process is explicitly opted in to
+ * observe. Unknown instance names are rejected via
+ * {@link normalizeGatewayInstanceSelection}. With no opt-in the set is empty.
+ */
+export function resolveObservedInstanceSet(
+  options?: ObservedInstanceOptions,
+): Set<GatewayInstanceName> {
+  const raw: string[] = [];
+  const explicit = options?.observedInstances;
+  if (explicit != null) {
+    for (const entry of explicit) raw.push(entry);
+  } else {
+    const env = options?.env ?? process.env;
+    const fromEnv = env[OBSERVED_INSTANCES_ENV];
+    if (fromEnv) raw.push(...fromEnv.split(","));
+  }
+
+  const set = new Set<GatewayInstanceName>();
+  for (const entry of raw) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    set.add(normalizeGatewayInstanceSelection(trimmed));
+  }
+  return set;
+}
+
+/** True when `instanceName` is an explicitly opted-in observed instance. */
+export function isInstanceObserved(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): boolean {
+  return resolveObservedInstanceSet(options).has(normalizeGatewayInstanceSelection(instanceName));
+}
