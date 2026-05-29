@@ -328,6 +328,8 @@ type CarryForwardFieldKey =
   | "autocheckMaxRounds"
   | "autocheckBackend"
   | "autocheckSessionId"
+  | "autocheckSkipReason"
+  | "autocheckSkipMetadataPath"
   | "completionSummary"
   | "deliveryFailed"
   | "deliveryError"
@@ -371,6 +373,8 @@ const carryForwardFields: readonly CarryForwardField[] = [
   { key: "autocheckMaxRounds", mode: "nullish" },
   { key: "autocheckBackend", mode: "falsy" },
   { key: "autocheckSessionId", mode: "falsy" },
+  { key: "autocheckSkipReason", mode: "falsy" },
+  { key: "autocheckSkipMetadataPath", mode: "falsy" },
   { key: "completionSummary", mode: "falsy" },
   { key: "deliveryFailed", mode: "falsy" },
   { key: "deliveryError", mode: "falsy" },
@@ -429,6 +433,8 @@ export function sessionToSerialized(params: {
   autocheckMaxRounds?: SerializedRun["autocheckMaxRounds"];
   autocheckBackend?: SerializedRun["autocheckBackend"];
   autocheckSessionId?: SerializedRun["autocheckSessionId"];
+  autocheckSkipReason?: SerializedRun["autocheckSkipReason"];
+  autocheckSkipMetadataPath?: SerializedRun["autocheckSkipMetadataPath"];
   manualTests?: SerializedRun["manualTests"];
   manualTestsError?: SerializedRun["manualTestsError"];
   telegramDoneMessage?: SerializedRun["telegramDoneMessage"];
@@ -469,6 +475,10 @@ export function sessionToSerialized(params: {
     ...(params.autocheckMaxRounds != null ? { autocheckMaxRounds: params.autocheckMaxRounds } : {}),
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
+    ...(params.autocheckSkipReason ? { autocheckSkipReason: params.autocheckSkipReason } : {}),
+    ...(params.autocheckSkipMetadataPath
+      ? { autocheckSkipMetadataPath: params.autocheckSkipMetadataPath }
+      : {}),
     ...(manualTests != null ? { manualTests } : {}),
     ...(manualTestsError ? { manualTestsError } : {}),
     ...(session.completionSummary ? { completionSummary: session.completionSummary } : {}),

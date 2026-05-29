@@ -705,6 +705,56 @@ describe("runPlanAutocheck", () => {
     ).rejects.toThrow(/Plan autocheck worker failed: boom/);
 
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    const roundDir = path.join(tmpDir, "run-fresh-fail", "autocheck", "round-1");
+    const metadataPath = path.join(roundDir, "metadata.json");
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
+      failure?: { reason?: string; metadataPath?: string; artifactPaths?: string[] };
+    };
+    expect(metadata.failure?.reason).toContain("Plan autocheck worker failed: boom");
+    expect(metadata.failure?.metadataPath).toBe(metadataPath);
+    expect(metadata.failure?.artifactPaths).toContain(path.join(roundDir, "failure.txt"));
+    expect(fs.readFileSync(path.join(roundDir, "failure.txt"), "utf8")).toContain("boom");
+  });
+
+  it("keeps the stable workingDir as the reviewer cwd while adding observed read roots", async () => {
+    const stableWorkingDir = path.join(
+      tmpDir,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    const observedDevAgentRoot = path.join(tmpDir, "smithersbot-dev-home", "agent");
+    const observedDevWorkspacesRoot = path.join(observedDevAgentRoot, "workspaces");
+    const observedDevHistoryRoot = path.join(observedDevAgentRoot, "history");
+    const readOnlyRoots = [observedDevAgentRoot, observedDevWorkspacesRoot, observedDevHistoryRoot];
+    fs.mkdirSync(stableWorkingDir, { recursive: true });
+    const initialPlan = { ...makePlan("Observed read roots"), workingDir: stableWorkingDir };
+    mockRunCliProcess.mockImplementationOnce(async (call: { cwd: string; args: string[] }) => {
+      expect(call.cwd).toBe(stableWorkingDir);
+      const prompt = call.args.at(-1) ?? "";
+      expect(prompt).toContain(`"workingDir": "${stableWorkingDir}"`);
+      expect(prompt).not.toContain(`"workingDir": "${observedDevWorkspacesRoot}"`);
+      return cliResult({ stdout: '{"approved":true}\n' });
+    });
+
+    const result = await runPlanAutocheck({
+      plan: initialPlan,
+      goalText: "Verify observed dev surface",
+      mode: "codex",
+      workingDir: stableWorkingDir,
+      readOnlyRoots,
+      runDir: runPath(tmpDir, "run-observed-read-roots"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.plan.workingDir).toBe(stableWorkingDir);
+    expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDir: stableWorkingDir,
+        readOnlyRoots,
+      }),
+    );
   });
 
   it("falls back to Codex when the Claude reviewer hits a usage limit", async () => {

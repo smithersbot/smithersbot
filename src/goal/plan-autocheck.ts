@@ -40,6 +40,7 @@ import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
 const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
@@ -65,6 +66,7 @@ export type PlanAutocheckParams = {
   workingDir: string;
   claudeCodeAuth?: ClaudeCodeAuthMode;
   enabledWorkers?: CliWorkerId[];
+  readOnlyRoots?: string[];
   runDir: string;
   existingSessionId?: string;
   existingBackend?: string;
@@ -84,6 +86,28 @@ export type PlanAutocheckResult = {
 };
 
 type AutocheckDecision = { approved: true } | { approved: false; editInstructions: string };
+
+export type PlanAutocheckFailureMetadata = {
+  runId: string;
+  workingDir: string;
+  backend: PlanAutocheckBackend;
+  round: number;
+  attemptLabel: string;
+  reason: string;
+  metadataPath: string;
+  agentHistoryMetadataPath: string;
+  artifactPaths: string[];
+};
+
+export class PlanAutocheckError extends Error {
+  readonly metadata: PlanAutocheckFailureMetadata;
+
+  constructor(message: string, metadata: PlanAutocheckFailureMetadata, cause?: unknown) {
+    super(message, cause instanceof Error ? { cause } : undefined);
+    this.name = "PlanAutocheckError";
+    this.metadata = metadata;
+  }
+}
 
 type ParsedReviewerOutput = {
   text: string;
@@ -601,6 +625,42 @@ function writeJsonArtifact(filePath: string, value: unknown): void {
   }
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function collectRoundArtifactPaths(roundDir: string): string[] {
+  try {
+    return fs
+      .readdirSync(roundDir)
+      .filter(
+        (name) =>
+          name.endsWith(".stdout.txt") ||
+          name.endsWith(".stderr.txt") ||
+          name.endsWith("_failure.txt") ||
+          name === "failure.txt",
+      )
+      .sort()
+      .map((name) => path.join(roundDir, name));
+  } catch {
+    return [];
+  }
+}
+
+function agentHistoryRuntimePath(params: {
+  workingDir: string;
+  runId: string;
+  runDir: string;
+  artifactPath: string;
+}): string {
+  const workspaceName = workspaceNameFromWorkingDir(params.workingDir);
+  return path.join(
+    resolveAgentGoalHistoryDir(workspaceName, params.runId),
+    "runtime",
+    path.relative(params.runDir, params.artifactPath),
+  );
+}
+
 function redactTextArtifactIfExists(filePath: string): void {
   try {
     if (!fs.existsSync(filePath)) return;
@@ -624,6 +684,7 @@ async function runReviewerAttempt(params: {
   attemptLabel: string;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
   sessionId?: string;
   model?: string;
   stdoutPath: string;
@@ -639,6 +700,7 @@ async function runReviewerAttempt(params: {
           workingDir: params.workingDir,
           runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
           purpose: "repo-chat",
+          readOnlyRoots: params.readOnlyRoots,
         })
       : undefined;
   const codexSandbox =
@@ -647,6 +709,7 @@ async function runReviewerAttempt(params: {
           workingDir: params.workingDir,
           runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
           purpose: "repo-chat",
+          readOnlyRoots: params.readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -835,6 +898,7 @@ async function runFreshReviewerAttempt(params: {
   round: number;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
   model?: string;
   roundDir: string;
   attemptLabel: string;
@@ -866,6 +930,7 @@ async function runFreshReviewerAttempt(params: {
           attemptLabel: labelSuffix,
           timeoutMs: params.timeoutMs,
           claudeCodeAuth: params.claudeCodeAuth,
+          readOnlyRoots: params.readOnlyRoots,
           model: params.model,
           stdoutPath: path.join(params.roundDir, `${labelSuffix}.stdout.txt`),
           stderrPath: path.join(params.roundDir, `${labelSuffix}.stderr.txt`),
@@ -907,6 +972,59 @@ function clampMaxRounds(value: number | undefined): number {
   if (value == null || Number.isNaN(value)) return DEFAULT_AUTOCHECK_MAX_ROUNDS;
   if (value <= 0) return 0;
   return Math.trunc(value);
+}
+
+function recordAutocheckFailure(params: {
+  runId: string;
+  goalsDir: string;
+  runDir: string;
+  workingDir: string;
+  backend: PlanAutocheckBackend;
+  round: number;
+  attemptLabel: string;
+  roundDir: string;
+  err: unknown;
+}): PlanAutocheckError {
+  const reason = redactSecretValues(describeError(params.err));
+  const failurePath = path.join(params.roundDir, "failure.txt");
+  const metadataPath = path.join(params.roundDir, "metadata.json");
+  writeTextArtifact(failurePath, `${reason}\n`);
+  const artifactPaths = uniqueStrings([...collectRoundArtifactPaths(params.roundDir), failurePath]);
+  const metadata: PlanAutocheckFailureMetadata = {
+    runId: params.runId,
+    workingDir: params.workingDir,
+    backend: params.backend,
+    round: params.round,
+    attemptLabel: params.attemptLabel,
+    reason,
+    metadataPath,
+    agentHistoryMetadataPath: agentHistoryRuntimePath({
+      workingDir: params.workingDir,
+      runId: params.runId,
+      runDir: params.runDir,
+      artifactPath: metadataPath,
+    }),
+    artifactPaths,
+  };
+  writeJsonArtifact(metadataPath, {
+    backend: params.backend,
+    approved: false,
+    round: params.round,
+    attemptLabel: params.attemptLabel,
+    failure: {
+      reason,
+      metadataPath,
+      agentHistoryMetadataPath: metadata.agentHistoryMetadataPath,
+      artifactPaths,
+    },
+  });
+  mirrorAutocheckRuntimeBestEffort({
+    workingDir: params.workingDir,
+    runId: params.runId,
+    goalsDir: params.goalsDir,
+    round: params.round,
+  });
+  return new PlanAutocheckError(`Plan autocheck failed: ${reason}`, metadata, params.err);
 }
 
 /**
@@ -987,6 +1105,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           attemptLabel,
           timeoutMs,
           claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+          readOnlyRoots: params.readOnlyRoots,
           sessionId,
           model: params.model,
           stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
@@ -1019,6 +1138,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
             round: roundNumber,
             timeoutMs,
             claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+            readOnlyRoots: params.readOnlyRoots,
             model: params.model,
             roundDir,
             attemptLabel,
@@ -1053,18 +1173,33 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         contextNotes,
         userEditInstructions: params.userEditInstructions,
       });
-      result = await runFreshReviewerAttempt({
-        backend,
-        prompt,
-        workingDir: params.workingDir,
-        runId,
-        round: roundNumber,
-        timeoutMs,
-        claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-        model: params.model,
-        roundDir,
-        attemptLabel,
-      });
+      try {
+        result = await runFreshReviewerAttempt({
+          backend,
+          prompt,
+          workingDir: params.workingDir,
+          runId,
+          round: roundNumber,
+          timeoutMs,
+          claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+          readOnlyRoots: params.readOnlyRoots,
+          model: params.model,
+          roundDir,
+          attemptLabel,
+        });
+      } catch (err) {
+        throw recordAutocheckFailure({
+          runId,
+          goalsDir,
+          runDir: params.runDir,
+          workingDir: params.workingDir,
+          backend,
+          round: roundNumber,
+          attemptLabel,
+          roundDir,
+          err,
+        });
+      }
     }
 
     sessionId = result.sessionId;
