@@ -547,3 +547,77 @@ export function isObservedAgentPathAllowed(
   const candidates = pathCandidates(candidate);
   return candidates.every((entry) => allowedRoots.some((root) => isInside(entry, root)));
 }
+
+/**
+ * If `candidate` resolves into an opted-in observed instance's managed root or
+ * state dir, return that instance name; otherwise undefined. This is the
+ * "does this path belong to an observed instance at all" check, made BEFORE the
+ * allow/deny split. Built only on the explicit instance identity mapping and the
+ * explicit opt-in set — never inferred from the checkout/working directory.
+ */
+export function resolveObservedInstanceForPath(
+  candidate: string,
+  options?: ObservedInstanceOptions,
+): GatewayInstanceName | undefined {
+  if (typeof candidate !== "string" || candidate.length === 0) return undefined;
+  const homedir = options?.homedir ?? os.homedir;
+  for (const name of resolveObservedInstanceSet(options)) {
+    const identity = resolveGatewayInstanceIdentity(name, homedir);
+    if (
+      pathInsideAnyCandidate(candidate, identity.managedRoot) ||
+      pathInsideAnyCandidate(candidate, identity.stateDir)
+    ) {
+      return name;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Result of classifying an inspection target against the observed-instance set:
+ *   - `none`   : not an observed-instance path (caller keeps its own behavior).
+ *   - `agent`  : an allowed observed agent subtree — read-scope to `agentRoot`.
+ *   - `sealed` : an observed private/state target — caller must refuse it.
+ */
+export type ObservedInspectionTarget =
+  | { kind: "none" }
+  | { kind: "agent"; instance: GatewayInstanceName; agentRoot: string }
+  | { kind: "sealed"; instance: GatewayInstanceName };
+
+/**
+ * Classify a repo-chat / inspection target against the explicitly opted-in
+ * observed instances, gating every observed path through
+ * {@link isObservedAgentPathAllowed}. Callers translate `sealed` into their own
+ * private-path refusal and use `agentRoot` to read-scope an allowed agent
+ * subtree. With no opt-in this always returns `{ kind: "none" }`, so behavior for
+ * the current process's own workspaces/history is unchanged.
+ */
+export function resolveObservedInspectionTarget(
+  target: string,
+  options?: ObservedInstanceOptions,
+): ObservedInspectionTarget {
+  const instance = resolveObservedInstanceForPath(target, options);
+  if (!instance) return { kind: "none" };
+  if (isObservedAgentPathAllowed(target, instance, options)) {
+    return { kind: "agent", instance, agentRoot: resolveObservedAgentRoot(instance, options) };
+  }
+  return { kind: "sealed", instance };
+}
+
+/**
+ * Sealed roots of an observed instance — its private root and state dir — that
+ * must be DENIED to any inspection sandbox. This is the opposite of exposing
+ * them: the paths are computed only to add them to backend deny lists so a broad
+ * filesystem read grant cannot reach dev private state. Opt-in gated.
+ */
+export function resolveObservedSealedRoots(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): { privateRoot: string; stateDir: string } {
+  const name = requireObservedInstance(instanceName, options);
+  const identity = resolveGatewayInstanceIdentity(name, options?.homedir ?? os.homedir);
+  return {
+    privateRoot: path.join(identity.managedRoot, "private"),
+    stateDir: identity.stateDir,
+  };
+}

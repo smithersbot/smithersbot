@@ -6,7 +6,10 @@ import {
   isPathInsideAgentRoot,
   isPathInsidePrivateRoot,
   resolveAgentRoot,
+  resolveObservedInspectionTarget,
+  resolveObservedSealedRoots,
   resolvePrivateRoot,
+  type ObservedInspectionTarget,
 } from "../config/managed-paths.js";
 import { stripClaudeSubscriptionAuthEnv } from "./claude-code-env.js";
 
@@ -156,10 +159,63 @@ const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
 const CLAUDE_AUTH_OK_REPLY = "claude-auth-ok";
 
+/**
+ * Classify the working dir against the explicitly opted-in observed instances,
+ * but only for repo-chat (the read-only inspection surface). Goal-worker runs
+ * never target another instance's surface, so they keep the current process's
+ * own resolution untouched.
+ */
+function observedInspectionTarget(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): ObservedInspectionTarget {
+  if (params.purpose !== "repo-chat") return { kind: "none" };
+  return resolveObservedInspectionTarget(params.workingDir);
+}
+
+/**
+ * Read-scope agent root for a repo-chat sandbox: the observed instance's agent
+ * root when inspecting an allowed observed surface, else the current process's
+ * own agent root. Throws on an observed private/state target.
+ */
+function resolveRepoChatAgentRoot(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): string {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind === "sealed") {
+    throw new Error("Backend execution cannot run from SmithersBot private paths.");
+  }
+  return observed.kind === "agent" ? observed.agentRoot : resolveAgentRoot();
+}
+
+/**
+ * Extra deny roots that seal an observed instance's private state (its private
+ * root and state dir) against a broad filesystem read grant. Empty unless the
+ * working dir targets an explicitly opted-in observed instance.
+ */
+function observedSealedDenyRoots(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): string[] {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind !== "agent") return [];
+  const sealed = resolveObservedSealedRoots(observed.instance);
+  return [sealed.privateRoot, sealed.stateDir];
+}
+
 export function resolveManagedExecutionRoot(params: {
   workingDir: string;
   purpose: CodexSandboxPurpose;
 }): string {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind === "sealed") {
+    throw new Error("Backend execution cannot run from SmithersBot private paths.");
+  }
+  if (observed.kind === "agent") {
+    return observed.agentRoot;
+  }
+
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Backend execution cannot run from SmithersBot private paths.");
   }
@@ -248,8 +304,13 @@ function resolveRealCodexAuthSource(): string {
   return path.join(realCodexHome, "auth.json");
 }
 
-function buildCodexDeniedReadPaths(workingDir: string, authSourcePath: string): string[] {
+function buildCodexDeniedReadPaths(
+  workingDir: string,
+  authSourcePath: string,
+  extraDeniedRoots: string[] = [],
+): string[] {
   return uniqueValues([
+    ...extraDeniedRoots,
     path.join(workingDir, ".env"),
     path.join(workingDir, ".env.local"),
     path.join(workingDir, ".env.production"),
@@ -375,9 +436,10 @@ export function buildCodexNativeSandboxConfig(params: {
   const helperPath = path.join(helperDir, "codex-linux-sandbox");
   const authSourcePath = resolveRealCodexAuthSource();
   const authReferencePath = path.join(codexHome, "auth.json");
+  const repoChatAgentRoot = resolveRepoChatAgentRoot(params);
   const allowedReadPaths =
     params.purpose === "repo-chat"
-      ? uniqueValues([resolveAgentRoot(), params.workingDir])
+      ? uniqueValues([repoChatAgentRoot, params.workingDir])
       : uniqueValues([params.workingDir, path.join(resolveAgentRoot(), "history")]);
   const writablePaths =
     params.purpose === "repo-chat"
@@ -387,7 +449,13 @@ export function buildCodexNativeSandboxConfig(params: {
           path.join(params.workingDir, ".git"),
           ...(params.extraWritablePaths ?? []),
         ]);
-  const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir, authSourcePath);
+  // Codex grants a broad `/`=read base, so an observed instance's private root
+  // and state dir must be explicitly denied to seal dev private state.
+  const deniedReadPaths = buildCodexDeniedReadPaths(
+    params.workingDir,
+    authSourcePath,
+    observedSealedDenyRoots(params),
+  );
   const configToml = buildCodexPermissionProfileToml({
     executionRoot,
     deniedReadPaths,
@@ -746,6 +814,7 @@ function isSensitiveCredentialFileName(name: string): boolean {
 function buildClaudeSensitiveFileDenies(
   workingDir: string,
   deps: ResolvedClaudeDenyDeps,
+  extraScanDirs: string[] = [],
 ): string[] {
   const { homedir, privateRoot, pathExists, realPath, readDir, isRegularFile, isDirectory } = deps;
   const home = homedir();
@@ -782,6 +851,14 @@ function buildClaudeSensitiveFileDenies(
         maxDepth: 1,
         namePredicate: isSensitiveCredentialFileName,
       })),
+      // Observed-instance sealed roots (e.g. dev private + ~/.smithersbot-dev):
+      // scan a few levels deep so dev .env / auth / config / session files become
+      // exact-file denies, the reliable Bash-deny mechanism.
+      ...extraScanDirs.map((dir) => ({
+        dir,
+        maxDepth: 3,
+        namePredicate: isSensitiveCredentialFileName,
+      })),
     ];
 
   for (const scan of scans) {
@@ -797,13 +874,18 @@ function buildClaudeSensitiveFileDenies(
   return resolveExistingRealFiles(candidates, { pathExists, realPath, isRegularFile });
 }
 
-function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+function buildClaudeDenyReadPaths(
+  workingDir: string,
+  deps: ClaudeDenyReadDeps = {},
+  extraDenyDirs: string[] = [],
+): string[] {
   const resolved = resolveClaudeDenyDeps(deps);
   const { homedir, privateRoot, pathExists, realPath } = resolved;
   const home = homedir();
   // Directory denies kept as defense-in-depth (proven safe for bwrap startup). On their
   // own these do NOT reliably block sandboxed Bash child reads — see buildClaudeSensitiveFileDenies.
-  const protectedDirs = [privateRoot(), path.join(home, ".claude")];
+  // extraDenyDirs seal an observed instance's private root + state dir.
+  const protectedDirs = [privateRoot(), path.join(home, ".claude"), ...extraDenyDirs];
   // Literal top-level repo env files (kept explicit for back-compat with the proven matrix).
   const protectedFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
     path.join(workingDir, name),
@@ -813,7 +895,7 @@ function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps =
     realPath,
   });
   // Exact existing sensitive regular files — the reliable Bash-deny mechanism.
-  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved);
+  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved, extraDenyDirs);
   return uniqueValues([...dirAndLiteralDenies, ...exactFileDenies]);
 }
 
@@ -826,7 +908,11 @@ function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps =
  * symlink) and deny repo env files by absolute literal path (workspace-relative or
  * recursive double-star Read forms make Claude scan node_modules at startup and hang).
  */
-function buildClaudeReadToolDenies(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+function buildClaudeReadToolDenies(
+  workingDir: string,
+  deps: ClaudeDenyReadDeps = {},
+  extraDenyDirs: string[] = [],
+): string[] {
   const { homedir, pathExists, realPath } = resolveClaudeDenyDeps(deps);
   const home = homedir();
   const repoEnvFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
@@ -846,9 +932,10 @@ function buildClaudeReadToolDenies(workingDir: string, deps: ClaudeDenyReadDeps 
   const repoEnvDenies = resolveExistingRealPaths(repoEnvFiles, { pathExists, realPath }).map(
     (p) => `Read(${p})`,
   );
-  const homeDenies = resolveExistingRealPaths(homeCredentialDirs, { pathExists, realPath }).map(
-    (d) => `Read(${d}/**)`,
-  );
+  const homeDenies = resolveExistingRealPaths([...homeCredentialDirs, ...extraDenyDirs], {
+    pathExists,
+    realPath,
+  }).map((d) => `Read(${d}/**)`);
   return [...repoEnvDenies, ...homeDenies];
 }
 
@@ -863,13 +950,16 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
   }
+  // Read-scope to an observed instance's agent root when inspecting it (throws on
+  // an observed private/state target); seal that instance's private/state dirs.
+  const agentRoot = resolveRepoChatAgentRoot(params);
+  const extraDenyDirs = observedSealedDenyRoots(params);
 
   const settingsRoot = params.settingsRoot ?? DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT;
   const settingsDir = path.join(
     settingsRoot,
     `smithersbot-claude-${safeRunIdSegment(params.runId)}`,
   );
-  const agentRoot = resolveAgentRoot();
   const allowRead =
     params.purpose === "repo-chat"
       ? uniqueValues([agentRoot, params.workingDir])
@@ -890,14 +980,14 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
         filesystem: {
           allowRead,
           allowWrite,
-          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps),
+          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps, extraDenyDirs),
         },
       },
       permissions: {
         // Read-tool denies, filtered to existing real paths because Claude Code enforces
         // them via the same bubblewrap mounts as the sandbox filesystem denies (an absent
         // ~/.aws or a symlinked ~/.clawdbot would fail bwrap startup). See builder doc.
-        deny: buildClaudeReadToolDenies(params.workingDir, params.denyReadDeps),
+        deny: buildClaudeReadToolDenies(params.workingDir, params.denyReadDeps, extraDenyDirs),
       },
     },
   };

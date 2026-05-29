@@ -33,6 +33,7 @@ import {
   isPathInsideAgentRoot,
   isPathInsidePrivateRoot,
   resolveAgentRoot,
+  resolveObservedInspectionTarget,
 } from "../config/managed-paths.js";
 import {
   buildClaudeCodeSandboxLaunchConfig,
@@ -160,6 +161,16 @@ export function buildCodexRepoChatArgs(params: {
 }
 
 export function resolveRepoChatExecutionRoot(workingDir: string): string {
+  // An explicitly opted-in observed instance (e.g. the dev gateway) lets stable
+  // read-scope to that instance's agent root. Its private/state targets are
+  // refused exactly like the current process's own private paths.
+  const observed = resolveObservedInspectionTarget(workingDir);
+  if (observed.kind === "sealed") {
+    throw new Error("Repo chat cannot run from SmithersBot private paths.");
+  }
+  if (observed.kind === "agent") {
+    return observed.agentRoot;
+  }
   if (isPathInsidePrivateRoot(workingDir)) {
     throw new Error("Repo chat cannot run from SmithersBot private paths.");
   }
