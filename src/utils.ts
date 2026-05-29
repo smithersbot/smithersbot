@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveOAuthDir } from "./config/paths.js";
+import { resolveOAuthDir, resolveStateDir } from "./config/paths.js";
 import { logVerbose, shouldLogVerbose } from "./globals.js";
 
 export async function ensureDir(dir: string) {
@@ -215,22 +215,7 @@ export function resolveConfigDir(
   env: NodeJS.ProcessEnv = process.env,
   homedir: () => string = os.homedir,
 ): string {
-  const override =
-    env.SMITHERSBOT_STATE_DIR?.trim() ||
-    env.MOLTBOT_STATE_DIR?.trim() ||
-    env.CLAWDBOT_STATE_DIR?.trim();
-  if (override) return resolveUserPath(override);
-  const canonicalDir = path.join(homedir(), ".smithersbot");
-  const moltbotDir = path.join(homedir(), ".moltbot");
-  const legacyDir = path.join(homedir(), ".clawdbot");
-  try {
-    if (fs.existsSync(canonicalDir)) return canonicalDir;
-    if (fs.existsSync(moltbotDir)) return moltbotDir;
-    if (fs.existsSync(legacyDir)) return legacyDir;
-  } catch {
-    // best-effort
-  }
-  return canonicalDir;
+  return resolveStateDir(env, homedir);
 }
 
 export function resolveHomeDir(): string | undefined {
