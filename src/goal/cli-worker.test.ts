@@ -27,6 +27,7 @@ import {
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
+  DEV_GATEWAY_COMMAND_INVOCATION,
   DEV_GATEWAY_OPERATION_ACTIONS,
   DEV_GATEWAY_OPERATION_UNIT,
   describeDevGatewayMediatedActions,
@@ -2040,8 +2041,11 @@ describe("cli-worker", () => {
         devGatewayWorkspace: true,
       });
       expect(withDev).toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
-      // Workers are directed to the mediated operation, not raw systemctl/journalctl.
-      expect(withDev).toContain("safe gateway-mediated dev-gateway operation");
+      // Workers are directed to the real worker-invocable command, by exact name,
+      // not raw systemctl/journalctl.
+      expect(withDev).toContain("worker-invocable command");
+      expect(withDev).toContain(DEV_GATEWAY_COMMAND_INVOCATION);
+      expect(withDev).toContain("moltbot dev-gateway restart");
       expect(withDev).toContain("Do NOT run raw `systemctl --user ...` or `journalctl --user ...`");
       expect(withDev).not.toContain("systemctl --user restart smithersbot-dev-gateway.service");
       expect(withDev).toContain(

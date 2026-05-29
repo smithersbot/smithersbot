@@ -37,6 +37,7 @@ import {
 import { buildDevWorkspaceHardDenies, renderGroupedHardDenies } from "./hard-deny.js";
 import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
 import {
+  DEV_GATEWAY_COMMAND_INVOCATION,
   DEV_GATEWAY_OPERATION_UNIT,
   describeDevGatewayMediatedActions,
 } from "./dev-gateway-operation.js";
@@ -84,9 +85,9 @@ export const DEV_GATEWAY_WORKER_INSTRUCTION = [
   `You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (${DEV_GATEWAY_OPERATION_UNIT}) is installed.`,
   "- Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
   "- Do NOT run raw `systemctl --user ...` or `journalctl --user ...` for the dev gateway: the worker sandbox cannot reach the user systemd bus, so those commands fail. They are also blocked for every unit except the dev gateway.",
-  `- Manage the dev gateway ONLY through the safe gateway-mediated dev-gateway operation. It is fixed to ${DEV_GATEWAY_OPERATION_UNIT} and supports EXACTLY these three actions (no service name is ever accepted from you):`,
+  `- Manage the dev gateway ONLY through the safe, worker-invocable command \`${DEV_GATEWAY_COMMAND_INVOCATION}\` (for example \`moltbot dev-gateway restart\`). It is fixed to ${DEV_GATEWAY_OPERATION_UNIT} and supports EXACTLY these three actions (no service name is ever accepted from you):`,
   ...describeDevGatewayMediatedActions().map((line) => `  - ${line}`),
-  "- The mediated operation can never target smithersbot-gateway.service or any other unit, and exposes no stop/enable/disable/reinstall.",
+  "- The command can never target smithersbot-gateway.service or any other unit, and exposes no stop/enable/disable/reinstall.",
   "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, use the mediated restart action and then the status/logs actions to smoke-test the changed behavior against the dev gateway before reporting completion.",
   "- For docs-only or tests-only changes, do not force a gateway restart unless it is needed to verify the requested behavior.",
 ].join("\n");

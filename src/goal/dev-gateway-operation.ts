@@ -14,6 +14,17 @@ export const DEV_GATEWAY_OPERATION_ACTIONS = ["restart", "status", "logs"] as co
 
 export type DevGatewayOperationAction = (typeof DEV_GATEWAY_OPERATION_ACTIONS)[number];
 
+/**
+ * The worker-invocable CLI subcommand name that wraps this mediated operation.
+ * Kept here (alongside the action allowlist) so the registered command and the
+ * worker guidance share one source of truth and can never advertise a command
+ * that is not wired.
+ */
+export const DEV_GATEWAY_COMMAND_NAME = "dev-gateway";
+
+/** The exact command line a dev-workspace worker invokes to manage the dev gateway. */
+export const DEV_GATEWAY_COMMAND_INVOCATION = `moltbot ${DEV_GATEWAY_COMMAND_NAME} <restart|status|logs>`;
+
 /** The single dev unit this mediated operation is hard-coded to manage. */
 export const DEV_GATEWAY_OPERATION_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit;
 
