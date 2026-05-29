@@ -4,8 +4,11 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  OBSERVED_INSTANCES_ENV,
+  isInstanceObserved,
   resolveGatewayInstanceFromEnv,
   resolveGatewayInstanceIdentity,
+  resolveObservedInstanceSet,
 } from "./gateway-instance.js";
 
 describe("gateway instance resolver", () => {
@@ -87,5 +90,31 @@ describe("gateway instance resolver", () => {
       process.chdir(prevCwd);
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("observed-instance opt-in", () => {
+  it("requires an explicit opt-in (empty set with no signal)", () => {
+    expect(resolveObservedInstanceSet({ env: {} as NodeJS.ProcessEnv }).size).toBe(0);
+    expect(isInstanceObserved("dev", { env: {} as NodeJS.ProcessEnv })).toBe(false);
+  });
+
+  it("parses the env opt-in signal and normalizes aliases", () => {
+    const env = { [OBSERVED_INSTANCES_ENV]: "dev, default" } as unknown as NodeJS.ProcessEnv;
+    const set = resolveObservedInstanceSet({ env });
+    expect(set.has("dev")).toBe(true);
+    expect(set.has("stable")).toBe(true);
+    expect(isInstanceObserved("dev", { env })).toBe(true);
+  });
+
+  it("treats an explicit list as authoritative over env", () => {
+    const env = { [OBSERVED_INSTANCES_ENV]: "dev" } as unknown as NodeJS.ProcessEnv;
+    expect(resolveObservedInstanceSet({ observedInstances: [], env }).size).toBe(0);
+  });
+
+  it("rejects unknown observed instance names", () => {
+    expect(() => resolveObservedInstanceSet({ observedInstances: ["prod"] })).toThrow(
+      'Unknown SmithersBot gateway instance "prod". Allowed values: default, stable, dev.',
+    );
   });
 });
