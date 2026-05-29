@@ -136,6 +136,41 @@ describe("goal command — early failure persistence", () => {
     expect(run!.lastError).toContain("Plan must contain at least one step");
   });
 
+  it("initializes the workspace before planning runs", async () => {
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-"));
+
+    await goalCommand({ goal: "Do something", workingDir, yes: true, planOnly: true }, rt);
+
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(workingDir);
+    expect(mockEnsureWorkingDir.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockRunCliPlanning.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("surfaces an actionable init failure before planning instead of a raw git error", async () => {
+    mockEnsureWorkingDir.mockImplementationOnce(() => {
+      throw new Error(
+        "SmithersBot needs a git repository at /x to manage checkpoints, branches, and rollback, " +
+          "but it is not a git repository and is outside the managed workspaces root (/root). " +
+          "Move this folder under the managed workspaces root so SmithersBot can initialize it " +
+          "automatically, or run `git init` in it yourself before starting a goal.",
+      );
+    });
+
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+    const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-ws-"));
+
+    await expect(goalCommand({ goal: "Do something", workingDir, yes: true }, rt)).rejects.toThrow(
+      /managed workspaces root/,
+    );
+
+    // Planning never ran because init failed first.
+    expect(mockRunCliPlanning).not.toHaveBeenCalled();
+  });
+
   it("persists raw planner output when CLI planning throws PlanParseError", async () => {
     mockRunCliPlanning.mockRejectedValue(
       new MockPlanParseError("Failed to parse plan JSON", "raw planner output"),
