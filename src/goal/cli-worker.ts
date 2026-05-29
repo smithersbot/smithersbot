@@ -305,6 +305,7 @@ export async function repairResultFile(params: {
   workingDir: string;
   hardDenies: HardDeny[];
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
 }): Promise<GoalWorkerOutput | null> {
   const {
     backend,
@@ -317,6 +318,7 @@ export async function repairResultFile(params: {
     workingDir,
     hardDenies,
     claudeCodeAuth = "subscription",
+    readOnlyRoots,
   } = params;
 
   const initialRead = readWorkerResultFile({ primaryPath: resultFilePath });
@@ -345,6 +347,7 @@ export async function repairResultFile(params: {
           workingDir,
           runId: `repair-${attemptNumber}`,
           purpose: "goal-worker",
+          readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -355,6 +358,7 @@ export async function repairResultFile(params: {
     denyFilePath,
     model,
     codexNativeSandbox,
+    readOnlyRoots,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -436,6 +440,7 @@ export async function executeTaskWithCliWorker(
           runId: `${runId}-${step.id}-attempt-${attemptNumber}`,
           purpose: "goal-worker",
           requiresNetwork: step.requiresNetwork === true,
+          readOnlyRoots: goalConfig?.readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -505,6 +510,7 @@ export async function executeTaskWithCliWorker(
     projectConventions,
     promptPayload,
     codexNativeSandbox,
+    readOnlyRoots: goalConfig?.readOnlyRoots,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -691,6 +697,7 @@ export async function executeTaskWithCliWorker(
       workingDir,
       hardDenies,
       claudeCodeAuth,
+      readOnlyRoots: goalConfig?.readOnlyRoots,
     });
     if (repaired) {
       output = repaired;
@@ -1069,6 +1076,7 @@ export function buildCliArgs(params: {
     appendedSystemPrompt?: string;
   };
   codexNativeSandbox?: CodexNativeSandboxConfig;
+  readOnlyRoots?: string[];
 }): string[] {
   const {
     backend,
@@ -1081,6 +1089,7 @@ export function buildCliArgs(params: {
     projectConventions,
     promptPayload,
     codexNativeSandbox,
+    readOnlyRoots,
   } = params;
   const assembledPrompt =
     promptPayload ??
@@ -1100,6 +1109,7 @@ export function buildCliArgs(params: {
         runId,
         purpose: "goal-worker",
         requiresNetwork,
+        readOnlyRoots,
         sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         codexPath: "codex",
       });
@@ -1123,6 +1133,7 @@ export function buildCliArgs(params: {
     workingDir,
     runId,
     purpose: "goal-worker",
+    readOnlyRoots,
   });
   const args = [
     "-p",

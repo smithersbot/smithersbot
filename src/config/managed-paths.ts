@@ -501,8 +501,8 @@ export function resolveObservedHistoryIndexDir(
 
 /**
  * Traversal-safe guard: true ONLY when `candidate` lies inside the observed
- * instance's allowed agent subtrees (agent/workspaces or
- * agent/history/{goals,repo-chats,index}) AND every realpath candidate stays
+ * instance's allowed agent surface (agent, agent/workspaces, or agent/history)
+ * AND every realpath candidate stays
  * within those subtrees.
  *
  * Returns false when:
@@ -536,7 +536,9 @@ export function isObservedAgentPathAllowed(
   // Allowed subtrees, plus their realpaths so a benign symlink in the path
   // prefix (e.g. /tmp -> /private/tmp) does not spuriously reject a real path.
   const allowedRoots = withRealpaths([
+    agentRoot,
     path.join(agentRoot, "workspaces"),
+    path.join(agentRoot, "history"),
     path.join(agentRoot, "history", "goals"),
     path.join(agentRoot, "history", "repo-chats"),
     path.join(agentRoot, "history", "index"),
