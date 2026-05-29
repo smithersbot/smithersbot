@@ -566,6 +566,7 @@ describe("goal command — early failure persistence", () => {
 
 describe("resolveWorkingDir — 4-level precedence", () => {
   const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
   let managedRoot: string;
 
   beforeEach(() => {
@@ -577,6 +578,8 @@ describe("resolveWorkingDir — 4-level precedence", () => {
   afterEach(() => {
     if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
     else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
     fs.rmSync(managedRoot, { recursive: true, force: true });
   });
 
@@ -625,6 +628,46 @@ describe("resolveWorkingDir — 4-level precedence", () => {
       "/my/repo",
     );
     expect(result).toBe(path.join(managedRoot, "agent", "workspaces", "smithersbot"));
+  });
+
+  it("keeps a smithersbot-dev workspace name under the stable instance root by default", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue("/home/matt");
+    delete process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_INSTANCE = "stable";
+    mockIsGitRepo.mockReturnValue(true);
+
+    try {
+      const result = resolveWorkingDir(
+        undefined,
+        { goal: { defaultWorkspaceName: "smithersbot-dev" } },
+        "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+      );
+
+      expect(result).toBe("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev");
+    } finally {
+      homedirSpy.mockRestore();
+    }
+  });
+
+  it("uses the dev instance root only from explicit instance env, not the workspace name", async () => {
+    const { resolveWorkingDir } = await import("./goal.js");
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue("/home/matt");
+    delete process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_INSTANCE = "dev";
+    mockIsGitRepo.mockReturnValue(true);
+
+    try {
+      const result = resolveWorkingDir(
+        undefined,
+        { goal: { defaultWorkspaceName: "smithersbot-dev" } },
+        "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+      );
+
+      expect(result).toBe("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev");
+    } finally {
+      homedirSpy.mockRestore();
+    }
   });
 
   it("resolves relative --working-dir to absolute", async () => {

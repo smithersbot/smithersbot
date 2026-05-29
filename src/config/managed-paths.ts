@@ -69,6 +69,7 @@ export function resolveManagedRoot(
   if (override) return expandUserPath(override);
   const home = homedir();
   const instance = resolveGatewayInstanceFromEnv(env, homedir);
+  if (env.SMITHERSBOT_INSTANCE?.trim()) return instance.managedRoot;
   const defaultRoot = instance.managedRoot;
   const legacyRoot = path.join(home, LEGACY_DEFAULT_MANAGED_ROOT_DIRNAME);
   if (

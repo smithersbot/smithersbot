@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
+import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import { isValidProfileName } from "./profile-utils.js";
 
 export type CliProfileParseResult =
@@ -85,6 +86,10 @@ function resolveProfileStateDir(profile: string, homedir: () => string): string 
   return path.join(homedir(), `.clawdbot${suffix}`);
 }
 
+function hasAnyEnvValue(env: Record<string, string | undefined>, keys: string[]): boolean {
+  return keys.some((key) => Boolean(env[key]?.trim()));
+}
+
 export function applyCliProfileEnv(params: {
   profile: string;
   env?: Record<string, string | undefined>;
@@ -97,6 +102,28 @@ export function applyCliProfileEnv(params: {
 
   // Convenience only: fill defaults, never override explicit env values.
   env.CLAWDBOT_PROFILE = profile;
+
+  if (profile === "dev") {
+    const instance = resolveGatewayInstanceIdentity("dev", homedir);
+    env.SMITHERSBOT_INSTANCE = instance.name;
+    if (!env.SMITHERSBOT_GOALS_ROOT?.trim()) {
+      env.SMITHERSBOT_GOALS_ROOT = instance.managedRoot;
+    }
+    if (
+      !hasAnyEnvValue(env, ["SMITHERSBOT_STATE_DIR", "MOLTBOT_STATE_DIR", "CLAWDBOT_STATE_DIR"])
+    ) {
+      env.SMITHERSBOT_STATE_DIR = instance.stateDir;
+    }
+    if (
+      !hasAnyEnvValue(env, [
+        "SMITHERSBOT_CONFIG_PATH",
+        "MOLTBOT_CONFIG_PATH",
+        "CLAWDBOT_CONFIG_PATH",
+      ])
+    ) {
+      env.SMITHERSBOT_CONFIG_PATH = path.join(instance.stateDir, "smithersbot.json");
+    }
+  }
 
   const stateDir = env.CLAWDBOT_STATE_DIR?.trim() || resolveProfileStateDir(profile, homedir);
   if (!env.CLAWDBOT_STATE_DIR?.trim()) env.CLAWDBOT_STATE_DIR = stateDir;

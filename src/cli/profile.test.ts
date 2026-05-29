@@ -53,17 +53,27 @@ describe("applyCliProfileEnv", () => {
     applyCliProfileEnv({
       profile: "dev",
       env,
-      homedir: () => "/home/peter",
+      homedir: () => "/home/matt",
     });
-    const expectedStateDir = path.join("/home/peter", ".clawdbot-dev");
+    const expectedStateDir = path.join("/home/matt", ".clawdbot-dev");
+    const expectedInstanceStateDir = path.join("/home/matt", ".smithersbot-dev");
     expect(env.CLAWDBOT_PROFILE).toBe("dev");
     expect(env.CLAWDBOT_STATE_DIR).toBe(expectedStateDir);
     expect(env.CLAWDBOT_CONFIG_PATH).toBe(path.join(expectedStateDir, "moltbot.json"));
     expect(env.CLAWDBOT_GATEWAY_PORT).toBe("19001");
+    expect(env.SMITHERSBOT_INSTANCE).toBe("dev");
+    expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/home/matt/smithersbot-dev-home");
+    expect(env.SMITHERSBOT_STATE_DIR).toBe(expectedInstanceStateDir);
+    expect(env.SMITHERSBOT_CONFIG_PATH).toBe(
+      path.join(expectedInstanceStateDir, "smithersbot.json"),
+    );
   });
 
   it("does not override explicit env values", () => {
     const env: Record<string, string | undefined> = {
+      SMITHERSBOT_GOALS_ROOT: "/explicit/managed-root",
+      SMITHERSBOT_STATE_DIR: "/explicit/state",
+      SMITHERSBOT_CONFIG_PATH: "/explicit/config.json",
       CLAWDBOT_STATE_DIR: "/custom",
       CLAWDBOT_GATEWAY_PORT: "19099",
     };
@@ -75,6 +85,9 @@ describe("applyCliProfileEnv", () => {
     expect(env.CLAWDBOT_STATE_DIR).toBe("/custom");
     expect(env.CLAWDBOT_GATEWAY_PORT).toBe("19099");
     expect(env.CLAWDBOT_CONFIG_PATH).toBe(path.join("/custom", "moltbot.json"));
+    expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/explicit/managed-root");
+    expect(env.SMITHERSBOT_STATE_DIR).toBe("/explicit/state");
+    expect(env.SMITHERSBOT_CONFIG_PATH).toBe("/explicit/config.json");
   });
 });
 

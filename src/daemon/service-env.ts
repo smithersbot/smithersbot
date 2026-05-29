@@ -1,5 +1,10 @@
+import os from "node:os";
 import path from "node:path";
 
+import {
+  normalizeGatewayInstanceSelection,
+  resolveGatewayInstanceIdentity,
+} from "../config/gateway-instance.js";
 import { VERSION } from "../version.js";
 import {
   GATEWAY_SERVICE_KIND,
@@ -134,6 +139,13 @@ export function buildServiceEnvironment(params: {
 }): Record<string, string | undefined> {
   const { env, port, token, launchdLabel, systemdUnit: explicitSystemdUnit, instance } = params;
   const profile = env.CLAWDBOT_PROFILE;
+  const instanceSignal = instance?.trim() || env.SMITHERSBOT_INSTANCE?.trim();
+  const resolvedInstance = instanceSignal
+    ? resolveGatewayInstanceIdentity(
+        normalizeGatewayInstanceSelection(instanceSignal),
+        () => env.HOME?.trim() || os.homedir(),
+      )
+    : undefined;
   const resolvedLaunchdLabel =
     launchdLabel ||
     (process.platform === "darwin" ? resolveGatewayLaunchAgentLabel(profile) : undefined);
@@ -141,7 +153,8 @@ export function buildServiceEnvironment(params: {
   return {
     HOME: env.HOME,
     PATH: buildMinimalServicePath({ env }),
-    SMITHERSBOT_INSTANCE: instance,
+    SMITHERSBOT_INSTANCE: resolvedInstance?.name,
+    SMITHERSBOT_GOALS_ROOT: env.SMITHERSBOT_GOALS_ROOT?.trim() || resolvedInstance?.managedRoot,
     SMITHERSBOT_GATEWAY_PORT: String(port),
     CLAWDBOT_PROFILE: profile,
     CLAWDBOT_STATE_DIR: env.CLAWDBOT_STATE_DIR,
