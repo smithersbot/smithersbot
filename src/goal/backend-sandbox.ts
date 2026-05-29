@@ -11,6 +11,7 @@ import {
   resolvePrivateRoot,
   type ObservedInspectionTarget,
 } from "../config/managed-paths.js";
+import type { GatewayInstanceName } from "../config/gateway-instance.js";
 import { stripClaudeSubscriptionAuthEnv } from "./claude-code-env.js";
 
 export type CodexSandboxPurpose = "goal-worker" | "repo-chat";
@@ -158,6 +159,8 @@ const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
 const CLAUDE_AUTH_OK_REPLY = "claude-auth-ok";
+const OBSERVABLE_GATEWAY_INSTANCES: GatewayInstanceName[] = ["stable", "dev"];
+const PRIVATE_RUNTIME_SUBDIRS = ["env", "config", "auth", "sessions"];
 
 /**
  * Classify the working dir against the explicitly opted-in observed instances,
@@ -200,8 +203,68 @@ function observedSealedDenyRoots(params: {
 }): string[] {
   const observed = observedInspectionTarget(params);
   if (observed.kind !== "agent") return [];
-  const sealed = resolveObservedSealedRoots(observed.instance);
-  return [sealed.privateRoot, sealed.stateDir];
+  return expandedObservedSealedDenyRoots(observed.instance);
+}
+
+function expandedObservedSealedDenyRoots(instance: GatewayInstanceName): string[] {
+  const sealed = resolveObservedSealedRoots(instance, { observedInstances: [instance] });
+  return uniqueValues([
+    sealed.privateRoot,
+    ...PRIVATE_RUNTIME_SUBDIRS.map((name) => path.join(sealed.privateRoot, name)),
+    sealed.stateDir,
+  ]);
+}
+
+function expandConfiguredPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("~")) {
+    return path.resolve(trimmed.replace(/^~(?=$|[\\/])/, os.homedir()));
+  }
+  return path.resolve(trimmed);
+}
+
+function observedReadOnlyTarget(root: string): ObservedInspectionTarget {
+  for (const instance of OBSERVABLE_GATEWAY_INSTANCES) {
+    const target = resolveObservedInspectionTarget(root, { observedInstances: [instance] });
+    if (target.kind !== "none") return target;
+  }
+  return { kind: "none" };
+}
+
+function resolveConfiguredReadOnlyRoots(readOnlyRoots: readonly string[] = []): {
+  allowedReadRoots: string[];
+  sealedDenyRoots: string[];
+} {
+  const allowedReadRoots: string[] = [];
+  const sealedDenyRoots: string[] = [];
+
+  for (const rawRoot of readOnlyRoots) {
+    if (!rawRoot.trim()) continue;
+    const root = expandConfiguredPath(rawRoot);
+    const observed = observedReadOnlyTarget(root);
+
+    if (observed.kind === "agent") {
+      allowedReadRoots.push(root);
+      sealedDenyRoots.push(...expandedObservedSealedDenyRoots(observed.instance));
+      continue;
+    }
+    if (observed.kind === "sealed") {
+      sealedDenyRoots.push(...expandedObservedSealedDenyRoots(observed.instance));
+      continue;
+    }
+
+    if (isPathInsidePrivateRoot(root)) {
+      sealedDenyRoots.push(resolvePrivateRoot());
+      continue;
+    }
+
+    allowedReadRoots.push(root);
+  }
+
+  return {
+    allowedReadRoots: uniqueValues(allowedReadRoots),
+    sealedDenyRoots: uniqueValues(sealedDenyRoots),
+  };
 }
 
 export function resolveManagedExecutionRoot(params: {
@@ -337,10 +400,12 @@ function buildCodexDeniedReadPaths(
 
 function buildCodexPermissionProfileToml(params: {
   executionRoot: string;
+  allowedReadPaths: string[];
   deniedReadPaths: string[];
   writablePaths: string[];
   requiresNetwork?: boolean;
 }): string {
+  const writablePathSet = new Set(params.writablePaths);
   const filesystemLines = [
     "[permissions.smithersbot.filesystem]",
     "glob_scan_max_depth = 8",
@@ -354,6 +419,9 @@ function buildCodexPermissionProfileToml(params: {
     `${tomlQuotedKey(params.executionRoot)} = "${
       params.writablePaths.includes(params.executionRoot) ? "write" : "read"
     }"`,
+    ...params.allowedReadPaths
+      .filter((readPath) => readPath !== params.executionRoot && !writablePathSet.has(readPath))
+      .map((readPath) => `${tomlQuotedKey(readPath)} = "read"`),
     ...params.writablePaths
       .filter((writablePath) => writablePath !== params.executionRoot)
       .map((writablePath) => `${tomlQuotedKey(writablePath)} = "write"`),
@@ -417,6 +485,7 @@ export function buildCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
@@ -437,10 +506,19 @@ export function buildCodexNativeSandboxConfig(params: {
   const authSourcePath = resolveRealCodexAuthSource();
   const authReferencePath = path.join(codexHome, "auth.json");
   const repoChatAgentRoot = resolveRepoChatAgentRoot(params);
+  const configuredReadOnlyRoots = resolveConfiguredReadOnlyRoots(params.readOnlyRoots);
   const allowedReadPaths =
     params.purpose === "repo-chat"
-      ? uniqueValues([repoChatAgentRoot, params.workingDir])
-      : uniqueValues([params.workingDir, path.join(resolveAgentRoot(), "history")]);
+      ? uniqueValues([
+          repoChatAgentRoot,
+          params.workingDir,
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ])
+      : uniqueValues([
+          params.workingDir,
+          path.join(resolveAgentRoot(), "history"),
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ]);
   const writablePaths =
     params.purpose === "repo-chat"
       ? uniqueValues(params.extraWritablePaths ?? [])
@@ -454,10 +532,11 @@ export function buildCodexNativeSandboxConfig(params: {
   const deniedReadPaths = buildCodexDeniedReadPaths(
     params.workingDir,
     authSourcePath,
-    observedSealedDenyRoots(params),
+    uniqueValues([...observedSealedDenyRoots(params), ...configuredReadOnlyRoots.sealedDenyRoots]),
   );
   const configToml = buildCodexPermissionProfileToml({
     executionRoot,
+    allowedReadPaths,
     deniedReadPaths,
     writablePaths,
     requiresNetwork: params.requiresNetwork,
@@ -490,6 +569,7 @@ export function writeCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
@@ -943,6 +1023,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
@@ -953,7 +1034,11 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   // Read-scope to an observed instance's agent root when inspecting it (throws on
   // an observed private/state target); seal that instance's private/state dirs.
   const agentRoot = resolveRepoChatAgentRoot(params);
-  const extraDenyDirs = observedSealedDenyRoots(params);
+  const configuredReadOnlyRoots = resolveConfiguredReadOnlyRoots(params.readOnlyRoots);
+  const extraDenyDirs = uniqueValues([
+    ...observedSealedDenyRoots(params),
+    ...configuredReadOnlyRoots.sealedDenyRoots,
+  ]);
 
   const settingsRoot = params.settingsRoot ?? DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT;
   const settingsDir = path.join(
@@ -962,8 +1047,12 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   );
   const allowRead =
     params.purpose === "repo-chat"
-      ? uniqueValues([agentRoot, params.workingDir])
-      : uniqueValues([params.workingDir, path.join(agentRoot, "history")]);
+      ? uniqueValues([agentRoot, params.workingDir, ...configuredReadOnlyRoots.allowedReadRoots])
+      : uniqueValues([
+          params.workingDir,
+          path.join(agentRoot, "history"),
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ]);
   const allowWrite =
     params.purpose === "repo-chat"
       ? uniqueValues(params.extraWritablePaths ?? [])
@@ -997,6 +1086,7 @@ export function writeClaudeCodeSandboxSettings(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
@@ -1020,6 +1110,7 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
 }): ClaudeCodeLaunchSandboxConfig {

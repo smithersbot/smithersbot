@@ -667,6 +667,71 @@ describe("cli-worker", () => {
       expect(args.join(" ")).not.toContain("dangerously-bypass");
     });
 
+    it("passes configured observed dev read roots to the Claude worker sandbox", () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-observed-home-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const stableHistoryRoot = path.join(testManagedRoot!, "agent", "history");
+      const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+      const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+      const devHistoryRoot = path.join(devAgentRoot, "history");
+      const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+      const devStateDir = path.join(home, ".smithersbot-dev");
+      const devPrivateChecks = [
+        devPrivateRoot,
+        path.join(devPrivateRoot, "env"),
+        path.join(devPrivateRoot, "config"),
+        path.join(devPrivateRoot, "auth"),
+        path.join(devPrivateRoot, "sessions"),
+        devStateDir,
+      ];
+      for (const dir of [
+        workingDir,
+        devAgentRoot,
+        devWorkspacesRoot,
+        devHistoryRoot,
+        ...devPrivateChecks,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+        });
+        const settingsPath = args[args.indexOf("--settings") + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+          sandbox: {
+            filesystem: { allowRead: string[]; allowWrite: string[]; denyRead: string[] };
+          };
+          permissions: { deny: string[] };
+        };
+
+        expect(args).not.toContain("--cd");
+        expect(parsed.sandbox.filesystem.allowRead).toEqual(
+          expect.arrayContaining([
+            workingDir,
+            stableHistoryRoot,
+            devAgentRoot,
+            devWorkspacesRoot,
+            devHistoryRoot,
+          ]),
+        );
+        expect(parsed.sandbox.filesystem.allowWrite).toEqual([workingDir]);
+        for (const privatePath of devPrivateChecks) {
+          expect(parsed.sandbox.filesystem.allowRead).not.toContain(privatePath);
+          expect(parsed.sandbox.filesystem.denyRead).toContain(fs.realpathSync(privatePath));
+        }
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     it("does not use the managed root as the codex worker sandbox root", () => {
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-worker-root-"));
@@ -983,6 +1048,101 @@ describe("cli-worker", () => {
       expect(fs.readFileSync(configPath, "utf8")).toContain("enabled = true");
       expect(args).not.toContain("net.allowed=false");
       expect(args).not.toContain("--sandbox");
+    });
+
+    it("keeps codex execution in the stable workspace while allowing configured dev agent roots read-only", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-observed-exec-home-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      const runId = "run-observed-read-roots";
+      const stepId = "step-observed-read-roots";
+      const step = makeStep({ id: stepId });
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+      const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+      const devHistoryRoot = path.join(devAgentRoot, "history");
+      const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+      const devStateDir = path.join(home, ".smithersbot-dev");
+      const devPrivateChecks = [
+        devPrivateRoot,
+        path.join(devPrivateRoot, "env"),
+        path.join(devPrivateRoot, "config"),
+        path.join(devPrivateRoot, "auth"),
+        path.join(devPrivateRoot, "sessions"),
+        devStateDir,
+      ];
+      for (const dir of [
+        workingDir,
+        devAgentRoot,
+        devWorkspacesRoot,
+        devHistoryRoot,
+        ...devPrivateChecks,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const plan: Plan = { ...makePlan(), workingDir, steps: [step] };
+      const workerDir = path.join(workingDir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        workingDir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "Observed read roots passed through" }),
+          "utf8",
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step,
+          plan,
+          goal: "Verify observed read roots",
+          workingDir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+          goalConfig: {
+            readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+          },
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        const args = call?.args ?? [];
+        const env = (call?.env ?? {}) as Record<string, string>;
+        const configToml = fs.readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+
+        expect(call?.cwd).toBe(workingDir);
+        expect(args[args.indexOf("--cd") + 1]).toBe(workingDir);
+        expect(args.join(" ")).not.toContain(devWorkspacesRoot);
+        expect(configToml).toContain(`${JSON.stringify(devAgentRoot)} = "read"`);
+        expect(configToml).toContain(`${JSON.stringify(devWorkspacesRoot)} = "read"`);
+        expect(configToml).toContain(`${JSON.stringify(devHistoryRoot)} = "read"`);
+        for (const privatePath of devPrivateChecks) {
+          expect(configToml).toContain(`${JSON.stringify(privatePath)} = "deny"`);
+          expect(configToml).not.toContain(`${JSON.stringify(privatePath)} = "read"`);
+        }
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     });
 
     it("launches codex with the auth-continuous generated CODEX_HOME shape", async () => {
