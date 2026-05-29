@@ -297,6 +297,138 @@ describeGit("git-checkpoint", () => {
     expect(remotes).toBe("");
   });
 
+  // A `git` shim placed first on PATH records the exact order of git
+  // invocations (and can simulate init/rev-parse failures) so these tests fail
+  // if any `git add` is ever issued before `git init` + verification succeed.
+  describe("git-init-before-staging ordering", () => {
+    let shimDir: string;
+    let logPath: string;
+    let savedPath: string | undefined;
+    let realGit: string;
+
+    function gitInvocations(): string[][] {
+      if (!fs.existsSync(logPath)) return [];
+      return fs
+        .readFileSync(logPath, "utf8")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => line.split(/\s+/));
+    }
+
+    /** Index of the first invocation whose git subcommand is `name`. */
+    function firstIndexOf(invocations: string[][], name: string): number {
+      return invocations.findIndex((args) => args[2] === name);
+    }
+
+    beforeEach(() => {
+      realGit = (() => {
+        try {
+          return execSync("command -v git", { encoding: "utf8" }).trim() || "git";
+        } catch {
+          return "git";
+        }
+      })();
+      shimDir = tracked(mkdtempSync(path.join(tempBaseOutsideRepo(), "git-shim-")));
+      logPath = path.join(shimDir, "git-invocations.log");
+      const shimPath = path.join(shimDir, "git");
+      fs.writeFileSync(
+        shimPath,
+        [
+          "#!/usr/bin/env bash",
+          'printf "%s\\n" "$*" >> "$MOLTBOT_GIT_LOG"',
+          'if [ "$3" = "init" ] && [ -n "$MOLTBOT_GIT_FAIL_INIT" ]; then',
+          '  echo "fatal: simulated init failure" >&2',
+          "  exit 128",
+          "fi",
+          'if [ "$3" = "rev-parse" ] && [ "$4" = "--show-toplevel" ] && [ -n "$MOLTBOT_GIT_FAIL_REVPARSE" ]; then',
+          '  echo "fatal: simulated rev-parse failure" >&2',
+          "  exit 128",
+          "fi",
+          `exec "${realGit}" "$@"`,
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      savedPath = process.env.PATH;
+      process.env.PATH = `${shimDir}${path.delimiter}${savedPath ?? ""}`;
+      process.env.MOLTBOT_GIT_LOG = logPath;
+    });
+
+    afterEach(() => {
+      if (savedPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = savedPath;
+      }
+      delete process.env.MOLTBOT_GIT_LOG;
+      delete process.env.MOLTBOT_GIT_FAIL_INIT;
+      delete process.env.MOLTBOT_GIT_FAIL_REVPARSE;
+    });
+
+    it("creates .git (init + rev-parse) before any git add for a plain managed folder", () => {
+      const workingDir = managedWorkspace("plain-shim");
+      fs.mkdirSync(workingDir, { recursive: true });
+      fs.writeFileSync(path.join(workingDir, "README.md"), "# Dragged-in\n");
+
+      ensureWorkingDir(workingDir);
+
+      const invocations = gitInvocations();
+      const idxInit = firstIndexOf(invocations, "init");
+      const idxAdd = firstIndexOf(invocations, "add");
+      const idxVerify = invocations.findIndex(
+        (args, i) => i > idxInit && args[2] === "rev-parse" && args.includes("--show-toplevel"),
+      );
+
+      expect(idxInit).toBeGreaterThanOrEqual(0);
+      expect(idxAdd).toBeGreaterThanOrEqual(0);
+      // init runs first; verification rev-parse runs after init and before add.
+      expect(idxAdd).toBeGreaterThan(idxInit);
+      expect(idxVerify).toBeGreaterThan(idxInit);
+      expect(idxAdd).toBeGreaterThan(idxVerify);
+
+      // The real repo exists with a baseline commit and no remote.
+      expect(isGitRepo(workingDir)).toBe(true);
+      const head = execSync("git rev-parse HEAD", { cwd: workingDir, encoding: "utf8" }).trim();
+      expect(head).toHaveLength(40);
+      expect(execSync("git remote -v", { cwd: workingDir, encoding: "utf8" }).trim()).toBe("");
+    });
+
+    it("aborts with a clear non-raw error and never stages when git init fails", () => {
+      const workingDir = managedWorkspace("plain-init-fail");
+      fs.mkdirSync(workingDir, { recursive: true });
+      process.env.MOLTBOT_GIT_FAIL_INIT = "1";
+
+      expect(() => ensureWorkingDir(workingDir)).toThrow(
+        /SmithersBot could not initialize a local git repository/,
+      );
+
+      const invocations = gitInvocations();
+      expect(firstIndexOf(invocations, "add")).toBe(-1);
+    });
+
+    it("aborts with a clear non-raw error and never stages when rev-parse verification fails", () => {
+      const workingDir = managedWorkspace("plain-revparse-fail");
+      fs.mkdirSync(workingDir, { recursive: true });
+      process.env.MOLTBOT_GIT_FAIL_REVPARSE = "1";
+
+      let thrown: Error | undefined;
+      try {
+        ensureWorkingDir(workingDir);
+      } catch (error) {
+        thrown = error as Error;
+      }
+      expect(thrown).toBeDefined();
+      expect(thrown?.message).toMatch(/could not verify it with/);
+      expect(thrown?.message).not.toMatch(/fatal: not a git repository/);
+
+      const invocations = gitInvocations();
+      // init was attempted, but verification failed, so no staging happened.
+      expect(firstIndexOf(invocations, "init")).toBeGreaterThanOrEqual(0);
+      expect(firstIndexOf(invocations, "add")).toBe(-1);
+    });
+  });
+
   it("autosaveIfDirty does not fail when only submodule content is dirty", () => {
     const dir = tracked(initRepo());
     const submoduleDir = tracked(initSubmoduleRepo());
