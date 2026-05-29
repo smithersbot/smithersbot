@@ -96,7 +96,17 @@ export async function startTelegramWebhook(opts: {
     }
   });
 
-  await new Promise<void>((resolve) => server.listen(port, host, resolve));
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("error", onError);
+      reject(error);
+    };
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
   const address = server.address();
   const listenPort = address && typeof address !== "string" ? (address as AddressInfo).port : port;
   const publicUrl =
