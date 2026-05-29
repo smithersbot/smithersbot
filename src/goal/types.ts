@@ -242,6 +242,10 @@ export type SerializedRun = {
   autocheckBackend?: "codex" | "claude_code";
   /** Stable CLI session ID for autocheck reviewer resume. */
   autocheckSessionId?: string;
+  /** Redacted reason recorded when plan autocheck was skipped after a failure. */
+  autocheckSkipReason?: string;
+  /** Agent-visible metadata artifact for the latest skipped autocheck failure. */
+  autocheckSkipMetadataPath?: string;
   /** Suggested manual verification tests shown after completion. */
   manualTests?: ManualTestSuggestion[];
   /** Why manual test generation failed when suggestions are unavailable. */

@@ -84,6 +84,14 @@ vi.mock("../goal/cli-planner.js", () => ({
 
 const mockRunPlanAutocheck = vi.fn();
 vi.mock("../goal/plan-autocheck.js", () => ({
+  PlanAutocheckError: class PlanAutocheckError extends Error {
+    readonly metadata: unknown;
+    constructor(message: string, metadata: unknown) {
+      super(message);
+      this.name = "PlanAutocheckError";
+      this.metadata = metadata;
+    }
+  },
   runPlanAutocheck: (...args: unknown[]) => mockRunPlanAutocheck(...args),
 }));
 
@@ -500,6 +508,11 @@ describe("goal-commands telegram adapter", () => {
           },
         ],
       } as const;
+      const readOnlyRoots = [
+        "/Users/test/smithersbot-dev-home/agent",
+        "/Users/test/smithersbot-dev-home/agent/workspaces",
+        "/Users/test/smithersbot-dev-home/agent/history",
+      ];
 
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
@@ -524,7 +537,7 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Build a website", {
-        goal: { planAutocheck: "codex" },
+        goal: { planAutocheck: "codex", readOnlyRoots },
       } as never);
 
       expect(mockGoalCommand).toHaveBeenCalledOnce();
@@ -540,6 +553,8 @@ describe("goal-commands telegram adapter", () => {
           existingSessionId: undefined,
           existingBackend: undefined,
           mode: "codex",
+          workingDir: "/tmp/ws",
+          readOnlyRoots,
         }),
       );
 
@@ -559,7 +574,15 @@ describe("goal-commands telegram adapter", () => {
           return undefined;
         },
       );
-      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+      mockRunPlanAutocheck.mockRejectedValue(
+        Object.assign(new Error("autocheck failed"), {
+          metadata: {
+            reason: "reviewer failed at autocheck/round-1/failure.txt",
+            agentHistoryMetadataPath:
+              "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+          },
+        }),
+      );
 
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Build a website", {
@@ -568,8 +591,15 @@ describe("goal-commands telegram adapter", () => {
 
       expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
       expect(result.autocheckSkipped).toBe(true);
+      expect(result.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
       const persisted = loadRun(result.runId!, testGoalsDir);
       expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.autocheckSkipReason).toBe(
+        "reviewer failed at autocheck/round-1/failure.txt",
+      );
+      expect(persisted?.autocheckSkipMetadataPath).toBe(
+        "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+      );
     });
 
     it("skips autocheck in handleGoal when planAutocheck is off", async () => {
@@ -2279,12 +2309,15 @@ describe("goal-commands telegram adapter", () => {
           plan,
           stepResults: new Map(),
           autocheckSkipped: true,
+          autocheckSkipReason: "reviewer failed at autocheck/round-1/failure.txt",
         },
       });
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      expect(options.caption).toContain("Note: Plan autocheck was skipped due to an error.");
+      expect(options.caption).toContain(
+        "Note: Plan autocheck was skipped due to an error: reviewer failed at autocheck/round-1/failure.txt.",
+      );
     });
 
     it("threads reply parameters when PNG plan delivery succeeds", async () => {
@@ -3372,7 +3405,15 @@ describe("goal-commands telegram adapter", () => {
           ],
         },
       });
-      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+      mockRunPlanAutocheck.mockRejectedValue(
+        Object.assign(new Error("autocheck failed"), {
+          metadata: {
+            reason: "reviewer failed at autocheck/round-1/failure.txt",
+            agentHistoryMetadataPath:
+              "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+          },
+        }),
+      );
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -3382,8 +3423,13 @@ describe("goal-commands telegram adapter", () => {
 
       expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
       expect(result.autocheckSkipped).toBe(true);
+      expect(result.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
       const run = loadRun("test-run-id-1234", testGoalsDir);
       expect(run?.state).toBe("awaiting_approval");
+      expect(run?.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
+      expect(run?.autocheckSkipMetadataPath).toBe(
+        "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+      );
     });
 
     it("skips autocheck in handleGoalEdit when planAutocheck is off", async () => {
