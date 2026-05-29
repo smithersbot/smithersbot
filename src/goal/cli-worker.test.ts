@@ -1862,6 +1862,48 @@ describe("cli-worker", () => {
       expect(prompt).not.toContain(HARD_DENIES[0]!.pattern);
     });
 
+    it("injects the dev-gateway worker instruction only when devGatewayWorkspace is set", () => {
+      const withDev = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: true,
+      });
+      expect(withDev).toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+      expect(withDev).toContain("systemctl --user restart smithersbot-dev-gateway.service");
+      expect(withDev).toContain("Never restart, reinstall, or otherwise modify the stable gateway");
+      // Guidance appears in the dynamic body, after the goal line.
+      expect(withDev.indexOf("GOAL: Build auth")).toBeLessThan(
+        withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:"),
+      );
+      expect(withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:")).toBeLessThan(
+        withDev.indexOf("PLAN CONTEXT:"),
+      );
+    });
+
+    it("omits the dev-gateway worker instruction by default", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+      expect(prompt).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+
+      const explicitlyOff = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: false,
+      });
+      expect(explicitlyOff).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+    });
+
     it("includes success criteria and constraints when provided", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep({

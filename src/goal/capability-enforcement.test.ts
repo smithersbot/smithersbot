@@ -6,7 +6,12 @@ import {
   createEnforcedBashOperations,
   createEnforcedCodingTools,
 } from "./capability-enforcement.js";
-import { HARD_DENIES, checkCommandDeny, checkPathDeny } from "./hard-deny.js";
+import {
+  HARD_DENIES,
+  buildDevWorkspaceHardDenies,
+  checkCommandDeny,
+  checkPathDeny,
+} from "./hard-deny.js";
 
 const WORKING_DIR = "/home/user/project";
 const mockSpawn = vi.fn();
@@ -155,6 +160,56 @@ describe("createEnforcedBashOperations", () => {
     expect(result.exitCode).toBe(126);
     expect(denied.length).toBe(1);
     expect(output.join("")).toContain("Denied:");
+  });
+
+  it("allows the dev gateway restart but denies the stable gateway under dev denies", async () => {
+    const devDenies = buildDevWorkspaceHardDenies();
+
+    const allowDenied: string[] = [];
+    const allowMock = mockBashOps();
+    const allowOps = createEnforcedBashOperations(
+      devDenies,
+      (d) => allowDenied.push(d.reason),
+      allowMock,
+    );
+    const allowResult = await allowOps.exec(
+      "systemctl --user restart smithersbot-dev-gateway.service",
+      WORKING_DIR,
+      { onData: () => {} },
+    );
+    expect(allowResult.exitCode).toBe(0);
+    expect(allowDenied).toHaveLength(0);
+    expect(allowMock.calls).toHaveLength(1);
+
+    const denyDenied: string[] = [];
+    const denyMock = mockBashOps();
+    const denyOps = createEnforcedBashOperations(
+      devDenies,
+      (d) => denyDenied.push(d.reason),
+      denyMock,
+    );
+    const denyResult = await denyOps.exec(
+      "systemctl --user restart smithersbot-gateway.service",
+      WORKING_DIR,
+      { onData: () => {} },
+    );
+    expect(denyResult.exitCode).toBe(126);
+    expect(denyDenied).toHaveLength(1);
+    expect(denyMock.calls).toHaveLength(0);
+  });
+
+  it("denies the dev gateway restart under the default (stable) deny list", async () => {
+    const denied: string[] = [];
+    const mock = mockBashOps();
+    const ops = createEnforcedBashOperations(HARD_DENIES, (d) => denied.push(d.reason), mock);
+    const result = await ops.exec(
+      "systemctl --user restart smithersbot-dev-gateway.service",
+      WORKING_DIR,
+      { onData: () => {} },
+    );
+    expect(result.exitCode).toBe(126);
+    expect(denied).toHaveLength(1);
+    expect(mock.calls).toHaveLength(0);
   });
 
   it("denies inline interpreter shell-exec commands before bash execution", async () => {

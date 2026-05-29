@@ -34,7 +34,8 @@ import {
   WORKER_DYNAMIC_CONTEXT_HEADER,
   WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX,
 } from "./worker-context.js";
-import { renderGroupedHardDenies } from "./hard-deny.js";
+import { buildDevWorkspaceHardDenies, renderGroupedHardDenies } from "./hard-deny.js";
+import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
@@ -65,6 +66,21 @@ const RESULT_POLL_INTERVAL_MS = 4_000;
 const RESULT_GRACE_PERIOD_MS = 10_000;
 export const REPAIR_TIMEOUT_MS = 60_000;
 const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n";
+
+// Dynamic dev-gateway worker guidance. Injected only when the goal works in the
+// smithersbot-dev checkout AND the dev gateway service is present. This is
+// guidance, not runtime config — it never changes which instance the gateway is.
+export const DEV_GATEWAY_WORKER_INSTRUCTION = [
+  "SMITHERSBOT DEV GATEWAY WORKSPACE:",
+  "You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (smithersbot-dev-gateway.service) is installed.",
+  "- Never restart, reinstall, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
+  "- You may restart and inspect ONLY the dev gateway, using exactly these commands:",
+  "  - systemctl --user restart smithersbot-dev-gateway.service",
+  "  - systemctl --user status smithersbot-dev-gateway.service --no-pager",
+  "  - journalctl --user -u smithersbot-dev-gateway.service -n 80 --no-pager",
+  "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, rebuild, restart smithersbot-dev-gateway.service, and smoke-test the changed behavior against the dev gateway before reporting completion.",
+  "- For docs-only or tests-only changes, do not force a gateway restart unless it is needed to verify the requested behavior.",
+].join("\n");
 
 // --- Public API ---
 
@@ -444,6 +460,14 @@ export async function executeTaskWithCliWorker(
     }
   }
 
+  // Detect the dev-gateway workspace from the checkout/cwd (guidance only — this
+  // never changes the running gateway's runtime config). When active, the worker
+  // gets the dev-only restart guidance and a dev-aware hard-deny list.
+  const devGateway = resolveDevGatewayWorkerContext({ workingDir });
+  const effectiveHardDenies = devGateway.active
+    ? buildDevWorkspaceHardDenies(hardDenies)
+    : hardDenies;
+
   const prompt = buildCliWorkerPrompt({
     step,
     plan,
@@ -454,10 +478,11 @@ export async function executeTaskWithCliWorker(
     resumeQuestion,
     resultPath: workspaceResultPath,
     previousAttempt,
+    devGatewayWorkspace: devGateway.active,
   });
 
   // Write artifacts
-  const denyFilePath = writeDenyFile(hardDenies, workerDir);
+  const denyFilePath = writeDenyFile(effectiveHardDenies, workerDir);
   const promptPayload = buildCliPromptPayload({
     backend,
     prompt,
@@ -845,6 +870,12 @@ export function buildCliWorkerPrompt(params: {
   resumeQuestion?: string;
   resultPath: string;
   previousAttempt?: string | null;
+  /**
+   * Inject the dynamic SmithersBot dev-gateway guidance (dev-only restart
+   * policy). Set only when the goal works in the smithersbot-dev checkout and
+   * the dev gateway service is present.
+   */
+  devGatewayWorkspace?: boolean;
 }): string {
   const {
     step,
@@ -856,6 +887,7 @@ export function buildCliWorkerPrompt(params: {
     resumeQuestion,
     resultPath,
     previousAttempt,
+    devGatewayWorkspace,
   } = params;
   const lines: string[] = [];
 
@@ -865,6 +897,10 @@ export function buildCliWorkerPrompt(params: {
   lines.push("");
   lines.push(`GOAL: ${goal}`);
   lines.push("");
+  if (devGatewayWorkspace) {
+    lines.push(DEV_GATEWAY_WORKER_INSTRUCTION);
+    lines.push("");
+  }
   lines.push("PLAN CONTEXT:");
   lines.push(formatPlanAsContext(plan));
   lines.push("");
