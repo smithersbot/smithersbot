@@ -100,29 +100,31 @@ async function mkPnpmGitFixture(root: string, name = "fixture-repo") {
   return repo;
 }
 
-async function runSetupPreflight(params: { home: string; env?: NodeJS.ProcessEnv }) {
-  const child = spawn(
-    "/bin/bash",
-    [
-      scriptPath,
-      "--no-build",
-      "--backend",
-      "codex",
-      "--config-dir",
-      path.join(params.home, ".smithersbot"),
-      "--state-dir",
-      path.join(params.home, ".smithersbot"),
-    ],
-    {
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        ...params.env,
-        HOME: params.home,
-      },
-      stdio: ["pipe", "pipe", "pipe"],
+async function runSetupPreflight(params: {
+  home: string;
+  env?: NodeJS.ProcessEnv;
+  extraArgs?: string[];
+}) {
+  const args = [
+    scriptPath,
+    ...(params.extraArgs ?? []),
+    "--no-build",
+    "--backend",
+    "codex",
+    "--config-dir",
+    path.join(params.home, ".smithersbot"),
+    "--state-dir",
+    path.join(params.home, ".smithersbot"),
+  ];
+  const child = spawn("/bin/bash", args, {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      ...params.env,
+      HOME: params.home,
     },
-  );
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");
@@ -217,6 +219,7 @@ async function runSetup(params: {
   home: string;
   apiBase: string;
   input: string;
+  instance?: string;
   noBuild?: boolean;
   pollSeconds?: string;
   pollInterval?: string;
@@ -226,6 +229,9 @@ async function runSetup(params: {
   honorificInput?: string;
   systemdInput?: string;
   backendArg?: "codex" | "claude_code" | null;
+  configDir?: string | null;
+  stateDir?: string | null;
+  cwd?: string;
   env?: NodeJS.ProcessEnv;
 }) {
   const sourceRepo = path.join(params.home, "source-repo");
@@ -248,14 +254,21 @@ async function runSetup(params: {
   if (params.backendArg !== null) {
     args.push("--backend", params.backendArg ?? "codex");
   }
-  args.push(
-    "--config-dir",
-    path.join(params.home, ".smithersbot"),
-    "--state-dir",
-    path.join(params.home, ".smithersbot"),
-  );
+  if (params.instance) {
+    args.push("--instance", params.instance);
+  }
+  const configDir =
+    params.configDir === undefined ? path.join(params.home, ".smithersbot") : params.configDir;
+  const stateDir =
+    params.stateDir === undefined ? path.join(params.home, ".smithersbot") : params.stateDir;
+  if (configDir !== null) {
+    args.push("--config-dir", configDir);
+  }
+  if (stateDir !== null) {
+    args.push("--state-dir", stateDir);
+  }
   const child = spawn("/bin/bash", args, {
-    cwd: repoRoot,
+    cwd: params.cwd ?? repoRoot,
     env: {
       ...process.env,
       ...params.env,
@@ -280,9 +293,10 @@ async function runSetup(params: {
   return { exitCode, stdout, stderr, output: `${stdout}\n${stderr}` };
 }
 
-async function readGeneratedConfig(home: string) {
-  const configPath = path.join(home, ".smithersbot", "smithersbot.json");
-  const envPath = path.join(home, ".smithersbot", ".env");
+async function readGeneratedConfig(home: string, instance: "stable" | "dev" = "stable") {
+  const stateDirName = instance === "dev" ? ".smithersbot-dev" : ".smithersbot";
+  const configPath = path.join(home, stateDirName, "smithersbot.json");
+  const envPath = path.join(home, stateDirName, ".env");
   const [configRaw, envRaw, configStat, envStat] = await Promise.all([
     fs.readFile(configPath, "utf8"),
     fs.readFile(envPath, "utf8"),
@@ -348,6 +362,19 @@ describe("scripts/setup-smithersbot.sh", () => {
 
     expect(result.exitCode).not.toBe(0);
     expect(result.output).toContain("pnpm is required but was not found");
+  });
+
+  it("rejects unknown gateway instance names before setup starts", async () => {
+    const home = await mkTempHome();
+    const result = await runSetupPreflight({
+      home,
+      extraArgs: ["--instance", "prod"],
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain(
+      'Unknown SmithersBot gateway instance "prod". Allowed values: default, stable, dev.',
+    );
   });
 
   it("suppresses successful install/build logs behind concise status lines", async () => {
@@ -565,6 +592,113 @@ Very good. Let us begin.`);
     expect(result.output).toContain(
       "/new_goal Inspect the repository state and report whether the working tree is clean. Do not edit files.",
     );
+  });
+
+  it("keeps no-instance setup on the stable dirs even from the smithersbot-dev checkout", async () => {
+    const home = await mkTempHome();
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      configDir: null,
+      stateDir: null,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.join(home, ".smithersbot", ".env"))).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(home, ".smithersbot", "smithersbot.json")),
+    ).resolves.toBeTruthy();
+    await expect(
+      fs.stat(path.join(home, "smithersbot-home", "agent", "workspaces")),
+    ).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(home, ".smithersbot-dev"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(fs.stat(path.join(home, "smithersbot-dev-home"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(result.output).toContain(
+      `✓ Very good. SmithersBot home is set:\n  ${path.join(home, "smithersbot-home")}`,
+    );
+    expect(result.output).toContain("  node scripts/run-node.mjs gateway");
+    expect(result.output).not.toContain(
+      "SMITHERSBOT_INSTANCE=dev node scripts/run-node.mjs gateway",
+    );
+  });
+
+  it("--instance dev writes isolated dev config, state, managed home, and manual command", async () => {
+    const home = await mkTempHome();
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      instance: "dev",
+      configDir: null,
+      stateDir: null,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const generated = await readGeneratedConfig(home, "dev");
+    expect(generated.envRaw).toContain(`TELEGRAM_BOT_TOKEN=${testToken}`);
+    expect(generated.config.channels.telegram.allowFrom).toEqual(["555111222"]);
+    const managedRoot = path.join(home, "smithersbot-dev-home");
+    await expect(fs.stat(path.join(managedRoot, "agent", "workspaces"))).resolves.toBeTruthy();
+    await expect(fs.stat(path.join(home, ".smithersbot"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(fs.stat(path.join(home, "smithersbot-home"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(result.output).toContain(`✓ Very good. SmithersBot home is set:\n  ${managedRoot}`);
+    expect(result.output).toContain("  SMITHERSBOT_INSTANCE=dev node scripts/run-node.mjs gateway");
+  });
+
+  it("blocks configuring dev with the same Telegram token as stable without exposing it", async () => {
+    const home = await mkTempHome();
+    const stableDir = path.join(home, ".smithersbot");
+    await fs.mkdir(stableDir, { recursive: true });
+    await fs.writeFile(path.join(stableDir, ".env"), `TELEGRAM_BOT_TOKEN=${testToken}\n`, {
+      mode: 0o600,
+    });
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      instance: "dev",
+      configDir: null,
+      stateDir: null,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n`,
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain(
+      "dev gateway Telegram bot token must differ from the stable gateway token",
+    );
+    expect(result.output).not.toContain(testToken);
+    await expect(fs.stat(path.join(home, ".smithersbot-dev", ".env"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("respects an existing former default SmithersBot home when the new default is absent", async () => {
@@ -1328,7 +1462,16 @@ Choose [ENTER for default: Codex]:`);
     const home = await mkTempHome();
     const bin = path.join(home, "bin");
     const argvLog = path.join(home, "systemctl-argv.log");
+    const devUnit = path.join(
+      home,
+      ".config",
+      "systemd",
+      "user",
+      "smithersbot-dev-gateway.service",
+    );
     await fs.mkdir(bin);
+    await fs.mkdir(path.dirname(devUnit), { recursive: true });
+    await fs.writeFile(devUnit, "keep dev unit\n", "utf8");
     await writeExecutable(
       path.join(bin, "systemctl"),
       `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\nif [[ "$*" == "--user --version" ]]; then exit 0; fi\nexit 0\n`,
@@ -1360,6 +1503,56 @@ Choose [ENTER for default: Codex]:`);
     expect(result.output).toContain("✓ SmithersBot is running:\n  smithersbot-gateway.service");
     expect(result.output).toContain("journalctl --user -u smithersbot-gateway.service -f");
     expect((result.output.match(/Next commands:/g) ?? []).length).toBe(0);
+    await expect(fs.readFile(devUnit, "utf8")).resolves.toBe("keep dev unit\n");
+  });
+
+  it("starts the dev systemd user service when --instance dev is accepted", async () => {
+    const home = await mkTempHome();
+    const bin = path.join(home, "bin");
+    const argvLog = path.join(home, "systemctl-argv.log");
+    const stableUnit = path.join(home, ".config", "systemd", "user", "smithersbot-gateway.service");
+    await fs.mkdir(bin);
+    await fs.mkdir(path.dirname(stableUnit), { recursive: true });
+    await fs.writeFile(stableUnit, "keep stable unit\n", "utf8");
+    await writeExecutable(
+      path.join(bin, "systemctl"),
+      `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\nif [[ "$*" == "--user --version" ]]; then exit 0; fi\nexit 0\n`,
+    );
+    const apiBase = await startTelegramStub((requestPath) => {
+      if (requestPath.endsWith("/getMe")) return getMeSuccess;
+      if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
+      return { ok: false, description: `unexpected path ${requestPath}` };
+    });
+
+    const result = await runSetup({
+      home,
+      apiBase,
+      instance: "dev",
+      configDir: null,
+      stateDir: null,
+      repoPromptInput: "4\n",
+      input: `${testToken}\n\n`,
+      systemdInput: "\n",
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const argv = await fs.readFile(argvLog, "utf8");
+    expect(argv).toContain("--user daemon-reload");
+    expect(argv).toContain("--user enable --now smithersbot-dev-gateway.service");
+    expect(argv).toContain("--user is-active smithersbot-dev-gateway.service");
+    expect(argv).not.toContain("--user enable --now smithersbot-gateway.service");
+    const unit = await fs.readFile(
+      path.join(home, ".config", "systemd", "user", "smithersbot-dev-gateway.service"),
+      "utf8",
+    );
+    expect(unit).toContain("EnvironmentFile=%h/.smithersbot-dev/.env\n");
+    expect(unit).toContain("Environment=SMITHERSBOT_INSTANCE=dev\n");
+    expect(unit).toContain("Environment=SMITHERSBOT_GATEWAY_PORT=18790\n");
+    expect(unit).toContain(`WorkingDirectory=${repoRoot}\n`);
+    await expect(fs.readFile(stableUnit, "utf8")).resolves.toBe("keep stable unit\n");
+    expect(result.output).toContain("✓ SmithersBot is running:\n  smithersbot-dev-gateway.service");
+    expect(result.output).toContain("journalctl --user -u smithersbot-dev-gateway.service -f");
   });
 
   it("prints a service-start failure block without setup complete when systemd never becomes active", async () => {

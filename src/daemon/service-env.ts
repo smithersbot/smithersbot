@@ -129,16 +129,20 @@ export function buildServiceEnvironment(params: {
   port: number;
   token?: string;
   launchdLabel?: string;
+  systemdUnit?: string;
+  instance?: string;
 }): Record<string, string | undefined> {
-  const { env, port, token, launchdLabel } = params;
+  const { env, port, token, launchdLabel, systemdUnit: explicitSystemdUnit, instance } = params;
   const profile = env.CLAWDBOT_PROFILE;
   const resolvedLaunchdLabel =
     launchdLabel ||
     (process.platform === "darwin" ? resolveGatewayLaunchAgentLabel(profile) : undefined);
-  const systemdUnit = `${resolveGatewaySystemdServiceName(profile)}.service`;
+  const systemdUnit = explicitSystemdUnit || `${resolveGatewaySystemdServiceName(profile)}.service`;
   return {
     HOME: env.HOME,
     PATH: buildMinimalServicePath({ env }),
+    SMITHERSBOT_INSTANCE: instance,
+    SMITHERSBOT_GATEWAY_PORT: String(port),
     CLAWDBOT_PROFILE: profile,
     CLAWDBOT_STATE_DIR: env.CLAWDBOT_STATE_DIR,
     CLAWDBOT_CONFIG_PATH: env.CLAWDBOT_CONFIG_PATH,
