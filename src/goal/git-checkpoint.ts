@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { TaskCheckpoint } from "./types.js";
 import { isRepoPrivate, parseGitHubRemote } from "./git-privacy.js";
+import { isPathInsideWorkspacesRoot, resolveWorkspacesRoot } from "../config/managed-paths.js";
 
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
@@ -19,6 +20,11 @@ __pycache__/
 .mypy_cache/
 .env
 .env.*
+!.env.example
+dist/
+build/
+.tmp/
+.moltbot-goal-worker-results/
 `;
 
 function describeGitError(error: unknown): string {
@@ -77,6 +83,36 @@ export function findGitRoot(cwd: string): string | null {
 
 export function isGitRepo(cwd: string): boolean {
   return Boolean(findGitRoot(cwd));
+}
+
+/**
+ * Ask git itself for the work-tree root containing `cwd`. Returns the absolute
+ * toplevel path, or null when `cwd` is not inside a usable git repository.
+ *
+ * This is git's own detection (unlike {@link findGitRoot}, which only walks the
+ * filesystem for a `.git` entry). It is the authoritative check before staging:
+ * a folder can contain a stale/empty/broken `.git` that `findGitRoot` reports as
+ * a repo but that git refuses with "fatal: not a git repository". Relying on git
+ * here prevents ever issuing `git add` against a directory git won't accept.
+ */
+function gitToplevel(cwd: string): string | null {
+  try {
+    const out = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function realpathOrResolve(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 function hasHeadCommit(cwd: string): boolean {
@@ -155,32 +191,45 @@ export function resolveRunBranchNameForResume(
   }
 }
 
-export function ensureWorkingDir(cwd: string): void {
-  fs.mkdirSync(cwd, { recursive: true });
-  if (!canRunGit()) return;
-
-  if (!isGitRepo(cwd)) {
-    execFileSync("git", ["-C", cwd, "init"], {
-      encoding: "utf8",
-      timeout: 10000,
-    });
+/** Files (other than git metadata / placeholders) that would seed a baseline commit. */
+function hasCommittableEntries(cwd: string): boolean {
+  try {
+    return fs.readdirSync(cwd).some((entry) => entry !== ".git" && entry !== ".gitkeep");
+  } catch {
+    return false;
   }
+}
 
-  // `git checkout -B` and `git rev-parse HEAD` require HEAD to exist.
-  if (hasHeadCommit(cwd)) return;
-
-  const gitkeepPath = path.join(cwd, ".gitkeep");
-  if (!fs.existsSync(gitkeepPath)) {
-    fs.writeFileSync(gitkeepPath, "");
+/**
+ * Write the placeholder + conservative .gitignore used to seed a baseline commit.
+ * Never overwrites an existing .gitignore. A .gitkeep is only created when the
+ * directory would otherwise have nothing to commit (empty workspace).
+ */
+function writeInitialWorkspaceFiles(cwd: string, opts: { gitkeep: boolean }): void {
+  if (opts.gitkeep) {
+    const gitkeepPath = path.join(cwd, ".gitkeep");
+    if (!fs.existsSync(gitkeepPath)) {
+      fs.writeFileSync(gitkeepPath, "");
+    }
   }
   const gitignorePath = path.join(cwd, ".gitignore");
   if (!fs.existsSync(gitignorePath)) {
     fs.writeFileSync(gitignorePath, INITIAL_WORKING_DIR_GITIGNORE);
   }
-  execFileSync("git", ["-C", cwd, "add", ".gitkeep", ".gitignore"], {
-    encoding: "utf8",
-    timeout: 10000,
-  });
+}
+
+/** Stage the given paths and create the local-only baseline commit. */
+function commitBaseline(cwd: string, addArgs: string[]): void {
+  try {
+    execFileSync("git", ["-C", cwd, "add", ...addArgs], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } catch (error) {
+    throw new Error(
+      `SmithersBot could not stage files while initializing the workspace at ${cwd}: ${describeGitError(error)}`,
+    );
+  }
   try {
     execFileSync(
       "git",
@@ -205,6 +254,84 @@ export function ensureWorkingDir(cwd: string): void {
     const errorText = describeGitError(error);
     throw new Error(`Failed to create initial commit for working directory ${cwd}: ${errorText}`);
   }
+}
+
+/**
+ * Ensure `cwd` is a git repository with a baseline commit so checkpoints,
+ * branches, retries, and rollback can run.
+ *
+ *  - Already inside a git repo: preserve existing behavior (seed a HEAD commit
+ *    only if one does not yet exist).
+ *  - Not a git repo but inside the managed workspaces root: initialize a
+ *    local-only repo (git init, conservative .gitignore created only if absent,
+ *    .gitkeep only for empty dirs, one baseline commit) with NO remote and NO push.
+ *  - Not a git repo and outside the managed workspaces root: refuse to
+ *    auto-initialize and throw an actionable SmithersBot-authored error instead
+ *    of surfacing a raw "fatal: not a git repository" from git.
+ *
+ * Set `allowOutsideManagedRoot` when an explicit user action (e.g. /create_repo)
+ * intentionally initializes a repo at an arbitrary path; that bypasses only the
+ * managed-root guard, not the local-only/baseline-commit behavior.
+ */
+export function ensureWorkingDir(
+  cwd: string,
+  opts: { allowOutsideManagedRoot?: boolean } = {},
+): void {
+  fs.mkdirSync(cwd, { recursive: true });
+  if (!canRunGit()) return;
+
+  // Ask git directly whether this is a usable repo. A filesystem-only check
+  // (findGitRoot) can report a repo for a stale/empty/broken `.git`, which would
+  // then surface a raw "fatal: not a git repository" on the first `git add`.
+  if (gitToplevel(cwd) !== null) {
+    // `git checkout -B` and `git rev-parse HEAD` require HEAD to exist.
+    if (hasHeadCommit(cwd)) return;
+    writeInitialWorkspaceFiles(cwd, { gitkeep: true });
+    commitBaseline(cwd, [".gitkeep", ".gitignore"]);
+    return;
+  }
+
+  if (!opts.allowOutsideManagedRoot && !isPathInsideWorkspacesRoot(cwd)) {
+    throw new Error(
+      `SmithersBot needs a git repository at ${cwd} to manage checkpoints, branches, and rollback, ` +
+        `but it is not a git repository and is outside the managed workspaces root ` +
+        `(${resolveWorkspacesRoot()}). Move this folder under the managed workspaces root so ` +
+        "SmithersBot can initialize it automatically, or run `git init` in it yourself before " +
+        "starting a goal.",
+    );
+  }
+
+  // Local-only init for a plain folder dragged into the managed workspaces root.
+  // Strict ordering: `git init` first, then verify the repo actually exists via
+  // `git rev-parse --show-toplevel`, and ONLY THEN write/stage baseline files.
+  // No `git add` may run before init + verification succeed, so a managed plain
+  // folder never surfaces a raw "fatal: not a git repository". No remote is added
+  // and nothing is pushed.
+  try {
+    execFileSync("git", ["-C", cwd, "init"], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  } catch (error) {
+    throw new Error(
+      `SmithersBot could not initialize a local git repository at ${cwd}: ${describeGitError(error)}`,
+    );
+  }
+
+  const toplevel = gitToplevel(cwd);
+  if (toplevel === null || realpathOrResolve(toplevel) !== realpathOrResolve(cwd)) {
+    throw new Error(
+      `SmithersBot initialized a git repository at ${cwd} but could not verify it with ` +
+        "`git rev-parse --show-toplevel`" +
+        (toplevel === null ? "" : ` (resolved to ${toplevel} instead)`) +
+        ". Refusing to stage files in a directory git does not recognize as a repository. " +
+        "Try removing any stale `.git` entry in the folder, or run `git init` in it manually.",
+    );
+  }
+
+  if (hasHeadCommit(cwd)) return;
+  writeInitialWorkspaceFiles(cwd, { gitkeep: !hasCommittableEntries(cwd) });
+  commitBaseline(cwd, ["-A"]);
 }
 
 export function isWorkingTreeClean(cwd: string): boolean {
