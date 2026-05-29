@@ -103,6 +103,69 @@ describe("checkPathDeny", () => {
   });
 });
 
+describe("checkPathDeny dev-instance private roots", () => {
+  // Issue 2 from the stable-to-dev isolation verification: a stable worker could
+  // enumerate ~/.smithersbot-dev and ~/smithersbot-dev-home/private. Child
+  // enumeration and content reads must be denied; exact-path metadata of the
+  // known root may remain visible, and the dev agent surface stays inspectable.
+  it("denies enumeration and content reads under ~/.smithersbot-dev", () => {
+    for (const filePath of [
+      "~/.smithersbot-dev/smithersbot.json",
+      "~/.smithersbot-dev/sessions/abc.json",
+      "~/.smithersbot-dev/config",
+    ]) {
+      const deny = checkPathDeny(filePath);
+      expect(deny?.reason).toBe(SECRET_PATH_DENY_REASON);
+      expect(deny?.pattern).toBe("~/.smithersbot-dev/**");
+    }
+  });
+
+  it("denies enumeration and content reads under ~/smithersbot-dev-home/private", () => {
+    for (const filePath of [
+      "~/smithersbot-dev-home/private/env",
+      "~/smithersbot-dev-home/private/config",
+      "~/smithersbot-dev-home/private/auth",
+      "~/smithersbot-dev-home/private/sessions",
+      "~/smithersbot-dev-home/private/env/ws/.env",
+      "~/smithersbot-dev-home/private/auth/auth.json",
+    ]) {
+      const deny = checkPathDeny(filePath);
+      expect(deny?.reason).toBe(SECRET_PATH_DENY_REASON);
+      expect(deny?.pattern).toBe("~/smithersbot-dev-home/private/**");
+    }
+  });
+
+  it("leaves exact-path metadata of the known private roots visible", () => {
+    // Bare-root stat (ls -ld) is acceptable because both gateways run as the same
+    // OS user; only child enumeration / content reads are denied.
+    expect(checkPathDeny("~/.smithersbot-dev")).toBeNull();
+    expect(checkPathDeny("~/smithersbot-dev-home/private")).toBeNull();
+  });
+
+  it("keeps the dev agent-visible surface inspectable", () => {
+    for (const filePath of [
+      "~/smithersbot-dev-home/agent/workspaces",
+      "~/smithersbot-dev-home/agent/workspaces/smithersbot-dev/package.json",
+      "~/smithersbot-dev-home/agent/history",
+      "~/smithersbot-dev-home/agent/history/goals/run.md",
+    ]) {
+      expect(checkPathDeny(filePath)).toBeNull();
+    }
+  });
+
+  it("preserves the dev private-root denies in buildDevWorkspaceHardDenies", () => {
+    const denies = buildDevWorkspaceHardDenies();
+    expect(checkPathDeny("~/.smithersbot-dev/smithersbot.json", denies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    expect(checkPathDeny("~/smithersbot-dev-home/private/env/ws/.env", denies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    // Agent surface stays inspectable under the dev-workspace deny list too.
+    expect(checkPathDeny("~/smithersbot-dev-home/agent/history", denies)).toBeNull();
+  });
+});
+
 describe("renderGroupedHardDenies", () => {
   it("groups repeated reasons under one heading without DENIED spam", () => {
     const rendered = renderGroupedHardDenies(HARD_DENIES);
