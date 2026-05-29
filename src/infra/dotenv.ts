@@ -3,6 +3,8 @@ import path from "node:path";
 
 import dotenv from "dotenv";
 
+import { resolveGatewayInstanceFromEnv } from "../config/gateway-instance.js";
+import { resolveManagedRoot } from "../config/managed-paths.js";
 import { resolveConfigDir } from "../utils.js";
 
 export function loadDotEnv(opts?: { quiet?: boolean }) {
@@ -11,10 +13,16 @@ export function loadDotEnv(opts?: { quiet?: boolean }) {
   // Load from process CWD first (dotenv default).
   dotenv.config({ quiet });
 
-  // Then load global fallback: ~/.clawdbot/.env (or CLAWDBOT_STATE_DIR/.env),
+  // Then load global fallback: ~/.smithersbot/.env (or $*_STATE_DIR/.env),
   // without overriding any env vars already present.
-  const globalEnvPath = path.join(resolveConfigDir(process.env), ".env");
-  if (!fs.existsSync(globalEnvPath)) return;
+  const instance = resolveGatewayInstanceFromEnv(process.env);
+  const globalEnvPaths = [path.join(resolveConfigDir(process.env), ".env")];
+  if (!instance.legacyStateFallbacks) {
+    globalEnvPaths.push(path.join(resolveManagedRoot(process.env), ".env"));
+  }
 
-  dotenv.config({ quiet, path: globalEnvPath, override: false });
+  for (const globalEnvPath of new Set(globalEnvPaths)) {
+    if (!fs.existsSync(globalEnvPath)) continue;
+    dotenv.config({ quiet, path: globalEnvPath, override: false });
+  }
 }

@@ -28,6 +28,8 @@ import { MissingEnvVarError, resolveConfigEnvVars } from "./env-substitution.js"
 import { collectConfigEnvVars } from "./env-vars.js";
 import { ConfigIncludeError, resolveConfigIncludes } from "./includes.js";
 import { findLegacyConfigIssues } from "./legacy.js";
+import { resolveGatewayInstanceFromEnv } from "./gateway-instance.js";
+import { resolveManagedRoot } from "./managed-paths.js";
 import { normalizeConfigPaths } from "./normalize-paths.js";
 import { resolveConfigPath, resolveDefaultConfigCandidates, resolveStateDir } from "./paths.js";
 import { applyConfigOverrides } from "./runtime-overrides.js";
@@ -169,7 +171,10 @@ function resolveUserEnvPath(input: string, homedir: () => string): string {
   return path.resolve(trimmed);
 }
 
-function resolveStateEnvFileCandidates(env: NodeJS.ProcessEnv, homedir: () => string): string[] {
+export function resolveStateEnvFileCandidates(
+  env: NodeJS.ProcessEnv,
+  homedir: () => string,
+): string[] {
   const candidates: string[] = [];
   const stateDirKeys = ["SMITHERSBOT_STATE_DIR", "MOLTBOT_STATE_DIR", "CLAWDBOT_STATE_DIR"];
 
@@ -178,7 +183,14 @@ function resolveStateEnvFileCandidates(env: NodeJS.ProcessEnv, homedir: () => st
     if (override) candidates.push(path.join(resolveUserEnvPath(override, homedir), ".env"));
   }
 
-  candidates.push(path.join(homedir(), ".smithersbot", ".env"));
+  const instance = resolveGatewayInstanceFromEnv(env, homedir);
+  if (!instance.legacyStateFallbacks) {
+    candidates.push(path.join(instance.stateDir, ".env"));
+    candidates.push(path.join(resolveManagedRoot(env, homedir), ".env"));
+    return [...new Set(candidates)];
+  }
+
+  candidates.push(path.join(instance.stateDir, ".env"));
   candidates.push(path.join(homedir(), ".moltbot", ".env"));
   candidates.push(path.join(homedir(), ".clawdbot", ".env"));
   return [...new Set(candidates)];

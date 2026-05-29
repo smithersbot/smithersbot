@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   resolveDefaultConfigCandidates,
   resolveConfigPath,
+  resolveGatewayPort,
   resolveOAuthDir,
   resolveOAuthPath,
   resolveStateDir,
@@ -70,6 +71,48 @@ describe("state + config path candidates", () => {
     expect(resolveStateDir(env, () => "/home/test")).toBe(path.resolve("/smithersbot/state"));
   });
 
+  it("resolves dev state and config paths only from an explicit dev instance", () => {
+    const home = "/home/test";
+    const env = { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv;
+    const stateDir = resolveStateDir(env, () => home);
+
+    expect(stateDir).toBe(path.join(home, ".smithersbot-dev"));
+    expect(resolveConfigPath(env, stateDir, () => home)).toBe(
+      path.join(home, ".smithersbot-dev", "smithersbot.json"),
+    );
+    expect(resolveDefaultConfigCandidates(env, () => home)).toEqual([
+      path.join(home, ".smithersbot-dev", "smithersbot.json"),
+      path.join(home, ".smithersbot-dev", "moltbot.json"),
+      path.join(home, ".smithersbot-dev", "clawdbot.json"),
+    ]);
+  });
+
+  it("does not infer dev state from a smithersbot-dev working directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "smithersbot-cwd-"));
+    const prevCwd = process.cwd();
+    const devCheckout = path.join(
+      root,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    try {
+      await fs.mkdir(devCheckout, { recursive: true });
+      process.chdir(devCheckout);
+
+      expect(resolveStateDir({} as NodeJS.ProcessEnv, () => root)).toBe(
+        path.join(root, ".smithersbot"),
+      );
+      expect(resolveDefaultConfigCandidates({} as NodeJS.ProcessEnv, () => root)[0]).toBe(
+        path.join(root, ".smithersbot", "smithersbot.json"),
+      );
+    } finally {
+      process.chdir(prevCwd);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("orders default config candidates as SmithersBot then Moltbot then Clawdbot", () => {
     const home = "/home/test";
     const candidates = resolveDefaultConfigCandidates({} as NodeJS.ProcessEnv, () => home);
@@ -92,6 +135,26 @@ describe("state + config path candidates", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("resolves gateway port with canonical env precedence and instance defaults", () => {
+    expect(
+      resolveGatewayPort({ gateway: { port: 19002 } }, {
+        SMITHERSBOT_GATEWAY_PORT: "19003",
+        MOLTBOT_GATEWAY_PORT: "19004",
+        CLAWDBOT_GATEWAY_PORT: "19005",
+      } as NodeJS.ProcessEnv),
+    ).toBe(19003);
+    expect(
+      resolveGatewayPort({ gateway: { port: 19002 } }, {
+        MOLTBOT_GATEWAY_PORT: "19004",
+        CLAWDBOT_GATEWAY_PORT: "19005",
+      } as NodeJS.ProcessEnv),
+    ).toBe(19004);
+    expect(resolveGatewayPort({}, { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv)).toBe(
+      18790,
+    );
+    expect(resolveGatewayPort({}, {} as NodeJS.ProcessEnv)).toBe(18789);
   });
 
   it("falls back to existing ~/.moltbot when canonical dir is missing", async () => {
