@@ -5,11 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
 import {
   buildCachedScoutSummary,
+  buildPlanningPrompt,
   CLAUDE_ALLOWED_TOOLS,
   runCliPlanning,
   runCliPlanRevision,
   EXECUTION_PLAN_FILE,
 } from "./cli-planner.js";
+import { DEV_GATEWAY_PLANNER_GUIDANCE } from "../prompts/planner/system-prompt.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import * as runtimeMirror from "./runtime-mirror.js";
@@ -316,6 +318,33 @@ function readPlannerHistoryEvents(
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
+
+describe("buildPlanningPrompt dev-gateway guidance gating", () => {
+  // Literal paths: only a checkout whose path includes the smithersbot-dev
+  // workspace segment is the dev checkout. Guidance is gated on the cwd and
+  // never flips runtime instance config.
+  const DEV_CWD = "/tmp/agent/workspaces/smithersbot-dev/repo";
+  const NON_DEV_CWD = "/tmp/agent/workspaces/smithersbot/repo";
+
+  function planOnlyPrompt(cwd: string): string {
+    return buildPlanningPrompt({
+      runId: "run-dev-guidance",
+      goalText: "Change gateway restart behavior",
+      cwd,
+      scoutDir: "/tmp/unused-scout-dir",
+      includeScoutArtifacts: false,
+      enabledWorkers: ["claude_code", "codex"],
+    });
+  }
+
+  it("injects dev-gateway guidance for the smithersbot-dev checkout", () => {
+    expect(planOnlyPrompt(DEV_CWD)).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+  });
+
+  it("omits dev-gateway guidance for non-dev checkouts", () => {
+    expect(planOnlyPrompt(NON_DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
+  });
+});
 
 describe("runCliPlanning", () => {
   let goalsDir: string;

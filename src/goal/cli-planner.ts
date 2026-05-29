@@ -502,7 +502,7 @@ function reconcileAgentVisibleScoutArtifacts(params: {
   copyScoutArtifacts({ ...params, label: "agent-visible" });
 }
 
-function buildPlanningPrompt(params: {
+export function buildPlanningPrompt(params: {
   runId: string;
   goalText: string;
   cwd: string;

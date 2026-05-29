@@ -1410,10 +1410,13 @@ describe("runPlanAutocheck", () => {
     // Docs/tests-only and ordinary project goals stay exempt.
     expect(devPrompt).toContain("Do NOT require dev-gateway verification for docs-only");
 
+    // Use a literal absolute path OUTSIDE the dev checkout. Under vitest,
+    // os.tmpdir() itself resolves under the real smithersbot-dev workspace, so a
+    // tmpdir-based path would (correctly) be detected as the dev checkout.
     const nonDevPrompt = buildAutocheckPrompt({
       goalText: "Change gateway restart behavior",
       plan: makePlan("Ordinary change", "1", "claude_code"),
-      workingDir: path.join(os.tmpdir(), "some-other-project"),
+      workingDir: "/tmp/some-other-project",
       resume: false,
       priorFeedback: [],
       contextNotes: [],

@@ -11,6 +11,7 @@ import {
   parsePlanResultFromText,
   PlanParseError,
 } from "./planner.js";
+import { DEV_GATEWAY_PLANNER_GUIDANCE } from "../prompts/planner/system-prompt.js";
 import { PLAN_QUALITY_RUBRIC } from "../prompts/shared/plan-quality-rubric.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
@@ -71,6 +72,57 @@ describe("planner", () => {
       expect(() => buildPlanSystemPrompt([])).toThrow(
         "No worker backend available. Install Codex or Claude Code and rerun.",
       );
+    });
+
+    it("appends dev-gateway verification guidance only when the dev option is set", () => {
+      const withDev = buildPlanSystemPrompt(["claude_code", "codex"], {
+        devGatewayVerification: true,
+      });
+      const withoutDev = buildPlanSystemPrompt(["claude_code", "codex"], {
+        devGatewayVerification: false,
+      });
+      const noOpts = buildPlanSystemPrompt(["claude_code", "codex"]);
+
+      expect(withDev).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      expect(withDev).toContain("smithersbot-dev-gateway.service");
+      expect(withoutDev).not.toContain("DEV GATEWAY VERIFICATION");
+      expect(noOpts).not.toContain("DEV GATEWAY VERIFICATION");
+    });
+  });
+
+  describe("dev-gateway planner guidance gating", () => {
+    const validPlanJson = JSON.stringify({
+      workingDir: "/tmp/moltbot",
+      summary: "Change gateway restart behavior",
+      steps: [
+        {
+          id: "edit-restart",
+          description: "Update restart resolver and verify with a focused test",
+          dependsOn: [],
+          durationMinutes: 10,
+          backend: "claude_code",
+        },
+      ],
+    });
+
+    // A literal path whose final segment is smithersbot-dev marks the dev
+    // checkout; a non-dev path must never trigger the guidance.
+    const DEV_CWD = "/tmp/agent/workspaces/smithersbot-dev";
+    const NON_DEV_CWD = "/tmp/moltbot-planner-cwd";
+
+    async function systemPromptForCwd(cwd: string): Promise<string> {
+      const complete = vi.fn().mockResolvedValue({ text: validPlanJson });
+      const client: GoalLlmClient = { complete };
+      await generatePlan(client, "Change gateway restart behavior", cwd);
+      return complete.mock.calls[0][0].systemPrompt as string;
+    }
+
+    it("injects dev-gateway guidance when planning in the smithersbot-dev checkout", async () => {
+      expect(await systemPromptForCwd(DEV_CWD)).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    });
+
+    it("omits dev-gateway guidance for non-dev workspaces", async () => {
+      expect(await systemPromptForCwd(NON_DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
     });
   });
 
