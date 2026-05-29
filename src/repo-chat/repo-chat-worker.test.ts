@@ -2651,3 +2651,81 @@ describe("repo-chat-worker", () => {
     });
   });
 });
+
+describe("repo-chat-worker observed dev surface", () => {
+  let home: string;
+  let devManagedRoot: string;
+  let devAgentRoot: string;
+  let devPrivateRoot: string;
+  let devStateDir: string;
+  let previousObserved: string | undefined;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "rc-observed-"));
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    devManagedRoot = path.join(home, "smithersbot-dev-home");
+    devAgentRoot = path.join(devManagedRoot, "agent");
+    devPrivateRoot = path.join(devManagedRoot, "private");
+    devStateDir = path.join(home, ".smithersbot-dev");
+    for (const dir of [
+      path.join(devAgentRoot, "workspaces", "smithersbot-dev"),
+      path.join(devAgentRoot, "history", "goals", "ws", "goal-1"),
+      path.join(devAgentRoot, "history", "repo-chats", "ws"),
+      path.join(devAgentRoot, "history", "index"),
+      path.join(devPrivateRoot, "env", "ws"),
+      path.join(devPrivateRoot, "auth"),
+      devStateDir,
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    previousObserved = process.env.SMITHERSBOT_OBSERVED_INSTANCES;
+    process.env.SMITHERSBOT_OBSERVED_INSTANCES = "dev";
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousObserved === undefined) delete process.env.SMITHERSBOT_OBSERVED_INSTANCES;
+    else process.env.SMITHERSBOT_OBSERVED_INSTANCES = previousObserved;
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("read-scopes an allowed observed dev workspaces/history target to the dev agent root", () => {
+    const workspace = path.join(devAgentRoot, "workspaces", "smithersbot-dev");
+    expect(resolveRepoChatExecutionRoot(workspace)).toBe(devAgentRoot);
+
+    const goalHistory = path.join(devAgentRoot, "history", "goals", "ws", "goal-1");
+    expect(resolveRepoChatExecutionRoot(goalHistory)).toBe(devAgentRoot);
+
+    const repoChats = path.join(devAgentRoot, "history", "repo-chats", "ws");
+    expect(resolveRepoChatExecutionRoot(repoChats)).toBe(devAgentRoot);
+  });
+
+  it("refuses the observed dev private root and state dir", () => {
+    for (const target of [
+      devPrivateRoot,
+      path.join(devPrivateRoot, "env", "ws", ".env"),
+      path.join(devPrivateRoot, "auth"),
+      devStateDir,
+      path.join(devStateDir, ".env"),
+    ]) {
+      expect(() => resolveRepoChatExecutionRoot(target)).toThrow(/private paths/);
+    }
+  });
+
+  it("refuses a symlink under the observed agent root that escapes into private", () => {
+    const secret = path.join(devPrivateRoot, "env", "ws", ".env");
+    fs.writeFileSync(secret, "TELEGRAM_BOT_TOKEN=should-never-be-read");
+    const link = path.join(devAgentRoot, "workspaces", "leak");
+    fs.symlinkSync(secret, link);
+    expect(() => resolveRepoChatExecutionRoot(link)).toThrow(/private paths/);
+  });
+
+  it("does not treat observed dev paths specially without the explicit opt-in", () => {
+    delete process.env.SMITHERSBOT_OBSERVED_INSTANCES;
+    const workspace = path.join(devAgentRoot, "workspaces", "smithersbot-dev");
+    // With no opt-in the dev agent root is not the current process's agent root,
+    // so it is treated as an ordinary working dir (returned as-is), never resolved
+    // to the dev agent root.
+    expect(resolveRepoChatExecutionRoot(workspace)).toBe(workspace);
+  });
+});
