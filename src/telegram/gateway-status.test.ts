@@ -75,6 +75,50 @@ describe("gateway status", () => {
     expect(snapshot.unit).toBe("moltbot-gateway-dev.service");
   });
 
+  it("reports the dev unit and port for an explicitly-dev process", () => {
+    const snapshot = buildGatewayStatusSnapshot({
+      cfg: {} as MoltbotConfig,
+      env: {
+        ...process.env,
+        SMITHERSBOT_INSTANCE: "dev",
+        // No explicit unit/port override: both should derive from the instance.
+        SMITHERSBOT_SYSTEMD_UNIT: undefined,
+        MOLTBOT_SYSTEMD_UNIT: undefined,
+        CLAWDBOT_SYSTEMD_UNIT: undefined,
+        SMITHERSBOT_GATEWAY_PORT: undefined,
+        MOLTBOT_GATEWAY_PORT: undefined,
+        CLAWDBOT_GATEWAY_PORT: undefined,
+      },
+      cwd: "/home/test/smithersbot-home/agent/workspaces/smithersbot-dev",
+      spawnSync: okSystemd,
+    });
+
+    expect(snapshot.unit).toBe("smithersbot-dev-gateway.service");
+    expect(snapshot.port).toBe(18790);
+    expect(snapshot.systemd).toMatchObject({ activeState: "active", subState: "running" });
+  });
+
+  it("reports the stable unit and port for an explicit stable process", () => {
+    const snapshot = buildGatewayStatusSnapshot({
+      cfg: {} as MoltbotConfig,
+      env: {
+        ...process.env,
+        SMITHERSBOT_INSTANCE: "stable",
+        SMITHERSBOT_SYSTEMD_UNIT: undefined,
+        MOLTBOT_SYSTEMD_UNIT: undefined,
+        CLAWDBOT_SYSTEMD_UNIT: undefined,
+        SMITHERSBOT_GATEWAY_PORT: undefined,
+        MOLTBOT_GATEWAY_PORT: undefined,
+        CLAWDBOT_GATEWAY_PORT: undefined,
+      },
+      cwd: "/tmp/repo",
+      spawnSync: okSystemd,
+    });
+
+    expect(snapshot.unit).toBe("smithersbot-gateway.service");
+    expect(snapshot.port).toBe(18789);
+  });
+
   it("detects cwd inside the managed workspace", () => {
     const env = {
       ...process.env,
