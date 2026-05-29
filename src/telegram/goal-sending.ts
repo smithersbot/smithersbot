@@ -398,7 +398,8 @@ function buildCaptionHeader(result: GoalPlanResult): string {
     }
   }
   if (result.autocheckSkipped) {
-    lines.push("Note: Plan autocheck was skipped due to an error.");
+    const reason = result.autocheckSkipReason ? `: ${result.autocheckSkipReason}` : "";
+    lines.push(`Note: Plan autocheck was skipped due to an error${reason}.`);
   }
   if (result.plan) {
     // Resolve workers from classification + planner hints, deduplicated

@@ -39,7 +39,7 @@ import {
 } from "../goal/feedback.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { generateManualTests, isNoBackendManualTestsError } from "../goal/manual-tests.js";
-import { runPlanAutocheck } from "../goal/plan-autocheck.js";
+import { PlanAutocheckError, runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import {
@@ -93,6 +93,7 @@ import {
 } from "./goal-sending.js";
 import { findRunByPlanMessageIdIndexed } from "./goal-message-index.js";
 import { shortenHomePath } from "../utils.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 import {
   buildCommandFragmentKey,
@@ -213,6 +214,8 @@ export type GoalPlanResult = {
   autocheckExhausted?: boolean;
   /** Whether autocheck failed and was skipped. */
   autocheckSkipped?: boolean;
+  /** Redacted reason shown when autocheck was skipped. */
+  autocheckSkipReason?: string;
 };
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
@@ -282,6 +285,37 @@ type PlanAutocheckDisplayInfo = {
   exhausted: boolean;
 };
 
+type AutocheckSkipMetadata = {
+  reason: string;
+  metadataPath?: string;
+};
+
+const AUTOCHECK_SKIP_REASON_MAX_CHARS = 240;
+
+function formatAutocheckSkipReason(err: unknown): AutocheckSkipMetadata {
+  const metadata =
+    err instanceof PlanAutocheckError
+      ? err.metadata
+      : (err as { metadata?: { reason?: unknown; agentHistoryMetadataPath?: unknown } } | null)
+          ?.metadata;
+  const rawReason =
+    typeof metadata?.reason === "string"
+      ? metadata.reason
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  const redactedReason = redactSecretValues(rawReason).replace(/\s+/g, " ").trim();
+  const reason =
+    redactedReason.length > AUTOCHECK_SKIP_REASON_MAX_CHARS
+      ? `${redactedReason.slice(0, AUTOCHECK_SKIP_REASON_MAX_CHARS)}...`
+      : redactedReason || "unknown error";
+  const metadataPath =
+    typeof metadata?.agentHistoryMetadataPath === "string"
+      ? metadata.agentHistoryMetadataPath
+      : undefined;
+  return { reason, ...(metadataPath ? { metadataPath } : {}) };
+}
+
 function commitPlanRevision(params: {
   run: SerializedRun;
   revisedPlan: Plan;
@@ -341,6 +375,9 @@ async function runGoalPlanAutocheck(params: {
     ...(params.config?.goal?.enabledWorkers
       ? { enabledWorkers: params.config.goal.enabledWorkers }
       : {}),
+    ...(params.config?.goal?.readOnlyRoots
+      ? { readOnlyRoots: params.config.goal.readOnlyRoots }
+      : {}),
     runDir: path.join(resolveGoalsDir(), params.runId),
     existingSessionId: params.existingSessionId,
     existingBackend: params.existingBackend,
@@ -369,6 +406,8 @@ async function runGoalPlanAutocheck(params: {
   nextRun.autocheckMaxRounds = autocheckResult.autocheckMaxRounds;
   nextRun.autocheckBackend = autocheckResult.backend;
   nextRun.autocheckSessionId = autocheckResult.sessionId;
+  delete nextRun.autocheckSkipReason;
+  delete nextRun.autocheckSkipMetadataPath;
   nextRun.updatedAt = new Date().toISOString();
   saveRun(nextRun);
 
@@ -603,6 +642,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     let run = latestRun;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     let autocheckSkipped = false;
+    let autocheckSkipReason: string | undefined;
     if (run?.plan) {
       try {
         const autocheckResult = await runGoalPlanAutocheck({
@@ -624,6 +664,13 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
         autocheckSkipped = true;
         // Re-load the run in case autocheck partially modified it
         run = loadRun(runId) ?? run;
+        const skip = formatAutocheckSkipReason(autocheckErr);
+        autocheckSkipReason = skip.reason;
+        run.autocheckSkipReason = skip.reason;
+        if (skip.metadataPath) run.autocheckSkipMetadataPath = skip.metadataPath;
+        else delete run.autocheckSkipMetadataPath;
+        run.updatedAt = new Date().toISOString();
+        saveRun(run);
       }
     }
     if (run?.scoutStatus === "skipped") {
@@ -646,6 +693,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
       autocheckSkipped: autocheckSkipped || undefined,
+      autocheckSkipReason,
     };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
@@ -1384,6 +1432,7 @@ export async function handleGoalEdit(
     let finalPlan = result;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     let autocheckSkipped = false;
+    let autocheckSkipReason: string | undefined;
     try {
       const autocheckResult = await runGoalPlanAutocheck({
         runId: resolvedId,
@@ -1405,6 +1454,13 @@ export async function handleGoalEdit(
       autocheckSkipped = true;
       // Re-load the run in case autocheck partially modified it
       run = loadRun(resolvedId) ?? run;
+      const skip = formatAutocheckSkipReason(autocheckErr);
+      autocheckSkipReason = skip.reason;
+      run.autocheckSkipReason = skip.reason;
+      if (skip.metadataPath) run.autocheckSkipMetadataPath = skip.metadataPath;
+      else delete run.autocheckSkipMetadataPath;
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
     }
     run = markRunAwaitingApproval(run) ?? run;
 
@@ -1436,6 +1492,7 @@ export async function handleGoalEdit(
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
       autocheckSkipped: autocheckSkipped || undefined,
+      autocheckSkipReason,
     };
   } catch (err) {
     if (err instanceof PlanParseError) {
