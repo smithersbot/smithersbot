@@ -383,6 +383,9 @@ async function retryPlanning(
   try {
     ensureGlobalConventions();
 
+    // Ensure the workspace is a checkpoint-compatible git repo before replanning.
+    ensureWorkingDir(run.workingDir);
+
     const includeScoutArtifacts = !(
       run.scoutStatus === "skipped" && run.scoutSkipReason === "--no-scout flag"
     );

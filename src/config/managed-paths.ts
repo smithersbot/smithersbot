@@ -75,6 +75,14 @@ export function resolveAgentRoot(
   return path.join(resolveManagedRoot(env, homedir), "agent");
 }
 
+/** Managed workspaces root: <root>/agent/workspaces. */
+export function resolveWorkspacesRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  homedir: () => string = os.homedir,
+): string {
+  return path.join(resolveAgentRoot(env, homedir), "workspaces");
+}
+
 /** Private host-only root: <root>/private. */
 export function resolvePrivateRoot(
   env: NodeJS.ProcessEnv = process.env,
@@ -343,6 +351,19 @@ export function isPathInsideAgentRoot(
   if (typeof candidate !== "string" || candidate.length === 0) return false;
   if (pathInsideAnyCandidate(candidate, resolvePrivateRoot(env, homedir))) return false;
   return pathInsideAnyCandidate(candidate, resolveAgentRoot(env, homedir));
+}
+
+/**
+ * True when `candidate` lies inside <root>/agent/workspaces. Traversal-safe:
+ * resolves real paths and rejects `..` escapes via {@link pathInsideAnyCandidate}.
+ */
+export function isPathInsideWorkspacesRoot(
+  candidate: string,
+  env: NodeJS.ProcessEnv = process.env,
+  homedir: () => string = os.homedir,
+): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0) return false;
+  return pathInsideAnyCandidate(candidate, resolveWorkspacesRoot(env, homedir));
 }
 
 /** True when `candidate` lies inside <root>/private. */
