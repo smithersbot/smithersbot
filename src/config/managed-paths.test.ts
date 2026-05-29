@@ -43,6 +43,35 @@ describe("managed paths", () => {
     expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(legacyRoot);
   });
 
+  it("resolves the dev managed root from an explicit dev instance", () => {
+    const legacyRoot = path.join(tmpDir, "smithersbot-goals");
+    fs.mkdirSync(legacyRoot);
+
+    expect(
+      resolveManagedRoot({ SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv, () => tmpDir),
+    ).toBe(path.join(tmpDir, "smithersbot-dev-home"));
+  });
+
+  it("does not infer dev managed root from a smithersbot-dev working directory", () => {
+    const prevCwd = process.cwd();
+    const devCheckout = path.join(
+      tmpDir,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    fs.mkdirSync(devCheckout, { recursive: true });
+    try {
+      process.chdir(devCheckout);
+      expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(
+        path.join(tmpDir, "smithersbot-home"),
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
+  });
+
   it("keeps workspace projects under agent and private env outside agent", () => {
     const managedRoot = resolveManagedRoot(env, homedir);
     const agentRoot = resolveAgentRoot(env, homedir);

@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  resolveGatewayInstanceFromEnv,
+  resolveGatewayInstanceIdentity,
+} from "./gateway-instance.js";
 
 /**
  * Managed-workspace path model (Stage 2S).
@@ -19,7 +23,8 @@ import path from "node:path";
  * NEW managed root and adds nothing to the legacy resolution behavior.
  */
 
-export const DEFAULT_MANAGED_ROOT_DIRNAME = "smithersbot-home";
+export const DEFAULT_MANAGED_ROOT_DIRNAME =
+  resolveGatewayInstanceIdentity("stable").managedRootDirName;
 
 const LEGACY_DEFAULT_MANAGED_ROOT_DIRNAME = "smithersbot-goals";
 
@@ -59,9 +64,14 @@ export function resolveManagedRoot(
   const override = env.SMITHERSBOT_GOALS_ROOT?.trim();
   if (override) return expandUserPath(override);
   const home = homedir();
-  const defaultRoot = path.join(home, DEFAULT_MANAGED_ROOT_DIRNAME);
+  const instance = resolveGatewayInstanceFromEnv(env, homedir);
+  const defaultRoot = instance.managedRoot;
   const legacyRoot = path.join(home, LEGACY_DEFAULT_MANAGED_ROOT_DIRNAME);
-  if (!isExistingDirectory(defaultRoot) && isExistingDirectory(legacyRoot)) {
+  if (
+    instance.legacyManagedRootFallback &&
+    !isExistingDirectory(defaultRoot) &&
+    isExistingDirectory(legacyRoot)
+  ) {
     return legacyRoot;
   }
   return defaultRoot;
