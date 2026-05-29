@@ -34,6 +34,7 @@ import {
   parsePlanResultFromText,
   type PlanResult,
 } from "./planner.js";
+import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import { resolveRunDir } from "./run-store.js";
 import {
   classifyScoutError,
@@ -96,7 +97,9 @@ function buildPlanOnlyPrompt(params: {
   cwd: string;
   enabledWorkers: CliWorkerId[];
 }): string {
-  return `${buildPlanSystemPrompt(params.enabledWorkers)}
+  return `${buildPlanSystemPrompt(params.enabledWorkers, {
+    devGatewayVerification: isSmithersbotDevWorkspace(params.cwd),
+  })}
 
 Goal: ${params.goalText}
 Current workspace path: ${params.cwd}`;
@@ -510,6 +513,7 @@ function buildPlanningPrompt(params: {
 }): string {
   const { runId, goalText, cwd, scoutDir, includeScoutArtifacts, enabledWorkers, scoutData } =
     params;
+  const devGatewayVerification = isSmithersbotDevWorkspace(cwd);
   if (!includeScoutArtifacts) {
     return buildPlanOnlyPrompt({
       goalText,
@@ -521,7 +525,7 @@ function buildPlanningPrompt(params: {
   if (scoutData) {
     const agentVisibleScoutDir = buildAgentVisibleScoutDir(runId, cwd);
     return [
-      buildPlanSystemPrompt(enabledWorkers),
+      buildPlanSystemPrompt(enabledWorkers, { devGatewayVerification }),
       "",
       "## Replan With Cached Scout Context",
       "",
@@ -554,7 +558,7 @@ function buildPlanningPrompt(params: {
   });
 
   return [
-    buildPlanSystemPrompt(enabledWorkers),
+    buildPlanSystemPrompt(enabledWorkers, { devGatewayVerification }),
     "",
     "## Conceptual Planning Phases",
     "",
@@ -797,7 +801,9 @@ function buildPlanRevisionPrompt(params: {
       : [];
 
   return [
-    buildPlanSystemPrompt(enabledWorkers),
+    buildPlanSystemPrompt(enabledWorkers, {
+      devGatewayVerification: isSmithersbotDevWorkspace(cwd),
+    }),
     "",
     `Goal: ${goalText}`,
     `Current workspace path: ${cwd}`,

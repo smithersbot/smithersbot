@@ -29,3 +29,16 @@ export const REVIEW_INSTRUCTION = [
   "## 5. OUTPUT FORMAT",
   'Respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
 ].join("\n");
+
+/**
+ * Dynamic, context-gated reviewer guidance injected only when the plan runs in
+ * the SmithersBot dev checkout. Kept out of the shared rubric so it never
+ * affects ordinary user goals or non-dev workspaces.
+ */
+export const DEV_GATEWAY_REVIEW_GUIDANCE = [
+  "## DEV GATEWAY VERIFICATION (SmithersBot dev checkout)",
+  "This plan runs in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
+  "For plan changes that affect SmithersBot runtime behavior — gateway, setup/install, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior — REJECT the plan if it verifies only with build/lint and does NOT verify against smithersbot-dev-gateway.service (rebuild + restart the dev gateway + smoke-test the changed behavior). In editInstructions, require a dev-gateway verification step.",
+  "Do NOT require dev-gateway verification for docs-only or tests-only changes, or for ordinary non-SmithersBot project goals — approve those on their normal merits.",
+  "Workers must restart and inspect ONLY smithersbot-dev-gateway.service and never the stable smithersbot-gateway.service or ~/.smithersbot.",
+].join("\n");

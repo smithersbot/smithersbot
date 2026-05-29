@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
-import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
+import {
+  DEV_GATEWAY_REVIEW_GUIDANCE,
+  REVIEW_INSTRUCTION,
+} from "../prompts/plan-autocheck/review-instruction.js";
 import {
   appendAgentHistoryEventBestEffort,
   parseBackendUsage,
@@ -9,6 +12,7 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
@@ -525,11 +529,18 @@ export function buildAutocheckPrompt(params: {
 }): string {
   const snapshot = buildPlanSnapshot(params.plan);
   const userEditInstructionsSection = buildUserEditInstructionsSection(params.userEditInstructions);
+  // Guidance only — detect the dev checkout from the working dir to require
+  // dev-gateway verification for runtime-affecting changes. Never flips runtime
+  // instance config (see src/config/gateway-instance.ts).
+  const devGatewaySection = isSmithersbotDevWorkspace(params.workingDir)
+    ? [DEV_GATEWAY_REVIEW_GUIDANCE, ""]
+    : [];
 
   if (params.resume) {
     return [
       REVIEW_INSTRUCTION,
       "",
+      ...devGatewaySection,
       "You are continuing plan review in an existing reviewer session.",
       "Re-review this updated plan and answer: Is this plan ready to execute?",
       "",
@@ -556,6 +567,7 @@ export function buildAutocheckPrompt(params: {
   return [
     REVIEW_INSTRUCTION,
     "",
+    ...devGatewaySection,
     "You are an independent plan reviewer.",
     "Question: Is this plan ready to execute?",
     "",

@@ -1393,6 +1393,49 @@ describe("runPlanAutocheck", () => {
     expect(prompt).not.toContain("Do not repeat this context note");
   });
 
+  it("injects dev-gateway verification guidance only for the smithersbot-dev checkout", () => {
+    const devDir = path.join(os.tmpdir(), "smithersbot-home", "workspaces", "smithersbot-dev");
+    const devPrompt = buildAutocheckPrompt({
+      goalText: "Change gateway restart behavior",
+      plan: makePlan("Dev gateway change", "1", "claude_code"),
+      workingDir: devDir,
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+
+    expect(devPrompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(devPrompt).toContain("smithersbot-dev-gateway.service");
+    expect(devPrompt).toContain("REJECT the plan if it verifies only with build/lint");
+    // Docs/tests-only and ordinary project goals stay exempt.
+    expect(devPrompt).toContain("Do NOT require dev-gateway verification for docs-only");
+
+    const nonDevPrompt = buildAutocheckPrompt({
+      goalText: "Change gateway restart behavior",
+      plan: makePlan("Ordinary change", "1", "claude_code"),
+      workingDir: path.join(os.tmpdir(), "some-other-project"),
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+    expect(nonDevPrompt).not.toContain("DEV GATEWAY VERIFICATION");
+  });
+
+  it("injects dev-gateway verification guidance on resume prompts too", () => {
+    const devDir = path.join(os.tmpdir(), "workspaces", "smithersbot-dev");
+    const prompt = buildAutocheckPrompt({
+      goalText: "Change worker prompt injection",
+      plan: makePlan("Dev resume change", "1", "claude_code"),
+      workingDir: devDir,
+      resume: true,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+    expect(prompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
+    expect(prompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(prompt).toContain("You are continuing plan review in an existing reviewer session.");
+  });
+
   it("repairs malformed direct decision JSON with trailing brace", async () => {
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({

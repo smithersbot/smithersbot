@@ -14,6 +14,32 @@ type PromptWorkerId = Extract<CliWorkerId, "codex" | "claude_code">;
 
 const DEFAULT_PROMPT_WORKERS: PromptWorkerId[] = ["claude_code", "codex"];
 
+/** Options controlling context-gated additions to the planner system prompt. */
+export type PlanSystemPromptOptions = {
+  /**
+   * When the goal is planned inside the SmithersBot dev checkout, append
+   * guidance that runtime-affecting changes must be verified against the dev
+   * gateway (rebuild + restart smithersbot-dev-gateway.service + smoke test),
+   * not merely build/lint. Guidance only — this never flips runtime instance
+   * config (see src/config/gateway-instance.ts) and is omitted for non-dev
+   * workspaces and ordinary project goals.
+   */
+  devGatewayVerification?: boolean;
+};
+
+/**
+ * Dynamic, context-gated planner guidance injected only when planning in the
+ * SmithersBot dev checkout. Kept out of the shared rubric so it never affects
+ * ordinary user goals or non-dev workspaces.
+ */
+export const DEV_GATEWAY_PLANNER_GUIDANCE = [
+  "DEV GATEWAY VERIFICATION (SmithersBot dev checkout):",
+  "- This goal is planned in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
+  "- For changes that affect SmithersBot runtime behavior — gateway, setup/install, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior — verification MUST go beyond build/lint: include a step that rebuilds, restarts smithersbot-dev-gateway.service, and smoke-tests the changed behavior against the dev gateway before completion.",
+  "- Workers may restart and inspect ONLY smithersbot-dev-gateway.service; never restart, reinstall, or modify the stable smithersbot-gateway.service or ~/.smithersbot.",
+  "- For docs-only or tests-only changes, a dev-gateway restart is not required unless it is needed to verify the requested behavior.",
+].join("\n");
+
 function normalizePromptWorkers(workers?: CliWorkerId[]): PromptWorkerId[] {
   const filtered = (workers ?? DEFAULT_PROMPT_WORKERS).filter(
     (worker): worker is PromptWorkerId => worker === "codex" || worker === "claude_code",
@@ -60,7 +86,10 @@ function buildBackendSelectionRules(workers: PromptWorkerId[]): string {
   ].join("\n");
 }
 
-export function buildPlanSystemPrompt(workers?: CliWorkerId[]): string {
+export function buildPlanSystemPrompt(
+  workers?: CliWorkerId[],
+  opts?: PlanSystemPromptOptions,
+): string {
   const promptWorkers = normalizePromptWorkers(workers);
   if (promptWorkers.length === 0) {
     throw new Error("No worker backend available. Install Codex or Claude Code and rerun.");
@@ -73,7 +102,7 @@ export function buildPlanSystemPrompt(workers?: CliWorkerId[]): string {
       ? "agent-compatible format"
       : "Codex-compatible format";
 
-  return `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
+  const base = `You are a technical planning agent. Given a goal, break it into a structured execution plan as JSON.
 
 Each step describes a task that an autonomous coding agent will carry out. The worker has tool access within SmithersBot's configured capability and sandbox boundaries. Within a single turn the agent can chain as many tool calls as it needs — read dozens of files, edit many, run builds and tests — so each step can encompass substantial work. You do NOT need to specify tools — just describe what to do.
 
@@ -159,4 +188,6 @@ workingDir is the directory where the goal's work should happen.
 
 If you cannot create a plan because you need more information, respond with:
 { "blocked": true, "question": "The specific question you need answered" }`;
+
+  return opts?.devGatewayVerification ? `${base}\n\n${DEV_GATEWAY_PLANNER_GUIDANCE}` : base;
 }
