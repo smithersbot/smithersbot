@@ -211,3 +211,87 @@ or branch you control:
 
 Never alter `public`'s disabled push URL to work around this; the disabled push
 URL is an intentional safety policy.
+
+## Observed dev surface (stable inspects dev)
+
+The stable gateway can **read** a slice of the dev gateway's runtime surface for
+repo chat, diagnostics, and context — but only the agent-visible parts, and only
+read-only. The dev gateway's private runtime state stays sealed.
+
+### Two different "dev" locations
+
+Do not confuse these:
+
+- **Source checkout** — `~/smithersbot-home/agent/workspaces/smithersbot-dev`.
+  This is the SmithersBot *source code* the stable gateway edits, builds, and
+  installs from. It is a managed workspace **of the stable gateway** and has
+  nothing to do with the dev gateway's runtime state.
+- **Runtime agent surface** — `~/smithersbot-dev-home/agent`. This is the *dev
+  gateway's own* agent-visible runtime surface (its managed workspaces and goal /
+  repo-chat history), produced while the dev gateway runs as the `dev` instance.
+
+Inspecting "the dev gateway" means reading the **runtime agent surface** under
+`~/smithersbot-dev-home/agent`, not the source checkout.
+
+### What stable may inspect
+
+When dev observation is explicitly enabled, stable may read inside the observed
+dev instance's agent root (`~/smithersbot-dev-home/agent`), specifically:
+
+- `agent/workspaces` — the dev gateway's managed workspaces
+- `agent/history` — the dev gateway's agent-visible history, including:
+  - `agent/history/goals` — goal run history
+  - `agent/history/repo-chats` — repo-chat history
+  - `agent/history/index` — the history index
+
+These are the only subtrees the guard
+(`isObservedAgentPathAllowed` in `src/config/managed-paths.ts`) admits. Reads of
+the observed surface go through the guard, and the observed surface is **not
+mirrored or indexed into stable's own managed root** — it is read in place,
+read-only.
+
+### Observation is EXPLICIT opt-in
+
+Stable never observes another instance by default, and never derives the observed
+instance from a checkout or working directory. Observation is enabled only by an
+explicit opt-in signal listing which instances stable may observe:
+
+- the `gateway.observedInstances` config field, or
+- the `SMITHERSBOT_OBSERVED_INSTANCES` environment signal.
+
+With no opt-in, no observed root resolves and the guard denies every observed
+path. Unknown instance names in the opt-in list are rejected with the same clear
+error used elsewhere (naming the offending value and the allowed set).
+
+### Sealed private/state — never reachable
+
+Even with observation enabled, stable must **never** expose, resolve, or inspect
+the dev instance's private runtime state. The following are always sealed and are
+rejected by the guard:
+
+- `~/.smithersbot-dev` — the dev config/state dir
+- `~/smithersbot-dev-home/private` and everything under it, including its `env`,
+  `config`, `auth`, and `sessions` subtrees
+- dev `.env` files, Telegram bot tokens, and any other private credentials or
+  runtime secrets
+
+These are never reachable through symlinks, mirrors, indexes, repo chat, worker
+prompts, or logs:
+
+- The guard resolves the realpath of every candidate (reusing the existing
+  `pathCandidates` / realpath logic), so a **symlink** placed under the observed
+  agent root that points into `~/smithersbot-dev-home/private` or
+  `~/.smithersbot-dev` is rejected — it cannot escape the allowed
+  `agent/workspaces` and `agent/history/{goals,repo-chats,index}` subtrees.
+- The observed private root and state dir are added to the inspection sandbox's
+  **deny lists** (never to any read root), so they are not readable even when a
+  broad read base is granted.
+- The observed surface is read in place and is **not** copied into stable's own
+  mirrors or indexes, so private paths cannot leak through indexing.
+- Output redaction (`redactSecretValues`) remains in force on repo-chat and
+  diagnostic output, so no observed private path or secret is emitted through
+  responses, prompts, or logs.
+
+In short: stable can read the dev gateway's agent workspaces and history for
+context, and the dev gateway's private config, env, auth, sessions, and Telegram
+tokens remain unreachable.
