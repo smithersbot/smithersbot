@@ -2,8 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  type GatewayInstanceName,
+  type ObservedInstanceOptions,
+  normalizeGatewayInstanceSelection,
   resolveGatewayInstanceFromEnv,
   resolveGatewayInstanceIdentity,
+  resolveObservedInstanceSet,
 } from "./gateway-instance.js";
 
 /**
@@ -352,6 +356,18 @@ function pathInsideAnyCandidate(candidate: string, parent: string): boolean {
   return pathCandidates(candidate).some((entry) => isInside(entry, parent));
 }
 
+/** Each root plus its realpath (when resolvable), de-duplicated. */
+function withRealpaths(roots: string[]): string[] {
+  const out = new Set<string>();
+  for (const root of roots) {
+    const resolved = path.resolve(root);
+    out.add(resolved);
+    const real = tryRealpath(resolved);
+    if (real) out.add(real);
+  }
+  return [...out];
+}
+
 /** True when `candidate` lies inside <root>/agent. */
 export function isPathInsideAgentRoot(
   candidate: string,
@@ -394,4 +410,140 @@ export function isPathInsideManagedRoot(
 ): boolean {
   if (typeof candidate !== "string" || candidate.length === 0) return false;
   return pathInsideAnyCandidate(candidate, resolveManagedRoot(env, homedir));
+}
+
+/**
+ * Observed-instance surface (stable inspects another instance, read-only).
+ *
+ * These helpers resolve the AGENT-VISIBLE runtime surface of ANOTHER instance
+ * (e.g. the dev gateway's ~/smithersbot-dev-home/agent) so the stable gateway
+ * can read its workspaces and sanitized history for repo chat, diagnostics, and
+ * context — while the observed instance's private/state (env, config, auth,
+ * sessions, ~/.smithersbot-dev, Telegram tokens) stays sealed.
+ *
+ * CRITICAL invariants:
+ *   - Built ONLY on the explicit {@link resolveGatewayInstanceIdentity} mapping,
+ *     never on the current process's resolveManagedRoot or the checkout path.
+ *   - Observation is EXPLICIT opt-in only ({@link resolveObservedInstanceSet});
+ *     with no opt-in nothing resolves and the guard denies everything.
+ *   - The observed state dir and private root are never resolved or exposed.
+ *   - These do NOT alter the current process's own managed-root resolution.
+ */
+
+function requireObservedInstance(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): GatewayInstanceName {
+  const name = normalizeGatewayInstanceSelection(instanceName);
+  if (!resolveObservedInstanceSet(options).has(name)) {
+    throw new Error(
+      `Instance "${name}" is not an opted-in observed instance. ` +
+        `Enable it explicitly via SMITHERSBOT_OBSERVED_INSTANCES or gateway.observedInstances.`,
+    );
+  }
+  return name;
+}
+
+function observedManagedRoot(instanceName: GatewayInstanceName, homedir: () => string): string {
+  // Built on the static instance identity, NOT the current process's resolveManagedRoot.
+  return resolveGatewayInstanceIdentity(instanceName, homedir).managedRoot;
+}
+
+/** Observed instance managed root, e.g. ~/smithersbot-dev-home. Requires opt-in. */
+export function resolveObservedManagedRoot(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  const name = requireObservedInstance(instanceName, options);
+  return observedManagedRoot(name, options?.homedir ?? os.homedir);
+}
+
+/** Observed agent-visible root: <observed managed root>/agent. Requires opt-in. */
+export function resolveObservedAgentRoot(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  return path.join(resolveObservedManagedRoot(instanceName, options), "agent");
+}
+
+/** Observed workspaces root: <observed managed root>/agent/workspaces. Requires opt-in. */
+export function resolveObservedWorkspacesRoot(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  return path.join(resolveObservedAgentRoot(instanceName, options), "workspaces");
+}
+
+/** Observed goal history root: <observed managed root>/agent/history/goals. Requires opt-in. */
+export function resolveObservedGoalHistoryRoot(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  return path.join(resolveObservedAgentRoot(instanceName, options), "history", "goals");
+}
+
+/** Observed repo-chat history root: <observed managed root>/agent/history/repo-chats. */
+export function resolveObservedRepoChatHistoryRoot(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  return path.join(resolveObservedAgentRoot(instanceName, options), "history", "repo-chats");
+}
+
+/** Observed history index dir: <observed managed root>/agent/history/index. Requires opt-in. */
+export function resolveObservedHistoryIndexDir(
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): string {
+  return path.join(resolveObservedAgentRoot(instanceName, options), "history", "index");
+}
+
+/**
+ * Traversal-safe guard: true ONLY when `candidate` lies inside the observed
+ * instance's allowed agent subtrees (agent/workspaces or
+ * agent/history/{goals,repo-chats,index}) AND every realpath candidate stays
+ * within those subtrees.
+ *
+ * Returns false when:
+ *   - the instance is not an opted-in observed instance (or no opt-in at all);
+ *   - the path lies inside the observed private root or state dir
+ *     (~/smithersbot-dev-home/private, ~/.smithersbot-dev);
+ *   - any symlink/realpath escapes the allowed agent subtree (e.g. a symlink
+ *     under agent/workspaces pointing into private/ or the state dir).
+ */
+export function isObservedAgentPathAllowed(
+  candidate: string,
+  instanceName: string,
+  options?: ObservedInstanceOptions,
+): boolean {
+  if (typeof candidate !== "string" || candidate.length === 0) return false;
+
+  const name = normalizeGatewayInstanceSelection(instanceName);
+  if (!resolveObservedInstanceSet(options).has(name)) return false;
+
+  const homedir = options?.homedir ?? os.homedir;
+  const identity = resolveGatewayInstanceIdentity(name, homedir);
+  const managedRoot = identity.managedRoot;
+  const agentRoot = path.join(managedRoot, "agent");
+  const privateRoot = path.join(managedRoot, "private");
+  const stateDir = identity.stateDir;
+
+  // Reject anything resolving into the observed private root or state dir.
+  if (pathInsideAnyCandidate(candidate, privateRoot)) return false;
+  if (pathInsideAnyCandidate(candidate, stateDir)) return false;
+
+  // Allowed subtrees, plus their realpaths so a benign symlink in the path
+  // prefix (e.g. /tmp -> /private/tmp) does not spuriously reject a real path.
+  const allowedRoots = withRealpaths([
+    path.join(agentRoot, "workspaces"),
+    path.join(agentRoot, "history", "goals"),
+    path.join(agentRoot, "history", "repo-chats"),
+    path.join(agentRoot, "history", "index"),
+  ]);
+
+  // Every realpath candidate must stay inside one of the allowed subtrees, so a
+  // symlink/mirror that escapes (into private, the state dir, or anywhere else)
+  // is rejected even if its literal path is under an allowed root.
+  const candidates = pathCandidates(candidate);
+  return candidates.every((entry) => allowedRoots.some((root) => isInside(entry, root)));
 }
