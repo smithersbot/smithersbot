@@ -26,6 +26,12 @@ import {
   writeDenyFile,
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
+import {
+  DEV_GATEWAY_OPERATION_ACTIONS,
+  DEV_GATEWAY_OPERATION_UNIT,
+  describeDevGatewayMediatedActions,
+} from "./dev-gateway-operation.js";
+import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
@@ -100,6 +106,8 @@ vi.mock("./backend-sandbox.js", async (importOriginal) => {
     writeCodexNativeSandboxConfig,
   };
 });
+
+const STABLE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 
 const runCliProcessMock = vi.mocked(runCliProcess);
 const resolveWorkerDirMock = vi.mocked(resolveWorkerDir);
@@ -2032,8 +2040,13 @@ describe("cli-worker", () => {
         devGatewayWorkspace: true,
       });
       expect(withDev).toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
-      expect(withDev).toContain("systemctl --user restart smithersbot-dev-gateway.service");
-      expect(withDev).toContain("Never restart, reinstall, or otherwise modify the stable gateway");
+      // Workers are directed to the mediated operation, not raw systemctl/journalctl.
+      expect(withDev).toContain("safe gateway-mediated dev-gateway operation");
+      expect(withDev).toContain("Do NOT run raw `systemctl --user ...` or `journalctl --user ...`");
+      expect(withDev).not.toContain("systemctl --user restart smithersbot-dev-gateway.service");
+      expect(withDev).toContain(
+        "Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway",
+      );
       // Guidance appears in the dynamic body, after the goal line.
       expect(withDev.indexOf("GOAL: Build auth")).toBeLessThan(
         withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:"),
@@ -2041,6 +2054,32 @@ describe("cli-worker", () => {
       expect(withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:")).toBeLessThan(
         withDev.indexOf("PLAN CONTEXT:"),
       );
+    });
+
+    it("advertises exactly the three mediated dev-unit actions and never the stable unit", () => {
+      const withDev = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: true,
+      });
+
+      // Advertised tool availability is derived from the enforced policy.
+      expect(DEV_GATEWAY_OPERATION_ACTIONS).toEqual(["restart", "status", "logs"]);
+      for (const line of describeDevGatewayMediatedActions()) {
+        expect(withDev).toContain(`  - ${line}`);
+        expect(line).toContain(DEV_GATEWAY_OPERATION_UNIT);
+      }
+      // The dev unit is the only manageable unit; the stable unit is only ever
+      // referenced as protected (never as something the worker may operate on).
+      expect(withDev).toContain(DEV_GATEWAY_OPERATION_UNIT);
+      expect(withDev).not.toContain(`restart ${STABLE_UNIT}`);
+      expect(withDev).not.toContain(`status / is-active for ${STABLE_UNIT}`);
+      expect(withDev).not.toContain(`recent journal lines for ${STABLE_UNIT}`);
+      // No stop/enable/disable/reinstall is advertised for any unit.
+      expect(withDev).toContain("exposes no stop/enable/disable/reinstall");
     });
 
     it("omits the dev-gateway worker instruction by default", () => {

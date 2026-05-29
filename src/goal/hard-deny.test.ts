@@ -393,6 +393,22 @@ describe("buildDevWorkspaceHardDenies", () => {
     ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
   });
 
+  it("denies restarting an arbitrary (non-dev, non-stable) service name", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart some-random.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(checkCommandDeny("systemctl --user restart nginx", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+    // A unit whose name merely embeds the dev unit string is not the dev unit.
+    expect(
+      checkCommandDeny(
+        "systemctl --user restart smithersbot-dev-gateway.service.evil.service",
+        devDenies,
+      )?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
   it("denies stable install/manage paths (enable/start/stop) for the stable unit", () => {
     expect(
       checkCommandDeny("systemctl --user enable --now smithersbot-gateway.service", devDenies)

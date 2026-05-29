@@ -14,6 +14,25 @@ export const DEV_GATEWAY_OPERATION_ACTIONS = ["restart", "status", "logs"] as co
 
 export type DevGatewayOperationAction = (typeof DEV_GATEWAY_OPERATION_ACTIONS)[number];
 
+/** The single dev unit this mediated operation is hard-coded to manage. */
+export const DEV_GATEWAY_OPERATION_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit;
+
+/**
+ * Human-readable, one-line-per-action description of the mediated dev-gateway
+ * operation, derived from the action allowlist + the fixed dev unit. This is the
+ * single source of truth for worker GUIDANCE so the advertised tool availability
+ * always matches the enforced policy: exactly these three actions, fixed to the
+ * dev unit, never the stable unit and never a caller-supplied service name.
+ */
+export function describeDevGatewayMediatedActions(): string[] {
+  const detail: Record<DevGatewayOperationAction, string> = {
+    restart: `restart ${DEV_GATEWAY_OPERATION_UNIT}`,
+    status: `status / is-active for ${DEV_GATEWAY_OPERATION_UNIT}`,
+    logs: `recent journal lines for ${DEV_GATEWAY_OPERATION_UNIT}`,
+  };
+  return DEV_GATEWAY_OPERATION_ACTIONS.map((action) => `${action} — ${detail[action]}`);
+}
+
 export type DevGatewayRestartResult = {
   action: "restart";
   serviceUnit: string;
@@ -38,7 +57,7 @@ export type DevGatewayOperationResult =
   | DevGatewayStatusResult
   | DevGatewayLogsResult;
 
-const DEV_GATEWAY_SERVICE_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit;
+const DEV_GATEWAY_SERVICE_UNIT = DEV_GATEWAY_OPERATION_UNIT;
 const STABLE_GATEWAY_SERVICE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 const DEV_GATEWAY_OPERATION_ENV: Record<string, string | undefined> = {
   CLAWDBOT_SYSTEMD_UNIT: DEV_GATEWAY_SERVICE_UNIT,
