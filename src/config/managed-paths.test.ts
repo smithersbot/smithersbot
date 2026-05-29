@@ -6,11 +6,13 @@ import {
   isPathInsideAgentRoot,
   isPathInsideManagedRoot,
   isPathInsidePrivateRoot,
+  isPathInsideWorkspacesRoot,
   resolveAgentRoot,
   resolveManagedRoot,
   resolvePrivateEnvFile,
   resolvePrivateRoot,
   resolveWorkspaceRepoDir,
+  resolveWorkspacesRoot,
   slugifyWorkspaceName,
 } from "./managed-paths.js";
 
@@ -56,6 +58,35 @@ describe("managed paths", () => {
     expect(isPathInsideAgentRoot(privateEnv, env, homedir)).toBe(false);
     expect(isPathInsidePrivateRoot(privateEnv, env, homedir)).toBe(true);
     expect(isPathInsideManagedRoot(privateEnv, env, homedir)).toBe(true);
+  });
+
+  it("resolves the workspaces root under the agent root", () => {
+    expect(resolveWorkspacesRoot(env, homedir)).toBe(
+      path.join(resolveAgentRoot(env, homedir), "workspaces"),
+    );
+  });
+
+  it("recognizes paths inside the managed workspaces root and rejects those outside", () => {
+    const inside = path.join(resolveWorkspacesRoot(env, homedir), "launch-inputs");
+    const nested = path.join(inside, "src", "index.ts");
+    const agentSibling = path.join(resolveAgentRoot(env, homedir), "history", "goals");
+    const outside = path.join(resolveManagedRoot(env, homedir), "..", "elsewhere");
+
+    expect(isPathInsideWorkspacesRoot(inside, env, homedir)).toBe(true);
+    expect(isPathInsideWorkspacesRoot(nested, env, homedir)).toBe(true);
+    // The workspaces root itself counts as inside.
+    expect(isPathInsideWorkspacesRoot(resolveWorkspacesRoot(env, homedir), env, homedir)).toBe(
+      true,
+    );
+    // Other agent subtrees are not workspaces.
+    expect(isPathInsideWorkspacesRoot(agentSibling, env, homedir)).toBe(false);
+    expect(isPathInsideWorkspacesRoot(outside, env, homedir)).toBe(false);
+    expect(isPathInsideWorkspacesRoot("", env, homedir)).toBe(false);
+  });
+
+  it("is traversal-safe: a '..' escape from the workspaces root is rejected", () => {
+    const escape = path.join(resolveWorkspacesRoot(env, homedir), "..", "..", "private", "env");
+    expect(isPathInsideWorkspacesRoot(escape, env, homedir)).toBe(false);
   });
 
   it("rejects workspace names that could traverse managed roots", () => {

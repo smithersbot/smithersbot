@@ -179,6 +179,12 @@ export async function goalCommand(
     const resolvedAuthMode = opts.claudeCodeAuth ?? opts.config?.goal?.claudeCodeAuth;
     ensureGlobalConventions();
 
+    // Ensure the workspace is a checkpoint-compatible git repo before planning.
+    // A plain folder dragged into the managed workspaces root is initialized as a
+    // local-only repo here; a non-repo folder outside the managed root throws an
+    // actionable error instead of a raw "fatal: not a git repository" later.
+    ensureWorkingDir(workingDir);
+
     // Phase 1: Single CLI planning pass (plan + scout artifacts)
     session.state = "planning";
     persistRun();
