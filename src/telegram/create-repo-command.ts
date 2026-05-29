@@ -202,7 +202,8 @@ export function registerCreateRepoCommand({
     // Ensure it's a git repo with at least one commit
     try {
       if (!isGitRepo(resolvedPath)) {
-        ensureWorkingDir(resolvedPath);
+        // Explicit user-driven repo creation may target any path.
+        ensureWorkingDir(resolvedPath, { allowOutsideManagedRoot: true });
         await bot.api.sendMessage(
           chatId,
           `Initialized git repo in ${shortenHomePath(resolvedPath)}`,

@@ -1109,6 +1109,42 @@ describe("goal-resume command", () => {
       expect(rt.logs.join("\n")).toContain("Replanned successfully");
     });
 
+    it("initializes the workspace before replanning runs", async () => {
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          workingDir: "/tmp/ws",
+          summary: "Replanned successfully",
+          steps: [
+            {
+              id: "replanned-step",
+              description: "A replanned task",
+              dependsOn: [],
+              durationMinutes: 30,
+              status: "pending",
+            },
+          ],
+          goal: "Original goal text",
+        },
+        scoutStatus: "success",
+      });
+
+      const run = makeRun({
+        runId: "replan-init-ordering",
+        state: "planning",
+        goal: "Original goal text",
+      });
+      saveRun(run);
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      await goalResumeCommand("replan-init-ordering", { replan: true }, mockRuntime());
+
+      expect(mockEnsureWorkingDir).toHaveBeenCalledWith(run.workingDir);
+      expect(mockEnsureWorkingDir.mock.invocationCallOrder[0]!).toBeLessThan(
+        mockRunCliPlanning.mock.invocationCallOrder[0]!,
+      );
+    });
+
     it("returns cancelled and does not save plan when run is stopped during replan", async () => {
       const runId = "planning-cancelled-during-replan";
       const plannerWorkingDir = fs.mkdtempSync(
