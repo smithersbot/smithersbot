@@ -4,7 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
 import {
+  DEV_GATEWAY_WORKSPACE_DENY_REASON,
   HARD_DENIES,
+  buildDevWorkspaceHardDenies,
   checkCommandDeny,
   checkPathDeny,
   renderGroupedHardDenies,
@@ -334,5 +336,88 @@ describe("checkCommandDeny", () => {
   it("allows normal safe commands", () => {
     expect(checkCommandDeny("pnpm test")).toBeNull();
     expect(checkCommandDeny('echo "vercel deploy docs"')).toBeNull();
+  });
+
+  describe("default/stable workers keep denying all gateway restarts", () => {
+    it("denies the dev gateway restart in the default (stable) deny list", () => {
+      expect(
+        checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service")?.pattern,
+      ).toBe("systemctl --user restart");
+    });
+
+    it("denies the stable gateway restart in the default deny list", () => {
+      expect(
+        checkCommandDeny("systemctl --user restart smithersbot-gateway.service")?.pattern,
+      ).toBe("systemctl --user restart");
+    });
+  });
+});
+
+describe("buildDevWorkspaceHardDenies", () => {
+  const devDenies = buildDevWorkspaceHardDenies();
+
+  it("allows restarting/inspecting only the dev gateway unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service", devDenies),
+    ).toBeNull();
+    expect(
+      checkCommandDeny(
+        "systemctl --user status smithersbot-dev-gateway.service --no-pager",
+        devDenies,
+      ),
+    ).toBeNull();
+    expect(
+      checkCommandDeny(
+        "journalctl --user -u smithersbot-dev-gateway.service -n 80 --no-pager",
+        devDenies,
+      ),
+    ).toBeNull();
+    // Bare unit name (no .service suffix) is still recognized as the dev unit.
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway", devDenies),
+    ).toBeNull();
+  });
+
+  it("still denies restarting the stable gateway unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
+  it("denies a unit-less or non-dev gateway restart", () => {
+    expect(checkCommandDeny("systemctl --user restart", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+    expect(
+      checkCommandDeny("systemctl restart smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
+  it("denies stable install/manage paths (enable/start/stop) for the stable unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user enable --now smithersbot-gateway.service", devDenies)
+        ?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(
+      checkCommandDeny("systemctl --user start smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(checkCommandDeny("systemctl --user stop smithersbot-gateway", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+  });
+
+  it("keeps the moltbot gateway restart and unrelated denies intact", () => {
+    expect(checkCommandDeny("moltbot gateway restart", devDenies)?.pattern).toBe(
+      "moltbot gateway restart",
+    );
+    expect(checkCommandDeny("sudo whoami", devDenies)?.pattern).toBe("sudo");
+    expect(checkCommandDeny("npm publish", devDenies)?.pattern).toBe("npm publish");
+  });
+
+  it("keeps ~/.smithersbot stable-config mutation denied", () => {
+    expect(checkPathDeny("~/.smithersbot/.env", devDenies)?.reason).toBe(SECRET_PATH_DENY_REASON);
+    expect(checkPathDeny("~/.smithersbot/smithersbot.json", devDenies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
   });
 });
