@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts } from "../prompts/planner/system-prompt.js";
+import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import { GoalLlmError, classifyGoalError } from "./errors.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalBackendId } from "./backend-types.js";
@@ -87,7 +88,9 @@ export async function generatePlan(
   let response;
   try {
     response = await client.complete({
-      systemPrompt: buildPlanSystemPrompt(enabledWorkers),
+      systemPrompt: buildPlanSystemPrompt(enabledWorkers, {
+        devGatewayVerification: isSmithersbotDevWorkspace(cwd),
+      }),
       userMessage: buildPlannerUserMessage(goal, cwd, scoutData),
       maxTokens: 8192,
     });
@@ -421,7 +424,9 @@ export async function generatePlanRevision(
   let response;
   try {
     response = await client.complete({
-      systemPrompt: buildPlanSystemPrompt(enabledWorkers),
+      systemPrompt: buildPlanSystemPrompt(enabledWorkers, {
+        devGatewayVerification: isSmithersbotDevWorkspace(cwd),
+      }),
       userMessage: `Goal: ${goal}\nCurrent workspace path: ${cwd}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
       maxTokens: 8192,
     });
