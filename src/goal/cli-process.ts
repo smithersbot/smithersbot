@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import { buildCredentialStrippedEnv } from "./claude-code-env.js";
 
 const SIGTERM_GRACE_MS = 5_000;
@@ -63,6 +64,34 @@ function terminateProcess(proc: ChildProcess): void {
   proc.once("close", () => clearTimeout(killTimer));
 }
 
+function openOutputFd(outputPath: string | undefined): number | undefined {
+  if (!outputPath) return undefined;
+  try {
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    return fs.openSync(outputPath, "w");
+  } catch {
+    return undefined;
+  }
+}
+
+function closeOutputFd(fd: number | undefined): void {
+  if (fd === undefined) return;
+  try {
+    fs.closeSync(fd);
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+function readOutputFile(outputPath: string | undefined, fallback: string): string {
+  if (!outputPath) return fallback;
+  try {
+    return fs.readFileSync(outputPath, "utf8");
+  } catch {
+    return fallback;
+  }
+}
+
 export async function runCliProcess(params: RunCliProcessParams): Promise<RunCliProcessResult> {
   const { command, args, cwd, timeoutMs, abortSignal, stdin, stdoutPath, stderrPath } = params;
   const start = Date.now();
@@ -84,28 +113,18 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
     let timedOut = false;
     let settled = false;
 
-    let stdoutStream: fs.WriteStream | undefined;
-    let stderrStream: fs.WriteStream | undefined;
-
-    if (stdoutPath) {
-      try {
-        stdoutStream = fs.createWriteStream(stdoutPath, { flags: "w" });
-      } catch {
-        stdoutStream = undefined;
-      }
-    }
-    if (stderrPath) {
-      try {
-        stderrStream = fs.createWriteStream(stderrPath, { flags: "w" });
-      } catch {
-        stderrStream = undefined;
-      }
-    }
-
     fs.mkdirSync(cwd, { recursive: true });
+    const stdoutFd = openOutputFd(stdoutPath);
+    const stderrFd = openOutputFd(stderrPath);
+    const stdio: ["pipe" | "ignore", number | "pipe", number | "pipe"] = [
+      stdin ? "pipe" : "ignore",
+      stdoutFd ?? "pipe",
+      stderrFd ?? "pipe",
+    ];
+
     const proc: ChildProcess = spawn(command, args, {
       cwd,
-      stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"],
+      stdio,
       env: params.env ?? buildCredentialStrippedEnv(),
     });
 
@@ -117,13 +136,11 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
     proc.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       stdout += text;
-      if (stdoutStream) stdoutStream.write(chunk);
     });
 
     proc.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       stderr += text;
-      if (stderrStream) stderrStream.write(chunk);
     });
 
     const hardTimeout = setTimeout(() => {
@@ -148,8 +165,10 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
       if (abortSignal) {
         abortSignal.removeEventListener("abort", abortHandler);
       }
-      stdoutStream?.end();
-      stderrStream?.end();
+      closeOutputFd(stdoutFd);
+      closeOutputFd(stderrFd);
+      stdout = readOutputFile(stdoutPath, stdout);
+      stderr = readOutputFile(stderrPath, stderr);
       if (timedOut && proc.pid && isProcessAlive(proc.pid)) {
         proc.kill("SIGKILL");
       }
@@ -169,7 +188,13 @@ export async function runCliProcess(params: RunCliProcessParams): Promise<RunCli
 
     proc.on("error", (err) => {
       stderr += `\nProcess error: ${err.message}`;
-      if (stderrStream) stderrStream.write(Buffer.from(`\nProcess error: ${err.message}`));
+      if (stderrFd !== undefined) {
+        try {
+          fs.writeSync(stderrFd, `\nProcess error: ${err.message}`);
+        } catch {
+          // best-effort artifact write
+        }
+      }
       finish(1, null);
     });
   });
