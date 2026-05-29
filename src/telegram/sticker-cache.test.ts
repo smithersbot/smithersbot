@@ -20,10 +20,17 @@ const { TEST_STATE_DIR, TEST_CACHE_FILE } = await vi.hoisted(async () => {
   };
 });
 
-// Mock the state directory to use a temp location
-vi.mock("../config/paths.js", () => ({
-  STATE_DIR: TEST_STATE_DIR,
-}));
+// Mock the state directory to use a temp location. Preserve the real module so
+// that the env/config-loading chain (resolveStateDir, resolveConfigPath, etc.)
+// stays intact and only the resolved state dir points at the temp location.
+vi.mock("../config/paths.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/paths.js")>();
+  return {
+    ...actual,
+    STATE_DIR: TEST_STATE_DIR,
+    resolveStateDir: () => TEST_STATE_DIR,
+  };
+});
 
 describe("sticker-cache", () => {
   beforeEach(() => {
