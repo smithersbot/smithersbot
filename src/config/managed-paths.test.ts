@@ -55,6 +55,46 @@ describe("managed paths", () => {
     ).toBe(path.join(tmpDir, "smithersbot-dev-home"));
   });
 
+  it("does not use the legacy fallback when an instance is selected explicitly", () => {
+    const legacyRoot = path.join(tmpDir, "smithersbot-goals");
+    fs.mkdirSync(legacyRoot);
+
+    expect(
+      resolveManagedRoot({ SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv, () => tmpDir),
+    ).toBe(path.join(tmpDir, "smithersbot-home"));
+  });
+
+  it("resolves the smithersbot-dev workspace name under the selected instance root", () => {
+    const home = "/home/matt";
+
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+        () => home,
+      ),
+    ).toBe("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev");
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
+        () => home,
+      ),
+    ).toBe("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev");
+  });
+
+  it("keeps an explicit managed-root override over the selected instance root", () => {
+    const override = path.join(tmpDir, "custom-root");
+
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "dev", SMITHERSBOT_GOALS_ROOT: override } as NodeJS.ProcessEnv,
+        () => "/home/matt",
+      ),
+    ).toBe(path.join(override, "agent", "workspaces", "smithersbot-dev"));
+  });
+
   it("does not infer dev managed root from a smithersbot-dev working directory", () => {
     const prevCwd = process.cwd();
     const devCheckout = path.join(
