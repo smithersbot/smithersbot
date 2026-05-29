@@ -85,6 +85,36 @@ export function isGitRepo(cwd: string): boolean {
   return Boolean(findGitRoot(cwd));
 }
 
+/**
+ * Ask git itself for the work-tree root containing `cwd`. Returns the absolute
+ * toplevel path, or null when `cwd` is not inside a usable git repository.
+ *
+ * This is git's own detection (unlike {@link findGitRoot}, which only walks the
+ * filesystem for a `.git` entry). It is the authoritative check before staging:
+ * a folder can contain a stale/empty/broken `.git` that `findGitRoot` reports as
+ * a repo but that git refuses with "fatal: not a git repository". Relying on git
+ * here prevents ever issuing `git add` against a directory git won't accept.
+ */
+function gitToplevel(cwd: string): string | null {
+  try {
+    const out = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+function realpathOrResolve(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
 function hasHeadCommit(cwd: string): boolean {
   try {
     execFileSync("git", ["-C", cwd, "rev-parse", "--verify", "HEAD"], {
@@ -250,7 +280,10 @@ export function ensureWorkingDir(
   fs.mkdirSync(cwd, { recursive: true });
   if (!canRunGit()) return;
 
-  if (isGitRepo(cwd)) {
+  // Ask git directly whether this is a usable repo. A filesystem-only check
+  // (findGitRoot) can report a repo for a stale/empty/broken `.git`, which would
+  // then surface a raw "fatal: not a git repository" on the first `git add`.
+  if (gitToplevel(cwd) !== null) {
     // `git checkout -B` and `git rev-parse HEAD` require HEAD to exist.
     if (hasHeadCommit(cwd)) return;
     writeInitialWorkspaceFiles(cwd, { gitkeep: true });
@@ -269,7 +302,11 @@ export function ensureWorkingDir(
   }
 
   // Local-only init for a plain folder dragged into the managed workspaces root.
-  // No remote is added and nothing is pushed.
+  // Strict ordering: `git init` first, then verify the repo actually exists via
+  // `git rev-parse --show-toplevel`, and ONLY THEN write/stage baseline files.
+  // No `git add` may run before init + verification succeed, so a managed plain
+  // folder never surfaces a raw "fatal: not a git repository". No remote is added
+  // and nothing is pushed.
   try {
     execFileSync("git", ["-C", cwd, "init"], {
       encoding: "utf8",
@@ -278,6 +315,17 @@ export function ensureWorkingDir(
   } catch (error) {
     throw new Error(
       `SmithersBot could not initialize a local git repository at ${cwd}: ${describeGitError(error)}`,
+    );
+  }
+
+  const toplevel = gitToplevel(cwd);
+  if (toplevel === null || realpathOrResolve(toplevel) !== realpathOrResolve(cwd)) {
+    throw new Error(
+      `SmithersBot initialized a git repository at ${cwd} but could not verify it with ` +
+        "`git rev-parse --show-toplevel`" +
+        (toplevel === null ? "" : ` (resolved to ${toplevel} instead)`) +
+        ". Refusing to stage files in a directory git does not recognize as a repository. " +
+        "Try removing any stale `.git` entry in the folder, or run `git init` in it manually.",
     );
   }
 
