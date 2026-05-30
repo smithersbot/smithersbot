@@ -32,8 +32,10 @@ import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { markdownToTelegramChunks, markdownToTelegramHtml } from "./format.js";
 import {
   buildBlockedCaption,
+  buildBlockedSurfaceCopy,
   buildGoalBlockedInlineKeyboard,
   buildTaskBlockedInlineKeyboard,
+  classifyBlockedNotification,
 } from "./goal-blocked-ui.js";
 import { indexPlanMessage } from "./goal-message-index.js";
 import { buildInlineKeyboard } from "./send.js";
@@ -446,20 +448,22 @@ export async function sendBlockedNotification(params: {
 
   const runIdPrefix = runId.slice(0, 8);
   const blockedCaption = buildBlockedCaption(steps);
-  const replyMarkup = blockedDetail.stepId
-    ? buildTaskBlockedInlineKeyboard(runIdPrefix)
-    : buildGoalBlockedInlineKeyboard(runIdPrefix);
-  const isUserInputBlock = blockedDetail.requiredInputKey !== "resume_execution";
-  const title = blockedDetail.stepId
-    ? isUserInputBlock
-      ? `**TASK BLOCKED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs input`
-      : `**TASK INTERRUPTED** (${runIdPrefix}): Step ${blockedDetail.stepId} needs resume`
-    : isUserInputBlock
-      ? `**GOAL BLOCKED** (${runIdPrefix}): no runnable steps - waiting for answers.`
-      : `**GOAL INTERRUPTED** (${runIdPrefix}): worker failed/interrupted - resume needed.`;
-  const caption = blockedCaption
-    ? `${title}\n\n${blockedCaption}`
-    : `${title}\n\n${blockedDetail.prompt}`;
+  // Drive the surface — keyboard, title and action hint — from the derived
+  // user-facing category so task-level and goal-level behave consistently.
+  const level = blockedDetail.stepId ? "task" : "goal";
+  const category = classifyBlockedNotification(steps, blockedDetail);
+  const replyMarkup =
+    level === "task"
+      ? buildTaskBlockedInlineKeyboard(runIdPrefix, category)
+      : buildGoalBlockedInlineKeyboard(runIdPrefix, category);
+  const copy = buildBlockedSurfaceCopy({
+    level,
+    category,
+    runIdPrefix,
+    stepId: blockedDetail.stepId,
+  });
+  const body = blockedCaption || blockedDetail.prompt;
+  const caption = `${copy.title}\n\n${body}\n\n${copy.actionHint}`;
 
   let messageId: number | undefined;
   try {
