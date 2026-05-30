@@ -341,16 +341,21 @@ export const registerTelegramHandlers = ({
     senderId: string;
   }): { key: string; anchor: CommandAnchor } | undefined {
     if (!commandFragmentBuffer) return undefined;
-    const key = buildCommandFragmentKey({
-      accountId,
-      chatId: params.chatId,
-      resolvedThreadId: params.threadId,
-      senderId: params.senderId,
-      commandName: "new_goal",
-    });
-    const anchor = commandFragmentBuffer.getAnchor(key) as CommandAnchor | undefined;
-    if (!anchor) return undefined;
-    return { key, anchor };
+    // Mirror /new_goal: resolve live anchors for both /new_goal and /repo_chat so a late
+    // paste tail (after the buffer flushed) routes to append/new/ignore instead of falling
+    // through to a brand-new repo-chat launch.
+    for (const commandName of ["new_goal", "repo_chat"] as const) {
+      const key = buildCommandFragmentKey({
+        accountId,
+        chatId: params.chatId,
+        resolvedThreadId: params.threadId,
+        senderId: params.senderId,
+        commandName,
+      });
+      const anchor = commandFragmentBuffer.getAnchor(key) as CommandAnchor | undefined;
+      if (anchor) return { key, anchor };
+    }
+    return undefined;
   }
 
   async function promptForCommandAnchorFollowUp(params: {
@@ -669,7 +674,7 @@ export const registerTelegramHandlers = ({
     const repoChatEnabled = isRepoChatBackendEnabled(telegramCfg.repoChatBackend);
 
     const bufferLongFreeformRoute = async (bufferParams: {
-      commandName: "repo_chat" | "goal_answer" | "goal_feedback";
+      commandName: "repo_chat" | "goal_answer" | "goal_feedback" | "goal_edit";
       runId?: string;
       replyToMessageId?: number;
       text: string;
@@ -854,43 +859,71 @@ export const registerTelegramHandlers = ({
       },
       runHandlers: {
         edit: (runId, text) => {
-          const editLock = acquireGoalOpLock(runId, "edit");
-          if (!editLock.acquired) {
-            void sendGoalReply(
+          // Buffer split "Request changes" / GOAL_EDIT fragments BEFORE taking the edit
+          // lock, mirroring goal_answer. Acquiring the lock per-fragment would make the
+          // second split chunk surface "already being processed (edit)". The lock is only
+          // taken once, after the combined edit text flushes.
+          const dispatchEdit = (editText: string) => {
+            const editLock = acquireGoalOpLock(runId, "edit");
+            if (!editLock.acquired) {
+              void sendGoalReply(
+                bot,
+                chatId,
+                formatGoalLockedMessage(runId, editLock.existingLabel),
+                runtime,
+                params.threadId,
+                sourceMessageId,
+              );
+              return;
+            }
+            runGoalInBackground({
               bot,
               chatId,
-              formatGoalLockedMessage(runId, editLock.existingLabel),
+              threadId: params.threadId,
               runtime,
-              params.threadId,
-              sourceMessageId,
-            );
+              label: "goal-router:edit",
+              replyToMessageId: sourceMessageId,
+              releaseGoalLock: editLock.release,
+              fn: () => handleGoalEdit(runId, editText, cfg),
+              onResult: async (result) => {
+                if (result == null) return;
+                if (typeof result === "string") {
+                  await sendGoalReply(
+                    bot,
+                    chatId,
+                    result,
+                    runtime,
+                    params.threadId,
+                    sourceMessageId,
+                  );
+                } else {
+                  await sendGoalPlanResult({
+                    bot,
+                    chatId,
+                    runtime,
+                    result,
+                    threadId: params.threadId,
+                    replyToMessageId: sourceMessageId,
+                  });
+                }
+              },
+            });
+          };
+
+          if (replyToMessageId != null) {
+            void bufferLongFreeformRoute({
+              commandName: "goal_edit",
+              runId,
+              replyToMessageId,
+              text,
+              flushCallback: (combinedText) => dispatchEdit(combinedText),
+            }).then((buffered) => {
+              if (!buffered) dispatchEdit(text);
+            });
             return;
           }
-          runGoalInBackground({
-            bot,
-            chatId,
-            threadId: params.threadId,
-            runtime,
-            label: "goal-router:edit",
-            replyToMessageId: sourceMessageId,
-            releaseGoalLock: editLock.release,
-            fn: () => handleGoalEdit(runId, text, cfg),
-            onResult: async (result) => {
-              if (result == null) return;
-              if (typeof result === "string") {
-                await sendGoalReply(bot, chatId, result, runtime, params.threadId, sourceMessageId);
-              } else {
-                await sendGoalPlanResult({
-                  bot,
-                  chatId,
-                  runtime,
-                  result,
-                  threadId: params.threadId,
-                  replyToMessageId: sourceMessageId,
-                });
-              }
-            },
-          });
+
+          dispatchEdit(text);
         },
         answer: (runId, text) => {
           const dispatchAnswer = (answerText: string) => {
@@ -1558,7 +1591,14 @@ export const registerTelegramHandlers = ({
         const consumed = commandFragmentBuffer.tryAppendMatching(
           {
             ...normalized,
-            commandNames: ["new_goal", "repo_chat", "goal_feedback", "goal_answer", "goal_resume"],
+            commandNames: [
+              "new_goal",
+              "repo_chat",
+              "goal_feedback",
+              "goal_answer",
+              "goal_edit",
+              "goal_resume",
+            ],
           },
           msg.message_id,
           text,
