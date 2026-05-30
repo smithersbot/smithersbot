@@ -239,6 +239,78 @@ describe("sendBlockedNotification", () => {
     });
   });
 
+  it("selects a Resume keyboard and Paused copy for a retry-exhausted task block", async () => {
+    const runId = "run-blocked-paused";
+    const steps = [makeBlockedStep({ blockedReason: "rate_limit" })];
+    const plan = makePlan(steps);
+    saveRun(makeRun(runId, plan));
+    mockRenderMermaidToPng.mockReturnValue(null);
+
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 901 });
+    const bot = { api: { sendPhoto: vi.fn(), sendMessage } };
+    const blockedDetail: BlockedDetail = {
+      blockedAt: "execution",
+      prompt: "Worker hit a provider limit.",
+      requiredInputKey: "resume_execution",
+      stepId: "1",
+    };
+
+    await sendBlockedNotification({
+      bot: bot as never,
+      chatId: 7007,
+      runtime: createRuntime(),
+      runId,
+      plan,
+      steps,
+      stepResults: new Map(),
+      blockedDetail,
+    });
+
+    const text = sendMessage.mock.calls[0]?.[1] as string;
+    expect(text).toContain("TASK PAUSED");
+    expect(text).toContain("Resume");
+    const keyboard = JSON.stringify(sendMessage.mock.calls[0]?.[2]?.reply_markup?.inline_keyboard);
+    expect(keyboard).toContain("gResume:");
+    expect(keyboard).toContain("gStop:");
+    expect(keyboard).not.toContain("gAD:");
+  });
+
+  it("selects a Stop-only keyboard and Failed copy for a non-retryable task block", async () => {
+    const runId = "run-blocked-failed";
+    const steps = [makeBlockedStep({ blockedReason: "auth" })];
+    const plan = makePlan(steps);
+    saveRun(makeRun(runId, plan));
+    mockRenderMermaidToPng.mockReturnValue(null);
+
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 902 });
+    const bot = { api: { sendPhoto: vi.fn(), sendMessage } };
+    const blockedDetail: BlockedDetail = {
+      blockedAt: "execution",
+      prompt: "Worker authentication failed.",
+      requiredInputKey: "resume_execution",
+      stepId: "1",
+    };
+
+    await sendBlockedNotification({
+      bot: bot as never,
+      chatId: 7008,
+      runtime: createRuntime(),
+      runId,
+      plan,
+      steps,
+      stepResults: new Map(),
+      blockedDetail,
+    });
+
+    const text = sendMessage.mock.calls[0]?.[1] as string;
+    expect(text).toContain("TASK FAILED");
+    expect(text).toMatch(/fix/i);
+    const keyboard = JSON.stringify(sendMessage.mock.calls[0]?.[2]?.reply_markup?.inline_keyboard);
+    expect(keyboard).toContain("gStop:");
+    expect(keyboard).not.toContain("gResume:");
+    expect(keyboard).not.toContain("gAD:");
+  });
+
   it("threads replyToMessageId into overflow DAG caption replies", async () => {
     const plan = makePlan([makeBlockedStep()]);
     const sendPhoto = vi.fn().mockResolvedValue({ message_id: 777 });
