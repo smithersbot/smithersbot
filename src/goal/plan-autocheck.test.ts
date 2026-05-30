@@ -2407,4 +2407,65 @@ describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
     if (decision.approved) throw new Error("expected rejection");
     expect(decision.editInstructions.toLowerCase()).toContain("private");
   });
+
+  describe("on-disk existence / is-directory validation", () => {
+    const validDir = "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev";
+    const asDir = () => ({ isDirectory: () => true });
+    const asFile = () => ({ isDirectory: () => false });
+
+    it("approves a valid in-root workspace directory that exists on disk", () => {
+      expect(checkPlanWorkingDir(validDir, { ...stable, statPath: asDir })).toEqual({
+        approved: true,
+      });
+    });
+
+    it("rejects a missing working directory before execution, naming the path", () => {
+      const decision = checkPlanWorkingDir(validDir, {
+        ...stable,
+        statPath: () => undefined,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(validDir);
+      expect(decision.editInstructions.toLowerCase()).toContain("does not exist");
+    });
+
+    it("rejects an existing path that is a file, not a directory", () => {
+      const decision = checkPlanWorkingDir(validDir, {
+        ...stable,
+        statPath: asFile,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(validDir);
+      expect(decision.editInstructions.toLowerCase()).toContain("not a directory");
+    });
+
+    it("still rejects an observed-runtime workspace path even when it exists on disk", () => {
+      const decision = checkPlanWorkingDir(
+        "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+        {
+          ...stable,
+          observedInstances: ["dev"],
+          config: { allowLegacyWorkingDir: true },
+          // It exists on disk, but the workspace-root guard must reject it first.
+          statPath: asDir,
+        },
+      );
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions.toLowerCase()).toContain("read-only");
+    });
+
+    it("rejects assertion/preflight wording like 'exactly /path' as a non-absolute workingDir", () => {
+      const decision = checkPlanWorkingDir(`exactly ${validDir}`, {
+        ...stable,
+        // statPath would say directory, but the value is not absolute.
+        statPath: asDir,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions.toLowerCase()).toContain("absolute");
+    });
+  });
 });
