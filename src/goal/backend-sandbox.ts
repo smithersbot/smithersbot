@@ -91,9 +91,11 @@ export type ClaudeCodeSandboxSettingsConfig = {
       //
       // Claude Code's sandbox network proxy is allowlist-based and DEFAULT-DENY:
       // an unmatched host is refused at the proxy (HTTP 403 on CONNECT). There is
-      // no `allowAll` key — broad egress is expressed as `allowedDomains:["*"]`,
-      // where a single trailing "*" matches every domain (per the documented
-      // wildcard syntax). We grant that for a requiresNetwork step.
+      // no universal allow-all token (bare "*"/"**"/"*.*" match nothing). Broad
+      // egress is expressed as a list of per-suffix wildcards
+      // (CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS) where each `*.<tld>` matches any
+      // host under that suffix including the apex. We grant that for a
+      // requiresNetwork step.
       network?: { allowedDomains: string[] };
     };
     permissions: {
@@ -164,6 +166,57 @@ export type ClaudeSubscriptionAuthProbeReport = {
 
 const DEFAULT_CODEX_SANDBOX_ROOT = "/var/tmp";
 const CODEX_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES";
+
+/**
+ * Broad network allowlist for a Claude Code `requiresNetwork=true` step.
+ *
+ * Claude Code's sandbox network proxy is allowlist-based and DEFAULT-DENY, and
+ * (unlike Codex's unrestricted `[permissions.smithersbot.network] enabled=true`)
+ * it has NO universal allow-all token. The documented/observed `allowedDomains`
+ * wildcard is a single leading label, `*.<suffix>`, which matches any host under
+ * that suffix INCLUDING the apex (`*.com` matches `example.com` and
+ * `api.example.com`). A bare `"*"`, `"**"`, or `"*.*"` matches nothing and the
+ * proxy returns HTTP 403 on CONNECT. The non-interactive goal worker cannot use
+ * the `dangerouslyDisableSandbox` escape hatch (it has no human to approve the
+ * fallback), so the only way to actually open egress for the step is to pre-allow
+ * domains here.
+ *
+ * We therefore grant per-suffix wildcards across the common public TLDs. This
+ * covers the overwhelming majority of real external endpoints (the live test's
+ * example.com is matched by `*.com`). It is intentionally NOT a security boundary
+ * equal to Codex's full grant: an exotic TLD or a bare-IP host the step happens
+ * to need is still denied by the proxy and surfaces as a real Claude sandbox
+ * capability error (curl exit 56 / HTTP 403 from proxy), never a silent success.
+ */
+const CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS: readonly string[] = [
+  "*.com",
+  "*.org",
+  "*.net",
+  "*.io",
+  "*.dev",
+  "*.ai",
+  "*.co",
+  "*.app",
+  "*.cloud",
+  "*.gov",
+  "*.edu",
+  "*.mil",
+  "*.info",
+  "*.biz",
+  "*.xyz",
+  "*.me",
+  "*.us",
+  "*.uk",
+  "*.eu",
+  "*.ca",
+  "*.de",
+  "*.fr",
+  "*.jp",
+  "*.au",
+  "*.in",
+  "*.sh",
+  "*.tech",
+];
 const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = DEFAULT_CODEX_SANDBOX_ROOT;
 const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
@@ -1037,9 +1090,9 @@ function buildClaudeReadToolDenies(
  * Policy: a planned step's `requiresNetwork=true` is sufficient to attempt
  * Claude network activation — there is no hidden operator env-var opt-in. The
  * grant is written into that one invocation's generated sandbox settings via
- * `sandbox.network={allowedDomains:["*"]}` (the allowlist wildcard that matches
- * every domain) and is never applied to steps that did not request it. Network
- * remains off by default for normal steps.
+ * `sandbox.network.allowedDomains` (broad per-suffix wildcards — see
+ * CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS) and is never applied to steps that did
+ * not request it. Network remains off by default for normal steps.
  *
  * This reports eligibility only; it does not prove the installed Claude build
  * honors the network setting at runtime. A genuine runtime/sandbox failure to
@@ -1111,9 +1164,10 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
     if (!capability.supported) {
       throw new Error(`Claude Code cannot satisfy requiresNetwork=true: ${capability.reason}`);
     }
-    // "*" is the documented allowlist wildcard for "all domains"; the proxy is
-    // default-deny, so a bare grant with no allowlist would still refuse egress.
-    networkGrant = { allowedDomains: ["*"] };
+    // Grant broad per-suffix wildcards; Claude's proxy is default-deny and has no
+    // universal allow-all token, so an explicit allowlist is the only way to open
+    // egress for the step. See CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS.
+    networkGrant = { allowedDomains: [...CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS] };
   }
 
   return {
