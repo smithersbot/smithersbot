@@ -59,6 +59,16 @@ describe("planner", () => {
       expect(prompt).toContain('Use "claude_code" for testing tasks');
     });
 
+    it("restricts requiresNetwork guidance to genuine network needs, not normal local build/test", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("requiresNetwork");
+      // Network is off by default and only for genuine network work.
+      expect(prompt).toMatch(/web fetch\/search/);
+      expect(prompt).toMatch(/download/i);
+      // Must explicitly steer away from setting it for normal local build/test.
+      expect(prompt).toMatch(/Do NOT set it for normal local build\/test/);
+    });
+
     it("does not offer pi as an assignable backend (disabled for launch)", () => {
       // Pi is disabled for launch: the planner/scout must not be told it can
       // assign pi. Check the backend union and selection rules across modes.

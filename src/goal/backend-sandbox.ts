@@ -85,6 +85,11 @@ export type ClaudeCodeSandboxSettingsConfig = {
         allowWrite: string[];
         denyRead: string[];
       };
+      // Present only when a step opts in via requiresNetwork=true AND the
+      // installed Claude build supports per-invocation sandbox network. Omitted
+      // (no network) for normal repo-local steps. Mirrors Codex's
+      // [permissions.smithersbot.network] enabled grant.
+      network?: { allowAll: true };
     };
     permissions: {
       deny: string[];
@@ -1019,6 +1024,38 @@ function buildClaudeReadToolDenies(
   return [...repoEnvDenies, ...homeDenies];
 }
 
+/**
+ * Whether the installed Claude Code build can be granted broad network for a
+ * single sandboxed invocation (the equivalent of Codex's
+ * `[permissions.smithersbot.network] enabled = true`).
+ *
+ * Unlike Codex — whose `codex-linux-sandbox` permission profile exposes a
+ * documented per-run network toggle — the packaged Claude Code sandbox here does
+ * not expose a verified per-invocation broad-network switch, so the default is
+ * unsupported. An operator who runs a Claude build that does support it can opt
+ * in with `SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1`; the grant is then written into
+ * the generated sandbox settings. We never silently ignore requiresNetwork=true:
+ * callers must route network steps away from Claude (or block) when this returns
+ * unsupported. See backend selection in agent-executor-helpers.ts.
+ */
+export function claudeCodeSandboxNetworkCapability(env: NodeJS.ProcessEnv = process.env): {
+  supported: boolean;
+  reason: string;
+} {
+  if (env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK === "1") {
+    return {
+      supported: true,
+      reason: "Claude Code sandbox network enabled via SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1.",
+    };
+  }
+  return {
+    supported: false,
+    reason:
+      "Claude Code native sandbox cannot enable per-step network in this environment " +
+      "(set SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1 only if the installed Claude build supports it).",
+  };
+}
+
 export function buildClaudeCodeSandboxSettingsConfig(params: {
   workingDir: string;
   runId: string;
@@ -1027,6 +1064,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
+  requiresNetwork?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
@@ -1058,6 +1096,18 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
       ? uniqueValues(params.extraWritablePaths ?? [])
       : uniqueValues([params.workingDir, ...(params.extraWritablePaths ?? [])]);
 
+  // requiresNetwork=true must never be silently ignored: either write a real
+  // network grant (when the build supports it) or throw a clear capability error
+  // so the caller routes the step to a network-capable backend (or blocks).
+  let networkGrant: { allowAll: true } | undefined;
+  if (params.requiresNetwork === true) {
+    const capability = claudeCodeSandboxNetworkCapability();
+    if (!capability.supported) {
+      throw new Error(`Claude Code cannot satisfy requiresNetwork=true: ${capability.reason}`);
+    }
+    networkGrant = { allowAll: true };
+  }
+
   return {
     settingsDir,
     settingsPath: path.join(settingsDir, "settings.json"),
@@ -1071,6 +1121,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
           allowWrite,
           denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps, extraDenyDirs),
         },
+        ...(networkGrant ? { network: networkGrant } : {}),
       },
       permissions: {
         // Read-tool denies, filtered to existing real paths because Claude Code enforces
@@ -1090,6 +1141,7 @@ export function writeClaudeCodeSandboxSettings(params: {
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
+  requiresNetwork?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
   if (
@@ -1113,6 +1165,7 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
+  requiresNetwork?: boolean;
 }): ClaudeCodeLaunchSandboxConfig {
   const config = writeClaudeCodeSandboxSettings({
     ...params,

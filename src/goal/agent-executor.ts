@@ -13,6 +13,7 @@ import {
   buildGoalSummary,
   buildSuccessorMap,
   clampBackendForEnabledWorkers,
+  isBackendNetworkCapable,
   pickFallbackBackend,
   pickNextTask,
   recordTaskResult,
@@ -512,10 +513,36 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const taskStartMs = Date.now();
     const taskTimeoutMs = resolveTaskTimeoutMs(task.durationMinutes, timeoutMs);
 
+    const networkCapable = (candidate: GoalBackendId): boolean =>
+      isBackendNetworkCapable(candidate, availability);
     let backend = clampBackendForEnabledWorkers(
-      resolveBackendForStep(task, backendOverride, defaultBackend),
+      resolveBackendForStep(task, backendOverride, defaultBackend, {
+        networkCapable,
+        networkCandidates: resolvedEnabledWorkers,
+      }),
       resolvedEnabledWorkers,
     );
+
+    // A network-required step must not run on a backend that cannot enable
+    // network. resolveBackendForStep reroutes when a capable backend exists; if
+    // none does, block deterministically (capability_blocked) instead of running
+    // without network or surfacing a vague retryable process error.
+    if (task.requiresNetwork === true && !networkCapable(backend)) {
+      const attempted = resolvedEnabledWorkers.filter((candidate) => candidate !== backend);
+      const attemptedNote =
+        attempted.length > 0
+          ? ` No network-capable backend available (also checked: ${attempted.join(", ")}).`
+          : " No alternate backend was available to take it over.";
+      const msg = `Step requires network but backend '${backend}' cannot enable it.${attemptedNote}`;
+      task.status = "blocked";
+      task.blockedReason = "capability_blocked";
+      task.blockedQuestion = msg;
+      onProgress?.(`  [blocked] ${msg}`);
+      recordTaskResult(session, task, taskStartMs, onTaskUpdate);
+      lastExecutedId = task.id;
+      continue;
+    }
+
     const availabilityResult = isBackendAvailable(backend, availability);
     if (!availabilityResult.available) {
       const reason = availabilityResult.reason ? `: ${availabilityResult.reason}` : "";
@@ -636,6 +663,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               resolvedEnabledWorkers,
               availability,
               backendOverride,
+              { requiresNetwork: task.requiresNetwork === true, networkCapable },
             );
 
         if (fallback.backend && attempt < maxAttempts) {
