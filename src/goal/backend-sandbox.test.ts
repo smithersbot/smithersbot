@@ -739,16 +739,15 @@ describe("Claude Code native sandbox settings", () => {
     expect(config.settingsPath).not.toContain("/agent/workspaces/smithersbot/repo");
   });
 
-  it("reports Claude Code sandbox network unsupported by default and opt-in via env", () => {
+  it("reports Claude Code sandbox network supported per-step without any env-var opt-in", () => {
     const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
     try {
+      // No env var set: per-step policy alone makes Claude eligible to attempt network.
       delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-      const off = claudeCodeSandboxNetworkCapability();
-      expect(off.supported).toBe(false);
-      expect(off.reason).toMatch(/SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1/);
-
-      process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
-      expect(claudeCodeSandboxNetworkCapability().supported).toBe(true);
+      const cap = claudeCodeSandboxNetworkCapability();
+      expect(cap.supported).toBe(true);
+      expect(cap.reason).not.toMatch(/SMITHERSBOT_CLAUDE_SANDBOX_NETWORK/);
+      expect(cap.reason).toMatch(/requiresNetwork=true/);
     } finally {
       if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
       else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
@@ -764,9 +763,9 @@ describe("Claude Code native sandbox settings", () => {
     expect(config.settings.sandbox.network).toBeUndefined();
   });
 
-  it("wires a network grant when requiresNetwork=true and the build supports it (supported path)", () => {
+  it("wires a network grant when requiresNetwork=true with no env var set", () => {
     const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-    process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
     try {
       const config = buildClaudeCodeSandboxSettingsConfig({
         workingDir: MOCK_WORKING_DIR,
@@ -781,22 +780,14 @@ describe("Claude Code native sandbox settings", () => {
     }
   });
 
-  it("throws a clear capability error for requiresNetwork=true when unsupported (no silent ignore)", () => {
-    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-    try {
-      expect(() =>
-        buildClaudeCodeSandboxSettingsConfig({
-          workingDir: MOCK_WORKING_DIR,
-          runId: "net-unsupported",
-          purpose: "goal-worker",
-          requiresNetwork: true,
-        }),
-      ).toThrow(/cannot satisfy requiresNetwork=true/);
-    } finally {
-      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
-    }
+  it("omits the network grant when requiresNetwork is false (network off by default)", () => {
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "net-false",
+      purpose: "goal-worker",
+      requiresNetwork: false,
+    });
+    expect(config.settings.sandbox.network).toBeUndefined();
   });
 
   it("writes fail-closed sandbox settings and denies private/env reads while allowing workspace files", () => {
