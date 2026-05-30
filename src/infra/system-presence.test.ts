@@ -1,8 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { listSystemPresence, updateSystemPresence, upsertPresence } from "./system-presence.js";
+import os from "node:os";
+import { describe, expect, it, vi } from "vitest";
+import {
+  listSystemPresence,
+  refreshSelfPresence,
+  updateSystemPresence,
+  upsertPresence,
+} from "./system-presence.js";
 
 describe("system-presence", () => {
+  it("refreshes self-presence without crashing when os.networkInterfaces() throws (sandbox isolation)", () => {
+    const spy = vi.spyOn(os, "networkInterfaces").mockImplementation(() => {
+      throw new Error("uv_interface_addresses returned Unknown system error 1");
+    });
+    try {
+      // resolvePrimaryIPv4() runs through the safe wrapper and degrades to the
+      // hostname instead of throwing; presence stays available.
+      expect(() => refreshSelfPresence()).not.toThrow();
+      expect(() => listSystemPresence()).not.toThrow();
+      expect(listSystemPresence().length).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("dedupes entries across sources by case-insensitive instanceId key", () => {
     const instanceIdUpper = `AaBb-${randomUUID()}`.toUpperCase();
     const instanceIdLower = instanceIdUpper.toLowerCase();

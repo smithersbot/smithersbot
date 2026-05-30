@@ -163,7 +163,7 @@ Step schema:
 - constraints (required): array of explicit do-not-do constraints (can be [] if none)
 - durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
 - backend (required): ${backendUnion} — execution backend
-- requiresNetwork (optional): true only when this step explicitly needs internet/network access; omit or false for normal repo-local work.
+- requiresNetwork (optional): network is OFF by default. Set true ONLY for steps that genuinely reach the network: web fetch/search, package installs that may download dependencies, or scripts that intentionally call out to the network. Do NOT set it for normal local build/test/lint when dependencies are already installed, and prefer mediated health/dev-gateway operations over broad network for gateway/dev health checks. Omit or false for normal repo-local work.
 - risk (optional): "low" | "medium" | "high" — Flag steps as "high" risk if they touch critical paths, have uncertain requirements, or could break existing behavior. The executor allocates extra retries to high-risk steps. Default: "low".
 
 Top-level summary fields:

@@ -827,6 +827,51 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--sandbox");
     });
 
+    it("wires Claude Code worker network into sandbox settings when the build supports it", () => {
+      const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-supported-"));
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          requiresNetwork: true,
+        });
+        const settingsIdx = args.indexOf("--settings");
+        expect(settingsIdx).toBeGreaterThanOrEqual(0);
+        const settingsPath = args[settingsIdx + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+        expect(parsed.sandbox.network).toEqual({ allowAll: true });
+      } finally {
+        if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+        else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+      }
+    });
+
+    it("blocks Claude Code worker construction with a clear capability error when network is unsupported", () => {
+      const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-unsupported-"));
+      try {
+        expect(() =>
+          buildCliArgs({
+            backend: "claude_code",
+            prompt: "test",
+            workingDir,
+            denyFilePath: path.join(workingDir, "deny"),
+            requiresNetwork: true,
+          }),
+        ).toThrow(/cannot satisfy requiresNetwork=true/);
+      } finally {
+        if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+        else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+      }
+    });
+
     it("prepends hard denies, then project conventions before worker context for codex workers", () => {
       const args = buildCliArgs({
         backend: "codex",

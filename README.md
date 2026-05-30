@@ -119,6 +119,8 @@ flowchart LR
 | ✅ Green               | **Done**. Completed and verified.                                                     |
 | ⛔ Red, dashed         | **Blocked, needs you**. Genuinely stuck and blocked for user input; reply to unblock. |
 
+Each node also shows its assigned backend label (for example `Codex` or `Claude Code`). A 📡 marker to the right of that label (for example `Codex 📡`) means the task requested network access via `requiresNetwork=true`. Network is **off by default**; the 📡 marker indicates broad backend network access for that specific task only, not a global setting. Tasks without the marker run with no network.
+
 Technical interruptions, such as a failed attempt, interrupted worker, timeout, or backend usage limit, are recovered automatically when possible. On resume, SmithersBot retries from a checkpoint or falls back to the other backend, so those tasks show as pending/waiting rather than red while the Telegram message explains the cause and any reset time.
 
 A node is red only when the goal truly cannot proceed without you.

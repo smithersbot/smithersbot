@@ -89,8 +89,13 @@ function nodeDurationLabel(
   stepResults?: ReadonlyMap<string, StepResult>,
 ): string {
   const backendName = backendDisplayName(step.executedBackend ?? step.backend);
+  // A satellite-antenna marker to the right of the backend label flags steps that
+  // requested broad backend network access via requiresNetwork=true. Network is
+  // off by default, so the absence of the marker means no network for that step.
+  const backendLabel =
+    backendName && step.requiresNetwork === true ? `${backendName} 📡` : backendName;
   const withBackend = (durationLabel: string): string =>
-    backendName ? `${durationLabel} | ${backendName}` : durationLabel;
+    backendLabel ? `${durationLabel} | ${backendLabel}` : durationLabel;
 
   if (status === "done") {
     const result = stepResults?.get(step.id);

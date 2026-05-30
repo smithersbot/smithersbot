@@ -100,6 +100,10 @@ export function describeBlockedStep(step: PlanStep): string {
       return "worker hit a network error; resume needed";
     case "auth":
       return "worker authentication failed";
+    case "capability_blocked":
+      return message || "no backend could provide a required capability (e.g. network)";
+    case "sandbox_blocked":
+      return message || "sandbox restriction blocked the worker (network/interface isolation)";
     case "task_failed":
       return message || "worker failed";
     case "error":

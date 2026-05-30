@@ -93,6 +93,13 @@ export type PlanStep = {
     | "out_of_credits"
     | "auth"
     | "network"
+    // Selected/assigned backend cannot satisfy a required capability (e.g. a
+    // step with requiresNetwork=true routed to a backend that cannot enable
+    // network, with no network-capable backend available to take it over).
+    | "capability_blocked"
+    // A sandbox-level restriction (network/interface isolation) prevented the
+    // step from running; distinct from a vague retryable process error.
+    | "sandbox_blocked"
     | "other";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;

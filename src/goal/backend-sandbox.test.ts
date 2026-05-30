@@ -30,6 +30,7 @@ import {
   buildClaudeSandboxProbeCommand,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
+  claudeCodeSandboxNetworkCapability,
   appendCodexNativeSandboxExecArgs,
   classifyClaudeSubscriptionAuthProbeFailure,
   codexNativeSandboxStatus,
@@ -736,6 +737,66 @@ describe("Claude Code native sandbox settings", () => {
     expect(config.settingsDir).toBe(path.join("/var/tmp", "smithersbot-claude-run-with-spaces"));
     expect(config.settingsPath).toBe(path.join(config.settingsDir, "settings.json"));
     expect(config.settingsPath).not.toContain("/agent/workspaces/smithersbot/repo");
+  });
+
+  it("reports Claude Code sandbox network unsupported by default and opt-in via env", () => {
+    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    try {
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      const off = claudeCodeSandboxNetworkCapability();
+      expect(off.supported).toBe(false);
+      expect(off.reason).toMatch(/SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1/);
+
+      process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
+      expect(claudeCodeSandboxNetworkCapability().supported).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+    }
+  });
+
+  it("omits a network grant for normal repo-local steps (network off by default)", () => {
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "no-network",
+      purpose: "goal-worker",
+    });
+    expect(config.settings.sandbox.network).toBeUndefined();
+  });
+
+  it("wires a network grant when requiresNetwork=true and the build supports it (supported path)", () => {
+    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
+    try {
+      const config = buildClaudeCodeSandboxSettingsConfig({
+        workingDir: MOCK_WORKING_DIR,
+        runId: "net-supported",
+        purpose: "goal-worker",
+        requiresNetwork: true,
+      });
+      expect(config.settings.sandbox.network).toEqual({ allowAll: true });
+    } finally {
+      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+    }
+  });
+
+  it("throws a clear capability error for requiresNetwork=true when unsupported (no silent ignore)", () => {
+    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    try {
+      expect(() =>
+        buildClaudeCodeSandboxSettingsConfig({
+          workingDir: MOCK_WORKING_DIR,
+          runId: "net-unsupported",
+          purpose: "goal-worker",
+          requiresNetwork: true,
+        }),
+      ).toThrow(/cannot satisfy requiresNetwork=true/);
+    } finally {
+      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+    }
   });
 
   it("writes fail-closed sandbox settings and denies private/env reads while allowing workspace files", () => {

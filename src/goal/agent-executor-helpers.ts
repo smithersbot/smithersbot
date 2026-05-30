@@ -1,6 +1,7 @@
 import type { CliWorkerId } from "../config/types.goal.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
 import { isBackendAvailable } from "./backend-availability.js";
+import { claudeCodeSandboxNetworkCapability } from "./backend-sandbox.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import { isUsageLimitClassReason } from "./error-patterns.js";
 import { formatCompactGoalCompletionSummary, type GoalOutputChannel } from "./compact-output.js";
@@ -8,15 +9,48 @@ import type { CriticalPathScores } from "./plan-order.js";
 import type { GoalSession, ManualTestSuggestion, PlanStep, TaskExecutionResult } from "./types.js";
 import type { TaskRunnerResult } from "./task-runner.js";
 
+/**
+ * Whether a backend can actually provide network access for a
+ * requiresNetwork=true step. Codex wires net.allowed via its sandbox profile;
+ * Claude Code only when the installed build supports it (see
+ * claudeCodeSandboxNetworkCapability); pi has no sandbox network wiring. A
+ * backend that is not available at all cannot provide network either.
+ */
+export function isBackendNetworkCapable(
+  backend: GoalBackendId,
+  availability: BackendAvailability[],
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isBackendAvailable(backend, availability).available) return false;
+  if (backend === "codex") return true;
+  if (backend === "claude_code") return claudeCodeSandboxNetworkCapability(env).supported;
+  return false;
+}
+
+export type ResolveBackendNetworkOpts = {
+  /** Predicate: can this backend provide network for a requiresNetwork step? */
+  networkCapable: (backend: GoalBackendId) => boolean;
+  /** Ordered candidate backends to reroute to when the chosen one cannot network. */
+  networkCandidates: GoalBackendId[];
+};
+
 export function resolveBackendForStep(
   step: PlanStep,
   override: GoalBackendId | undefined,
   fallback: GoalBackendId,
+  networkOpts?: ResolveBackendNetworkOpts,
 ): GoalBackendId {
-  if (override) return override;
-  if (step.executedBackend) return step.executedBackend;
-  if (step.backend) return step.backend;
-  return fallback;
+  const chosen = override ?? step.executedBackend ?? step.backend ?? fallback;
+  // A network-required step must never be assigned to a backend that cannot
+  // enable network. Reroute to the first network-capable candidate; if none is
+  // capable, return the chosen backend unchanged so the caller can surface a
+  // capability_blocked block rather than silently running without network.
+  if (step.requiresNetwork !== true || !networkOpts) return chosen;
+  if (networkOpts.networkCapable(chosen)) return chosen;
+  const capable = networkOpts.networkCandidates.find(
+    (candidate) => candidate !== chosen && networkOpts.networkCapable(candidate),
+  );
+  return capable ?? chosen;
 }
 
 export function clampBackendForEnabledWorkers(
@@ -115,6 +149,10 @@ export function pickFallbackBackend(
   resolvedEnabledWorkers: CliWorkerId[],
   availability: BackendAvailability[],
   backendOverride?: GoalBackendId,
+  networkOpts?: {
+    requiresNetwork?: boolean;
+    networkCapable: (backend: GoalBackendId) => boolean;
+  },
 ): PickFallbackBackendResult {
   if (!isUsageLimitClassReason(result.blockedReason)) {
     return { backend: null, reason: "not_usage_or_rate_limit" };
@@ -139,6 +177,16 @@ export function pickFallbackBackend(
       backend: null,
       reason: "fallback_unavailable",
       detail: available.reason ?? `${fallbackBackend} is not available on PATH`,
+    };
+  }
+
+  // A network-required step must not fall back to a backend that cannot enable
+  // network (e.g. Claude Code when its build lacks a network grant).
+  if (networkOpts?.requiresNetwork === true && !networkOpts.networkCapable(fallbackBackend)) {
+    return {
+      backend: null,
+      reason: "fallback_unavailable",
+      detail: `${fallbackBackend} cannot enable network for a requiresNetwork step`,
     };
   }
 
