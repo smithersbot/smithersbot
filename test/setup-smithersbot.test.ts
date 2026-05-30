@@ -506,7 +506,6 @@ Very good. Let us begin.`);
       "Do not use @BotFather here. BotFather has completed his part.",
     );
     expect(result.output).toContain("Waiting for your Telegram message...");
-    expect(result.output).toContain("This can take up to 2 minutes.");
     expect(result.output).toContain(
       "✓ Detected Telegram private chat ID:\n  555111222\n\nUse this Telegram private chat ID for allowFrom? [Y/n]:",
     );

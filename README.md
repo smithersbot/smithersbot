@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml/badge.svg)](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml)
 
+<p align="center"><img src="assets/smithersbot-banner.png" alt="SmithersBot banner" width="900"></p>
+
 ## Leave agents running without giving up control.
 
 SmithersBot is for people who want Claude Code and Codex to keep working together for hours, but do not want to babysit every permission prompt or blindly trust an agent with their machine.
