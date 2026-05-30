@@ -843,7 +843,11 @@ describe("cli-worker", () => {
         expect(settingsIdx).toBeGreaterThanOrEqual(0);
         const settingsPath = args[settingsIdx + 1]!;
         const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-        expect(parsed.sandbox.network).toEqual({ allowedDomains: ["*"] });
+        // Allowlist-based, default-deny proxy: broad per-suffix wildcards, never a
+        // bare "*" (which the proxy rejects). *.com covers the example.com target.
+        expect(Array.isArray(parsed.sandbox.network.allowedDomains)).toBe(true);
+        expect(parsed.sandbox.network.allowedDomains).toContain("*.com");
+        expect(parsed.sandbox.network.allowedDomains).not.toContain("*");
       } finally {
         if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
         else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
