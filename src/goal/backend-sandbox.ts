@@ -1025,34 +1025,34 @@ function buildClaudeReadToolDenies(
 }
 
 /**
- * Whether the installed Claude Code build can be granted broad network for a
+ * Whether the Claude Code sandbox is eligible to attempt broad network for a
  * single sandboxed invocation (the equivalent of Codex's
  * `[permissions.smithersbot.network] enabled = true`).
  *
- * Unlike Codex — whose `codex-linux-sandbox` permission profile exposes a
- * documented per-run network toggle — the packaged Claude Code sandbox here does
- * not expose a verified per-invocation broad-network switch, so the default is
- * unsupported. An operator who runs a Claude build that does support it can opt
- * in with `SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1`; the grant is then written into
- * the generated sandbox settings. We never silently ignore requiresNetwork=true:
- * callers must route network steps away from Claude (or block) when this returns
- * unsupported. See backend selection in agent-executor-helpers.ts.
+ * Policy: a planned step's `requiresNetwork=true` is sufficient to attempt
+ * Claude network activation — there is no hidden operator env-var opt-in. The
+ * grant is written into that one invocation's generated sandbox settings via
+ * `sandbox.network={allowAll:true}` and is never applied to steps that did not
+ * request it. Network remains off by default for normal steps.
+ *
+ * This reports eligibility only; it does not prove the installed Claude build
+ * honors the network setting at runtime. A genuine runtime/sandbox failure to
+ * enable network must still surface as capability_blocked/sandbox_blocked via
+ * the live-probe/blocker plumbing in backend selection (agent-executor-helpers.ts),
+ * which classifies the real Claude sandbox error rather than an env-var hint.
+ *
+ * The `env` parameter is retained for signature stability but no longer gates
+ * the result: we do not read SMITHERSBOT_CLAUDE_SANDBOX_NETWORK.
  */
-export function claudeCodeSandboxNetworkCapability(env: NodeJS.ProcessEnv = process.env): {
+export function claudeCodeSandboxNetworkCapability(_env: NodeJS.ProcessEnv = process.env): {
   supported: boolean;
   reason: string;
 } {
-  if (env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK === "1") {
-    return {
-      supported: true,
-      reason: "Claude Code sandbox network enabled via SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1.",
-    };
-  }
   return {
-    supported: false,
+    supported: true,
     reason:
-      "Claude Code native sandbox cannot enable per-step network in this environment " +
-      "(set SMITHERSBOT_CLAUDE_SANDBOX_NETWORK=1 only if the installed Claude build supports it).",
+      "Claude Code sandbox network is activated per step: a planned requiresNetwork=true " +
+      "step requests network for that single invocation (off by default otherwise).",
   };
 }
 
