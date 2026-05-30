@@ -50,6 +50,35 @@ vi.mock("../goal/git-checkpoint.js", () => ({
   ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
 }));
 
+// Spy on the direct pre-planning mkdirSync so guard-ordering tests can prove no
+// directory is created for a rejected working dir. Other fs calls stay real.
+const mockMkdirSync = vi.fn();
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    default: actual,
+    mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+  };
+});
+
+// Route the shared goal-execution guard through a controllable mock. Default is a
+// no-op (existing tests keep their fixture working dirs); guard-ordering tests
+// delegate to the REAL helper to prove the actual hard-deny fires before any
+// mkdirSync / ensureWorkingDir / planning.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("../goal/workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
+vi.mock("../goal/workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
+
 // Mock progress
 vi.mock("../cli/progress.js", () => ({
   createCliProgress: () => ({
@@ -562,6 +591,122 @@ describe("goal command — early failure persistence", () => {
     expect(runs[0]!.state).toBe("planning");
     expect(runs[0]!.goal).toBe("Dangerous goal");
   });
+});
+
+describe("goalCommand — current-instance workspace guard", () => {
+  let managedRoot: string;
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
+
+  function delegateGuardToReal(): void {
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+  }
+
+  function validWorkingDir(): string {
+    const dir = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  beforeEach(() => {
+    testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-guard-test-"));
+    vi.clearAllMocks();
+    managedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "goal-guard-managed-")));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    delete process.env.SMITHERSBOT_INSTANCE; // default (stable) instance
+    delegateGuardToReal();
+    mockRunCliPlanning.mockResolvedValue({
+      status: "success",
+      plan: {
+        goal: "Test goal",
+        workingDir: validWorkingDir(),
+        summary: "Test plan",
+        steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+      },
+      scoutStatus: "success",
+    });
+  });
+
+  afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
+    fs.rmSync(testGoalsDir, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["dev-home observed path", "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev"],
+    ["arbitrary /tmp path", "/tmp/whatever-not-a-workspace-xyz"],
+  ])(
+    "rejects an invalid explicit pre-planning workingDir (%s) before mkdirSync/ensureWorkingDir/planning",
+    async (_label, badDir) => {
+      const { goalCommand } = await import("./goal.js");
+      const rt = mockRuntime();
+
+      await expect(
+        goalCommand({ goal: "Do something", workingDir: badDir, yes: true, planOnly: true }, rt),
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+
+      expect(mockAssertGoalWorkerWorkspace).toHaveBeenCalledWith(
+        expect.objectContaining({ workingDir: path.resolve(badDir) }),
+      );
+      // No filesystem preparation or planning happened for the rejected path.
+      expect(mockMkdirSync).not.toHaveBeenCalledWith(path.resolve(badDir), expect.anything());
+      expect(mockEnsureWorkingDir).not.toHaveBeenCalledWith(path.resolve(badDir));
+      expect(mockRunCliPlanning).not.toHaveBeenCalled();
+    },
+  );
+
+  it("proceeds for a valid stable explicit pre-planning workingDir", async () => {
+    const good = validWorkingDir();
+    const { goalCommand } = await import("./goal.js");
+    const rt = mockRuntime();
+
+    await goalCommand({ goal: "Do something", workingDir: good, yes: true, planOnly: true }, rt);
+
+    expect(mockAssertGoalWorkerWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDir: good }),
+    );
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(good);
+    expect(mockRunCliPlanning).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["dev-home observed path", "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev"],
+    ["arbitrary /tmp path", "/tmp/planner-picked-not-a-workspace-xyz"],
+  ])(
+    "rejects an invalid planResult.workingDir (%s) before any post-plan ensureWorkingDir/execution",
+    async (_label, badPlanDir) => {
+      const good = validWorkingDir();
+      mockRunCliPlanning.mockResolvedValue({
+        status: "success",
+        plan: {
+          goal: "Test goal",
+          workingDir: badPlanDir,
+          summary: "Test plan",
+          steps: [{ id: "s1", description: "Step 1", dependsOn: [], status: "pending" }],
+        },
+        scoutStatus: "success",
+      });
+
+      const { goalCommand } = await import("./goal.js");
+      const rt = mockRuntime();
+
+      await expect(
+        goalCommand({ goal: "Do something", workingDir: good, yes: true, planOnly: true }, rt),
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+
+      // Planning ran (valid pre-planning dir), but the planner-picked path is
+      // rejected before any post-plan ensureWorkingDir for it.
+      expect(mockRunCliPlanning).toHaveBeenCalled();
+      expect(mockEnsureWorkingDir).not.toHaveBeenCalledWith(badPlanDir);
+    },
+  );
 });
 
 describe("resolveWorkingDir — 4-level precedence", () => {

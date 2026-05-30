@@ -11,6 +11,7 @@ import { runCliPlanning } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
+import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { loadRun, saveRun, sessionToSerialized } from "../goal/run-store.js";
 import type { GoalBackendId } from "../goal/backend-types.js";
@@ -125,6 +126,13 @@ export async function goalCommand(
 
   const cwd = process.cwd();
   let workingDir = resolveWorkingDir(opts.workingDir, opts.config, cwd);
+
+  // Reject an explicit/config/default working dir that resolves outside the
+  // current gateway instance's own agent/workspaces tree BEFORE any directory is
+  // created or touched. Unconditional: an out-of-root explicit/config value (or an
+  // arbitrary path) must throw the actionable current-instance error here, never
+  // drift into an observed/foreign/private surface.
+  assertGoalWorkerWorkspace({ workingDir, config: opts.config?.goal });
 
   mkdirSync(workingDir, { recursive: true });
 
@@ -267,6 +275,10 @@ export async function goalCommand(
 
     // After the blocked check, planResult is narrowed to Plan
     session.plan = planResult;
+    // Guard the planner-selected working dir BEFORE adopting it for any post-plan
+    // ensureWorkingDir/execution, so a planner that drifts into an observed/foreign/
+    // out-of-root surface is rejected before any filesystem preparation.
+    assertGoalWorkerWorkspace({ workingDir: planResult.workingDir, config: opts.config?.goal });
     workingDir = planResult.workingDir;
     persistRun();
 
