@@ -22,6 +22,7 @@ export type CommandFragmentCommandName =
   | "repo_chat"
   | "goal_feedback"
   | "goal_answer"
+  | "goal_edit"
   | "goal_resume";
 
 export type CommandFragmentKeyParams = {
