@@ -16,6 +16,8 @@ import {
   formatGoalLockedMessage,
   formatManualTestDetails,
   getGoalExecutionPreface,
+  cleanWorkingDirInstructionPath,
+  parseWorkingDirInstruction,
   resolveBlockedRequiredInputKey,
   resolveGoalOperatorHonorific,
   sanitizeOperatorHonorific,
@@ -341,5 +343,40 @@ describe("goal preface honorifics", () => {
         "ops",
       ),
     ).toBe("boss");
+  });
+});
+
+describe("parseWorkingDirInstruction working-directory parser", () => {
+  it("does not treat assertion/preflight wording with 'exactly' as a working-directory directive", () => {
+    // Regression for: Could not resolve working directory:
+    // "exactly /home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev"
+    expect(
+      parseWorkingDirInstruction(
+        "Please confirm the working directory is exactly /home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev before running anything.",
+        "/tmp",
+      ),
+    ).toBeUndefined();
+
+    expect(
+      parseWorkingDirInstruction("working directory is exactly /path", "/tmp"),
+    ).toBeUndefined();
+    expect(parseWorkingDirInstruction("pwd should be exactly /path", "/tmp")).toBeUndefined();
+  });
+
+  it("strips a leading 'exactly' modifier from a captured path", () => {
+    expect(cleanWorkingDirInstructionPath("exactly /home/matt/foo")).toBe("/home/matt/foo");
+    expect(cleanWorkingDirInstructionPath("/home/matt/foo")).toBe("/home/matt/foo");
+  });
+
+  it("still honors an explicit 'In working directory /path' launch directive", () => {
+    const existingDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-wd-directive-"));
+    try {
+      const hint = parseWorkingDirInstruction(`In working directory ${existingDir}`, "/tmp");
+      expect(hint).toBeDefined();
+      expect(hint?.requestedPath).toBe(existingDir);
+      expect(hint?.resolvedPath).toBe(path.resolve(existingDir));
+    } finally {
+      fs.rmSync(existingDir, { recursive: true, force: true });
+    }
   });
 });
