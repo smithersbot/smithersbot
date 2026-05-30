@@ -60,7 +60,10 @@ describe("applyCliProfileEnv", () => {
     expect(env.CLAWDBOT_PROFILE).toBe("dev");
     expect(env.CLAWDBOT_STATE_DIR).toBe(expectedStateDir);
     expect(env.CLAWDBOT_CONFIG_PATH).toBe(path.join(expectedStateDir, "moltbot.json"));
-    expect(env.CLAWDBOT_GATEWAY_PORT).toBe("19001");
+    // Dev targets the dev gateway instance port (18790) via the instance-aligned
+    // SMITHERSBOT_GATEWAY_PORT; the legacy CLAWDBOT_GATEWAY_PORT is no longer forced.
+    expect(env.SMITHERSBOT_GATEWAY_PORT).toBe("18790");
+    expect(env.CLAWDBOT_GATEWAY_PORT).toBeUndefined();
     expect(env.SMITHERSBOT_INSTANCE).toBe("dev");
     expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/home/matt/smithersbot-dev-home");
     expect(env.SMITHERSBOT_STATE_DIR).toBe(expectedInstanceStateDir);
@@ -88,6 +91,20 @@ describe("applyCliProfileEnv", () => {
     expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/explicit/managed-root");
     expect(env.SMITHERSBOT_STATE_DIR).toBe("/explicit/state");
     expect(env.SMITHERSBOT_CONFIG_PATH).toBe("/explicit/config.json");
+  });
+
+  it("retargets an inherited (stable) CLAWDBOT_GATEWAY_PORT to the dev port", () => {
+    // Simulates a CLI launched from the stable gateway service env, which leaks
+    // CLAWDBOT_GATEWAY_PORT=18789. `--dev` must still target the dev port 18790.
+    const env: Record<string, string | undefined> = { CLAWDBOT_GATEWAY_PORT: "18789" };
+    applyCliProfileEnv({ profile: "dev", env, homedir: () => "/home/matt" });
+    expect(env.SMITHERSBOT_GATEWAY_PORT).toBe("18790");
+  });
+
+  it("preserves an explicit instance-aware SMITHERSBOT_GATEWAY_PORT", () => {
+    const env: Record<string, string | undefined> = { SMITHERSBOT_GATEWAY_PORT: "18999" };
+    applyCliProfileEnv({ profile: "dev", env, homedir: () => "/home/matt" });
+    expect(env.SMITHERSBOT_GATEWAY_PORT).toBe("18999");
   });
 });
 

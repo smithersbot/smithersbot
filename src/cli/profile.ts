@@ -123,6 +123,17 @@ export function applyCliProfileEnv(params: {
     ) {
       env.SMITHERSBOT_CONFIG_PATH = path.join(instance.stateDir, "smithersbot.json");
     }
+    // Target the dev gateway instance's canonical port (18790). A generic
+    // CLAWDBOT_GATEWAY_PORT may have been inherited from the launching (stable)
+    // instance's service env, which points at the wrong instance; the explicitly
+    // selected dev instance must win. Set the instance-aligned
+    // SMITHERSBOT_GATEWAY_PORT (highest precedence in resolveGatewayPort) unless the
+    // caller explicitly targeted a dev port via an instance-aware port var. We do
+    // NOT defer to a bare CLAWDBOT_GATEWAY_PORT: that legacy var is what leaks in
+    // from the launching instance and must not silently retarget `--dev`.
+    if (!hasAnyEnvValue(env, ["SMITHERSBOT_GATEWAY_PORT", "MOLTBOT_GATEWAY_PORT"])) {
+      env.SMITHERSBOT_GATEWAY_PORT = String(instance.defaultPort);
+    }
   }
 
   const stateDir = env.CLAWDBOT_STATE_DIR?.trim() || resolveProfileStateDir(profile, homedir);
@@ -130,9 +141,5 @@ export function applyCliProfileEnv(params: {
 
   if (!env.CLAWDBOT_CONFIG_PATH?.trim()) {
     env.CLAWDBOT_CONFIG_PATH = path.join(stateDir, "moltbot.json");
-  }
-
-  if (profile === "dev" && !env.CLAWDBOT_GATEWAY_PORT?.trim()) {
-    env.CLAWDBOT_GATEWAY_PORT = "19001";
   }
 }
