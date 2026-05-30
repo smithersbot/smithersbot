@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
-import { buildAutocheckPrompt, runPlanAutocheck } from "./plan-autocheck.js";
+import { buildAutocheckPrompt, checkPlanWorkingDir, runPlanAutocheck } from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
@@ -755,6 +755,62 @@ describe("runPlanAutocheck", () => {
         readOnlyRoots,
       }),
     );
+  });
+
+  it("rejects an out-of-instance plan workingDir up front (no reviewer spawn) and feeds the revision the actionable edit", async () => {
+    // Stable instance: workspaces root resolves under SMITHERSBOT_GOALS_ROOT.
+    const validWorkingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    fs.mkdirSync(validWorkingDir, { recursive: true });
+    // makePlan() points at /tmp/workspace, which is outside the instance root.
+    const invalidPlan = makePlan("Drifted workingDir");
+    const revisedPlan = { ...makePlan("Fixed workingDir", "2"), workingDir: validWorkingDir };
+
+    mockRunCliPlanRevision.mockResolvedValueOnce({ plan: revisedPlan });
+    // Round 2 reviewer (only invoked AFTER the workingDir is fixed) approves.
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}\n' }));
+
+    const commitRevision = vi.fn();
+    const result = await runPlanAutocheck({
+      plan: invalidPlan,
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: validWorkingDir,
+      runDir: runPath(tmpDir, "run-workingdir-guard"),
+      commitRevision,
+      workspacePolicy: {
+        env: { ...process.env, SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+      },
+    });
+
+    // Round 1 was the programmatic workingDir rejection — no reviewer process.
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(1);
+    const revisionArgs = mockRunCliPlanRevision.mock.calls[0]?.[0] as { editInstructions: string };
+    expect(revisionArgs.editInstructions).toContain("/tmp/workspace");
+    expect(revisionArgs.editInstructions).toContain("not an allowed executable goal working");
+    expect(commitRevision).toHaveBeenCalledTimes(1);
+    expect(result.approved).toBe(true);
+    expect(result.plan.workingDir).toBe(validWorkingDir);
+  });
+
+  it("skips the up-front workingDir guard when no workspacePolicy identity is supplied", async () => {
+    // Back-compat: callers that validated upstream omit workspacePolicy, so the
+    // reviewer runs even for a plan workingDir outside the test managed root.
+    const initialPlan = makePlan("No policy supplied");
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}\n' }));
+
+    const result = await runPlanAutocheck({
+      plan: initialPlan,
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: path.join(tmpDir, "workspace"),
+      runDir: runPath(tmpDir, "run-no-policy"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    expect(result.approved).toBe(true);
   });
 
   it("falls back to Codex when the Claude reviewer hits a usage limit", async () => {
@@ -1979,5 +2035,75 @@ describe("Stage 2Q — Stage 2P regression fixtures", () => {
     expect(REVIEW_INSTRUCTION).toContain("add-repo-chat-cli-output-extraction");
     expect(REVIEW_INSTRUCTION).toContain("IMPLEMENTATION/TEST SPLITS");
     expect(REVIEW_INSTRUCTION).toContain("TSC-ONLY LOGIC STEPS");
+  });
+});
+
+describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
+  const HOME = "/home/matt";
+  const homedir = () => HOME;
+  const stable = {
+    env: { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+    homedir,
+  };
+  const dev = {
+    env: { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
+    homedir,
+  };
+
+  it("rejects a stable plan whose workingDir is the observed dev-home workspace, with actionable edit instructions", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+      { ...stable, observedInstances: ["dev"], config: { allowLegacyWorkingDir: true } },
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions).toContain(
+      "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+    );
+    // Names the correct current-instance workspaces root to steer the revision.
+    expect(decision.editInstructions).toContain("/home/matt/smithersbot-home/agent/workspaces");
+    expect(decision.editInstructions.toLowerCase()).toContain("read-only");
+  });
+
+  it("rejects a stable plan with an arbitrary out-of-root workingDir", () => {
+    for (const workingDir of ["/tmp/whatever", "/home/matt/.config/smithersbot"]) {
+      const decision = checkPlanWorkingDir(workingDir, stable);
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(workingDir);
+      expect(decision.editInstructions).toContain("/home/matt/smithersbot-home/agent/workspaces");
+    }
+  });
+
+  it("accepts a stable plan whose workingDir is under the stable agent workspaces root", () => {
+    expect(
+      checkPlanWorkingDir("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev", stable),
+    ).toEqual({ approved: true });
+  });
+
+  it("accepts a dev-instance plan under the dev agent workspaces root", () => {
+    expect(
+      checkPlanWorkingDir("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev", dev),
+    ).toEqual({ approved: true });
+  });
+
+  it("rejects a dev-instance plan that points at the stable-home workspaces root", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+      dev,
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions).toContain("/home/matt/smithersbot-dev-home/agent/workspaces");
+  });
+
+  it("hard-denies private roots even with the legacy flag enabled", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-home/private/env/smithersbot-dev",
+      { ...stable, config: { allowLegacyWorkingDir: true } },
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions.toLowerCase()).toContain("private");
   });
 });

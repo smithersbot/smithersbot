@@ -11,7 +11,10 @@ import {
   parsePlanResultFromText,
   PlanParseError,
 } from "./planner.js";
-import { DEV_GATEWAY_PLANNER_GUIDANCE } from "../prompts/planner/system-prompt.js";
+import {
+  DEV_GATEWAY_PLANNER_GUIDANCE,
+  WORKSPACE_SCOPE_PLANNER_GUIDANCE,
+} from "../prompts/planner/system-prompt.js";
 import { PLAN_QUALITY_RUBRIC } from "../prompts/shared/plan-quality-rubric.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
@@ -72,6 +75,17 @@ describe("planner", () => {
       expect(() => buildPlanSystemPrompt([])).toThrow(
         "No worker backend available. Install Codex or Claude Code and rerun.",
       );
+    });
+
+    it("includes the current-instance-only goal working directory constraint", () => {
+      for (const workers of [["claude_code", "codex"], ["codex"], ["claude_code"]] as const) {
+        const prompt = buildPlanSystemPrompt([...workers]);
+        expect(prompt).toContain(WORKSPACE_SCOPE_PLANNER_GUIDANCE);
+        expect(prompt).toContain("GOAL WORKING DIRECTORY SCOPE (strict):");
+        expect(prompt).toContain("/home/matt/smithersbot-home/agent/workspaces/<workspace>");
+        expect(prompt).toContain("/home/matt/smithersbot-dev-home/agent/workspaces/<workspace>");
+        expect(prompt).toContain("are READ-ONLY/context-only and MUST NOT be chosen as workingDir");
+      }
     });
 
     it("appends dev-gateway verification guidance only when the dev option is set", () => {

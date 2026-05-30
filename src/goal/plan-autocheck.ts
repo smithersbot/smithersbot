@@ -38,6 +38,8 @@ import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
+import { assertWorkingDirInsideCurrentInstanceWorkspaces } from "./workspace-policy.js";
+import type { GoalConfig } from "../config/types.goal.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
@@ -73,6 +75,11 @@ export type PlanAutocheckParams = {
   commitRevision: (params: PlanAutocheckCommitRevisionParams) => Promise<void> | void;
   model?: string;
   timeoutMs?: number;
+  /**
+   * Optional identity override for the up-front executable-workingDir check.
+   * Defaults to the running process identity (process.env / os.homedir).
+   */
+  workspacePolicy?: PlanWorkingDirPolicyOptions;
 };
 
 export type PlanAutocheckResult = {
@@ -86,6 +93,50 @@ export type PlanAutocheckResult = {
 };
 
 type AutocheckDecision = { approved: true } | { approved: false; editInstructions: string };
+
+/**
+ * Override hooks that let callers/tests deterministically resolve the current
+ * gateway instance identity when validating a plan's executable workingDir.
+ * Mirrors the shared workspace-policy guard options — identity is taken from
+ * the explicit instance/env/homedir helpers, NEVER inferred from the checkout.
+ */
+export type PlanWorkingDirPolicyOptions = {
+  config?: GoalConfig;
+  env?: NodeJS.ProcessEnv;
+  homedir?: () => string;
+  instance?: string | null;
+  observedInstances?: Iterable<string> | null;
+};
+
+/**
+ * Programmatic plan-autocheck layer for the executable goal working directory.
+ *
+ * Reuses the SAME shared rejection/identity helper as the workspace-policy
+ * guard (do not fork): a plan whose workingDir does not resolve inside the
+ * current gateway instance's own agent/workspaces tree is rejected with
+ * actionable edit instructions that name the rejected path and the correct
+ * current-instance workspaces root. This is the up-front autocheck layer — the
+ * executor and build gate remain the hard enforcement boundary.
+ */
+export function checkPlanWorkingDir(
+  workingDir: string,
+  options: PlanWorkingDirPolicyOptions = {},
+): AutocheckDecision {
+  try {
+    assertWorkingDirInsideCurrentInstanceWorkspaces({ workingDir, ...options });
+    return { approved: true };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      approved: false,
+      editInstructions:
+        `Reject: the plan workingDir "${workingDir}" is not an allowed executable goal working directory. ` +
+        `${detail} ` +
+        "Edit the plan so workingDir resolves inside the current gateway instance's own agent/workspaces tree; " +
+        "observed/foreign-instance surfaces are read-only context and must not be used as the executable workingDir.",
+    };
+  }
+}
 
 export type PlanAutocheckFailureMetadata = {
   runId: string;
@@ -1081,45 +1132,123 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     let resumeFailure: string | undefined;
     let result: ReviewerAttemptResult;
 
-    const canResume = Boolean(sessionId && sessionBackend === backend);
-    if (canResume && sessionId) {
-      resumeAttempted = true;
-      attemptLabel = "resume";
-      prompt = buildAutocheckPrompt({
-        goalText: params.goalText,
-        plan: currentPlan,
+    // Up-front, programmatic executable-workingDir guard. A plan whose
+    // workingDir escapes the current instance's own agent/workspaces tree is
+    // rejected here (before spawning the reviewer) and fed into the revision
+    // loop with actionable edit instructions, using the SAME shared helper as
+    // the executor/build-gate hard stop. Active when a workspacePolicy identity
+    // is supplied (the gateway threads the running-instance identity); callers
+    // that have already validated the workingDir upstream may omit it.
+    const workingDirDecision = params.workspacePolicy
+      ? checkPlanWorkingDir(currentPlan.workingDir, params.workspacePolicy)
+      : ({ approved: true } as AutocheckDecision);
+    if (!workingDirDecision.approved) {
+      writeTextArtifact(
+        path.join(roundDir, "workingdir_rejection.txt"),
+        `${workingDirDecision.editInstructions}\n`,
+      );
+      appendAutocheckHistoryBestEffort({
         workingDir: params.workingDir,
-        resume: true,
-        priorFeedback: feedbackHistory,
-        contextNotes,
-        userEditInstructions: params.userEditInstructions,
+        runId,
+        backend,
+        event: "result",
+        status: "rejected",
+        round: roundNumber,
+        attemptLabel: "workingdir-guard",
+        outputSummary: workingDirDecision.editInstructions,
       });
-
-      try {
-        result = await runReviewerAttempt({
-          backend,
-          prompt,
+      result = {
+        stdout: workingDirDecision.editInstructions,
+        stderr: "",
+        durationMs: 0,
+        responseText: workingDirDecision.editInstructions,
+        sessionId,
+        decision: workingDirDecision,
+      };
+    } else {
+      const canResume = Boolean(sessionId && sessionBackend === backend);
+      if (canResume && sessionId) {
+        resumeAttempted = true;
+        attemptLabel = "resume";
+        prompt = buildAutocheckPrompt({
+          goalText: params.goalText,
+          plan: currentPlan,
           workingDir: params.workingDir,
-          runId,
-          round: roundNumber,
-          attemptLabel,
-          timeoutMs,
-          claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-          readOnlyRoots: params.readOnlyRoots,
-          sessionId,
-          model: params.model,
-          stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
-          stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+          resume: true,
+          priorFeedback: feedbackHistory,
+          contextNotes,
+          userEditInstructions: params.userEditInstructions,
         });
-        resumeSucceeded = true;
-      } catch (err) {
-        resumeFailure = describeError(err);
-        writeTextArtifact(path.join(roundDir, "resume_failure.txt"), `${resumeFailure}\n`);
-        contextNotes.push(
-          `Round ${roundNumber}: session resume failed (${resumeFailure}). Started a fresh reviewer session.`,
-        );
 
-        attemptLabel = "fresh-fallback";
+        try {
+          result = await runReviewerAttempt({
+            backend,
+            prompt,
+            workingDir: params.workingDir,
+            runId,
+            round: roundNumber,
+            attemptLabel,
+            timeoutMs,
+            claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+            readOnlyRoots: params.readOnlyRoots,
+            sessionId,
+            model: params.model,
+            stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
+            stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+          });
+          resumeSucceeded = true;
+        } catch (err) {
+          resumeFailure = describeError(err);
+          writeTextArtifact(path.join(roundDir, "resume_failure.txt"), `${resumeFailure}\n`);
+          contextNotes.push(
+            `Round ${roundNumber}: session resume failed (${resumeFailure}). Started a fresh reviewer session.`,
+          );
+
+          attemptLabel = "fresh-fallback";
+          prompt = buildAutocheckPrompt({
+            goalText: params.goalText,
+            plan: currentPlan,
+            workingDir: params.workingDir,
+            resume: false,
+            priorFeedback: feedbackHistory,
+            contextNotes,
+            userEditInstructions: params.userEditInstructions,
+          });
+          try {
+            result = await runFreshReviewerAttempt({
+              backend,
+              prompt,
+              workingDir: params.workingDir,
+              runId,
+              round: roundNumber,
+              timeoutMs,
+              claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+              readOnlyRoots: params.readOnlyRoots,
+              model: params.model,
+              roundDir,
+              attemptLabel,
+            });
+          } catch (freshErr) {
+            const freshFallbackFailure = describeError(freshErr);
+            writeTextArtifact(
+              path.join(roundDir, "fresh_fallback_failure.txt"),
+              `${freshFallbackFailure}\n`,
+            );
+            const warning =
+              `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
+              "Auto-approving plan to keep execution unblocked; verify results via the build/test/lint gate.";
+            contextNotes.push(warning);
+            result = {
+              stdout: warning,
+              stderr: freshFallbackFailure,
+              durationMs: 0,
+              responseText: warning,
+              sessionId: undefined,
+              decision: { approved: true },
+            };
+          }
+        }
+      } else {
         prompt = buildAutocheckPrompt({
           goalText: params.goalText,
           plan: currentPlan,
@@ -1143,62 +1272,19 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
             roundDir,
             attemptLabel,
           });
-        } catch (freshErr) {
-          const freshFallbackFailure = describeError(freshErr);
-          writeTextArtifact(
-            path.join(roundDir, "fresh_fallback_failure.txt"),
-            `${freshFallbackFailure}\n`,
-          );
-          const warning =
-            `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
-            "Auto-approving plan to keep execution unblocked; verify results via the build/test/lint gate.";
-          contextNotes.push(warning);
-          result = {
-            stdout: warning,
-            stderr: freshFallbackFailure,
-            durationMs: 0,
-            responseText: warning,
-            sessionId: undefined,
-            decision: { approved: true },
-          };
+        } catch (err) {
+          throw recordAutocheckFailure({
+            runId,
+            goalsDir,
+            runDir: params.runDir,
+            workingDir: params.workingDir,
+            backend,
+            round: roundNumber,
+            attemptLabel,
+            roundDir,
+            err,
+          });
         }
-      }
-    } else {
-      prompt = buildAutocheckPrompt({
-        goalText: params.goalText,
-        plan: currentPlan,
-        workingDir: params.workingDir,
-        resume: false,
-        priorFeedback: feedbackHistory,
-        contextNotes,
-        userEditInstructions: params.userEditInstructions,
-      });
-      try {
-        result = await runFreshReviewerAttempt({
-          backend,
-          prompt,
-          workingDir: params.workingDir,
-          runId,
-          round: roundNumber,
-          timeoutMs,
-          claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-          readOnlyRoots: params.readOnlyRoots,
-          model: params.model,
-          roundDir,
-          attemptLabel,
-        });
-      } catch (err) {
-        throw recordAutocheckFailure({
-          runId,
-          goalsDir,
-          runDir: params.runDir,
-          workingDir: params.workingDir,
-          backend,
-          round: roundNumber,
-          attemptLabel,
-          roundDir,
-          err,
-        });
       }
     }
 
