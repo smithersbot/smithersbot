@@ -77,6 +77,7 @@ import {
   parseWorkingDirInstruction,
   PLANNING_PREFACE,
   RESUME_PREFACE,
+  resolveActiveStepId,
   resolveGoalOperatorHonorific,
   resolveBlockedRequiredInputKey,
   serializedStepResultsToMap,
@@ -1671,7 +1672,10 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         chatId,
-        formatGoalLockedMessage(resolvedId, lockResult.existingLabel),
+        formatGoalLockedMessage(resolvedId, lockResult.existingLabel, {
+          activeStep: resolveActiveStepId(loadRun(resolvedId)),
+          retryCommand: "/goal_resume",
+        }),
         runtime,
         threadId,
         replyToMessageId,
@@ -2156,7 +2160,10 @@ export function registerTelegramGoalCommands({
         await sendGoalReply(
           bot,
           chatId,
-          formatGoalLockedMessage(run.runId, lockResult.existingLabel),
+          formatGoalLockedMessage(run.runId, lockResult.existingLabel, {
+            activeStep: resolveActiveStepId(run),
+            retryCommand: "/goal_resume",
+          }),
           runtime,
           threadId,
         );
@@ -2760,7 +2767,10 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        formatGoalLockedMessage(editRunId, editLock.existingLabel),
+        formatGoalLockedMessage(editRunId, editLock.existingLabel, {
+          activeStep: resolveActiveStepId(loadRun(editRunId)),
+          retryCommand: "/goal_edit",
+        }),
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
@@ -2867,7 +2877,10 @@ export function registerTelegramGoalCommands({
         void sendGoalReply(
           bot,
           resolved.chatId,
-          formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
+          formatGoalLockedMessage(answerRunId, answerLock.existingLabel, {
+            activeStep: resolveActiveStepId(loadRun(answerRunId)),
+            retryCommand: "/goal_answer",
+          }),
           runtime,
           resolved.threadIdForSend,
           replyToMessageId,
@@ -2964,7 +2977,10 @@ export function registerTelegramGoalCommands({
         await sendGoalReply(
           bot,
           resolved.chatId,
-          formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel),
+          formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel, {
+            activeStep: resolveActiveStepId(loadRun(feedbackRunId)),
+            retryCommand: "/goal_feedback",
+          }),
           runtime,
           resolved.threadIdForSend,
           replyToMessageId,

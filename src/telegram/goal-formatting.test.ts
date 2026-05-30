@@ -82,15 +82,39 @@ function captureRuntime(): RuntimeEnv & { errors: string[] } {
 }
 
 describe("formatGoalLockedMessage", () => {
-  it("formats the run prefix and lock label", () => {
+  it("names the in-flight operation from the lock label", () => {
     expect(formatGoalLockedMessage("1234567890abcdef", "approve")).toBe(
-      "Goal `12345678` is already being processed (approve).",
+      "Goal `12345678` is already resuming. Try again after the current operation finishes.",
     );
   });
 
-  it("falls back to unknown when lock label is absent", () => {
+  it("falls back to a generic phrase when lock label is absent", () => {
     expect(formatGoalLockedMessage("abcdef1234567890")).toBe(
-      "Goal `abcdef12` is already being processed (unknown).",
+      "Goal `abcdef12` is already being processed. Try again after the current operation finishes.",
+    );
+  });
+
+  it("names the active step and retry command when provided", () => {
+    expect(
+      formatGoalLockedMessage("edbda8e4ffff0000", "resume", {
+        activeStep: "fix-usage-status-refresh",
+        retryCommand: "/goal_resume",
+      }),
+    ).toBe(
+      "Goal `edbda8e4` is already resuming (currently on step `fix-usage-status-refresh`). " +
+        "Try /goal_resume again after the current operation finishes.",
+    );
+  });
+
+  it("maps each lock label to a distinct operation phrase", () => {
+    expect(formatGoalLockedMessage("aaaaaaaa1111", "answer")).toContain(
+      "is already applying your last answer",
+    );
+    expect(formatGoalLockedMessage("aaaaaaaa1111", "edit")).toContain(
+      "is already updating its plan",
+    );
+    expect(formatGoalLockedMessage("aaaaaaaa1111", "feedback")).toContain(
+      "is already incorporating your feedback",
     );
   });
 });
