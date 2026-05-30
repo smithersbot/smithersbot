@@ -51,6 +51,23 @@ vi.mock("../goal/git-checkpoint.js", () => ({
   ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
 }));
 
+// Shared goal-execution guard: default no-op so existing resume tests keep their
+// fixture working dirs; dedicated tests delegate to the REAL helper to prove a
+// persisted/planner out-of-instance workingDir is rejected before ensureWorkingDir
+// or worker dispatch.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("../goal/workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
+vi.mock("../goal/workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
+
 // Mock the agent executor so resume tests don't need a real PI agent session
 const mockExecuteGoalWithAgent = vi.fn(
   async (params: {
@@ -3262,5 +3279,79 @@ describe("goal-resume command", () => {
 
       fs.rmSync(workDir, { recursive: true, force: true });
     });
+  });
+});
+
+describe("goal-resume command — current-instance workspace guard", () => {
+  let managedRoot: string;
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
+
+  beforeEach(() => {
+    testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-resume-guard-"));
+    vi.clearAllMocks();
+    mockAvailability = [...ALL_BACKENDS_AVAILABLE];
+    managedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "goal-resume-managed-")));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    delete process.env.SMITHERSBOT_INSTANCE; // default (stable) instance
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+  });
+
+  afterEach(() => {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
+    fs.rmSync(testGoalsDir, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["dev-home observed path", "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev"],
+    ["arbitrary /tmp path", "/tmp/persisted-not-a-workspace-xyz"],
+  ])(
+    "rejects a persisted out-of-instance workingDir (%s) before ensureWorkingDir/dispatch",
+    async (_label, badDir) => {
+      saveRun(
+        makeRun({
+          runId: "resume-guard-reject",
+          state: "awaiting_approval",
+          plan: samplePlan,
+          workingDir: badDir,
+        }),
+      );
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+
+      await expect(
+        goalResumeCommand("resume-guard-reject", { yes: true, quiet: true }, rt),
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+
+      expect(mockEnsureWorkingDir).not.toHaveBeenCalled();
+      expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("resumes normally for a valid stable workingDir", async () => {
+    const valid = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    fs.mkdirSync(valid, { recursive: true });
+    saveRun(
+      makeRun({
+        runId: "resume-guard-valid",
+        state: "awaiting_approval",
+        plan: samplePlan,
+        workingDir: valid,
+      }),
+    );
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+
+    const result = await goalResumeCommand("resume-guard-valid", { yes: true, quiet: true }, rt);
+    expect(result?.status).toBe("done");
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(valid);
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalled();
   });
 });

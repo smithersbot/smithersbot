@@ -25,6 +25,10 @@ const mockRunCliProcess = vi.fn();
 const mockResolveClaudeBinary = vi.fn();
 const mockExtractRunLessons = vi.fn();
 const mockMirrorGoalRuntimeToAgentHistory = vi.fn();
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("./workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
@@ -66,6 +70,20 @@ vi.mock("./cli-runner.js", () => ({
 vi.mock("./pi-runner.js", () => ({
   PiTaskRunner: MockPiTaskRunner,
 }));
+
+// The shared goal-execution guard is fully exercised in workspace-policy.test.ts.
+// Here it routes through a controllable mock: default no-op so the orchestration
+// tests can use their fixture working dirs, while dedicated tests delegate to the
+// real implementation to prove executeGoalWithAgent rejects an out-of-instance
+// planResult.workingDir BEFORE any worker launch or build gate.
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
 
 vi.mock("./backend-availability.js", () => ({
   detectBackendAvailability: () => availability,
@@ -442,6 +460,75 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(allDoneEvent?.reviewUrl).toBe(reviewUrl);
   });
 
+  it("push policy: pushes only to origin and never to a public remote", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("push-policy-origin-only");
+    mockGithubPushGit({
+      privateRepo: true,
+      pushedSha: "feedfacecafebeef1234567890abcdef12345678",
+    });
+    mockCliExecute.mockResolvedValueOnce({ status: "complete", summary: "ok", turnsUsed: 1 });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-push-policy-origin",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true } } },
+      serializedRun: { createdAt: "2026-05-25T12:00:00.000Z" } as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("done");
+    const pushCalls = mockExecFileSync.mock.calls.filter((call) => {
+      const argv = Array.isArray(call[1]) ? call[1].map(String) : [];
+      return call[0] === "git" && argv.includes("push");
+    });
+    // A push happened, every push targeted origin, and none ever targeted public.
+    expect(pushCalls.length).toBeGreaterThan(0);
+    for (const call of pushCalls) {
+      const argv = (call[1] as string[]).map(String);
+      expect(argv).toContain("origin");
+      expect(argv).not.toContain("public");
+    }
+    expect(session.githubPushOutcome?.remote).toBe("origin");
+  });
+
+  it("push policy: performs no push before the run completes its gates (blocked step → no push)", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("push-policy-no-early-push");
+    mockGithubPushGit({ privateRepo: true });
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Need input",
+      blockedReason: "user_input",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-push-policy-no-early",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true } } },
+      serializedRun: { createdAt: "2026-05-25T12:00:00.000Z" } as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("blocked");
+    const pushCalls = mockExecFileSync.mock.calls.filter((call) => {
+      const argv = Array.isArray(call[1]) ? call[1].map(String) : [];
+      return call[0] === "git" && argv.includes("push");
+    });
+    // No git push is issued until the run reaches its post-gate completion path.
+    expect(pushCalls).toHaveLength(0);
+    expect(session.githubPushOutcome?.attempted ?? false).toBe(false);
+  });
+
   it("persists completion artifacts before emitting the all_done status update", async () => {
     const step = makeStep({ backend: "codex", description: "Ship completion delivery" });
     const plan = makePlan([step]);
@@ -728,40 +815,13 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.githubPushOutcome?.branch).toBe(runBranch);
   });
 
-  it("allows legacy workingDir by default with a warning", async () => {
-    const root = "/tmp/smithersbot-managed-agent-executor";
-    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
-    const step = makeStep({ backend: "codex" });
-    const plan = makePlan([step]);
-    const session = makeSession(plan);
-    const onProgress = vi.fn();
-    mockCliExecute.mockResolvedValueOnce({
-      status: "complete",
-      summary: "All set",
-      turnsUsed: 1,
+  it("rejects an out-of-current-instance planResult.workingDir before launching any worker", async () => {
+    // Delegate the guard to the real implementation for this test so the genuine
+    // hard-deny (not a mock) is what stops execution.
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
     });
-
-    try {
-      const { executeGoalWithAgent } = await import("./agent-executor.js");
-      const outcome = await executeGoalWithAgent({
-        session,
-        runId: "run-legacy-warning",
-        workingDir: "/tmp/moltbot-goal-test",
-        onProgress,
-      });
-
-      expect(outcome.status).toBe("done");
-      expect(onProgress.mock.calls.flat().join("\n")).toContain(
-        "outside the SmithersBot managed agent root",
-      );
-    } finally {
-      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
-      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
-    }
-  });
-
-  it("rejects legacy workingDir when compatibility is disabled", async () => {
     const root = "/tmp/smithersbot-managed-agent-executor";
     const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     process.env.SMITHERSBOT_GOALS_ROOT = root;
@@ -774,15 +834,54 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       await expect(
         executeGoalWithAgent({
           session,
-          runId: "run-legacy-reject",
+          runId: "run-out-of-instance-reject",
+          // Out-of-root: not under <root>/agent/workspaces.
           workingDir: "/tmp/moltbot-goal-test",
-          config: { goal: { allowLegacyWorkingDir: false } },
         }),
-      ).rejects.toThrow("managed agent root");
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+      // The guard fires before any worker launch or build gate runs.
       expect(mockCliExecute).not.toHaveBeenCalled();
+      expect(mockBuildDefaultSastCommand).not.toHaveBeenCalled();
     } finally {
+      mockAssertGoalWorkerWorkspace.mockReset();
       if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    }
+  });
+
+  it("accepts a valid current-instance planResult.workingDir under agent/workspaces", async () => {
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-executor-valid-"));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const validWorkingDir = path.join(root, "agent", "workspaces", "smithersbot-dev");
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.workingDir = validWorkingDir;
+    const session = makeSession(plan);
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    try {
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-valid-instance",
+        workingDir: validWorkingDir,
+      });
+      expect(outcome.status).toBe("done");
+      expect(mockCliExecute).toHaveBeenCalled();
+    } finally {
+      mockAssertGoalWorkerWorkspace.mockReset();
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

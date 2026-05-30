@@ -27,6 +27,7 @@ import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import {
   loadRun,
   saveRun,
@@ -383,6 +384,9 @@ async function retryPlanning(
   try {
     ensureGlobalConventions();
 
+    // Reject a persisted/planner working dir outside the current instance's own
+    // agent/workspaces tree before any filesystem preparation.
+    assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: opts.config?.goal });
     // Ensure the workspace is a checkpoint-compatible git repo before replanning.
     ensureWorkingDir(run.workingDir);
 
@@ -504,6 +508,8 @@ async function retryPlanning(
     session.state = "awaiting_approval";
     if (planningAnswer) delete session.answers["step:planning:input"];
     run.plan = planResult;
+    // Guard the planner-selected working dir before persisting/adopting it.
+    assertGoalWorkerWorkspace({ workingDir: planResult.workingDir, config: opts.config?.goal });
     run.workingDir = planResult.workingDir;
     run.state = "awaiting_approval";
     run.lastError = undefined;
@@ -711,6 +717,9 @@ export async function goalResumeCommand(
   // Capture run fields for closure (TypeScript can't narrow across closures)
   const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
 
+  // Reject a persisted/planner working dir outside the current instance's own
+  // agent/workspaces tree before any filesystem preparation or worker dispatch.
+  assertGoalWorkerWorkspace({ workingDir, config: opts.config?.goal });
   // Ensure checkpoint-compatible workspace state before execution resumes.
   ensureWorkingDir(workingDir);
 

@@ -39,6 +39,17 @@ vi.mock("./pi-runner.js", () => ({
   PiTaskRunner: MockPiTaskRunner,
 }));
 
+// Workspace-policy hard-deny is exercised in workspace-policy.test.ts and the
+// per-surface guard tests. These end-to-end orchestration tests use fixture temp
+// working dirs, so the shared guard is a no-op here.
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: () => {},
+  };
+});
+
 vi.mock("./backend-availability.js", () => ({
   detectBackendAvailability: () => availability,
   isBackendAvailable: (backend: GoalBackendId, avail: BackendAvailability[]) => {

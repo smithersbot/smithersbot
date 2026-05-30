@@ -1,5 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 
+import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
+
 export const BUILD_GATE_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const BUILD_GATE_OUTPUT_MAX_CHARS = 16_000;
 const BUILD_GATE_GIT_TIMEOUT_MS = 15_000;
@@ -63,6 +65,8 @@ export function classifyBuildGateFailure(command: string, output: string): Build
 }
 
 export function runBuildGateCommands(commands: string[], workingDir: string): BuildGateResult {
+  // Reject an out-of-current-instance working dir BEFORE spawning any command.
+  assertGoalWorkerWorkspace({ workingDir });
   for (const command of commands) {
     const trimmed = command.trim();
     if (!trimmed) continue;
@@ -132,6 +136,8 @@ export function resolveChangedFilesSinceCheckpoint(params: {
 }): string[] | null {
   const baseSha = params.baseSha?.trim();
   if (!baseSha) return null;
+  // Reject an out-of-current-instance working dir BEFORE running any git command.
+  assertGoalWorkerWorkspace({ workingDir: params.workingDir });
   try {
     const trackedRaw = execFileSync(
       "git",
@@ -164,6 +170,9 @@ export function buildDefaultSastCommand(params: {
   if (!DEFAULT_SAST_SEMGREP_ENABLED) {
     return null;
   }
+
+  // Reject an out-of-current-instance working dir BEFORE probing/spawning.
+  assertGoalWorkerWorkspace({ workingDir: params.workingDir });
 
   const semgrepCheck = spawnSync("which", ["semgrep"], {
     encoding: "utf8",
@@ -199,6 +208,8 @@ export function resetToTaskBaseSha(
   if (!checkpointSha) {
     return { success: false, error: "No task checkpoint base SHA was recorded for this step." };
   }
+  // Reject an out-of-current-instance working dir BEFORE running git reset.
+  assertGoalWorkerWorkspace({ workingDir });
   try {
     execFileSync("git", ["-C", workingDir, "reset", "--hard", checkpointSha], {
       encoding: "utf8",

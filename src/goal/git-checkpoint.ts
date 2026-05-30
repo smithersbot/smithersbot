@@ -4,6 +4,7 @@ import path from "node:path";
 import type { TaskCheckpoint } from "./types.js";
 import { isRepoPrivate, parseGitHubRemote } from "./git-privacy.js";
 import { isPathInsideWorkspacesRoot, resolveWorkspacesRoot } from "../config/managed-paths.js";
+import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 
 export type GitResult = { success: true; sha: string } | { success: false; error: string };
 export type GitCommitResult = { success: true; sha?: string } | { success: false; error: string };
@@ -277,6 +278,16 @@ export function ensureWorkingDir(
   cwd: string,
   opts: { allowOutsideManagedRoot?: boolean } = {},
 ): void {
+  // Strict goal-execution guard: reject any executable/editable working dir that
+  // does not resolve under the CURRENT gateway instance's own agent/workspaces
+  // tree BEFORE any filesystem mutation (mkdir/init/stage). This is the shared
+  // helper used by every goal-execution surface, so a foreign/observed/private/
+  // out-of-root path can never be created, initialized, or staged here. The
+  // explicit `allowOutsideManagedRoot` escape hatch (e.g. /create_repo) opts out
+  // of goal-execution semantics and is intentionally exempt.
+  if (!opts.allowOutsideManagedRoot) {
+    assertGoalWorkerWorkspace({ workingDir: cwd });
+  }
   fs.mkdirSync(cwd, { recursive: true });
   if (!canRunGit()) return;
 

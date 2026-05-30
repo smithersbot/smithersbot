@@ -41,6 +41,7 @@ import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-ou
 import { generateManualTests, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { PlanAutocheckError, runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import {
   acquireGoalOpLock,
@@ -394,6 +395,10 @@ async function runGoalPlanAutocheck(params: {
         previousPlan,
       });
       if (latestRun.workingDir !== workingDirBeforeRevision) {
+        assertGoalWorkerWorkspace({
+          workingDir: latestRun.workingDir,
+          config: params.config?.goal,
+        });
         ensureWorkingDir(latestRun.workingDir);
       }
       saveRun(latestRun);
@@ -1183,6 +1188,7 @@ export async function handleGoalFeedback(
       previousPlan: currentPlan,
     });
     if (run.workingDir !== currentPlan.workingDir) {
+      assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: config?.goal });
       ensureWorkingDir(run.workingDir);
     }
     run.blocked = null;
@@ -1359,6 +1365,7 @@ export async function handleGoalEdit(
   }
   const nextWorkingDir = workingDirHint?.resolvedPath;
   if (nextWorkingDir && nextWorkingDir !== run.workingDir) {
+    assertGoalWorkerWorkspace({ workingDir: nextWorkingDir, config: config?.goal });
     ensureWorkingDir(nextWorkingDir);
     run.workingDir = nextWorkingDir;
     run.updatedAt = new Date().toISOString();
@@ -1423,6 +1430,7 @@ export async function handleGoalEdit(
       previousPlan: run.plan,
     });
     if (run.workingDir !== workingDirBeforeRevision) {
+      assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: config?.goal });
       ensureWorkingDir(run.workingDir);
     }
     run.state = "planning";

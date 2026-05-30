@@ -98,6 +98,38 @@ describe("git-checkpoint push/review URLs", () => {
     expect(pushCall).toBeUndefined();
   });
 
+  it("pushRunBranch defaults to the origin remote and never targets a public remote", async () => {
+    const dir = makeRepoDir();
+    dirs.push(dir);
+    const sha = "1234567890123456789012345678901234567890";
+
+    mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
+      const argv = argvFrom(args);
+      if (command === "git" && argv[0] === "--version") return "git version 2.45.0";
+      if (command === "git" && argv[2] === "remote" && argv[3] === "get-url") {
+        return "git@github.com:owner/repo.git\n";
+      }
+      if (command === "gh" && argv[0] === "api") return "true\n";
+      if (command === "git" && argv[2] === "push") return "";
+      if (command === "git" && argv[2] === "rev-parse") return `${sha}\n`;
+      throw new Error(`Unexpected command: ${String(command)} ${argv.join(" ")}`);
+    });
+
+    const { buildRunBranchName, pushRunBranch } = await import("./git-checkpoint.js");
+    const runBranchName = buildRunBranchName("run-default-remote", "2026-02-25T15:04:05.999Z");
+    // No remote argument supplied: the default must be origin.
+    const result = pushRunBranch(dir, "run-default-remote", undefined, runBranchName);
+
+    expect(result).toEqual({ success: true, sha });
+    const pushCalls = mockExecFileSync.mock.calls.filter(
+      (call) => call[0] === "git" && argvFrom(call[1])[2] === "push",
+    );
+    expect(pushCalls).toHaveLength(1);
+    const pushArgv = argvFrom(pushCalls[0]?.[1]);
+    expect(pushArgv).toContain("origin");
+    expect(pushArgv).not.toContain("public");
+  });
+
   it.each([
     ["https://github.com/owner/repo.git"],
     ["https://github.com/owner/repo"],
