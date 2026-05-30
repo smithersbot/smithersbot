@@ -8,6 +8,11 @@ import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import {
+  isBackendNetworkCapable,
+  pickFallbackBackend,
+  resolveBackendForStep,
+} from "./agent-executor-helpers.js";
 type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
@@ -361,6 +366,42 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       expect(outcome.summary).toContain("**Progress** 1/1");
       expect(outcome.summary).toContain("**Retries** 0 retries");
       expect(outcome.summary).toContain("**Goal ID:** run-cli-");
+    }
+  });
+
+  it("blocks a network-required step as capability_blocked when no backend can provide network", async () => {
+    const previousNet = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    // Codex (the only network-capable backend) is unavailable; Claude Code cannot
+    // enable per-step network here, so the step cannot run with network anywhere.
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not on PATH" },
+      { id: "claude_code", available: true },
+    ];
+    const step = makeStep({ backend: "claude_code", requiresNetwork: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    try {
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-capability-blocked",
+        workingDir: "/tmp/moltbot-goal-test",
+      });
+
+      expect(outcome.status).toBe("blocked");
+      expect(step.status).toBe("blocked");
+      expect(step.blockedReason).toBe("capability_blocked");
+      // Names the backend that lacked network and that another was checked.
+      expect(step.blockedQuestion).toContain("claude_code");
+      expect(step.blockedQuestion).toContain("codex");
+      // The worker is never launched for an unsatisfiable network step.
+      expect(mockCliExecute).not.toHaveBeenCalled();
+    } finally {
+      if (previousNet === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previousNet;
     }
   });
 
@@ -3504,5 +3545,93 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       // Final global state after draining all runnable work: blocked (Task 7 + deps).
       expect(outcome.status).toBe("blocked");
     });
+  });
+});
+
+describe("network-aware backend selection (requiresNetwork parity)", () => {
+  const netStep = (overrides: Partial<PlanStep>): PlanStep => ({
+    id: "s",
+    description: "d",
+    dependsOn: [],
+    status: "pending",
+    ...overrides,
+  });
+  const codexCapable = (b: GoalBackendId) => b === "codex";
+
+  it("reroutes a network-required step off a network-incapable backend to a capable one", () => {
+    const step = netStep({ backend: "claude_code", requiresNetwork: true });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("codex");
+  });
+
+  it("keeps the chosen backend for non-network steps even if it cannot network", () => {
+    const step = netStep({ backend: "claude_code" });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("claude_code");
+  });
+
+  it("leaves a network-required step on the incapable backend when no capable candidate exists (caller blocks)", () => {
+    const step = netStep({ backend: "claude_code", requiresNetwork: true });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code"],
+    });
+    expect(resolved).toBe("claude_code");
+  });
+
+  it("never falls back a network-required step to a network-incapable backend", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      { requiresNetwork: true, networkCapable: codexCapable },
+    );
+    expect(result.backend).toBeNull();
+    expect(result.reason).toBe("fallback_unavailable");
+    expect(result.detail).toContain("cannot enable network");
+  });
+
+  it("still falls back normally for non-network steps", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      { requiresNetwork: false, networkCapable: codexCapable },
+    );
+    expect(result.backend).toBe("claude_code");
+  });
+
+  it("classifies backend network capability: codex yes, claude_code default no, pi no", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+      { id: "pi", available: false, reason: "disabled" },
+    ];
+    expect(isBackendNetworkCapable("codex", avail, {})).toBe(true);
+    expect(isBackendNetworkCapable("claude_code", avail, {})).toBe(false);
+    expect(
+      isBackendNetworkCapable("claude_code", avail, { SMITHERSBOT_CLAUDE_SANDBOX_NETWORK: "1" }),
+    ).toBe(true);
+    expect(isBackendNetworkCapable("pi", avail, {})).toBe(false);
+    // An unavailable backend can never provide network.
+    expect(isBackendNetworkCapable("codex", [{ id: "codex", available: false }], {})).toBe(false);
   });
 });

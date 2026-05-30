@@ -1144,6 +1144,7 @@ export function buildCliArgs(params: {
     runId,
     purpose: "goal-worker",
     readOnlyRoots,
+    requiresNetwork,
   });
   const args = [
     "-p",
