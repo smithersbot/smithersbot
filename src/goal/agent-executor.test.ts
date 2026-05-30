@@ -371,40 +371,62 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
-  it("blocks a network-required step as capability_blocked when no backend can provide network", async () => {
-    const previousNet = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-    // Codex (the only network-capable backend) is unavailable; Claude Code cannot
-    // enable per-step network here, so the step cannot run with network anywhere.
+  it("blocks a network-required step as capability_blocked only when no network-capable backend is available", async () => {
+    // Under the requiresNetwork policy both codex and claude_code are
+    // network-eligible, so a step only blocks when BOTH are unavailable (no env
+    // var is involved). pi has no sandbox network wiring.
     availability = [
       { id: "pi", available: true },
       { id: "codex", available: false, reason: "not on PATH" },
-      { id: "claude_code", available: true },
+      { id: "claude_code", available: false, reason: "not on PATH" },
     ];
     const step = makeStep({ backend: "claude_code", requiresNetwork: true });
     const plan = makePlan([step]);
     const session = makeSession(plan);
 
-    try {
-      const { executeGoalWithAgent } = await import("./agent-executor.js");
-      const outcome = await executeGoalWithAgent({
-        session,
-        runId: "run-capability-blocked",
-        workingDir: "/tmp/moltbot-goal-test",
-      });
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-capability-blocked",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
 
-      expect(outcome.status).toBe("blocked");
-      expect(step.status).toBe("blocked");
-      expect(step.blockedReason).toBe("capability_blocked");
-      // Names the backend that lacked network and that another was checked.
-      expect(step.blockedQuestion).toContain("claude_code");
-      expect(step.blockedQuestion).toContain("codex");
-      // The worker is never launched for an unsatisfiable network step.
-      expect(mockCliExecute).not.toHaveBeenCalled();
-    } finally {
-      if (previousNet === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previousNet;
-    }
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("capability_blocked");
+    // Names the backend that lacked network and that another was checked.
+    expect(step.blockedQuestion).toContain("claude_code");
+    expect(step.blockedQuestion).toContain("codex");
+    // The worker is never launched for an unsatisfiable network step.
+    expect(mockCliExecute).not.toHaveBeenCalled();
+  });
+
+  it("runs a network-required step on Claude Code (no env var) when it is the only available backend", async () => {
+    // Codex unavailable, claude_code available: the network step must run on
+    // Claude Code under the per-step policy — not block — with no
+    // SMITHERSBOT_CLAUDE_SANDBOX_NETWORK opt-in set.
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not on PATH" },
+      { id: "claude_code", available: true },
+    ];
+    mockCliExecute.mockResolvedValueOnce({ status: "complete", summary: "Fetched", turnsUsed: 1 });
+    const step = makeStep({ backend: "claude_code", requiresNetwork: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-network-claude-only",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
   });
 
   it("clears stale run-level blocker fields on transition to done", async () => {
@@ -3684,6 +3706,29 @@ describe("network-aware backend selection (requiresNetwork parity)", () => {
     expect(result.detail).toContain("cannot enable network");
   });
 
+  it("falls back a usage-limited Codex network step to Claude Code (no env var, claude_code is network-capable)", () => {
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    // Use the real capability predicate: under the requiresNetwork policy
+    // claude_code is network-eligible with no env-var opt-in.
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      {
+        requiresNetwork: true,
+        networkCapable: (b: GoalBackendId) => isBackendNetworkCapable(b, avail, {}),
+      },
+    );
+    expect(result.backend).toBe("claude_code");
+    expect(result.reason).toBeUndefined();
+  });
+
   it("still falls back normally for non-network steps", () => {
     const avail: BackendAvailability[] = [
       { id: "codex", available: true },
@@ -3700,19 +3745,22 @@ describe("network-aware backend selection (requiresNetwork parity)", () => {
     expect(result.backend).toBe("claude_code");
   });
 
-  it("classifies backend network capability: codex yes, claude_code default no, pi no", () => {
+  it("classifies backend network capability: codex yes, claude_code yes (no env var), pi no", () => {
     const avail: BackendAvailability[] = [
       { id: "codex", available: true },
       { id: "claude_code", available: true },
       { id: "pi", available: false, reason: "disabled" },
     ];
     expect(isBackendNetworkCapable("codex", avail, {})).toBe(true);
-    expect(isBackendNetworkCapable("claude_code", avail, {})).toBe(false);
-    expect(
-      isBackendNetworkCapable("claude_code", avail, { SMITHERSBOT_CLAUDE_SANDBOX_NETWORK: "1" }),
-    ).toBe(true);
+    // Under the requiresNetwork policy, Claude Code is network-eligible by
+    // default — no SMITHERSBOT_CLAUDE_SANDBOX_NETWORK opt-in required.
+    expect(isBackendNetworkCapable("claude_code", avail, {})).toBe(true);
+    // pi has no sandbox network wiring.
     expect(isBackendNetworkCapable("pi", avail, {})).toBe(false);
-    // An unavailable backend can never provide network.
+    // An unavailable backend can never provide network, even claude_code.
+    expect(
+      isBackendNetworkCapable("claude_code", [{ id: "claude_code", available: false }], {}),
+    ).toBe(false);
     expect(isBackendNetworkCapable("codex", [{ id: "codex", available: false }], {})).toBe(false);
   });
 });
