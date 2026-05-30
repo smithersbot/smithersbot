@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
-import { buildAutocheckPrompt, checkPlanWorkingDir, runPlanAutocheck } from "./plan-autocheck.js";
+import {
+  buildAutocheckPrompt,
+  checkPlanWorkingDir,
+  formatReviewerResetTime,
+  runPlanAutocheck,
+  summarizeReviewerFailureReason,
+} from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
@@ -1952,6 +1958,167 @@ describe("runPlanAutocheck", () => {
       expect(roundEvents[0]).toMatchObject({ status: "revision_committed" });
       expect(roundEvents[1]).toMatchObject({ status: "approved" });
     });
+  });
+
+  describe("backend-availability error rendering", () => {
+    const SYSTEM_INIT_JSON =
+      '{"type":"system","subtype":"init","cwd":"/repo","tools":["Read"],"model":"sonnet"}';
+
+    it("summarizes a worker init/system JSON blob instead of printing it raw", async () => {
+      // Only Codex is available; it emits a system/init control message (exit 1)
+      // instead of a review. The surfaced error must be summarized, never raw.
+      mockDetectBackendAvailability.mockReturnValueOnce([
+        { id: "pi", available: false },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ]);
+      mockRunCliProcess.mockResolvedValueOnce(
+        cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+      );
+
+      let caught: unknown;
+      try {
+        await runPlanAutocheck({
+          plan: makePlan("System init blob"),
+          goalText: "Ship feature",
+          mode: "codex",
+          workingDir: tmpDir,
+          runDir: runPath(tmpDir, "run-system-init"),
+          commitRevision: vi.fn(),
+        });
+      } catch (err) {
+        caught = err;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toContain("Plan autocheck could not run");
+      expect(message).toContain("Codex");
+      expect(message).toMatch(/system\/init message/i);
+      // Never echoes the raw JSON.
+      expect(message).not.toContain('"type"');
+      expect(message).not.toContain("{");
+
+      // The persisted skip reason (which feeds the Telegram note) is also clean.
+      const failureTxt = fs.readFileSync(
+        path.join(tmpDir, "run-system-init", "autocheck", "round-1", "failure.txt"),
+        "utf8",
+      );
+      expect(failureTxt).not.toContain("{");
+      expect(failureTxt).toMatch(/system\/init message/i);
+    });
+
+    it("falls back to the alternate reviewer backend before giving up on a system/init blob", async () => {
+      // Codex emits a system/init message; autocheck must try Claude Code rather
+      // than skipping on the first failure.
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }),
+        );
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("System init fallback"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-system-init-fallback"),
+        commitRevision: vi.fn(),
+      });
+
+      expect(result.approved).toBe(true);
+      expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+      expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+      expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    });
+
+    it("renders a clean, actionable message naming both backends when all reviewers fail", async () => {
+      // Codex returns a rate-limit error JSON; Claude Code returns a system/init
+      // blob. Neither produces a review, so the consolidated message must name
+      // both backends and stay free of raw JSON.
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: '{"error":{"type":"rate_limit_error","message":"429 too many requests"}}',
+            stderr: "",
+            exitCode: 1,
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+        );
+
+      let caught: unknown;
+      try {
+        await runPlanAutocheck({
+          plan: makePlan("All reviewers fail"),
+          goalText: "Ship feature",
+          mode: "codex",
+          workingDir: tmpDir,
+          runDir: runPath(tmpDir, "run-all-fail"),
+          commitRevision: vi.fn(),
+        });
+      } catch (err) {
+        caught = err;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).not.toContain("{");
+      expect(message).not.toContain('"type"');
+      expect(message).toContain("Codex");
+      expect(message).toContain("Claude Code");
+      expect(message).toMatch(/No reviewer backend is currently available|exhausted/i);
+    });
+  });
+});
+
+describe("summarizeReviewerFailureReason", () => {
+  it("summarizes a worker init/system JSON line without printing it", () => {
+    const raw =
+      'Plan autocheck worker failed: {"type":"system","subtype":"init","model":"sonnet"} (exit=1, signal=none)';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "claude_code" });
+    expect(summary).not.toContain("{");
+    expect(summary).toContain("Claude Code");
+    expect(summary).toMatch(/system\/init message/i);
+  });
+
+  it("classifies an out-of-usage provider JSON and appends the reset time", () => {
+    const raw =
+      '{"error":{"type":"insufficient_quota","message":"You have exceeded your quota, resets at 12:20 PM EDT"}}';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "codex" });
+    expect(summary).not.toContain("{");
+    expect(summary).toMatch(/Codex is out of usage/);
+    expect(summary).toContain("12:20 PM EDT");
+  });
+
+  it("classifies a rate-limit provider JSON", () => {
+    const raw = '{"error":{"type":"rate_limit_error","message":"429 too many requests"}}';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "claude_code" });
+    expect(summary).not.toContain("{");
+    expect(summary).toMatch(/Claude Code is rate limited/);
+  });
+
+  it("passes clean (non-JSON) text through unchanged so classification is preserved", () => {
+    const raw = "monthly usage limit reached. Resets at 3pm.";
+    expect(summarizeReviewerFailureReason(raw, { backend: "codex" })).toBe(raw);
+  });
+});
+
+describe("formatReviewerResetTime", () => {
+  it("formats an epoch-seconds reset into local time for the given zone", () => {
+    // 2024-06-10T08:53:20Z -> 04:53 AM EDT in America/New_York.
+    const formatted = formatReviewerResetTime("resets at 1718009600", "America/New_York");
+    expect(formatted).toMatch(/EDT/);
+    expect(formatted).toMatch(/AM|PM/);
+  });
+
+  it("formats an ISO timestamp into local time for the given zone", () => {
+    const formatted = formatReviewerResetTime("2024-06-10T16:20:00Z", "America/New_York");
+    expect(formatted).toMatch(/12:20\s?PM/);
+    expect(formatted).toMatch(/EDT/);
+  });
+
+  it("returns a relative phrase unchanged when it has no parseable absolute time", () => {
+    expect(formatReviewerResetTime("resets in 2 hours")).toBe("resets in 2 hours");
   });
 });
 
