@@ -10,11 +10,14 @@ import type { GoalSession, ManualTestSuggestion, PlanStep, TaskExecutionResult }
 import type { TaskRunnerResult } from "./task-runner.js";
 
 /**
- * Whether a backend can actually provide network access for a
+ * Whether a backend is eligible to attempt network access for a
  * requiresNetwork=true step. Codex wires net.allowed via its sandbox profile;
- * Claude Code only when the installed build supports it (see
- * claudeCodeSandboxNetworkCapability); pi has no sandbox network wiring. A
- * backend that is not available at all cannot provide network either.
+ * Claude Code activates network per step under the requiresNetwork policy (no
+ * hidden env-var opt-in — see claudeCodeSandboxNetworkCapability); pi has no
+ * sandbox network wiring. A backend that is not available at all cannot provide
+ * network either. This reports eligibility only: a genuine runtime/sandbox
+ * failure to enable network still surfaces as capability_blocked/sandbox_blocked
+ * downstream.
  */
 export function isBackendNetworkCapable(
   backend: GoalBackendId,
