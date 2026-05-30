@@ -1698,7 +1698,7 @@ describe("goal-commands telegram adapter", () => {
       expect(buttonTexts).not.toContain("▶️ Resume Goal");
     });
 
-    it("sends step_blocked update for a usage-limit block as interrupted, never 'needs input'", async () => {
+    it("sends step_blocked update for a usage-limit block as paused, never 'needs input'", async () => {
       saveRunFixture(makeRun());
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 40 });
@@ -1731,8 +1731,8 @@ describe("goal-commands telegram adapter", () => {
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      // A backend usage limit is a resume-needed interruption, NOT a user-input block.
-      expect(options.caption).toContain("<b>TASK INTERRUPTED</b> (test-run): Step 1 needs resume");
+      // A backend usage limit is a resume-needed pause, NOT a user-input block.
+      expect(options.caption).toContain("<b>TASK PAUSED</b> (test-run): Step 1 - resume needed.");
       expect(options.caption).not.toContain("needs input");
       expect(options.caption).toContain("Codex");
       expect(options.caption).toContain("resets at 5pm");
