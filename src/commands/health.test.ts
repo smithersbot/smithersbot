@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { applyCliProfileEnv } from "../cli/profile.js";
+import { resolveGatewayPort } from "../config/paths.js";
 import type { HealthSummary } from "./health.js";
 import { formatHealthChannelLines, healthCommand } from "./health.js";
 
@@ -167,5 +169,27 @@ describe("healthCommand", () => {
     expect(lines).toContain(
       "Telegram: ok (@pinguini_ugi_bot:main:196ms, @flurry_ugi_bot:flurry:190ms, @poe_ugi_bot:poe:188ms)",
     );
+  });
+});
+
+describe("--dev health gateway port resolution", () => {
+  it("resolves the dev instance to port 18790 even with an inherited stable port", () => {
+    // `node scripts/run-node.mjs --dev health` applies the dev profile to the env,
+    // then health -> callGateway -> resolveGatewayPort picks the target. The worker
+    // is launched by the stable service with CLAWDBOT_GATEWAY_PORT=18789 in env;
+    // `--dev` must retarget the dev gateway on 18790, not the inherited stable port.
+    const env: Record<string, string | undefined> = { CLAWDBOT_GATEWAY_PORT: "18789" };
+    applyCliProfileEnv({ profile: "dev", env, homedir: () => "/home/matt" });
+    expect(resolveGatewayPort(undefined, env as NodeJS.ProcessEnv)).toBe(18790);
+    expect(resolveGatewayPort(undefined, env as NodeJS.ProcessEnv)).not.toBe(19001);
+  });
+
+  it("resolves the stable instance to port 18789", () => {
+    const env: Record<string, string | undefined> = { SMITHERSBOT_INSTANCE: "stable" };
+    expect(resolveGatewayPort(undefined, env as NodeJS.ProcessEnv)).toBe(18789);
+  });
+
+  it("defaults (no instance selected) to the stable port 18789", () => {
+    expect(resolveGatewayPort(undefined, {} as NodeJS.ProcessEnv)).toBe(18789);
   });
 });
