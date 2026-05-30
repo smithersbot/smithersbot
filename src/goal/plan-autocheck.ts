@@ -109,7 +109,33 @@ export type PlanWorkingDirPolicyOptions = {
   homedir?: () => string;
   instance?: string | null;
   observedInstances?: Iterable<string> | null;
+  /**
+   * Injectable on-disk stat used for the existence/is-directory check. Defaults
+   * to fs.statSync; tests override it to deterministically model a missing path
+   * or a file (not a directory) without touching the real filesystem.
+   */
+  statPath?: (candidate: string) => { isDirectory(): boolean } | undefined;
 };
+
+function defaultStatPath(candidate: string): { isDirectory(): boolean } | undefined {
+  try {
+    return fs.statSync(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+function rejectPlanWorkingDir(workingDir: string, detail: string): AutocheckDecision {
+  return {
+    approved: false,
+    editInstructions:
+      `Reject: the plan workingDir "${workingDir}" is not an allowed executable goal working directory. ` +
+      `${detail} ` +
+      "Edit the plan so workingDir is an absolute path to an existing directory inside the current gateway " +
+      "instance's own agent/workspaces tree; observed/foreign-instance surfaces are read-only context and must " +
+      "not be used as the executable workingDir.",
+  };
+}
 
 /**
  * Programmatic plan-autocheck layer for the executable goal working directory.
@@ -125,20 +151,45 @@ export function checkPlanWorkingDir(
   workingDir: string,
   options: PlanWorkingDirPolicyOptions = {},
 ): AutocheckDecision {
+  // 1) Must be a non-empty, absolute/resolved path. Assertion-text artifacts
+  // such as "exactly /path" (a relative-looking token) never reach the
+  // executor as a valid workingDir, so reject them up front by their shape.
+  if (typeof workingDir !== "string" || workingDir.trim().length === 0) {
+    return rejectPlanWorkingDir(String(workingDir), "It is empty or not a string.");
+  }
+  if (!path.isAbsolute(workingDir)) {
+    return rejectPlanWorkingDir(
+      workingDir,
+      "It is not an absolute/resolved path (assertion/preflight wording such as " +
+        '"exactly /path" is not a valid working-directory directive).',
+    );
+  }
+
+  // 2) Current-instance workspace-root / private-root / foreign-instance
+  // enforcement (the same shared guard as the executor). This runs BEFORE the
+  // on-disk check so an observed/foreign workspace is rejected even if it
+  // happens to exist on disk.
   try {
     assertWorkingDirInsideCurrentInstanceWorkspaces({ workingDir, ...options });
-    return { approved: true };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    return {
-      approved: false,
-      editInstructions:
-        `Reject: the plan workingDir "${workingDir}" is not an allowed executable goal working directory. ` +
-        `${detail} ` +
-        "Edit the plan so workingDir resolves inside the current gateway instance's own agent/workspaces tree; " +
-        "observed/foreign-instance surfaces are read-only context and must not be used as the executable workingDir.",
-    };
+    return rejectPlanWorkingDir(workingDir, detail);
   }
+
+  // 3) The path must exist on disk and be a directory (not a file). The
+  // executor/build-gate remains the final hard-stop, but catching this here
+  // means autocheck never approves a plan that will only fail later because the
+  // working directory is missing.
+  const statPath = options.statPath ?? defaultStatPath;
+  const stat = statPath(workingDir);
+  if (!stat) {
+    return rejectPlanWorkingDir(workingDir, "It does not exist on disk.");
+  }
+  if (!stat.isDirectory()) {
+    return rejectPlanWorkingDir(workingDir, "It exists but is a file, not a directory.");
+  }
+
+  return { approved: true };
 }
 
 export type PlanAutocheckFailureMetadata = {
