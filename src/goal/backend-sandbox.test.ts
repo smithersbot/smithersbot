@@ -773,9 +773,18 @@ describe("Claude Code native sandbox settings", () => {
         purpose: "goal-worker",
         requiresNetwork: true,
       });
-      // Claude Code's network proxy is default-deny and allowlist-based; "*" is
-      // the documented wildcard that matches every domain (no `allowAll` key).
-      expect(config.settings.sandbox.network).toEqual({ allowedDomains: ["*"] });
+      // Claude Code's network proxy is default-deny and allowlist-based with no
+      // universal allow-all token, so the grant is a list of per-suffix wildcards
+      // (each `*.<tld>` matches any host under that suffix, including the apex).
+      const network = config.settings.sandbox.network;
+      expect(network).toBeDefined();
+      expect(Array.isArray(network?.allowedDomains)).toBe(true);
+      // Every entry is a per-suffix wildcard; a bare "*" (which the proxy rejects)
+      // must never be emitted.
+      expect(network?.allowedDomains.every((d) => /^\*\.[a-z]+$/.test(d))).toBe(true);
+      expect(network?.allowedDomains).not.toContain("*");
+      // example.com (the live-test target) is covered by the *.com wildcard.
+      expect(network?.allowedDomains).toContain("*.com");
     } finally {
       if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
       else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
