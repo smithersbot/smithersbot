@@ -67,6 +67,9 @@ describe("managed paths", () => {
   it("resolves the smithersbot-dev workspace name under the selected instance root", () => {
     const home = "/home/matt";
 
+    expect(resolveWorkspaceRepoDir("smithersbot-dev", {} as NodeJS.ProcessEnv, () => home)).toBe(
+      "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+    );
     expect(
       resolveWorkspaceRepoDir(
         "smithersbot-dev",

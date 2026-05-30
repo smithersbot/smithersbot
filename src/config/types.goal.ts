@@ -17,9 +17,8 @@ export type GoalConfig = {
   /** Default managed workspace name for new goal workspaces. */
   defaultWorkspaceName?: string;
   /**
-   * Stage 2S transition flag. Default true: workers may still run from legacy
-   * working directories outside the managed agent root, with a warning.
-   * Set false to fail closed for non-managed workspaces.
+   * Deprecated compatibility flag retained for older configs. Goal execution is
+   * always constrained to the current instance's managed agent/workspaces root.
    */
   allowLegacyWorkingDir?: boolean;
   /** Extra directories the agent can read (read-only). Hard denies still apply. */

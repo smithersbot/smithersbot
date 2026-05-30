@@ -15,6 +15,7 @@ import {
   resolveObservedAgentRoot,
   resolveObservedGoalHistoryRoot,
   resolveObservedHistoryIndexDir,
+  resolveObservedInspectionTarget,
   resolveObservedManagedRoot,
   resolveObservedRepoChatHistoryRoot,
   resolveObservedWorkspacesRoot,
@@ -117,6 +118,35 @@ describe("observed-instance resolvers and guard", () => {
     }
   });
 
+  it("classifies observed dev agent paths as readable context and seals private state", () => {
+    const workspace = path.join(devAgentRoot, "workspaces", "smithersbot-dev");
+    const history = path.join(devAgentRoot, "history", "repo-chats", "smithersbot-dev");
+
+    expect(resolveObservedInspectionTarget(devAgentRoot, opts())).toEqual({
+      kind: "agent",
+      instance: "dev",
+      agentRoot: devAgentRoot,
+    });
+    expect(resolveObservedInspectionTarget(workspace, opts())).toEqual({
+      kind: "agent",
+      instance: "dev",
+      agentRoot: devAgentRoot,
+    });
+    expect(resolveObservedInspectionTarget(history, opts())).toEqual({
+      kind: "agent",
+      instance: "dev",
+      agentRoot: devAgentRoot,
+    });
+    expect(resolveObservedInspectionTarget(path.join(devPrivateRoot, "env"), opts())).toEqual({
+      kind: "sealed",
+      instance: "dev",
+    });
+    expect(resolveObservedInspectionTarget(devStateDir, opts())).toEqual({
+      kind: "sealed",
+      instance: "dev",
+    });
+  });
+
   it("rejects the observed private root, its subtrees, and the state dir", () => {
     const rejected = [
       devPrivateRoot,
@@ -126,9 +156,6 @@ describe("observed-instance resolvers and guard", () => {
       path.join(devPrivateRoot, "sessions"),
       devStateDir,
       path.join(devStateDir, ".env"),
-      // Bare agent root and unrelated agent subdirs are not allowed targets.
-      devAgentRoot,
-      path.join(devAgentRoot, "history"),
     ];
     for (const candidate of rejected) {
       expect(isObservedAgentPathAllowed(candidate, "dev", opts())).toBe(false);
