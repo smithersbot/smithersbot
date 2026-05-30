@@ -6173,6 +6173,54 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("/goal_resume reports the active operation and step when the lock is held", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "fix-usage-status-refresh",
+                description: "Fix usage status refresh",
+                shortSummary: "Fix usage status refresh",
+                dependsOn: [],
+                status: "in_progress",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      // Another operation (answer) is already holding the run lock.
+      const held = acquireGoalOpLock("test-run-id-1234", "answer");
+      expect(held.acquired).toBe(true);
+      try {
+        await harness.commandHandlers.goal_resume?.(makeCommandCtx("test-run", 805));
+
+        const lockMsg = harness.sendMessage.mock.calls.find(
+          (call) => String(call[1]).includes("is already") && hasReplyMessageId(call, 805),
+        );
+        expect(lockMsg).toBeDefined();
+        // The harness renders markdown to HTML, so backtick code spans become
+        // <code>…</code>; assert on the text that survives rendering.
+        const text = String(lockMsg?.[1]);
+        expect(text).toContain("applying your last answer");
+        expect(text).toContain("currently on step");
+        expect(text).toContain("fix-usage-status-refresh");
+        expect(text).toContain("Try /goal_resume again after the current operation finishes.");
+      } finally {
+        if (held.acquired) held.release();
+      }
+    });
+
     it("threads replies for /goal_approve usage responses", async () => {
       const harness = makeHarness();
       await harness.register();
@@ -6398,7 +6446,9 @@ describe("goal-commands telegram adapter", () => {
       expect(
         harness.sendMessage.mock.calls.some(
           (call) =>
-            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 915),
+            String(call[1]).includes("is already") &&
+            String(call[1]).includes("after the current operation finishes") &&
+            hasReplyMessageId(call, 915),
         ),
       ).toBe(true);
 
@@ -6446,7 +6496,9 @@ describe("goal-commands telegram adapter", () => {
       expect(
         harness.sendMessage.mock.calls.some(
           (call) =>
-            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 919),
+            String(call[1]).includes("is already") &&
+            String(call[1]).includes("after the current operation finishes") &&
+            hasReplyMessageId(call, 919),
         ),
       ).toBe(true);
 

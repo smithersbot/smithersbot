@@ -11,6 +11,7 @@ export type RouteKind =
   | "GOAL_EDIT"
   | "GOAL_ANSWER"
   | "GOAL_FEEDBACK"
+  | "GOAL_NOTICE"
   | "CHAT"
   | "CHAT_HELP"
   | "DISAMBIGUATE";
@@ -69,6 +70,22 @@ const MAX_HELP_WORDS = 8;
 
 const OLDER_REVISION_MESSAGE =
   "That's an older revision. Reply to the latest plan message to request changes.";
+
+// requiredInputKey persisted by goal-formatting for technical/retryable blocks
+// (exhausted backend retries) rather than genuine user-input blocks. A reply to
+// such a message must NOT be stored as an answer — the run is paused, waiting on
+// a resume, not on input.
+const RESUME_EXECUTION_KEY = "resume_execution";
+
+function buildPausedReplyHint(runId: string): string {
+  const shortId = runId.slice(0, 8);
+  return `This goal is paused, not waiting on an answer. Tap ▶️ Resume Goal on the status message or send /goal_resume ${shortId} when you're ready.`;
+}
+
+function buildTrackedReplyNotice(runId: string): string {
+  const shortId = runId.slice(0, 8);
+  return `That goal message isn't waiting on a reply right now. Use /goal_detail ${shortId} to check its status, or /goal_resume ${shortId} if it's paused.`;
+}
 
 function normalizeText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, " ");
@@ -151,19 +168,75 @@ function isBlockedRun(run: SerializedRun): boolean {
 // Reply-to lookup helpers
 // ---------------------------------------------------------------------------
 
-function findRunByQuestionMessageId(
+type QuestionMessageHit = {
+  run: SerializedRun;
+  requiredInputKey: string | undefined;
+};
+
+function findBlockedQuestionHit(
+  runs: SerializedRun[],
+  chatId: number,
+  threadId: number | undefined,
+  messageId: number,
+): QuestionMessageHit | undefined {
+  for (const run of runs) {
+    if (!isBlockedRun(run)) continue;
+    const qm = run.telegramQuestionMessages?.find(
+      (q) => q.messageId === messageId && matchesChatThread(q, chatId, threadId),
+    );
+    if (qm) return { run, requiredInputKey: qm.requiredInputKey };
+  }
+  return undefined;
+}
+
+// True for a reply that targets ANY tracked goal/task message (plan, edit
+// prompt, done, feedback prompt, or question/blocked-notification message),
+// regardless of the run's current state. Used as a safety net so such replies
+// are always handled by the goal path and never fall through to repo-chat or
+// the embedded agent.
+function findRunByAnyTrackedMessageId(
   runs: SerializedRun[],
   chatId: number,
   threadId: number | undefined,
   messageId: number,
 ): SerializedRun | undefined {
-  return runs.find(
-    (run) =>
-      isBlockedRun(run) &&
+  return runs.find((run) => {
+    if (
+      run.telegramPlanMessage?.messageId === messageId &&
+      matchesChatThread(run.telegramPlanMessage, chatId, threadId)
+    ) {
+      return true;
+    }
+    if (run.telegramPlanMessage?.messageHistory?.includes(messageId)) return true;
+    if (
+      run.telegramEditPromptMessages?.some(
+        (ep) => ep.messageId === messageId && matchesChatThread(ep, chatId, threadId),
+      )
+    ) {
+      return true;
+    }
+    if (
+      run.telegramDoneMessage?.messageId === messageId &&
+      matchesChatThread(run.telegramDoneMessage, chatId, threadId)
+    ) {
+      return true;
+    }
+    if (
+      run.telegramFeedbackPromptMessages?.some(
+        (fp) => fp.messageId === messageId && matchesChatThread(fp, chatId, threadId),
+      )
+    ) {
+      return true;
+    }
+    if (
       run.telegramQuestionMessages?.some(
         (qm) => qm.messageId === messageId && matchesChatThread(qm, chatId, threadId),
-      ),
-  );
+      )
+    ) {
+      return true;
+    }
+    return false;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -180,10 +253,12 @@ function findRunByQuestionMessageId(
  *   4. Reply to edit-prompt message (ForceReply from "Request changes" button) → GOAL_EDIT
  *   5. Reply to done message (done buttons message) → GOAL_FEEDBACK
  *   6. Reply to feedback prompt message (ForceReply from "Incorporate Feedback") → GOAL_FEEDBACK
- *   7. Reply to question message (blocked run) → GOAL_ANSWER
- *   8. Reply to older plan revision → DISAMBIGUATE
- *   9. Help intent → CHAT_HELP
- *   10. Default → CHAT (with replyText hint if blocked runs exist)
+ *   7. Reply to question message (paused run) → GOAL_NOTICE (resume instruction)
+ *   8. Reply to question message (user-input block) → GOAL_ANSWER
+ *   9. Reply to older plan revision → DISAMBIGUATE
+ *   10. Reply to any other tracked goal/task message → GOAL_NOTICE (never repo-chat)
+ *   11. Help intent → CHAT_HELP
+ *   12. Default → CHAT (with replyText hint if blocked runs exist)
  */
 export function routeTelegramText(input: RouteInput): RouteResult {
   const { chatId, threadId, messageText, replyToMessageId } = input;
@@ -242,15 +317,21 @@ export function routeTelegramText(input: RouteInput): RouteResult {
       return { kind: "GOAL_FEEDBACK", runId: feedbackPromptMatch.runId };
     }
 
-    // GOAL_ANSWER: reply to a question/clarification message from a blocked run.
-    const questionMatch = findRunByQuestionMessageId(
-      scopedRuns,
-      chatId,
-      threadId,
-      replyToMessageId,
-    );
-    if (questionMatch) {
-      return { kind: "GOAL_ANSWER", runId: questionMatch.runId };
+    // Reply to a question/clarification/blocked-notification message.
+    const questionHit = findBlockedQuestionHit(scopedRuns, chatId, threadId, replyToMessageId);
+    if (questionHit) {
+      // A technical/retryable block whose auto-retries are exhausted is paused —
+      // it is NOT waiting on an answer. Route to a clear resume instruction so the
+      // reply is never stored as an answer (and never falls through to repo-chat).
+      if (questionHit.requiredInputKey === RESUME_EXECUTION_KEY) {
+        return {
+          kind: "GOAL_NOTICE",
+          runId: questionHit.run.runId,
+          replyText: buildPausedReplyHint(questionHit.run.runId),
+        };
+      }
+      // GOAL_ANSWER: genuine user-input block — store the answer.
+      return { kind: "GOAL_ANSWER", runId: questionHit.run.runId };
     }
 
     // DISAMBIGUATE: reply to an older plan revision.
@@ -259,6 +340,24 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     );
     if (olderMatch) {
       return { kind: "DISAMBIGUATE", replyText: OLDER_REVISION_MESSAGE };
+    }
+
+    // Safety net: a reply that targets a tracked goal/task message but matched no
+    // actionable route (e.g. a reply to a paused/done run's notification) must be
+    // handled by the goal path — never fall through to repo-chat or the embedded
+    // agent. Return a clear instruction so the user knows the next action.
+    const trackedMatch = findRunByAnyTrackedMessageId(
+      scopedRuns,
+      chatId,
+      threadId,
+      replyToMessageId,
+    );
+    if (trackedMatch) {
+      return {
+        kind: "GOAL_NOTICE",
+        runId: trackedMatch.runId,
+        replyText: buildTrackedReplyNotice(trackedMatch.runId),
+      };
     }
   }
 
@@ -283,4 +382,6 @@ export function routeTelegramText(input: RouteInput): RouteResult {
 
 export const TELEGRAM_GOAL_ROUTER_MESSAGES = {
   OLDER_REVISION_MESSAGE,
+  buildPausedReplyHint,
+  buildTrackedReplyNotice,
 };

@@ -183,6 +183,17 @@ export async function handleTelegramGoalRouting(params: {
     return true;
   }
 
+  // GOAL_NOTICE: a reply to a tracked goal/task message that can't be used as an
+  // answer (paused run, or a done/stale notification). Always handled by the goal
+  // path — returning true here prevents any fall-through to repo-chat or the
+  // embedded agent.
+  if (route.kind === "GOAL_NOTICE") {
+    await params.sendReply(
+      route.replyText ?? "That goal message isn't waiting on a reply right now.",
+    );
+    return true;
+  }
+
   if (route.kind === "CHAT") {
     // Try deterministic local intent handlers (A-C). Never calls LLM.
     const localReply = await tryLocalIntentHandlers(params.messageText, params.runs);

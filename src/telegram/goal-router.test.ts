@@ -466,7 +466,7 @@ describe("routeTelegramText", () => {
     expect(route.runId).toBe("r1");
   });
 
-  it("does not route reply to question message if run is no longer blocked", () => {
+  it("does not store an answer when the run is no longer blocked but still notices the reply", () => {
     const runs = [
       makeRun({
         runId: "r1",
@@ -480,6 +480,113 @@ describe("routeTelegramText", () => {
       threadId: undefined,
       messageText: "foo.txt",
       replyToMessageId: 15,
+      runs,
+    });
+    // A reply to a tracked goal/task message must never fall through to CHAT
+    // (which would reach repo-chat / the embedded agent). It is handled by the
+    // goal path with a clear notice instead.
+    expect(route.kind).toBe("GOAL_NOTICE");
+    expect(route.runId).toBe("r1");
+    expect(route.replyText).toContain("r1".slice(0, 8));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Paused / interrupted reply routing (resume_execution)
+  // ---------------------------------------------------------------------------
+
+  it("routes a reply to a Paused (resume_execution) message to GOAL_NOTICE, not GOAL_ANSWER", () => {
+    const runs = [
+      makeRun({
+        runId: "paused1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "worker hit a provider limit; resume needed",
+          requiredInputKey: "resume_execution",
+        },
+        telegramQuestionMessages: [
+          { chatId: 1, messageId: 70, requiredInputKey: "resume_execution" },
+        ],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "please continue",
+      replyToMessageId: 70,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_NOTICE");
+    expect(route.runId).toBe("paused1");
+    expect(route.replyText).toContain("/goal_resume");
+    expect(route.replyText).toContain("Resume Goal");
+  });
+
+  it("routes a reply to a true user-input block (task:<id>:input) to GOAL_ANSWER", () => {
+    const runs = [
+      makeRun({
+        runId: "blocked1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Which database?",
+          requiredInputKey: "task:1:input",
+        },
+        telegramQuestionMessages: [{ chatId: 1, messageId: 71, requiredInputKey: "task:1:input" }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "postgres",
+      replyToMessageId: 71,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("blocked1");
+  });
+
+  it("notices a reply to a tracked question message of a cancelled run (never CHAT)", () => {
+    const runs = [
+      makeRun({
+        runId: "cancelled1",
+        state: "cancelled",
+        telegramQuestionMessages: [
+          { chatId: 1, messageId: 81, requiredInputKey: "resume_execution" },
+        ],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "keep going",
+      replyToMessageId: 81,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_NOTICE");
+    expect(route.runId).toBe("cancelled1");
+  });
+
+  it("still routes a plain non-reply message to CHAT (never auto-resumes)", () => {
+    const runs = [
+      makeRun({
+        runId: "paused1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "resume needed",
+          requiredInputKey: "resume_execution",
+        },
+        telegramQuestionMessages: [
+          { chatId: 1, messageId: 90, requiredInputKey: "resume_execution" },
+        ],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "what is the weather",
+      replyToMessageId: undefined,
       runs,
     });
     expect(route.kind).toBe("CHAT");
