@@ -10,9 +10,11 @@ import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import {
   isBackendNetworkCapable,
+  MAX_TRANSIENT_RETRY_ATTEMPTS,
   pickFallbackBackend,
   resolveBackendForStep,
 } from "./agent-executor-helpers.js";
+import { classifyStepCategory } from "./run-category.js";
 type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
@@ -1513,6 +1515,85 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(executedCliBackends).toEqual(["codex"]);
     expect(step.blockedQuestion).toContain("Codex hit a rate limit");
     expect(step.blockedQuestion).toContain("single enabled worker");
+  });
+
+  it("auto-retries a transient 529 overload with backoff instead of surfacing a user-input block", async () => {
+    // A single Claude 529/Overloaded must NOT immediately become a user-visible
+    // block. The run stays retrying (auto-retry with backoff) and only pauses
+    // after the transient retry budget is spent.
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const progress: string[] = [];
+
+    // Always a transient overload; never recovers within the budget.
+    mockCliExecute.mockResolvedValue({
+      status: "blocked",
+      question: "API Error: 529 Overloaded",
+      blockedReason: "rate_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-transient-529-pause",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(outcome.status).toBe("blocked");
+    // Up to 5 attempts (initial + 4 auto-retries) on the same backend before pausing.
+    expect(executedCliBackends).toHaveLength(MAX_TRANSIENT_RETRY_ATTEMPTS);
+    expect(executedCliBackends.every((backend) => backend === "claude_code")).toBe(true);
+    // It is never a user-input block; the derived category is resumable "paused".
+    expect(step.blockedReason).not.toBe("user_input");
+    expect(classifyStepCategory(step)).toBe("paused");
+    // It emitted retrying (not blocked) progress while auto-retrying.
+    expect(progress.some((line) => line.includes("[retrying] Transient backend overload"))).toBe(
+      true,
+    );
+  });
+
+  it("recovers from a transient overload on a later auto-retry without surfacing a block", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "API Error: 529 Overloaded",
+        blockedReason: "rate_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Anthropic server-side issue (overloaded)",
+        blockedReason: "rate_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered after transient overload",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-transient-529-recovers",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    // Two transient retries then success — the run never surfaced a block.
+    expect(executedCliBackends).toEqual(["claude_code", "claude_code", "claude_code"]);
   });
 
   it("falls back from Claude Code to Codex when Claude Code hits a rate limit", async () => {
