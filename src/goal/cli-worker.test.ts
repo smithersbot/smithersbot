@@ -108,6 +108,18 @@ vi.mock("./backend-sandbox.js", async (importOriginal) => {
   };
 });
 
+// Worker-launch guard: default no-op so the spawn/repair tests can use their temp
+// working dirs; the "managed workspace compatibility" describe delegates to the
+// REAL helper to exercise the genuine accept/hard-deny at the worker-launch site.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
+
 const STABLE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 
 const runCliProcessMock = vi.mocked(runCliProcess);
@@ -477,6 +489,19 @@ describe("cli-worker", () => {
   });
 
   describe("managed workspace compatibility", () => {
+    // These tests exercise the genuine worker-launch guard, so delegate the mock
+    // to the real shared helper here (and reset back to no-op afterwards).
+    beforeEach(async () => {
+      const actual =
+        await vi.importActual<typeof import("./workspace-policy.js")>("./workspace-policy.js");
+      mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) =>
+        (actual.assertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args),
+      );
+    });
+    afterEach(() => {
+      mockAssertGoalWorkerWorkspace.mockReset();
+    });
+
     function makeRunCliProcessSuccess() {
       runCliProcessMock.mockResolvedValueOnce({
         stdout: "",
@@ -521,32 +546,28 @@ describe("cli-worker", () => {
       }
     });
 
-    it("allows legacy cwd by default with a warning", async () => {
+    it("hard-denies an out-of-instance legacy cwd before launching the worker (default config)", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
       const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       process.env.SMITHERSBOT_GOALS_ROOT = root;
       resolveWorkerDirMock.mockReturnValue(path.join(root, "worker"));
-      makeRunCliProcessSuccess();
-      const onProgress = vi.fn();
 
       try {
-        await executeTaskWithCliWorker({
-          backend: "codex",
-          step: makeStep(),
-          plan: { ...makePlan(), workingDir: legacyDir },
-          goal: "Build auth",
-          workingDir: legacyDir,
-          runId: "run-legacy",
-          hardDenies: HARD_DENIES,
-          timeoutMs: 100,
-          onProgress,
-        });
-
-        expect(runCliProcessMock).toHaveBeenCalledOnce();
-        expect(onProgress.mock.calls.flat().join("\n")).toContain(
-          "outside the SmithersBot managed agent root",
-        );
+        await expect(
+          executeTaskWithCliWorker({
+            backend: "codex",
+            step: makeStep(),
+            plan: { ...makePlan(), workingDir: legacyDir },
+            goal: "Build auth",
+            workingDir: legacyDir,
+            runId: "run-legacy",
+            hardDenies: HARD_DENIES,
+            timeoutMs: 100,
+          }),
+        ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+        // The worker is never launched for a rejected working dir.
+        expect(runCliProcessMock).not.toHaveBeenCalled();
       } finally {
         if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
         else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
@@ -555,7 +576,7 @@ describe("cli-worker", () => {
       }
     });
 
-    it("rejects legacy cwd when compatibility is disabled", async () => {
+    it("hard-denies an out-of-instance cwd even when the legacy flag is disabled", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
       const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
@@ -574,7 +595,7 @@ describe("cli-worker", () => {
             timeoutMs: 100,
             goalConfig: { allowLegacyWorkingDir: false },
           }),
-        ).rejects.toThrow("managed agent root");
+        ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
         expect(runCliProcessMock).not.toHaveBeenCalled();
       } finally {
         if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;

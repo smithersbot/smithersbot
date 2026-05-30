@@ -104,6 +104,23 @@ vi.mock("../goal/git-checkpoint.js", async (importOriginal) => {
   };
 });
 
+// Shared goal-execution guard: default no-op so existing telegram tests keep their
+// fixture working dirs; dedicated tests delegate to the REAL helper to prove an
+// edited/approved out-of-instance workingDir is rejected before ensureWorkingDir
+// or dispatch from the telegram flow.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("../goal/workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
+vi.mock("../goal/workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
+
 class MockPlanParseError extends Error {
   readonly rawResponse: string;
   constructor(message: string, rawResponse: string) {
@@ -7011,5 +7028,125 @@ describe("goal-commands telegram adapter", () => {
       const { findRunByPlanMessageId } = await import("./goal-commands.js");
       expect(findRunByPlanMessageId(123, 456)).toBeUndefined();
     });
+  });
+});
+
+describe("telegram goal commands — current-instance workspace guard", () => {
+  let managedRoot: string;
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
+  const DEV_HOME = "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+  const ARBITRARY = "/tmp/tg-not-a-workspace-xyz";
+
+  beforeEach(() => {
+    testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-guard-"));
+    vi.clearAllMocks();
+    managedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-managed-")));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    delete process.env.SMITHERSBOT_INSTANCE; // default (stable) instance
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+  });
+
+  afterEach(() => {
+    mockAssertGoalWorkerWorkspace.mockReset();
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
+    fs.rmSync(testGoalsDir, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["dev-home observed path", DEV_HOME],
+    ["arbitrary /tmp path", ARBITRARY],
+  ])(
+    "handleGoalEdit rejects an out-of-instance workingDir instruction (%s) before ensureWorkingDir",
+    async (_label, badDir) => {
+      saveRunFixture(makeRun({ workingDir: path.join(managedRoot, "agent", "workspaces", "wd") }));
+      const { handleGoalEdit } = await import("./goal-commands.js");
+
+      await expect(
+        handleGoalEdit("test-run", `working dir should be ${badDir}`, {
+          goal: { planAutocheck: "off" },
+        }),
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+
+      expect(mockEnsureWorkingDir).not.toHaveBeenCalled();
+      expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    },
+  );
+
+  it("handleGoalEdit proceeds for a valid stable workingDir instruction", async () => {
+    const valid = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    saveRunFixture(makeRun({ workingDir: path.join(managedRoot, "agent", "workspaces", "wd") }));
+    mockRunCliPlanRevision.mockResolvedValue({
+      plan: {
+        goal: "Test goal",
+        workingDir: valid,
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+          },
+        ],
+      },
+    });
+    mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+    const { handleGoalEdit } = await import("./goal-commands.js");
+    const result = await handleGoalEdit("test-run", `working dir should be ${valid}`, {
+      goal: { planAutocheck: "off" },
+    });
+
+    expect(result.text).not.toContain("outside the current stable instance");
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(valid);
+  });
+
+  it("handleGoalFeedback rejects an out-of-instance revised workingDir before ensureWorkingDir", async () => {
+    const originalWorkingDir = path.join(managedRoot, "agent", "workspaces", "fb");
+    fs.mkdirSync(originalWorkingDir, { recursive: true });
+    saveRunFixture(
+      makeRun({
+        state: "done",
+        workingDir: originalWorkingDir,
+        plan: {
+          goal: "Test goal",
+          workingDir: originalWorkingDir,
+          summary: "Completed plan",
+          steps: [{ id: "1", description: "Initial", dependsOn: [], status: "done" }],
+        },
+        stepResults: { "1": { stepId: "1", success: true, output: "done", durationMs: 1000 } },
+      }),
+    );
+    mockRunCliPlanRevision.mockResolvedValue({
+      plan: {
+        goal: "Test goal",
+        workingDir: DEV_HOME,
+        summary: "Feedback revised plan",
+        steps: [
+          { id: "1", description: "Initial", dependsOn: [], status: "pending" },
+          { id: "2", description: "Fix", dependsOn: ["1"], status: "pending" },
+        ],
+      },
+    });
+
+    const { handleGoalFeedback } = await import("./goal-commands.js");
+    const result = await handleGoalFeedback("test-run", "Move it and fix", {
+      goal: { planAutocheck: "off" },
+    });
+
+    // The feedback handler surfaces the guard error and never prepares the dir.
+    expect(result ?? "").toMatch(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+    expect(mockEnsureWorkingDir).not.toHaveBeenCalledWith(DEV_HOME);
   });
 });

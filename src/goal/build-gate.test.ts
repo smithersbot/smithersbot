@@ -4,6 +4,7 @@ import {
   classifyBuildGateFailure,
   makeBuildGateFailurePrompt,
   resolveChangedFilesSinceCheckpoint,
+  runBuildGateCommands,
 } from "./build-gate.js";
 
 const mockSpawnSync = vi.fn();
@@ -15,6 +16,19 @@ vi.mock("node:child_process", async () => {
     ...actual,
     spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
     execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+  };
+});
+
+// The shared goal-execution guard is exercised end-to-end in workspace-policy.test.ts.
+// Here it is routed through a controllable mock so existing build-gate tests use
+// their fixture working dirs, while a dedicated test drives the real rejection
+// behavior to prove the guard runs BEFORE any command spawn / git invocation.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
   };
 });
 
@@ -133,6 +147,38 @@ describe("resolveChangedFilesSinceCheckpoint", () => {
       baseSha: "base-sha-1",
     });
     expect(changed).toBeNull();
+  });
+});
+
+describe("runBuildGateCommands current-instance guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("throws and never spawns a command when the working dir is rejected", () => {
+    mockAssertGoalWorkerWorkspace.mockImplementationOnce(() => {
+      throw new Error(
+        'Goal worker workspace "/tmp/evil" is outside the current stable instance\'s own ' +
+          "agent/workspaces tree (/root/agent/workspaces).",
+      );
+    });
+
+    expect(() => runBuildGateCommands(["echo hi"], "/tmp/evil")).toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+    // Guard ran before any command spawn.
+    expect(mockAssertGoalWorkerWorkspace).toHaveBeenCalledWith({ workingDir: "/tmp/evil" });
+    expect(mockSpawnSync).not.toHaveBeenCalled();
+  });
+
+  it("runs commands for a valid stable working dir (guard passes)", () => {
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "", error: undefined });
+    const result = runBuildGateCommands(["echo hi"], "/root/agent/workspaces/smithersbot-dev");
+    expect(result).toEqual({ passed: true });
+    expect(mockAssertGoalWorkerWorkspace).toHaveBeenCalledWith({
+      workingDir: "/root/agent/workspaces/smithersbot-dev",
+    });
+    expect(mockSpawnSync).toHaveBeenCalled();
   });
 });
 
