@@ -1681,6 +1681,84 @@ describe("runCliPlanning", () => {
     expect(attempt.errorClassification).toBe("needs_clarification");
   });
 
+  it("honors stdout-only blocked JSON before scout artifact validation (no plan files)", async () => {
+    // Reproduces the ordering bug: the planner deliberately blocked (e.g. an invalid
+    // observed-runtime workingDir) and wrote NO plan_draft.md / plan_needs_clarification.md.
+    // The blocked stdout response must be authoritative — not surfaced as the misleading
+    // scout-artifact failure "Planning scout artifacts invalid: plan_draft.md not found".
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.mkdirSync(scoutDir, { recursive: true });
+      fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      // Intentionally write NO plan_draft.md, plan_needs_clarification.md, or execution_plan.json.
+      return {
+        stdout:
+          '{"blocked":true,"question":"This workspace is an observed dev runtime surface and cannot be used as an executable working dir. Pick a managed workspace."}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 71,
+      };
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-blocked-stdout-only",
+      goalText: "Build in /home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("blocked");
+    if (result.status === "blocked") {
+      expect(result.question).toContain("observed dev runtime surface");
+      // Clean actionable clarification — never the generic scout-artifact failure or
+      // the generic "Planning failed:" formatting.
+      expect(result.question).not.toContain("plan_draft.md not found");
+      expect(result.question).not.toContain("Planning scout artifacts invalid");
+      expect(result.question).not.toContain("Planning failed");
+    }
+
+    // No execution plan / branch / worker side effects: an intentional block must not
+    // produce a canonical execution_plan.json artifact.
+    const scoutDir = path.join(goalsDir, "run-blocked-stdout-only", "scout");
+    expect(fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))).toBe(false);
+
+    // The attempt bundle records a blocked outcome routed through the needs-clarification
+    // transport, not a failed/validation outcome.
+    const attempt = JSON.parse(
+      fs.readFileSync(path.join(scoutDir, "attempt-1.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(attempt.outcome).toBe("blocked");
+    expect(attempt.errorClassification).toBe("needs_clarification");
+  });
+
+  it("does not throw a generic planning failure for an intentional stdout-only block", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.mkdirSync(scoutDir, { recursive: true });
+      fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      return {
+        stdout: '{"blocked":true,"question":"Which deployment target should this use?"}',
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 64,
+      };
+    });
+
+    // Must resolve to a blocked result, never reject with a generic planning error.
+    await expect(
+      runCliPlanning({
+        runId: "run-blocked-stdout-only-2",
+        goalText: "Deploy this change",
+        goalsDir,
+      }),
+    ).resolves.toMatchObject({ status: "blocked", scoutStatus: "skipped" });
+  });
+
   it("clears stale clarification artifacts before replanning the same run", async () => {
     const runId = "run-replan-stale-clarification";
     let planningAttempt = 0;
