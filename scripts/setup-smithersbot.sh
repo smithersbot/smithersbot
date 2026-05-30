@@ -656,7 +656,6 @@ detect_telegram_allowed_id() {
   printf 'Do not use @BotFather here. BotFather has completed his part.\n' >&2
   printf '\n' >&2
   printf 'Waiting for your Telegram message...\n' >&2
-  printf 'This can take up to 2 minutes.\n' >&2
 
   while true; do
     start=$(date +%s)
