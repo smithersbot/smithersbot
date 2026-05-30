@@ -31,6 +31,34 @@ export type GoalOpLockResult =
 export type PlanningLockResult = { acquired: true; release: () => void } | { acquired: false };
 
 // ---------------------------------------------------------------------------
+// User-facing operation labels
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable, present-progressive description of the in-flight goal
+ * operation identified by a lock `label`. Used to build a clear "already busy"
+ * message that names which operation holds the lock instead of a bare
+ * "(approve)". Unknown labels fall back to a generic phrase.
+ */
+export function describeGoalOpLabel(label: string | undefined): string {
+  switch (label) {
+    case "approve":
+    case "resume":
+      return "resuming";
+    case "answer":
+      return "applying your last answer";
+    case "edit":
+      return "updating its plan";
+    case "feedback":
+      return "incorporating your feedback";
+    case "test":
+      return "generating manual tests";
+    default:
+      return label ? `busy with a ${label} operation` : "being processed";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PID liveness check (reused from gateway-lock.ts pattern)
 // ---------------------------------------------------------------------------
 

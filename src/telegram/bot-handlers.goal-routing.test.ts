@@ -244,6 +244,71 @@ describe("handleTelegramGoalRouting", () => {
     // Result delivery is now fire-and-forget inside the handler
   });
 
+  it("reply to a Paused (resume_execution) message gives a resume instruction, not an answer", async () => {
+    const runs = [
+      makeRun({
+        runId: "paused1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "worker hit a provider limit; resume needed",
+          requiredInputKey: "resume_execution",
+        },
+        telegramQuestionMessages: [
+          { chatId: 9, messageId: 25, requiredInputKey: "resume_execution" },
+        ],
+      }),
+    ];
+
+    const sendReply = vi.fn(async () => {});
+    const answer = vi.fn();
+
+    const handled = await handleTelegramGoalRouting({
+      chatId: 9,
+      threadId: undefined,
+      messageText: "please continue",
+      replyToMessageId: 25,
+      runs,
+      chatMode: "chat",
+      sendReply,
+      sendPlanResult: vi.fn(async () => {}),
+      runHandlers: { edit: vi.fn(), answer },
+    });
+
+    expect(handled).toBe(true);
+    expect(answer).not.toHaveBeenCalled();
+    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("/goal_resume"));
+  });
+
+  it("reply to a tracked but unusable goal message is handled (never falls through)", async () => {
+    const runs = [
+      makeRun({
+        runId: "done1",
+        state: "done",
+        telegramQuestionMessages: [{ chatId: 9, messageId: 26 }],
+      }),
+    ];
+
+    const sendReply = vi.fn(async () => {});
+    const answer = vi.fn();
+
+    const handled = await handleTelegramGoalRouting({
+      chatId: 9,
+      threadId: undefined,
+      messageText: "foo",
+      replyToMessageId: 26,
+      runs,
+      chatMode: "chat",
+      sendReply,
+      sendPlanResult: vi.fn(async () => {}),
+      runHandlers: { edit: vi.fn(), answer },
+    });
+
+    expect(handled).toBe(true);
+    expect(answer).not.toHaveBeenCalled();
+    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("done1".slice(0, 8)));
+  });
+
   it("routes reply to plan message to GOAL_EDIT", async () => {
     const runs = [
       makeRun({

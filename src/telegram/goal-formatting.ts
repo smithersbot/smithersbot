@@ -10,6 +10,7 @@ import { formatAge } from "../infra/channel-summary.js";
 import type { GoalStatusChangeEvent, ManualTestsStatus } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
+import { describeGoalOpLabel } from "../goal/goal-lock.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { clampCriticality, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
@@ -346,8 +347,44 @@ export function formatGoalWorkers(workers: CliWorkerId[]): string {
   return workers.join(", ");
 }
 
-export function formatGoalLockedMessage(runId: string, existingLabel?: string): string {
-  return `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel ?? "unknown"}).`;
+export interface GoalLockedMessageOptions {
+  /** The step the in-flight operation is currently working on, if known. */
+  activeStep?: string;
+  /** Command the user should retry once the active operation finishes. */
+  retryCommand?: string;
+}
+
+/**
+ * Build the "already being processed" message for a contended goal-op lock.
+ *
+ * Instead of a bare "(approve)", this names which operation is active (via the
+ * lock label), which step it is on when known, and the command to retry — so a
+ * user who hits a busy lock knows what is happening and when to try again.
+ */
+export function formatGoalLockedMessage(
+  runId: string,
+  existingLabel?: string,
+  options?: GoalLockedMessageOptions,
+): string {
+  const shortId = runId.slice(0, 8);
+  const operation = describeGoalOpLabel(existingLabel);
+  const stepSuffix = options?.activeStep ? ` (currently on step \`${options.activeStep}\`)` : "";
+  const retry = options?.retryCommand
+    ? `Try ${options.retryCommand} again after the current operation finishes.`
+    : "Try again after the current operation finishes.";
+  return `Goal \`${shortId}\` is already ${operation}${stepSuffix}. ${retry}`;
+}
+
+/**
+ * Best-effort active step for a run: the step currently in progress, else the
+ * first blocked step. Returns undefined when no step is identifiable.
+ */
+export function resolveActiveStepId(run: SerializedRun | null | undefined): string | undefined {
+  const steps = run?.plan?.steps;
+  if (!steps) return undefined;
+  const inProgress = steps.find((step) => step.status === "in_progress");
+  if (inProgress) return inProgress.id;
+  return steps.find((step) => step.status === "blocked")?.id;
 }
 
 export function isPlanAutocheckBackend(

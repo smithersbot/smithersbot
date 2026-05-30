@@ -424,6 +424,30 @@ describe("registerTelegramHandlers repo-chat routing", () => {
     );
   });
 
+  it("does not dispatch a GOAL_NOTICE reply to repo-chat or the embedded agent", async () => {
+    // A reply to a tracked goal/task message that the router classifies as
+    // GOAL_NOTICE (e.g. a Paused run) must be answered by the goal path and must
+    // NOT fall through to dispatchTelegramRepoChatForInboundText (repo-chat / PI).
+    findRepoChatSessionByMessageIdMock.mockReturnValue(undefined);
+    routeTelegramTextMock.mockReturnValue({
+      kind: "GOAL_NOTICE",
+      runId: "paused-run",
+      replyText: "This goal is paused. Send /goal_resume paused-r when you're ready.",
+    });
+
+    const { bot, messageHandler } = makeRouteHarness({ repoChatBackend: "claude_code" });
+
+    await messageHandler(makeTextMessage("please continue", 960, 400));
+
+    expect(routeTelegramTextMock).toHaveBeenCalled();
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      "This goal is paused. Send /goal_resume paused-r when you're ready.",
+      expect.objectContaining({ reply_parameters: { message_id: 960 } }),
+    );
+  });
+
   it("routes replies to known repo-chat sessions directly without goal routing", async () => {
     findRepoChatSessionByMessageIdMock.mockReturnValue({ id: "repo-chat-session" });
 
