@@ -827,9 +827,9 @@ describe("cli-worker", () => {
       expect(args).not.toContain("--sandbox");
     });
 
-    it("wires Claude Code worker network into sandbox settings when the build supports it", () => {
+    it("wires Claude Code worker network into sandbox settings for a requiresNetwork step without any env var", () => {
       const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-      process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = "1";
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
       const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-supported-"));
       try {
         const args = buildCliArgs({
@@ -851,20 +851,23 @@ describe("cli-worker", () => {
       }
     });
 
-    it("blocks Claude Code worker construction with a clear capability error when network is unsupported", () => {
+    it("omits the Claude Code sandbox network grant for a non-network step", () => {
       const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
       delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
-      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-unsupported-"));
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-none-"));
       try {
-        expect(() =>
-          buildCliArgs({
-            backend: "claude_code",
-            prompt: "test",
-            workingDir,
-            denyFilePath: path.join(workingDir, "deny"),
-            requiresNetwork: true,
-          }),
-        ).toThrow(/cannot satisfy requiresNetwork=true/);
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          requiresNetwork: false,
+        });
+        const settingsIdx = args.indexOf("--settings");
+        expect(settingsIdx).toBeGreaterThanOrEqual(0);
+        const settingsPath = args[settingsIdx + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+        expect(parsed.sandbox?.network).toBeUndefined();
       } finally {
         if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
         else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
