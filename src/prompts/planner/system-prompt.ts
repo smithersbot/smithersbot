@@ -32,6 +32,25 @@ export type PlanSystemPromptOptions = {
  * SmithersBot dev checkout. Kept out of the shared rubric so it never affects
  * ordinary user goals or non-dev workspaces.
  */
+/**
+ * General (instance-agnostic) planner guidance constraining the executable
+ * goal working directory to the CURRENT gateway instance's own managed
+ * agent/workspaces tree. Observed-instance surfaces (e.g. the dev runtime agent
+ * surface as seen by the stable gateway) are read-only context only and must
+ * never be chosen as planResult.workingDir. This guidance is advisory only — it
+ * is NOT the security boundary; the workspace-policy guard, autocheck rejection,
+ * executor, and build gate hard-stop any out-of-instance workingDir regardless
+ * of what the planner produces.
+ */
+export const WORKSPACE_SCOPE_PLANNER_GUIDANCE = [
+  "GOAL WORKING DIRECTORY SCOPE (strict):",
+  "- The executable/editable workingDir MUST resolve inside the CURRENT gateway instance's own managed agent/workspaces tree:",
+  "  - stable/default instance: /home/matt/smithersbot-home/agent/workspaces/<workspace>",
+  "  - dev instance: /home/matt/smithersbot-dev-home/agent/workspaces/<workspace>",
+  "- Observed-instance surfaces — for the stable/default gateway these are /home/matt/smithersbot-dev-home/agent/workspaces and /home/matt/smithersbot-dev-home/agent/history — are READ-ONLY/context-only and MUST NOT be chosen as workingDir.",
+  "- Even when a step references an observed surface for context or inspection, keep workingDir inside the current instance's own managed workspaces root. Never set workingDir to another instance's managed root, an observed-instance root, a private/state root, or an arbitrary out-of-root path.",
+].join("\n");
+
 export const DEV_GATEWAY_PLANNER_GUIDANCE = [
   "DEV GATEWAY VERIFICATION (SmithersBot dev checkout):",
   "- This goal is planned in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
@@ -185,6 +204,8 @@ workingDir is the directory where the goal's work should happen.
 - Use the current workspace path if the goal modifies an existing repo.
 - Use a new path (for example ~/project-name) if the goal creates a new project or writes files outside the current workspace.
 - Use ~ for home directory prefix.
+
+${WORKSPACE_SCOPE_PLANNER_GUIDANCE}
 
 If you cannot create a plan because you need more information, respond with:
 { "blocked": true, "question": "The specific question you need answered" }`;
