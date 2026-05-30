@@ -773,7 +773,9 @@ describe("Claude Code native sandbox settings", () => {
         purpose: "goal-worker",
         requiresNetwork: true,
       });
-      expect(config.settings.sandbox.network).toEqual({ allowAll: true });
+      // Claude Code's network proxy is default-deny and allowlist-based; "*" is
+      // the documented wildcard that matches every domain (no `allowAll` key).
+      expect(config.settings.sandbox.network).toEqual({ allowedDomains: ["*"] });
     } finally {
       if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
       else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;

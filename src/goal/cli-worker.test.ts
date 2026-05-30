@@ -843,7 +843,7 @@ describe("cli-worker", () => {
         expect(settingsIdx).toBeGreaterThanOrEqual(0);
         const settingsPath = args[settingsIdx + 1]!;
         const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-        expect(parsed.sandbox.network).toEqual({ allowAll: true });
+        expect(parsed.sandbox.network).toEqual({ allowedDomains: ["*"] });
       } finally {
         if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
         else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
