@@ -85,11 +85,16 @@ export type ClaudeCodeSandboxSettingsConfig = {
         allowWrite: string[];
         denyRead: string[];
       };
-      // Present only when a step opts in via requiresNetwork=true AND the
-      // installed Claude build supports per-invocation sandbox network. Omitted
+      // Present only when a step opts in via requiresNetwork=true. Omitted
       // (no network) for normal repo-local steps. Mirrors Codex's
       // [permissions.smithersbot.network] enabled grant.
-      network?: { allowAll: true };
+      //
+      // Claude Code's sandbox network proxy is allowlist-based and DEFAULT-DENY:
+      // an unmatched host is refused at the proxy (HTTP 403 on CONNECT). There is
+      // no `allowAll` key — broad egress is expressed as `allowedDomains:["*"]`,
+      // where a single trailing "*" matches every domain (per the documented
+      // wildcard syntax). We grant that for a requiresNetwork step.
+      network?: { allowedDomains: string[] };
     };
     permissions: {
       deny: string[];
@@ -1032,8 +1037,9 @@ function buildClaudeReadToolDenies(
  * Policy: a planned step's `requiresNetwork=true` is sufficient to attempt
  * Claude network activation — there is no hidden operator env-var opt-in. The
  * grant is written into that one invocation's generated sandbox settings via
- * `sandbox.network={allowAll:true}` and is never applied to steps that did not
- * request it. Network remains off by default for normal steps.
+ * `sandbox.network={allowedDomains:["*"]}` (the allowlist wildcard that matches
+ * every domain) and is never applied to steps that did not request it. Network
+ * remains off by default for normal steps.
  *
  * This reports eligibility only; it does not prove the installed Claude build
  * honors the network setting at runtime. A genuine runtime/sandbox failure to
@@ -1099,13 +1105,15 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   // requiresNetwork=true must never be silently ignored: either write a real
   // network grant (when the build supports it) or throw a clear capability error
   // so the caller routes the step to a network-capable backend (or blocks).
-  let networkGrant: { allowAll: true } | undefined;
+  let networkGrant: { allowedDomains: string[] } | undefined;
   if (params.requiresNetwork === true) {
     const capability = claudeCodeSandboxNetworkCapability();
     if (!capability.supported) {
       throw new Error(`Claude Code cannot satisfy requiresNetwork=true: ${capability.reason}`);
     }
-    networkGrant = { allowAll: true };
+    // "*" is the documented allowlist wildcard for "all domains"; the proxy is
+    // default-deny, so a bare grant with no allowlist would still refuse egress.
+    networkGrant = { allowedDomains: ["*"] };
   }
 
   return {
