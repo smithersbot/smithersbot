@@ -103,6 +103,30 @@ export function applyTaskResult(
   onProgress?.(`  [blocked] ${task.blockedQuestion}`);
 }
 
+/**
+ * Maximum number of attempts (initial + auto-retries) spent on the *same*
+ * transient backend/system failure class for one task within a single execution
+ * run before the run surfaces a paused block. A transient blip (Claude 529
+ * overloaded, retryable rate limit, transient server 5xx) must never immediately
+ * become a user-facing block: the run keeps auto-retrying with backoff up to this
+ * budget, staying in a retrying/in-progress state, then pauses (resumable).
+ */
+export const MAX_TRANSIENT_RETRY_ATTEMPTS = 5;
+
+/**
+ * Exponential backoff delay (ms) for transient retries, capped. `retryIndex` is
+ * 0-based for the first retry, so delays grow base, 2x, 4x, ... up to `capMs`.
+ */
+export function computeTransientBackoffMs(
+  retryIndex: number,
+  baseDelayMs: number,
+  capMs = 30_000,
+): number {
+  const safeBase = Number.isFinite(baseDelayMs) && baseDelayMs > 0 ? baseDelayMs : 1;
+  if (retryIndex <= 0) return Math.min(safeBase, capMs);
+  return Math.min(safeBase * 2 ** retryIndex, capMs);
+}
+
 export function shouldRetry(
   result: TaskRunnerResult,
   backend: GoalBackendId,
