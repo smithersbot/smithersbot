@@ -141,6 +141,57 @@ Focused verification already completed by dependency tasks:
 
 No additional manual checks were required for this verification/report task.
 
-Live dev-gateway restart and runtime smoke verification are intentionally left to the dependent `dev-gateway-live-verify` task. This task did not restart, stop, enable, disable, reinstall, or otherwise modify the stable gateway or the dev gateway.
+Live dev-gateway restart and runtime smoke verification are handled by the dependent `dev-gateway-live-verify` task — **see the "Dev-gateway live verification" section below**. This verification/report task itself did not restart, stop, enable, disable, reinstall, or otherwise modify the stable gateway or the dev gateway.
 
 No push was performed automatically. Any later push must be post-verification, to `origin` only, and never to remote `public`.
+
+## Dev-gateway live verification
+
+Performed by the `dev-gateway-live-verify` task on 2026-05-29 against the **running dev gateway**, using the freshly compiled `dist/` (the same code the gateway loads). Only `smithersbot-dev-gateway.service` was touched; the stable `smithersbot-gateway.service` and `~/.smithersbot` were never restarted, inspected, or modified. All dev-gateway management went through the mediated worker command `moltbot dev-gateway <restart|status|logs>` (no raw `systemctl`).
+
+### Rebuild + restart (clean)
+
+- `pnpm build` — exit 0 (tsc app + tsc cli + post-build copy steps).
+- `moltbot dev-gateway restart` — exit 0: `Restarted smithersbot-dev-gateway.service`, `Active: active (running)`, `status: probe active`.
+- `moltbot dev-gateway status` — unit `loaded (… smithersbot-dev-gateway.service; enabled)`, `Active: active (running)`, main PID is `node` running from the dev managed root `/home/matt/smithersbot-dev-home/...`, `status: probe active`.
+- `moltbot dev-gateway logs` — clean startup sequence (config loaded → managed root resolved → listening → ready (dev) → heartbeat ok). No startup errors or stack traces. (Raw socket/PID journal lines are intentionally not pasted here so the SAST/build gate stays green; the gateway bound its dev endpoint normally.)
+
+### Runtime enforcement smoke tests — 9/9 passed
+
+A harness imported the gateway's compiled `dist/goal/workspace-policy.js` and `dist/config/observed-instance.js` and exercised the enforcement with an explicit **stable** identity (`managedRoot=/home/matt/smithersbot-home`) and an explicit **dev** identity (`managedRoot=/home/matt/smithersbot-dev-home`). Identity is supplied explicitly — never inferred from the checkout/working directory.
+
+**(1) Stable/default goal rejects observed dev-runtime workspace AND arbitrary out-of-root paths as executable/editable working dirs — synchronously at validation, before any `ensureWorkingDir`/`mkdirSync`/`git init`/worker dispatch/build gate:**
+
+- `STABLE` + `workingDir=/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev` → **REJECTED even with `allowLegacyWorkingDir: true`**. Verbatim actionable error:
+
+  > Goal working directory "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev" is outside the current gateway instance's own agent/workspaces tree (/home/matt/smithersbot-home/agent/workspaces). It is an observed/foreign read-only-for-context surface and must not be used as an executable/editable goal working directory. Use a path under /home/matt/smithersbot-home/agent/workspaces instead.
+
+- `STABLE` + `workingDir=/tmp/whatever` (arbitrary out-of-root) → **REJECTED**: `… is outside the current gateway instance's own agent/workspaces tree (/home/matt/smithersbot-home/agent/workspaces). Use a path under /home/matt/smithersbot-home/agent/workspaces instead.`
+- `STABLE` + `workingDir=/home/matt/.config/whatever` → **REJECTED**: `… resolves into a sensitive path (/home/matt/.config) and cannot be used for goal execution.`
+- `STABLE` + `workingDir=/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev` → **ACCEPTED**, resolving to exactly that path.
+
+**(2) Observed dev agent surfaces remain readable-for-context:**
+
+- `resolveObservedInspectionTarget('/home/matt/smithersbot-dev-home/agent/workspaces', { devOptIn: true })` → `kind: "agent"`.
+- `resolveObservedInspectionTarget('/home/matt/smithersbot-dev-home/agent/history', { devOptIn: true })` → `kind: "agent"`.
+
+  Repo-chat/inspection can still read the observed dev agent workspaces and history for context; only executable/editable working-dir acceptance is tightened.
+
+**(3) Dev private roots remain denied:**
+
+- `resolveObservedInspectionTarget('/home/matt/smithersbot-dev-home/private', { devOptIn: true })` → `kind: "sealed"` (not readable).
+
+**(4) True dev instance behavior intact:**
+
+- `DEV` + `workingDir=/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev` → **ACCEPTED** (under the dev managed root).
+- `DEV` + `workingDir=/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev` → **REJECTED** as outside the dev instance tree.
+
+### Build-gate (SAST) confirmation
+
+The exact orchestrator build-gate command —
+`semgrep scan --config auto --error --quiet --severity ERROR --timeout 600 --exclude node_modules --exclude dist --exclude .git --exclude .next --exclude build --exclude '*.test.ts' --exclude .moltbot-goal-worker-results <checkout>` —
+was run against the working tree (including this report) and exits **0 with no code findings**. (The earlier attempt's build-gate failure was caused solely by that attempt pasting raw journalctl lines containing a PID/socket token that tripped semgrep's generic-secret rule; this report deliberately omits such raw log lines.)
+
+### Conclusion
+
+The dev gateway rebuilt and restarted cleanly with no startup errors. At runtime, a stable/default-owned goal targeting the observed dev runtime workspace (`/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev`) or an arbitrary out-of-root path is rejected with the actionable current-instance-only error before any directory preparation, git init, worker dispatch, or build-gate execution — even with the legacy flag enabled — while the observed dev agent workspaces/history stay readable for context and dev private roots stay sealed. True dev-instance goals still use the dev managed root and reject the stable-home root. Dev-gateway service-control behavior was not weakened (restart/status/logs still flow only through the mediated `moltbot dev-gateway` command). No push was performed; any push remains origin-only (dev repo), post-verification, and never to remote `public`.
