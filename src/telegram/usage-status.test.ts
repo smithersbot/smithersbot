@@ -10,13 +10,17 @@ import type { RuntimeEnv } from "../runtime.js";
 import {
   buildClaudeStatuslineRefreshCommand,
   buildUsageStatusMessage,
+  buildUsageStatusMessageWithClaudeRefresh,
   clearUsageStatusCachesForTest,
   refreshClaudeStatuslineCache,
+  refreshClaudeUsageCacheViaApi,
   registerUsageStatusCommand,
   resolveClaudeStatuslineCachePath,
   USAGE_STATUS_COMMAND_SPEC,
+  type ClaudeApiUsageRefreshResult,
   type StatuslineCacheEntry,
 } from "./usage-status.js";
+import type { ProviderUsageSnapshot } from "../infra/provider-usage.types.js";
 import { PUBLIC_TELEGRAM_MENU } from "./public-menu.js";
 import type { CodexQuota, CodexQuotaProbeResult } from "./codex-quota-runner.js";
 
@@ -795,6 +799,143 @@ describe("Claude statusline active refresh", () => {
     expect(options.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(options.env.ANTHROPIC_API_KEY_OLD).toBeUndefined();
     expect(options.env.SAFE_VALUE).toBe("kept");
+  });
+});
+
+describe("Claude usage API refresh (deterministic OAuth path)", () => {
+  const FIVE_HOUR_RESET = NOW + 3 * 60 * 60 * 1000;
+  const WEEK_RESET = NOW + 5 * 24 * 60 * 60 * 1000;
+
+  function usageSnapshot(overrides?: Partial<ProviderUsageSnapshot>): ProviderUsageSnapshot {
+    return {
+      provider: "anthropic",
+      displayName: "Anthropic",
+      windows: [
+        { label: "5h", usedPercent: 37, resetAt: FIVE_HOUR_RESET },
+        { label: "Week", usedPercent: 64, resetAt: WEEK_RESET },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("writes a complete statusline cache from the OAuth usage API", async () => {
+    let written: { cachePath: string; raw: string } | undefined;
+    const result = await refreshClaudeUsageCacheViaApi({
+      cachePath: "/tmp/statusline.json",
+      nowMs: NOW,
+      readCredential: () => "oauth-access-token",
+      fetchUsage: async () => usageSnapshot(),
+      writeCache: (cachePath, raw) => {
+        written = { cachePath, raw };
+      },
+    });
+
+    expect(result).toEqual({ status: "refreshed" });
+    expect(written?.cachePath).toBe("/tmp/statusline.json");
+    const parsed = JSON.parse(written?.raw ?? "{}");
+    expect(parsed.rate_limits.five_hour.used_percentage).toBe(37);
+    expect(parsed.rate_limits.five_hour.resets_at).toBe(new Date(FIVE_HOUR_RESET).toISOString());
+    expect(parsed.rate_limits.seven_day.used_percentage).toBe(64);
+    expect(parsed.rate_limits.seven_day.resets_at).toBe(new Date(WEEK_RESET).toISOString());
+  });
+
+  it("reports auth_missing (not a stale/timeout) when Claude Code is not logged in", async () => {
+    const writeCache = vi.fn();
+    const result = await refreshClaudeUsageCacheViaApi({
+      cachePath: "/tmp/statusline.json",
+      nowMs: NOW,
+      readCredential: () => null,
+      fetchUsage: async () => usageSnapshot(),
+      writeCache,
+    });
+
+    expect(result.status).toBe("auth_missing");
+    expect((result as { reason: string }).reason).toContain("not logged in");
+    expect(writeCache).not.toHaveBeenCalled();
+  });
+
+  it("classifies an OAuth scope/403 error as auth_missing without writing the cache", async () => {
+    const writeCache = vi.fn();
+    const result = await refreshClaudeUsageCacheViaApi({
+      cachePath: "/tmp/statusline.json",
+      nowMs: NOW,
+      readCredential: () => "oauth-access-token",
+      fetchUsage: async () =>
+        usageSnapshot({ windows: [], error: "HTTP 403: scope requirement user:profile" }),
+      writeCache,
+    });
+
+    expect(result.status).toBe("auth_missing");
+    expect((result as { reason: string }).reason).toContain("403");
+    expect(writeCache).not.toHaveBeenCalled();
+  });
+
+  it("reports unavailable when the API omits a required reset window", async () => {
+    const result = await refreshClaudeUsageCacheViaApi({
+      cachePath: "/tmp/statusline.json",
+      nowMs: NOW,
+      readCredential: () => "oauth-access-token",
+      fetchUsage: async () =>
+        usageSnapshot({ windows: [{ label: "5h", usedPercent: 37, resetAt: FIVE_HOUR_RESET }] }),
+      writeCache: vi.fn(),
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect((result as { reason: string }).reason).toContain("5-hour and weekly");
+  });
+
+  it("renders fresh Claude usage after a successful API refresh (no spawn)", async () => {
+    const stale = { raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 };
+    const fresh = {
+      raw: JSON.stringify({
+        rate_limits: {
+          five_hour: { used_percentage: 37, resets_at: new Date(FIVE_HOUR_RESET).toISOString() },
+          seven_day: { used_percentage: 64, resets_at: new Date(WEEK_RESET).toISOString() },
+        },
+      }),
+      mtimeMs: NOW - 1000,
+    };
+    let reads = 0;
+    const spawn = vi.fn();
+    const text = await buildUsageStatusMessageWithClaudeRefresh({
+      env: {},
+      nowMs: NOW,
+      readCache: () => (reads++ === 0 ? stale : fresh),
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      refreshCodexQuota: () => codexOk(),
+      refreshClaudeUsageViaApi: async () =>
+        ({ status: "refreshed" }) as ClaudeApiUsageRefreshResult,
+    });
+
+    expect(text).toContain("**Claude Code:** current");
+    expect(text).toContain("**5-hour:** 37% used");
+    expect(text).toContain("**7-day:** 64% used");
+    expect(text).not.toContain("Refresh failed");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(text).toContain("**Codex:** current");
+  });
+
+  it("shows an actionable auth reason instead of masking stale values as fresh", async () => {
+    const spawn = vi.fn();
+    const text = await buildUsageStatusMessageWithClaudeRefresh({
+      env: {},
+      nowMs: NOW,
+      readCache: cacheReader({ raw: CLAUDE_CACHE, mtimeMs: NOW - 60 * 60 * 1000 }),
+      spawn: spawn as unknown as typeof import("node:child_process").spawn,
+      refreshCodexQuota: () => codexOk(),
+      refreshClaudeUsageViaApi: async () =>
+        ({
+          status: "auth_missing",
+          reason: "Claude Code is not logged in (no OAuth credentials found)",
+        }) as ClaudeApiUsageRefreshResult,
+    });
+
+    expect(text).toContain("**Claude Code:** auth missing");
+    expect(text).toContain("not logged in");
+    expect(text).not.toContain("**Claude Code:** current");
+    expect(spawn).not.toHaveBeenCalled();
+    // Codex display preserved on the new async path.
+    expect(text).toContain("**Codex:** current");
   });
 });
 
