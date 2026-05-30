@@ -755,4 +755,111 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       "FULL_MULTIMESSAGE_FEEDBACK_SENTINEL_20260524_G9_G10_REPO_CHAT_GOAL_ANSWER_ADD_DETAILS",
     );
   });
+
+  it("buffers split Request changes (GOAL_EDIT) replies before acquiring the edit lock", async () => {
+    vi.useFakeTimers();
+    mockHandleGoalEdit.mockResolvedValue("Plan updated");
+    const run = makeRun({
+      runId: "edit-buffer-run",
+      state: "awaiting_approval",
+      telegramPlanMessage: { chatId: 42, messageId: 410 },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Please change step 1 and ",
+        message_id: 811,
+        reply_to_message: { message_id: 410 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    expect(mockHandleGoalEdit).not.toHaveBeenCalled();
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "SPLIT_EDIT_SENTINEL_combine_both_fragments_into_one_edit",
+        message_id: 812,
+        reply_to_message: { message_id: 410 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    // The edit lock must not be contended by the split fragment.
+    expect(
+      harness.bot.api.sendMessage.mock.calls.some((call) =>
+        String(call[1]).toLowerCase().includes("already being processed"),
+      ),
+    ).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 1050);
+
+    await vi.waitFor(() => {
+      expect(mockHandleGoalEdit).toHaveBeenCalledTimes(1);
+    });
+    // Lock acquired exactly once, after buffering, with the combined edit text.
+    expect(mockHandleGoalEdit.mock.calls[0]?.[1]).toBe(
+      "Please change step 1 and SPLIT_EDIT_SENTINEL_combine_both_fragments_into_one_edit",
+    );
+  });
+
+  it("appends a second Request changes fragment that lost its reply_to", async () => {
+    vi.useFakeTimers();
+    mockHandleGoalEdit.mockResolvedValue("Plan updated");
+    const run = makeRun({
+      runId: "edit-late-fragment-run",
+      state: "awaiting_approval",
+      telegramPlanMessage: { chatId: 42, messageId: 415 },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "First edit chunk ",
+        message_id: 820,
+        reply_to_message: { message_id: 415 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    // Second fragment arrives WITHOUT reply_to (Telegram dropped reply threading on the tail).
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "second chunk via global append",
+        message_id: 821,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockHandleGoalEdit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 1050);
+    await vi.waitFor(() => {
+      expect(mockHandleGoalEdit).toHaveBeenCalledTimes(1);
+    });
+    expect(mockHandleGoalEdit.mock.calls[0]?.[1]).toBe(
+      "First edit chunk second chunk via global append",
+    );
+  });
 });
