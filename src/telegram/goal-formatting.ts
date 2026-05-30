@@ -205,10 +205,18 @@ export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
 
 // Word boundaries + trailing lookaheads avoid camelCase false matches (e.g. workingDir, workingDirectory).
 const WORKING_DIR_INSTRUCTION_PATTERNS = [
+  // Explicit launch directive: "In working directory /path".
+  /\bin\s+(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+([^\n]+)/i,
   /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
   /set\s+(?:the\s+)?(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+to\s+([^\n]+)/i,
   /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
 ];
+
+// Assertion/preflight wording prefixes a path with a modifier word, e.g.
+// "confirm the working directory is exactly /path" or "pwd should be exactly /path".
+// Such text is a verification instruction, NOT a directive to change the working
+// directory, so a captured path beginning with one of these modifiers is ignored.
+const WORKING_DIR_ASSERTION_MODIFIER_PATTERN = /^(?:exactly|precisely|literally|really)\b\s*/i;
 const WORKING_DIR_INSTRUCTION_PREFIX_PATTERN =
   /^(?:(?:in|at)\s+)?(?:(?:a|an|the)\s+)?(?:new\s+)?(?:folder|directory|dir)\b(?:\s+(?:called|named))?(?:\s*[:=-])?\s+/i;
 
@@ -223,6 +231,8 @@ export function cleanWorkingDirInstructionPath(rawPath: string): string {
     .trim();
   value = value.replace(/[.,;:!?]+$/, "").trim();
   value = value.replace(WORKING_DIR_INSTRUCTION_PREFIX_PATTERN, "").trim();
+  // Drop leading assertion modifiers ("exactly /path" -> "/path") so they never leak into a path.
+  value = value.replace(WORKING_DIR_ASSERTION_MODIFIER_PATTERN, "").trim();
   if (/^~[^/\\]/.test(value)) {
     value = `~/${value.slice(1)}`;
   }
@@ -309,6 +319,8 @@ export function parseWorkingDirInstruction(
   for (const pattern of WORKING_DIR_INSTRUCTION_PATTERNS) {
     const match = pattern.exec(instructions);
     if (!match?.[1]) continue;
+    // Assertion/preflight wording (e.g. "...is exactly /path") is not a launch directive.
+    if (WORKING_DIR_ASSERTION_MODIFIER_PATTERN.test(match[1].trim())) continue;
     const requestedPath = cleanWorkingDirInstructionPath(match[1]);
     if (!requestedPath) continue;
     return {
