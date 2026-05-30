@@ -33,6 +33,8 @@ import {
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
+import { classifyProviderError, extractUsageLimitResetHint } from "./error-patterns.js";
+import { backendDisplayName } from "./usage-limit-message.js";
 import { runCliPlanRevision } from "./cli-planner.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
@@ -378,8 +380,101 @@ function describeCliFailure(result: RunCliProcessResult): string {
   return `exit=${result.exitCode ?? "unknown"}`;
 }
 
+/** True when the text contains a JSON object literal (e.g. a worker init/system
+ * message or a provider error blob). Such blobs must never reach the
+ * user-facing message verbatim. */
+function looksLikeJsonBlob(text: string): boolean {
+  return /\{\s*"[^"]+"\s*:/.test(text) || /^\s*[[{]/.test(text);
+}
+
+/**
+ * Format a reset-time hint in the gateway's local timezone when the hint
+ * contains a parseable absolute timestamp (epoch seconds/ms or ISO), e.g.
+ * "12:20 PM EDT". When the hint carries no parseable absolute time (e.g. a
+ * relative phrase like "resets in 2 hours"), the original phrase is returned
+ * unchanged. `timeZone` is exposed for deterministic tests; production defaults
+ * to the process (gateway) local timezone.
+ */
+export function formatReviewerResetTime(
+  raw: string | undefined,
+  timeZone?: string,
+): string | undefined {
+  const text = (raw ?? "").trim();
+  if (!text) return undefined;
+  let date: Date | undefined;
+  const epochMatch = /\b(\d{10,13})\b/.exec(text);
+  if (epochMatch) {
+    const digits = epochMatch[1]!;
+    const value = Number(digits);
+    if (Number.isFinite(value)) {
+      date = new Date(digits.length >= 13 ? value : value * 1000);
+    }
+  }
+  if (!date) {
+    const isoMatch =
+      /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:[.\d]*)?(?:Z|[+-]\d{2}:?\d{2})?/.exec(text);
+    if (isoMatch) {
+      const parsed = new Date(isoMatch[0]);
+      if (!Number.isNaN(parsed.getTime())) date = parsed;
+    }
+  }
+  if (!date || Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+    ...(timeZone ? { timeZone } : {}),
+  }).format(date);
+}
+
+/**
+ * Convert a raw reviewer-failure blob (CLI stderr/stdout, which may contain a
+ * worker init/system JSON line or a provider error JSON) into a concise,
+ * human-readable one-liner that NEVER includes raw JSON. Provider errors are
+ * classified via the shared error-patterns helpers (out-of-usage,
+ * rate-limited, auth-failed, unavailable) and a reset time is appended (local
+ * time when a parseable timestamp is present) when the provider reported one.
+ *
+ * Text that contains no JSON blob is returned (single-lined, truncated)
+ * unchanged so the downstream usage-limit classification/messaging in
+ * phase-fallback stays intact.
+ */
+export function summarizeReviewerFailureReason(
+  rawText: string | null | undefined,
+  options: { backend?: PlanAutocheckBackend; timeZone?: string } = {},
+): string {
+  const text = (rawText ?? "").trim();
+  if (!text) return "the reviewer produced no output";
+  // Clean text passes through untouched so phase-fallback's usage-limit
+  // classification (which inspects this text) is preserved exactly.
+  if (!looksLikeJsonBlob(text)) return truncateDetail(text);
+
+  const name = options.backend ? backendDisplayName(options.backend) : "the reviewer";
+  if (/"type"\s*:\s*"system"/i.test(text) || /"subtype"\s*:\s*"init"/i.test(text)) {
+    return `${name} returned a system/init message instead of a plan review (the backend is unavailable or not logged in).`;
+  }
+
+  const appendReset = (lead: string): string => {
+    const hint = extractUsageLimitResetHint(text);
+    if (!hint) return `${lead}.`;
+    const formatted = formatReviewerResetTime(hint, options.timeZone) ?? hint;
+    return `${lead} (resets ${formatted.replace(/^resets?\s+/i, "")}).`;
+  };
+
+  const kind = classifyProviderError({ text });
+  if (kind === "out_of_credits") return appendReset(`${name} is out of usage`);
+  if (kind === "rate_limit") return appendReset(`${name} is rate limited`);
+  if (kind === "auth")
+    return `${name} authentication failed (not logged in or invalid credentials).`;
+  if (kind === "network") return `${name} hit a network error reaching the provider.`;
+  return `${name} returned an unrecognized response instead of a plan review.`;
+}
+
 function parseFailureEditInstructions(backend: PlanAutocheckBackend, raw: string): string {
-  const excerpt = truncateDetail(raw);
+  // Summarize so a worker init/system JSON blob (or provider error JSON) is
+  // never echoed verbatim into the revision/edit-instructions stream.
+  const excerpt = truncateDetail(summarizeReviewerFailureReason(raw, { backend }));
   return [
     `Autocheck (${backend}) reviewer response could not be parsed as decision JSON.`,
     "Please tighten the plan with clearer concrete file/function references, dependency ordering, and verification steps.",
@@ -860,8 +955,14 @@ async function runReviewerAttempt(params: {
       artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
       extra: { exitCode: procResult.exitCode, signal: procResult.signal },
     });
+    // Summarize so a worker init/system JSON line or provider error blob is
+    // never carried verbatim in the error message (and thus never reaches the
+    // user-facing autocheck-skip note).
     throw new ReviewerCliError(
-      `Plan autocheck worker failed: ${describeCliFailure(procResult)}`,
+      `Plan autocheck worker failed: ${summarizeReviewerFailureReason(
+        describeCliFailure(procResult),
+        { backend: params.backend },
+      )}`,
       procResult,
     );
   }
@@ -992,6 +1093,7 @@ async function runFreshReviewerAttempt(params: {
   }
 
   let lastError: unknown;
+  const backendFailures: { backend: PlanAutocheckBackend; reason: string }[] = [];
   const outcome = await runWithBackendFallback<{
     result: ReviewerAttemptResult;
     usedBackend: PlanAutocheckBackend;
@@ -1023,6 +1125,11 @@ async function runFreshReviewerAttempt(params: {
         return { ok: true, value: { result, usedBackend: backend } };
       } catch (err) {
         lastError = err;
+        const rawErrorText = describeError(err);
+        backendFailures.push({
+          backend,
+          reason: summarizeReviewerFailureReason(rawErrorText, { backend }),
+        });
         appendAutocheckHistoryBestEffort({
           workingDir: params.workingDir,
           runId: params.runId,
@@ -1032,9 +1139,9 @@ async function runFreshReviewerAttempt(params: {
           round: params.round,
           attemptLabel: labelSuffix,
           errorClass: err instanceof Error ? err.name : "error",
-          outputSummary: describeError(err),
+          outputSummary: rawErrorText,
         });
-        return { ok: false, errorText: describeError(err) };
+        return { ok: false, errorText: rawErrorText };
       }
     },
   });
@@ -1045,10 +1152,21 @@ async function runFreshReviewerAttempt(params: {
     return usedBackend === primary ? result : { ...result, sessionId: undefined };
   }
 
-  // Preserve the original error type for non-usage failures; otherwise surface
-  // the consolidated usage-limit history.
-  if (outcome.usageLimitEvents.length > 0) {
+  // When EVERY attempted backend hit a usage/rate limit, surface the
+  // consolidated usage-limit history (already names each backend + reset time,
+  // never raw JSON).
+  if (outcome.usageLimitEvents.length > 0 && outcome.usageLimitEvents.length === backends.length) {
     throw new Error(outcome.message);
+  }
+  // Otherwise at least one attempt failed for a non-usage reason (worker
+  // init/system JSON, auth failure, crash, ...) — possibly mixed with usage
+  // limits. Build a clean, actionable message naming EACH failing backend and
+  // why, never echoing the raw worker/provider JSON.
+  if (backendFailures.length > 0) {
+    const reasons = backendFailures.map((failure) => failure.reason).join("; ");
+    throw new Error(
+      `Plan autocheck could not run: ${reasons}. No reviewer backend is currently available.`,
+    );
   }
   throw lastError ?? new Error("Plan autocheck reviewer attempt failed.");
 }
@@ -1070,7 +1188,9 @@ function recordAutocheckFailure(params: {
   roundDir: string;
   err: unknown;
 }): PlanAutocheckError {
-  const reason = redactSecretValues(describeError(params.err));
+  // Summarize before persisting/surfacing so no raw worker/provider JSON can
+  // reach the user-facing autocheck-skip note (clean text passes through).
+  const reason = redactSecretValues(summarizeReviewerFailureReason(describeError(params.err)));
   const failurePath = path.join(params.roundDir, "failure.txt");
   const metadataPath = path.join(params.roundDir, "metadata.json");
   writeTextArtifact(failurePath, `${reason}\n`);
