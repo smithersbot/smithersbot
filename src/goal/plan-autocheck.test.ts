@@ -39,6 +39,14 @@ const mockDetectBackendAvailability = vi.hoisted(() =>
 vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
   detectBackendAvailability: () => mockDetectBackendAvailability(),
+  isBackendAvailable: (
+    backend: string,
+    availability: { id: string; available: boolean; reason?: string }[],
+  ) => {
+    const entry = availability.find((item) => item.id === backend);
+    if (!entry) return { available: false, reason: "Unknown backend" };
+    return entry.available ? { available: true } : { available: false, reason: entry.reason };
+  },
 }));
 
 const mockBuildClaudeCodeSandboxLaunchConfig = vi.hoisted(() =>
@@ -684,7 +692,14 @@ describe("runPlanAutocheck", () => {
     expect(revisionCall.editInstructions).toContain("Raw response excerpt");
   });
 
-  it("throws a descriptive error when reviewer subprocess fails on a fresh run", async () => {
+  it("throws a descriptive error when the only available reviewer backend fails on a fresh run", async () => {
+    // Only Claude Code is available, so there is no alternate to fall back to:
+    // the single backend's failure surfaces directly.
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: true },
+    ]);
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({
         stdout: "",
@@ -703,6 +718,7 @@ describe("runPlanAutocheck", () => {
         commitRevision: vi.fn(),
       }),
     ).rejects.toThrow(/Plan autocheck worker failed: boom/);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
 
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
     const roundDir = path.join(tmpDir, "run-fresh-fail", "autocheck", "round-1");
@@ -922,6 +938,117 @@ describe("runPlanAutocheck", () => {
       }),
     ).rejects.toThrow(/Claude Code hit a usage limit[\s\S]*Codex hit a usage limit/);
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to Claude Code when the Codex reviewer fails on a noninteractive-stdin error", async () => {
+    // The "Reading additional input from stdin..." failure is NOT a usage limit;
+    // it must still trigger backend failover instead of a silent skip.
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "Reading additional input from stdin...",
+          exitCode: 1,
+          signal: null,
+        }),
+      )
+      .mockResolvedValueOnce(cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }));
+
+    const runId = "run-codex-stdin-fallback";
+    const result = await runPlanAutocheck({
+      plan: makePlan("Stdin fallback codex"),
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, runId),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+  });
+
+  it("falls back to Codex when the Claude reviewer fails on a noninteractive-stdin error", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "Reading additional input from stdin...",
+          exitCode: 1,
+          signal: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: `${JSON.stringify({ type: "result", result: JSON.stringify({ approved: true }) })}\n`,
+        }),
+      );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Stdin fallback claude"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-stdin-fallback"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+  });
+
+  it("uses Codex when the configured Claude backend is unavailable on PATH (no silent skip)", async () => {
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: `${JSON.stringify({ type: "result", result: JSON.stringify({ approved: true }) })}\n`,
+      }),
+    );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Configured backend unavailable"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-unavailable"),
+      commitRevision: vi.fn(),
+    });
+
+    // Autocheck is enabled and must not be silently skipped: the only available
+    // backend (Codex) is used even though the configured backend was Claude.
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+  });
+
+  it("throws a clear actionable error when no reviewer backend is available", async () => {
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    await expect(
+      runPlanAutocheck({
+        plan: makePlan("No backend available"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-no-backend"),
+        commitRevision: vi.fn(),
+      }),
+    ).rejects.toThrow(
+      /no review backend is available[\s\S]*codex unavailable[\s\S]*claude_code unavailable/,
+    );
+    expect(mockRunCliProcess).not.toHaveBeenCalled();
   });
 
   it("uses workingDir as reviewer cwd so the checker can inspect repo files", async () => {
@@ -1213,6 +1340,13 @@ describe("runPlanAutocheck", () => {
   it("degrades to approve with warning when resume and fresh fallback both fail", async () => {
     const runDir = runPath(tmpDir, "run-resume-fallback-double-fail");
 
+    // Only Claude Code is available, so the fresh fallback has no alternate
+    // backend to try: resume(claude) -> fresh(claude) both fail, then degrade.
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: true },
+    ]);
     mockRunCliProcess
       .mockResolvedValueOnce(
         cliResult({

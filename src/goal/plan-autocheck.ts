@@ -16,6 +16,7 @@ import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
+  isBackendAvailable,
 } from "./backend-availability.js";
 import { runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
@@ -936,10 +937,18 @@ function describeError(err: unknown): string {
 
 /**
  * Run a fresh (no-session) reviewer attempt for the configured backend, falling
- * back once to the other backend on a usage/rate limit when it is available on
- * PATH. The fallback always starts fresh; if it is used, the returned sessionId
- * is cleared so later rounds do not try to resume a session bound to a backend
- * the caller is not tracking. Each backend is tried at most once.
+ * back to the other backend whenever the configured one cannot produce a review
+ * — unavailable, out of quota, auth-failed, usage-limited, stdin-blocked, or any
+ * other pre-review failure. This mirrors the general backend-failover behavior
+ * used elsewhere (lessons/manual-tests) so autocheck is never silently skipped
+ * just because one backend failed: Codex falls back to Claude Code and Claude
+ * Code falls back to Codex whenever the alternate is available on PATH. The
+ * configured backend is ordered first; backends that are not available are
+ * dropped from the attempt list entirely. The fallback always starts fresh; if
+ * it is used, the returned sessionId is cleared so later rounds do not try to
+ * resume a session bound to a backend the caller is not tracking. Each backend
+ * is tried at most once. Only when every available backend fails does this throw
+ * a clear, actionable error.
  */
 async function runFreshReviewerAttempt(params: {
   backend: PlanAutocheckBackend;
@@ -957,9 +966,30 @@ async function runFreshReviewerAttempt(params: {
 }): Promise<ReviewerAttemptResult> {
   const primary = params.backend;
   const other: PlanAutocheckBackend = primary === "claude_code" ? "codex" : "claude_code";
-  const otherAvailable =
-    detectBackendAvailability().find((entry) => entry.id === other)?.available === true;
-  const backends: PlanAutocheckBackend[] = otherAvailable ? [primary, other] : [primary];
+  const availability = detectBackendAvailability();
+  const primaryStatus = isBackendAvailable(primary, availability);
+  const otherStatus = isBackendAvailable(other, availability);
+  // Order the configured backend first, then the alternate, including only
+  // backends that are actually available on PATH. This makes autocheck fall
+  // back between Codex and Claude Code (in either direction) instead of being
+  // silently skipped when the configured backend is unavailable or fails.
+  const backends: PlanAutocheckBackend[] = [
+    ...(primaryStatus.available ? [primary] : []),
+    ...(otherStatus.available ? [other] : []),
+  ];
+  if (backends.length === 0) {
+    const reasonOf = (
+      backend: PlanAutocheckBackend,
+      status: ReturnType<typeof isBackendAvailable>,
+    ): string =>
+      status.available
+        ? `${backend} available`
+        : `${backend} unavailable (${status.reason ?? "unknown"})`;
+    throw new Error(
+      "Plan autocheck cannot run: no review backend is available. " +
+        `${reasonOf(primary, primaryStatus)}; ${reasonOf(other, otherStatus)}.`,
+    );
+  }
 
   let lastError: unknown;
   const outcome = await runWithBackendFallback<{
@@ -967,6 +997,10 @@ async function runFreshReviewerAttempt(params: {
     usedBackend: PlanAutocheckBackend;
   }>({
     backends,
+    // Fall back to the alternate backend on ANY pre-review failure (not just
+    // usage/rate limits), so a noninteractive-stdin crash, auth failure, or
+    // process error triggers failover instead of a silent autocheck skip.
+    fallbackOnAnyError: true,
     onProgress: params.onProgress,
     attempt: async (backend) => {
       const labelSuffix =
