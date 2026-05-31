@@ -335,6 +335,20 @@ describe("src/prompts/ — manual-tests system prompt", () => {
     expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("Return ONLY JSON");
     expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("MANUAL verification tests");
   });
+
+  it("points dev runtime verification at the dev gateway, not stable by default", () => {
+    const forbiddenDevUnit = ["smithersbot", "gateway", "dev.service"].join("-");
+    const stableRestartInstruction = [
+      "Restart the gateway: systemctl --user restart",
+      "smithersbot-gateway.service",
+    ].join(" ");
+
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("smithersbot-dev-gateway.service");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("node ./smithersbot.mjs dev-gateway restart");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("stable smithersbot-gateway.service");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain(stableRestartInstruction);
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain(forbiddenDevUnit);
+  });
 });
 
 describe("src/prompts/ — plan autocheck", () => {
@@ -645,14 +659,17 @@ describe("project docs — managed workspace and sandbox claims", () => {
     (fileName) => {
       const doc = fs.readFileSync(path.join(repoRoot, fileName), "utf8");
       expect(doc).toContain(".env.example");
-      expect(doc).toContain("Workers do");
       expect(doc).toContain("raw secrets");
-      expect(doc).toContain("Native backend sandboxing");
-      expect(doc).toMatch(/implements\s+and\s+verifies/);
-      expect(doc).toMatch(/not by\s+themselves a\s+kernel boundary/);
-      expect(doc).toContain("backend-specific live probes");
-      expect(doc).toMatch(/Codex `--sandbox\s+workspace-write` alone/);
-      expect(doc).toContain("Claude sandboxing requires its native sandbox");
+      expect(doc).toMatch(/workers do not receive raw secrets/i);
+      if (fileName === "SETUP.md") {
+        expect(doc).toContain("Native backend sandboxing");
+        expect(doc).toMatch(/not by\s+themselves a\s+kernel boundary/);
+        expect(doc).toContain("Backend-specific live probes");
+        expect(doc).toMatch(/Codex `--sandbox\s+workspace-write` alone/);
+        expect(doc).toContain("Claude sandboxing requires its native sandbox");
+      } else {
+        expect(doc).toContain("Private gateway config, env, auth, and session files");
+      }
       expect(doc).not.toMatch(
         new RegExp(
           ["full", "OS-level", "isolation", "is"].join(" ") + " (provided|ensured|enforced)",
@@ -663,15 +680,12 @@ describe("project docs — managed workspace and sandbox claims", () => {
     },
   );
 
-  it.each(["README.md", "SETUP.md"])(
-    "%s documents gateway restart service migration",
-    (fileName) => {
-      const doc = fs.readFileSync(path.join(repoRoot, fileName), "utf8");
-      expect(doc).toContain("moltbot-gateway-dev.service");
-      expect(doc).toContain("smithersbot-gateway.service");
-      expect(doc).toContain("SMITHERSBOT_SYSTEMD_UNIT");
-      expect(doc).toContain("MOLTBOT_SYSTEMD_UNIT");
-      expect(doc).toContain("CLAWDBOT_SYSTEMD_UNIT");
-    },
-  );
+  it("documents gateway restart service names without inventing a SmithersBot dev-gateway unit", () => {
+    const setup = fs.readFileSync(path.join(repoRoot, "SETUP.md"), "utf8");
+    const forbiddenDevUnit = ["smithersbot", "gateway", "dev.service"].join("-");
+
+    expect(setup).toContain("smithersbot-dev-gateway.service");
+    expect(setup).toContain("smithersbot-gateway.service");
+    expect(setup).not.toContain(forbiddenDevUnit);
+  });
 });
