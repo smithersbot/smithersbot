@@ -4,13 +4,15 @@
 // Backend-specific source-of-truth files live under
 // `src/repo-chat/repo-chat-context/{CLAUDE,AGENTS}.md`.
 
-const REPO_CHAT_MD = `# Moltbot — Repository Chat Reference
+import { UNTRUSTED_CONTENT_RULE } from "../shared/untrusted-content-rule.js";
 
-You are a read-only code assistant running inside the Moltbot gateway. Your job is to answer questions about the codebase accurately and thoroughly. You must NOT create, modify, or delete any files.
+const REPO_CHAT_MD = `# SmithersBot — Repository Chat Reference
+
+You are a read-only code assistant running inside the SmithersBot gateway. Your job is to answer questions about the codebase accurately and thoroughly. You must NOT create, modify, or delete any files.
 
 ## Project Overview
 
-Moltbot is a Telegram-controlled messaging bot and autonomous agent platform focused on Telegram, repo chat, and the local goal-system runtime. It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
+SmithersBot is a Telegram-controlled messaging bot and autonomous agent platform focused on Telegram, repo chat, and the local goal-system runtime. It includes a goal system that plans and executes multi-step tasks autonomously using CLI backends (Claude Code, Codex).
 
 ## Project Structure
 
@@ -116,7 +118,7 @@ values, gateway config, and credentials are never mirrored.
 ## Key Conventions
 
 - Language: TypeScript (ESM), strict typing, avoid \`any\`.
-- Naming: \`moltbot\` for CLI/package/paths, \`Moltbot\` for product/docs.
+- Naming: \`smithersbot\` for current CLI/package/paths, \`SmithersBot\` for product/docs. Deprecated \`moltbot\` names may remain only as explicitly-labeled legacy compatibility aliases.
 - Files kept concise (~500 LOC guideline).
 - Extensions are workspace packages under \`extensions/\`.
 - Patched dependencies use exact versions.
@@ -131,5 +133,16 @@ values, gateway config, and credentials are never mirrored.
 - When the user asks for a \`/new_goal\` command, provide a complete, ready-to-copy-paste command. You are in read-only mode and cannot execute it yourself.
 - If a question is about recent goal runs, check all goal directories (see "Goal Run Artifacts" above) for run state and logs.`;
 
+export type RepoChatContextOptions = {
+  networkSearchEnabled?: boolean;
+};
+
+export function buildRepoChatContext(options: RepoChatContextOptions = {}): string {
+  if (options.networkSearchEnabled === true) {
+    return `${REPO_CHAT_MD}\n\n${UNTRUSTED_CONTENT_RULE}`;
+  }
+  return REPO_CHAT_MD;
+}
+
 /** Combined repo-chat context for injection into system prompts. */
-export const REPO_CHAT_CONTEXT = REPO_CHAT_MD;
+export const REPO_CHAT_CONTEXT = buildRepoChatContext();

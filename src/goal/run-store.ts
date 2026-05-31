@@ -81,6 +81,9 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
   if (!data.answers) {
     data.answers = {};
   }
+  if (!Array.isArray(data.resumeNotes)) {
+    data.resumeNotes = [];
+  }
   // Default plan revision fields for runs that have a plan
   if (data.planRevision == null && data.plan) {
     data.planRevision = 1;
@@ -328,6 +331,8 @@ type CarryForwardFieldKey =
   | "autocheckMaxRounds"
   | "autocheckBackend"
   | "autocheckSessionId"
+  | "autocheckSkipReason"
+  | "autocheckSkipMetadataPath"
   | "completionSummary"
   | "deliveryFailed"
   | "deliveryError"
@@ -371,6 +376,8 @@ const carryForwardFields: readonly CarryForwardField[] = [
   { key: "autocheckMaxRounds", mode: "nullish" },
   { key: "autocheckBackend", mode: "falsy" },
   { key: "autocheckSessionId", mode: "falsy" },
+  { key: "autocheckSkipReason", mode: "falsy" },
+  { key: "autocheckSkipMetadataPath", mode: "falsy" },
   { key: "completionSummary", mode: "falsy" },
   { key: "deliveryFailed", mode: "falsy" },
   { key: "deliveryError", mode: "falsy" },
@@ -429,6 +436,8 @@ export function sessionToSerialized(params: {
   autocheckMaxRounds?: SerializedRun["autocheckMaxRounds"];
   autocheckBackend?: SerializedRun["autocheckBackend"];
   autocheckSessionId?: SerializedRun["autocheckSessionId"];
+  autocheckSkipReason?: SerializedRun["autocheckSkipReason"];
+  autocheckSkipMetadataPath?: SerializedRun["autocheckSkipMetadataPath"];
   manualTests?: SerializedRun["manualTests"];
   manualTestsError?: SerializedRun["manualTestsError"];
   telegramDoneMessage?: SerializedRun["telegramDoneMessage"];
@@ -446,6 +455,7 @@ export function sessionToSerialized(params: {
     stepResults: Object.fromEntries(session.stepResults),
     blocked: session.blocked,
     answers: session.answers,
+    resumeNotes: session.resumeNotes ?? params.previousRun?.resumeNotes ?? [],
     lastError: session.lastError,
     workingDir,
     model,
@@ -469,6 +479,10 @@ export function sessionToSerialized(params: {
     ...(params.autocheckMaxRounds != null ? { autocheckMaxRounds: params.autocheckMaxRounds } : {}),
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
+    ...(params.autocheckSkipReason ? { autocheckSkipReason: params.autocheckSkipReason } : {}),
+    ...(params.autocheckSkipMetadataPath
+      ? { autocheckSkipMetadataPath: params.autocheckSkipMetadataPath }
+      : {}),
     ...(manualTests != null ? { manualTests } : {}),
     ...(manualTestsError ? { manualTestsError } : {}),
     ...(session.completionSummary ? { completionSummary: session.completionSummary } : {}),
@@ -541,6 +555,7 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     stepResults,
     blocked: run.blocked ?? null,
     answers: run.answers ?? {},
+    resumeNotes: run.resumeNotes ?? [],
     lastError: run.lastError,
     taskCheckpoints: run.taskCheckpoints ?? {},
     buildGateConfig: run.buildGateConfig,

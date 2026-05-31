@@ -34,6 +34,7 @@ import {
   parsePlanResultFromText,
   type PlanResult,
 } from "./planner.js";
+import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import { resolveRunDir } from "./run-store.js";
 import {
   classifyScoutError,
@@ -96,7 +97,9 @@ function buildPlanOnlyPrompt(params: {
   cwd: string;
   enabledWorkers: CliWorkerId[];
 }): string {
-  return `${buildPlanSystemPrompt(params.enabledWorkers)}
+  return `${buildPlanSystemPrompt(params.enabledWorkers, {
+    devGatewayVerification: isSmithersbotDevWorkspace(params.cwd),
+  })}
 
 Goal: ${params.goalText}
 Current workspace path: ${params.cwd}`;
@@ -499,7 +502,7 @@ function reconcileAgentVisibleScoutArtifacts(params: {
   copyScoutArtifacts({ ...params, label: "agent-visible" });
 }
 
-function buildPlanningPrompt(params: {
+export function buildPlanningPrompt(params: {
   runId: string;
   goalText: string;
   cwd: string;
@@ -510,6 +513,7 @@ function buildPlanningPrompt(params: {
 }): string {
   const { runId, goalText, cwd, scoutDir, includeScoutArtifacts, enabledWorkers, scoutData } =
     params;
+  const devGatewayVerification = isSmithersbotDevWorkspace(cwd);
   if (!includeScoutArtifacts) {
     return buildPlanOnlyPrompt({
       goalText,
@@ -521,7 +525,7 @@ function buildPlanningPrompt(params: {
   if (scoutData) {
     const agentVisibleScoutDir = buildAgentVisibleScoutDir(runId, cwd);
     return [
-      buildPlanSystemPrompt(enabledWorkers),
+      buildPlanSystemPrompt(enabledWorkers, { devGatewayVerification }),
       "",
       "## Replan With Cached Scout Context",
       "",
@@ -554,7 +558,7 @@ function buildPlanningPrompt(params: {
   });
 
   return [
-    buildPlanSystemPrompt(enabledWorkers),
+    buildPlanSystemPrompt(enabledWorkers, { devGatewayVerification }),
     "",
     "## Conceptual Planning Phases",
     "",
@@ -797,7 +801,9 @@ function buildPlanRevisionPrompt(params: {
       : [];
 
   return [
-    buildPlanSystemPrompt(enabledWorkers),
+    buildPlanSystemPrompt(enabledWorkers, {
+      devGatewayVerification: isSmithersbotDevWorkspace(cwd),
+    }),
     "",
     `Goal: ${goalText}`,
     `Current workspace path: ${cwd}`,
@@ -1428,6 +1434,9 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   if (!procResult) {
     throw new Error("Planning process failed before producing output.");
   }
+  // Capture the narrowed (non-undefined) process result so closures below can
+  // reference it without TypeScript widening it back to `... | undefined`.
+  const planningProc = procResult;
   const degradedMetadata =
     plannerDegradedReason && plannerBackendUsed
       ? {
@@ -1459,6 +1468,63 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
     planParseError = err;
   }
   const hasUsableExecutionPlan = parsedPlan !== undefined && !("blocked" in parsedPlan);
+
+  // Emit a blocked/needs-clarification planning result using the existing
+  // needs-clarification transport. Reads scoutStatus/scoutSkipReason/scoutData at
+  // call time so it works both before and after scout validation has run.
+  const emitBlockedPlanningResult = (
+    blockedPlan: { blocked: true; question: string },
+    backend: PlannerBackendId,
+  ): CliPlanningResult => {
+    const resultFile = fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
+      ? EXECUTION_PLAN_FILE
+      : PLANNER_STDOUT_FILE;
+    writeAttemptBundle(scoutDir, {
+      attemptNumber: finalAttemptNumber,
+      backend,
+      outcome: "blocked",
+      errorClassification: "needs_clarification",
+      resultFile,
+      logExcerpt: tailText(planningProc.stdout, LOG_EXCERPT_CHARS),
+      durationMs: planningProc.durationMs,
+      tokenUsage: parseBackendUsage(planningProc.stdout),
+    });
+    appendPlannerHistoryBestEffort({
+      workingDir: plannerCwd,
+      runId,
+      phase: "planner",
+      backend,
+      event: "result",
+      status: "blocked",
+      attemptNumber: finalAttemptNumber,
+      tokenUsage: parseBackendUsage(planningProc.stdout),
+      outputSummary: tailText(blockedPlan.question, LOG_EXCERPT_CHARS),
+      artifactPaths: [resultFile],
+    });
+    return {
+      status: "blocked",
+      question: blockedPlan.question,
+      scoutStatus,
+      ...(scoutSkipReason ? { scoutSkipReason } : {}),
+      ...(scoutData ? { scoutData } : {}),
+      ...degradedMetadata,
+    };
+  };
+
+  // An intentional blocked/needs-clarification response is authoritative and must be
+  // honored BEFORE scout artifact validation. Otherwise validateScoutOutput would fail
+  // with "plan_draft.md not found" for a deliberately plan-less run (for example an
+  // invalid observed-runtime workingDir rejection), masking the clean clarification
+  // message behind a generic scout-artifact error and producing no plan/branch/worker.
+  // When the planner additionally wrote a scout clarification artifact, defer to the
+  // scout needs_clarification transport below so scoutStatus reflects it.
+  if (
+    parsedPlan &&
+    "blocked" in parsedPlan &&
+    !fs.existsSync(path.join(scoutDir, SCOUT_NEEDS_CLARIFICATION_FILE))
+  ) {
+    return emitBlockedPlanningResult(parsedPlan, plannerBackendUsed ?? defaultPlannerBackend);
+  }
 
   if (cachedScoutData) {
     // Cached replans intentionally reuse scout data only after an earlier strict
@@ -1634,42 +1700,10 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
   }
 
   if ("blocked" in parsedPlan) {
-    writeAttemptBundle(scoutDir, {
-      attemptNumber: finalAttemptNumber,
-      backend: plannerBackendUsed ?? defaultPlannerBackend,
-      outcome: "blocked",
-      errorClassification: "needs_clarification",
-      resultFile: fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
-        ? EXECUTION_PLAN_FILE
-        : PLANNER_STDOUT_FILE,
-      logExcerpt: tailText(procResult.stdout, LOG_EXCERPT_CHARS),
-      durationMs: procResult.durationMs,
-      tokenUsage: parseBackendUsage(procResult.stdout),
-    });
-    appendPlannerHistoryBestEffort({
-      workingDir: plannerCwd,
-      runId,
-      phase: "planner",
-      backend: plannerBackendUsed ?? defaultPlannerBackend,
-      event: "result",
-      status: "blocked",
-      attemptNumber: finalAttemptNumber,
-      tokenUsage: parseBackendUsage(procResult.stdout),
-      outputSummary: tailText(parsedPlan.question, LOG_EXCERPT_CHARS),
-      artifactPaths: [
-        fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))
-          ? EXECUTION_PLAN_FILE
-          : PLANNER_STDOUT_FILE,
-      ],
-    });
-    return {
-      status: "blocked",
-      question: parsedPlan.question,
-      scoutStatus,
-      ...(scoutSkipReason ? { scoutSkipReason } : {}),
-      ...(scoutData ? { scoutData } : {}),
-      ...degradedMetadata,
-    };
+    // Reachable when the planner wrote a scout clarification artifact (so the early
+    // honor above deferred here) or a cached scout success accompanied a blocked
+    // replan. The stdout-only blocked case is already handled before validation.
+    return emitBlockedPlanningResult(parsedPlan, plannerBackendUsed ?? defaultPlannerBackend);
   }
 
   const effectivePlan = plannerDegradedReason

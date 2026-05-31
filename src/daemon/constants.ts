@@ -1,3 +1,8 @@
+import {
+  type GatewayInstanceName,
+  resolveGatewayInstanceIdentity,
+} from "../config/gateway-instance.js";
+
 // Default service labels (for backward compatibility and when no profile specified)
 export const GATEWAY_LAUNCH_AGENT_LABEL = "bot.molt.gateway";
 export const GATEWAY_SYSTEMD_SERVICE_NAME = "moltbot-gateway";
@@ -48,6 +53,17 @@ export function resolveGatewaySystemdServiceName(profile?: string): string {
   const suffix = resolveGatewayProfileSuffix(profile);
   if (!suffix) return GATEWAY_SYSTEMD_SERVICE_NAME;
   return `moltbot-gateway${suffix}`;
+}
+
+/**
+ * Canonical per-instance gateway systemd unit names (stable first, then dev),
+ * derived from the single-source-of-truth instance resolver. Used to recognize
+ * the dev unit (smithersbot-dev-gateway.service) during active-unit probing
+ * without inferring the instance from the checkout path.
+ */
+export function resolveGatewayInstanceSystemdUnits(): string[] {
+  const names: GatewayInstanceName[] = ["stable", "dev"];
+  return names.map((name) => resolveGatewayInstanceIdentity(name).serviceUnit);
 }
 
 export function resolveGatewayWindowsTaskName(profile?: string): string {

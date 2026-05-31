@@ -1,4 +1,4 @@
-import os from "node:os";
+import { safeNetworkInterfaces } from "./net-interfaces.js";
 
 export type TailnetAddresses = {
   ipv4: string[];
@@ -28,7 +28,7 @@ export function listTailnetAddresses(): TailnetAddresses {
   const ipv4: string[] = [];
   const ipv6: string[] = [];
 
-  const ifaces = os.networkInterfaces();
+  const ifaces = safeNetworkInterfaces();
   for (const entries of Object.values(ifaces)) {
     if (!entries) continue;
     for (const e of entries) {

@@ -5,25 +5,147 @@ import {
   isUsageLimitClassReason,
   type UsageLimitBackend,
 } from "../goal/error-patterns.js";
-import type { PlanStep } from "../goal/types.js";
+import { classifyRunCategory, type RunCategory } from "../goal/run-category.js";
+import type { BlockedDetail, PlanStep } from "../goal/types.js";
 import { describeUsageLimitEvent, type UsageLimitEvent } from "../goal/usage-limit-message.js";
 import { buildInlineKeyboard } from "./send.js";
 
-export function buildGoalBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [
-      { text: "▶️ Resume Goal", callback_data: `gResume:${runIdPrefix}` },
-      { text: "⏹️ Stop Goal", callback_data: `gStop:${runIdPrefix}` },
-    ],
-  ]);
+export type BlockedSurfaceLevel = "task" | "goal";
+
+/**
+ * Build the inline keyboard for a blocked/interrupted surface, driven by the
+ * derived {@link RunCategory} so task-level and goal-level surfaces stay
+ * consistent. Callback prefixes are reused as-is (gAD/gResume/gStop):
+ *
+ *  - blocked  Add Details (answer). Goal-level keeps Resume next to Stop
+ *             (historical behavior); task-level offers Stop only.
+ *  - paused   Resume is the action for both levels; no Add Details (the user
+ *             does not need to provide anything, just resume).
+ *  - failed   User may fix/accept the issue and retry with Resume/Add Details.
+ *  - retrying Auto-retrying; no user-input prompt, only Stop.
+ */
+function buildBlockedKeyboard(
+  runIdPrefix: string,
+  level: BlockedSurfaceLevel,
+  category: RunCategory,
+) {
+  const addDetails = { text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` };
+  const resume = { text: "▶️ Resume Goal", callback_data: `gResume:${runIdPrefix}` };
+  const stop = { text: "⏹️ Stop Goal", callback_data: `gStop:${runIdPrefix}` };
+
+  switch (category) {
+    case "blocked":
+      return buildInlineKeyboard(
+        level === "goal" ? [[addDetails], [resume, stop]] : [[addDetails], [stop]],
+      );
+    case "paused":
+      return buildInlineKeyboard([[resume, stop]]);
+    case "failed":
+      return buildInlineKeyboard([[addDetails], [resume, stop]]);
+    case "retrying":
+      return buildInlineKeyboard([[stop]]);
+  }
 }
 
-export function buildTaskBlockedInlineKeyboard(runIdPrefix: string) {
-  return buildInlineKeyboard([
-    [{ text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` }],
-    [{ text: "⏹️ Stop Goal", callback_data: `gStop:${runIdPrefix}` }],
-  ]);
+export function buildGoalBlockedInlineKeyboard(
+  runIdPrefix: string,
+  category: RunCategory = "blocked",
+) {
+  return buildBlockedKeyboard(runIdPrefix, "goal", category);
+}
+
+export function buildTaskBlockedInlineKeyboard(
+  runIdPrefix: string,
+  category: RunCategory = "blocked",
+) {
+  return buildBlockedKeyboard(runIdPrefix, "task", category);
+}
+
+/**
+ * Derive the user-facing {@link RunCategory} for a blocked notification.
+ *
+ * The {@link BlockedDetail.requiredInputKey} is authoritative for whether the
+ * user must answer: goal-formatting persists a `task:<id>:input` / planning key
+ * for genuine user-input blocks and `resume_execution` for technical/retryable
+ * ones. A user-input key always reads as "blocked" (even when the underlying
+ * step is already "done", e.g. a final build-gate escalation). For the
+ * technical/resume bucket the blocked step's reason splits failed vs paused.
+ */
+export function classifyBlockedNotification(
+  steps: PlanStep[],
+  blockedDetail: Pick<BlockedDetail, "stepId" | "requiredInputKey">,
+): RunCategory {
+  if (blockedDetail.requiredInputKey !== "resume_execution") return "blocked";
+
+  const reasons: NonNullable<PlanStep["blockedReason"]>[] = [];
+  if (blockedDetail.stepId) {
+    const named = steps.find((s) => s.id === blockedDetail.stepId);
+    if (named?.blockedReason) reasons.push(named.blockedReason);
+  }
+  for (const step of steps) {
+    if (step.status === "blocked" && step.blockedReason) reasons.push(step.blockedReason);
+  }
+  const categories = reasons.map((reason) => classifyRunCategory({ blockedReason: reason }));
+  if (categories.includes("failed")) return "failed";
+  // A retryable block that has been persisted (auto-retries exhausted) or any
+  // unidentified resume_execution block reads as paused — the action is Resume.
+  return "paused";
+}
+
+export interface BlockedSurfaceCopy {
+  /** Bold title line for the surface (markdown). */
+  title: string;
+  /** One-line hint making the next user action obvious. */
+  actionHint: string;
+}
+
+/**
+ * Title + action-hint copy for a blocked/interrupted surface, selected by the
+ * derived category so the next action is obvious and consistent across the
+ * task-level and goal-level surfaces.
+ */
+export function buildBlockedSurfaceCopy(params: {
+  level: BlockedSurfaceLevel;
+  category: RunCategory;
+  runIdPrefix: string;
+  stepId?: string;
+}): BlockedSurfaceCopy {
+  const { level, category, runIdPrefix, stepId } = params;
+  const subject = level === "task" ? `Step ${stepId}` : "Goal";
+  switch (category) {
+    case "blocked":
+      return {
+        title:
+          level === "task"
+            ? `**TASK BLOCKED** (${runIdPrefix}): ${subject} needs input`
+            : `**GOAL BLOCKED** (${runIdPrefix}): no runnable steps - waiting for answers.`,
+        actionHint: `Reply to this message, tap ✏️ Add Details, or use /goal_answer ${runIdPrefix} <answer>.`,
+      };
+    case "paused":
+      return {
+        title:
+          level === "task"
+            ? `**TASK PAUSED** (${runIdPrefix}): ${subject} - resume needed.`
+            : `**GOAL PAUSED** (${runIdPrefix}): worker interrupted - resume needed.`,
+        actionHint: `Tap ▶️ Resume Goal or use /goal_resume ${runIdPrefix} when you're ready. No details needed.`,
+      };
+    case "failed":
+      return {
+        title:
+          level === "task"
+            ? `**TASK FAILED** (${runIdPrefix}): ${subject} hit a non-retryable error.`
+            : `**GOAL FAILED** (${runIdPrefix}): a non-retryable error needs fixing.`,
+        actionHint: `Fix or accept the underlying issue, then tap ▶️ Resume Goal, tap ✏️ Add Details, or use /goal_resume ${runIdPrefix}.`,
+      };
+    case "retrying":
+      return {
+        title:
+          level === "task"
+            ? `**TASK RETRYING** (${runIdPrefix}): ${subject} - temporary backend issue, retrying automatically.`
+            : `**GOAL RETRYING** (${runIdPrefix}): temporary backend issue, retrying automatically.`,
+        actionHint: `No action needed - SmithersBot is retrying with backoff.`,
+      };
+  }
 }
 
 export function buildBlockedCaption(steps: PlanStep[]): string {
@@ -100,6 +222,10 @@ export function describeBlockedStep(step: PlanStep): string {
       return "worker hit a network error; resume needed";
     case "auth":
       return "worker authentication failed";
+    case "capability_blocked":
+      return message || "no backend could provide a required capability (e.g. network)";
+    case "sandbox_blocked":
+      return message || "sandbox restriction blocked the worker (network/interface isolation)";
     case "task_failed":
       return message || "worker failed";
     case "error":

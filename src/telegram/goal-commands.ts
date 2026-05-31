@@ -10,6 +10,7 @@ import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
 import { goalDetailCommand } from "../commands/goal-detail.js";
+import { applyGoalResumeNoteById } from "../commands/goal-resume-note.js";
 import { goalResumeCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
 import { loadConfig, type MoltbotConfig } from "../config/config.js";
@@ -39,8 +40,9 @@ import {
 } from "../goal/feedback.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { generateManualTests, isNoBackendManualTestsError } from "../goal/manual-tests.js";
-import { runPlanAutocheck } from "../goal/plan-autocheck.js";
+import { PlanAutocheckError, runPlanAutocheck } from "../goal/plan-autocheck.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import {
   acquireGoalOpLock,
@@ -76,8 +78,8 @@ import {
   parseWorkingDirInstruction,
   PLANNING_PREFACE,
   RESUME_PREFACE,
+  resolveActiveStepId,
   resolveGoalOperatorHonorific,
-  resolveBlockedRequiredInputKey,
   serializedStepResultsToMap,
   START_PREFACE,
 } from "./goal-formatting.js";
@@ -93,6 +95,7 @@ import {
 } from "./goal-sending.js";
 import { findRunByPlanMessageIdIndexed } from "./goal-message-index.js";
 import { shortenHomePath } from "../utils.js";
+import { redactSecretValues } from "../security/secret-paths.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 import {
   buildCommandFragmentKey,
@@ -213,6 +216,8 @@ export type GoalPlanResult = {
   autocheckExhausted?: boolean;
   /** Whether autocheck failed and was skipped. */
   autocheckSkipped?: boolean;
+  /** Redacted reason shown when autocheck was skipped. */
+  autocheckSkipReason?: string;
 };
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
@@ -282,6 +287,37 @@ type PlanAutocheckDisplayInfo = {
   exhausted: boolean;
 };
 
+type AutocheckSkipMetadata = {
+  reason: string;
+  metadataPath?: string;
+};
+
+const AUTOCHECK_SKIP_REASON_MAX_CHARS = 240;
+
+function formatAutocheckSkipReason(err: unknown): AutocheckSkipMetadata {
+  const metadata =
+    err instanceof PlanAutocheckError
+      ? err.metadata
+      : (err as { metadata?: { reason?: unknown; agentHistoryMetadataPath?: unknown } } | null)
+          ?.metadata;
+  const rawReason =
+    typeof metadata?.reason === "string"
+      ? metadata.reason
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  const redactedReason = redactSecretValues(rawReason).replace(/\s+/g, " ").trim();
+  const reason =
+    redactedReason.length > AUTOCHECK_SKIP_REASON_MAX_CHARS
+      ? `${redactedReason.slice(0, AUTOCHECK_SKIP_REASON_MAX_CHARS)}...`
+      : redactedReason || "unknown error";
+  const metadataPath =
+    typeof metadata?.agentHistoryMetadataPath === "string"
+      ? metadata.agentHistoryMetadataPath
+      : undefined;
+  return { reason, ...(metadataPath ? { metadataPath } : {}) };
+}
+
 function commitPlanRevision(params: {
   run: SerializedRun;
   revisedPlan: Plan;
@@ -341,6 +377,9 @@ async function runGoalPlanAutocheck(params: {
     ...(params.config?.goal?.enabledWorkers
       ? { enabledWorkers: params.config.goal.enabledWorkers }
       : {}),
+    ...(params.config?.goal?.readOnlyRoots
+      ? { readOnlyRoots: params.config.goal.readOnlyRoots }
+      : {}),
     runDir: path.join(resolveGoalsDir(), params.runId),
     existingSessionId: params.existingSessionId,
     existingBackend: params.existingBackend,
@@ -357,6 +396,10 @@ async function runGoalPlanAutocheck(params: {
         previousPlan,
       });
       if (latestRun.workingDir !== workingDirBeforeRevision) {
+        assertGoalWorkerWorkspace({
+          workingDir: latestRun.workingDir,
+          config: params.config?.goal,
+        });
         ensureWorkingDir(latestRun.workingDir);
       }
       saveRun(latestRun);
@@ -369,6 +412,8 @@ async function runGoalPlanAutocheck(params: {
   nextRun.autocheckMaxRounds = autocheckResult.autocheckMaxRounds;
   nextRun.autocheckBackend = autocheckResult.backend;
   nextRun.autocheckSessionId = autocheckResult.sessionId;
+  delete nextRun.autocheckSkipReason;
+  delete nextRun.autocheckSkipMetadataPath;
   nextRun.updatedAt = new Date().toISOString();
   saveRun(nextRun);
 
@@ -603,6 +648,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     let run = latestRun;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     let autocheckSkipped = false;
+    let autocheckSkipReason: string | undefined;
     if (run?.plan) {
       try {
         const autocheckResult = await runGoalPlanAutocheck({
@@ -624,6 +670,13 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
         autocheckSkipped = true;
         // Re-load the run in case autocheck partially modified it
         run = loadRun(runId) ?? run;
+        const skip = formatAutocheckSkipReason(autocheckErr);
+        autocheckSkipReason = skip.reason;
+        run.autocheckSkipReason = skip.reason;
+        if (skip.metadataPath) run.autocheckSkipMetadataPath = skip.metadataPath;
+        else delete run.autocheckSkipMetadataPath;
+        run.updatedAt = new Date().toISOString();
+        saveRun(run);
       }
     }
     if (run?.scoutStatus === "skipped") {
@@ -646,6 +699,7 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
       autocheckSkipped: autocheckSkipped || undefined,
+      autocheckSkipReason,
     };
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
@@ -894,139 +948,12 @@ export async function handleGoalAnswer(
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
-  // "executing" state means process crashed mid-execution - resume directly without needing an answer
-  if (run.state === "executing") {
-    const prefix = resolvedId.slice(0, 8);
-    const cap = createCaptureRuntime();
-    const trackedStatus = trackBlockedStatusChange(onStatusChange);
-    try {
-      const outcome = await goalResumeCommand(
-        resolvedId,
-        {
-          yes: true,
-          quiet: true,
-          config,
-          onStatusChange: trackedStatus.onStatusChange,
-        },
-        cap.runtime,
-      );
-
-      const errors = cap.getErrors();
-      if (errors) return errors;
-
-      if (outcome?.status === "blocked") {
-        if (trackedStatus.didSendFullyBlocked()) return undefined;
-        return `Run blocked: ${outcome.question}`;
-      }
-
-      // onStatusChange already sent notifications for done/step-level events
-      if (trackedStatus.onStatusChange) return undefined;
-
-      return `Resuming interrupted run: ${prefix}...`;
-    } catch (err) {
-      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-        return cap.getErrors() || "Resume command failed.";
-      }
-      const backendHint = resolveBackendHint(resolvedId);
-      return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
-    }
-  }
-
-  if (run.state !== "blocked") {
-    const normalizedValue = value.trim().toLowerCase();
-    // Defensive fallback: some Telegram resume flows can end up on /goal_answer.
-    // If the user sent "resume", treat it as an explicit resume request.
-    if (
-      normalizedValue === "resume" &&
-      (run.state === "awaiting_approval" || run.state === "cancelled")
-    ) {
-      return handleGoalApprove(resolvedId, onStatusChange, config);
-    }
-    const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
-    return `Run is not awaiting input (state: ${run.state}).${suffix}`;
-  }
-  if (!run.blocked) {
-    return `Run is in "${run.state}" but has no blocked details.`;
-  }
-
-  const blockedAt = run.blocked.blockedAt ?? "execution";
-
-  if (blockedAt === "planning") {
-    const key = run.blocked.requiredInputKey;
-    const prefix = resolvedId.slice(0, 8);
-    const cap = createCaptureRuntime();
-    try {
-      await goalAnswerCommand(resolvedId, { key, value, quiet: true, config }, cap.runtime);
-
-      const answerErrors = cap.getErrors();
-      if (answerErrors) return answerErrors;
-
-      const outcome = await goalResumeCommand(resolvedId, { quiet: true, config }, cap.runtime);
-      const errors = cap.getErrors();
-      if (errors) return errors;
-
-      if (outcome?.status === "blocked") {
-        return {
-          text: `Still need more info:\n\n${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`,
-          runId: resolvedId,
-          blocked: true,
-        };
-      }
-
-      const updated = loadRun(resolvedId);
-      const plan = updated?.plan;
-      if (plan) {
-        const stepResults = serializedStepResultsToMap(updated);
-        const planText = formatPlanOutput(plan, {
-          diagram: "none",
-          format: "md",
-          stepResults,
-        });
-        const parts: string[] = [planText, `\nRun ID: \`${prefix}\``];
-        return {
-          text: parts.join("\n"),
-          runId: resolvedId,
-          revision: updated?.planRevision ?? 1,
-          plan,
-          stepResults,
-        };
-      }
-
-      return `Replanned: ${prefix}. Use /goal_approve ${prefix} to execute.`;
-    } catch (err) {
-      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-        return cap.getErrors() || "Answer command failed.";
-      }
-      const backendHint = resolveBackendHint(resolvedId);
-      return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
-    }
-  }
-
-  // blocked (execution-time): save answer and auto-resume execution
-  const key = run.blocked.requiredInputKey;
-  const prefix = resolvedId.slice(0, 8);
   const cap = createCaptureRuntime();
-  const trackedStatus = trackBlockedStatusChange(onStatusChange);
   try {
-    const outcome = await goalAnswerCommand(
-      resolvedId,
-      { key, value, quiet: true, config, onStatusChange: trackedStatus.onStatusChange },
-      cap.runtime,
-    );
-
+    await goalAnswerCommand(resolvedId, { key: "", value, quiet: false, config }, cap.runtime);
     const errors = cap.getErrors();
     if (errors) return errors;
-
-    if (outcome?.status === "blocked") {
-      if (trackedStatus.didSendFullyBlocked()) return undefined;
-      return `Still blocked: ${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`;
-    }
-
-    // When onStatusChange is wired, it already sent DAG PNGs for done/step-level events —
-    // return undefined so callers don't send a stray message after the notifications.
-    if (trackedStatus.onStatusChange) return undefined;
-
-    return `Resuming: ${prefix}...`;
+    return cap.getLogs() || "Got it.";
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || "Answer command failed.";
@@ -1135,6 +1062,7 @@ export async function handleGoalFeedback(
       previousPlan: currentPlan,
     });
     if (run.workingDir !== currentPlan.workingDir) {
+      assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: config?.goal });
       ensureWorkingDir(run.workingDir);
     }
     run.blocked = null;
@@ -1311,6 +1239,7 @@ export async function handleGoalEdit(
   }
   const nextWorkingDir = workingDirHint?.resolvedPath;
   if (nextWorkingDir && nextWorkingDir !== run.workingDir) {
+    assertGoalWorkerWorkspace({ workingDir: nextWorkingDir, config: config?.goal });
     ensureWorkingDir(nextWorkingDir);
     run.workingDir = nextWorkingDir;
     run.updatedAt = new Date().toISOString();
@@ -1375,6 +1304,7 @@ export async function handleGoalEdit(
       previousPlan: run.plan,
     });
     if (run.workingDir !== workingDirBeforeRevision) {
+      assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: config?.goal });
       ensureWorkingDir(run.workingDir);
     }
     run.state = "planning";
@@ -1384,6 +1314,7 @@ export async function handleGoalEdit(
     let finalPlan = result;
     let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
     let autocheckSkipped = false;
+    let autocheckSkipReason: string | undefined;
     try {
       const autocheckResult = await runGoalPlanAutocheck({
         runId: resolvedId,
@@ -1405,6 +1336,13 @@ export async function handleGoalEdit(
       autocheckSkipped = true;
       // Re-load the run in case autocheck partially modified it
       run = loadRun(resolvedId) ?? run;
+      const skip = formatAutocheckSkipReason(autocheckErr);
+      autocheckSkipReason = skip.reason;
+      run.autocheckSkipReason = skip.reason;
+      if (skip.metadataPath) run.autocheckSkipMetadataPath = skip.metadataPath;
+      else delete run.autocheckSkipMetadataPath;
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
     }
     run = markRunAwaitingApproval(run) ?? run;
 
@@ -1436,6 +1374,7 @@ export async function handleGoalEdit(
       autocheckMaxRounds: autocheckDisplay?.maxRounds,
       autocheckExhausted: autocheckDisplay?.exhausted,
       autocheckSkipped: autocheckSkipped || undefined,
+      autocheckSkipReason,
     };
   } catch (err) {
     if (err instanceof PlanParseError) {
@@ -1587,6 +1526,7 @@ export function registerTelegramGoalCommands({
     replyToMessageId?: number;
     lockLabel: "approve" | "resume";
     backgroundLabel: string;
+    resumeSource?: "goal_resume" | "resume";
   }): Promise<void> {
     const { rawId, chatId, threadId, replyToMessageId, lockLabel, backgroundLabel } = params;
     const resolvedId = resolveRunId(rawId);
@@ -1601,12 +1541,50 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
+    if (lockLabel === "resume") {
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          replyToMessageId,
+        );
+        return;
+      }
+      runGoalInBackground({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        label: backgroundLabel,
+        preface: getGoalExecutionPreface(run.state, resolveGoalOperatorHonorific(cfg)),
+        replyToMessageId,
+        releaseGoalLock: () => undefined,
+        runId: resolvedId,
+        fn: async () => {
+          const result = applyGoalResumeNoteById({
+            runId: resolvedId,
+            source: params.resumeSource ?? "goal_resume",
+          });
+          return result.message;
+        },
+        onResult: async (reply) =>
+          sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
+      });
+      return;
+    }
     const lockResult = acquireGoalOpLock(resolvedId, lockLabel);
     if (!lockResult.acquired) {
       await sendGoalReply(
         bot,
         chatId,
-        formatGoalLockedMessage(resolvedId, lockResult.existingLabel),
+        formatGoalLockedMessage(resolvedId, lockResult.existingLabel, {
+          activeStep: resolveActiveStepId(loadRun(resolvedId)),
+          retryCommand: "/goal_resume",
+        }),
         runtime,
         threadId,
         replyToMessageId,
@@ -1967,7 +1945,7 @@ export function registerTelegramGoalCommands({
           chatId,
           messageId: sent.message_id,
           threadId,
-          requiredInputKey: resolveBlockedRequiredInputKey(run),
+          requiredInputKey: "add_details",
         });
       }
       return;
@@ -2030,6 +2008,7 @@ export function registerTelegramGoalCommands({
           replyToMessageId: messageId,
           lockLabel: "resume",
           backgroundLabel: "callback:resume",
+          resumeSource: "resume",
         });
       }
       return;
@@ -2091,7 +2070,10 @@ export function registerTelegramGoalCommands({
         await sendGoalReply(
           bot,
           chatId,
-          formatGoalLockedMessage(run.runId, lockResult.existingLabel),
+          formatGoalLockedMessage(run.runId, lockResult.existingLabel, {
+            activeStep: resolveActiveStepId(run),
+            retryCommand: "/goal_resume",
+          }),
           runtime,
           threadId,
         );
@@ -2695,7 +2677,10 @@ export function registerTelegramGoalCommands({
       await sendGoalReply(
         bot,
         resolved.chatId,
-        formatGoalLockedMessage(editRunId, editLock.existingLabel),
+        formatGoalLockedMessage(editRunId, editLock.existingLabel, {
+          activeStep: resolveActiveStepId(loadRun(editRunId)),
+          retryCommand: "/goal_edit",
+        }),
         runtime,
         resolved.threadIdForSend,
         replyToMessageId,
@@ -2797,18 +2782,6 @@ export function registerTelegramGoalCommands({
       return;
     }
     const dispatchAnswer = (answerText: string) => {
-      const answerLock = acquireGoalOpLock(answerRunId, "answer");
-      if (!answerLock.acquired) {
-        void sendGoalReply(
-          bot,
-          resolved.chatId,
-          formatGoalLockedMessage(answerRunId, answerLock.existingLabel),
-          runtime,
-          resolved.threadIdForSend,
-          replyToMessageId,
-        );
-        return;
-      }
       const statusCb = buildOnStatusChange({
         bot,
         chatId: resolved.chatId,
@@ -2824,7 +2797,6 @@ export function registerTelegramGoalCommands({
         label: "goal_answer",
         preface: buildPlanningPreface(resolved.operatorHonorific),
         replyToMessageId,
-        releaseGoalLock: answerLock.release,
         runId: answerRunId,
         fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
         onResult: async (result) => {
@@ -2899,7 +2871,10 @@ export function registerTelegramGoalCommands({
         await sendGoalReply(
           bot,
           resolved.chatId,
-          formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel),
+          formatGoalLockedMessage(feedbackRunId, feedbackLock.existingLabel, {
+            activeStep: resolveActiveStepId(loadRun(feedbackRunId)),
+            retryCommand: "/goal_feedback",
+          }),
           runtime,
           resolved.threadIdForSend,
           replyToMessageId,

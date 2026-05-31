@@ -113,4 +113,54 @@ describe("gateway systemd restart unit resolution", () => {
       }),
     ).toBe("moltbot-gateway-dev.service");
   });
+
+  it("resolves the dev unit only for an explicitly-dev process", () => {
+    expect(resolveGatewaySystemdRestartUnit({ SMITHERSBOT_INSTANCE: "dev" })).toBe(
+      "smithersbot-dev-gateway.service",
+    );
+    // Explicit instance short-circuits before any active-unit probing.
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves the stable unit for an explicit default/stable instance", () => {
+    expect(resolveGatewaySystemdRestartUnit({ SMITHERSBOT_INSTANCE: "stable" })).toBe(
+      "smithersbot-gateway.service",
+    );
+    expect(resolveGatewaySystemdRestartUnit({ SMITHERSBOT_INSTANCE: "default" })).toBe(
+      "smithersbot-gateway.service",
+    );
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit unit env precedence over the instance signal", () => {
+    expect(
+      resolveGatewaySystemdRestartUnit({
+        SMITHERSBOT_INSTANCE: "dev",
+        CLAWDBOT_SYSTEMD_UNIT: "moltbot-gateway-dev",
+      }),
+    ).toBe("moltbot-gateway-dev.service");
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown instance signal with a clear error", () => {
+    expect(() => resolveGatewaySystemdRestartUnit({ SMITHERSBOT_INSTANCE: "prod" })).toThrow(
+      /prod/,
+    );
+  });
+
+  it("ignores the checkout path and defaults to stable for a no-instance process", () => {
+    mockActiveUnits(new Set(["smithersbot-gateway.service"]));
+
+    expect(
+      resolveGatewaySystemdRestartUnit({
+        PWD: "/home/test/smithersbot-home/agent/workspaces/smithersbot-dev",
+      }),
+    ).toBe("smithersbot-gateway.service");
+  });
+
+  it("detects an active dev unit during probing when no signal is set", () => {
+    mockActiveUnits(new Set(["smithersbot-dev-gateway.service"]));
+
+    expect(resolveGatewaySystemdRestartUnit({})).toBe("smithersbot-dev-gateway.service");
+  });
 });

@@ -434,6 +434,35 @@ describe("renderMermaid", () => {
     expect(out).toContain("~5 min | Pi");
   });
 
+  it("appends the 📡 network marker only beside requiresNetwork=true backends", () => {
+    const plan = makePlan([
+      {
+        id: "1",
+        description: "Fetch deps",
+        dependsOn: [],
+        status: "pending",
+        durationMinutes: 3,
+        backend: "codex",
+        requiresNetwork: true,
+      },
+      {
+        id: "2",
+        description: "Local build",
+        dependsOn: ["1"],
+        status: "pending",
+        durationMinutes: 5,
+        backend: "claude_code",
+      },
+    ]);
+    const cpm = computeCpm(plan);
+    const out = renderMermaid(plan, cpm);
+    // Network-required step shows the marker to the right of the backend label.
+    expect(out).toContain("~3 min | Codex 📡");
+    // Non-network step keeps the plain backend label (no marker).
+    expect(out).toContain("~5 min | Claude Code");
+    expect(out).not.toContain("Claude Code 📡");
+  });
+
   it("uses linkStyle for critical path instead of classDef critical", () => {
     const plan = makePlan([
       {

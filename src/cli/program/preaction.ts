@@ -41,6 +41,11 @@ export function registerPreActionHooks(program: Command, programVersion: string)
       process.env.NODE_NO_WARNINGS ??= "1";
     }
     if (commandPath[0] === "doctor") return;
+    // The host-mediated dev-gateway path must never read the hard-denied stable
+    // config; it runs its own minimal dev-context preflight. (The fast-path
+    // router normally dispatches it before commander, but guard here too in case
+    // route-first dispatch is disabled.)
+    if (commandPath[0] === "dev-gateway") return;
     await ensureConfigReady({ runtime: defaultRuntime, commandPath });
     // Load plugins for commands that need channel access
     if (PLUGIN_REQUIRED_COMMANDS.has(commandPath[0])) {

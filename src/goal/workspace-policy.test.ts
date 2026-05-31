@@ -2,90 +2,120 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { assertGoalWorkerWorkspace, LEGACY_WORKING_DIR_WARNING } from "./workspace-policy.js";
+
+import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
+
+const HOME = "/home/matt";
+const homedir = () => HOME;
+const stableEnv = { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv;
+const devEnv = { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv;
+
+function stablePolicy(overrides: Partial<Parameters<typeof assertGoalWorkerWorkspace>[0]> = {}) {
+  return {
+    env: stableEnv,
+    homedir,
+    ...overrides,
+  };
+}
+
+function devPolicy(overrides: Partial<Parameters<typeof assertGoalWorkerWorkspace>[0]> = {}) {
+  return {
+    env: devEnv,
+    homedir,
+    ...overrides,
+  };
+}
 
 describe("goal workspace policy", () => {
-  const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  let tempRoots: string[] = [];
 
   afterEach(() => {
-    if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
-    else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    for (const root of tempRoots) fs.rmSync(root, { recursive: true, force: true });
+    tempRoots = [];
   });
 
-  it("allows managed agent workspaces without warning", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-"));
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
+  it("allows stable/default goals under the stable instance agent workspaces root", () => {
     const warnings: string[] = [];
-    try {
-      assertGoalWorkerWorkspace({
-        workingDir: path.join(root, "agent", "workspaces", "sample", "repo"),
+
+    assertGoalWorkerWorkspace(
+      stablePolicy({
+        workingDir: "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
         onWarning: (message) => warnings.push(message),
-      });
-      expect(warnings).toEqual([]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      }),
+    );
+
+    expect(warnings).toEqual([]);
   });
 
-  it("keeps legacy workingDir compatibility with a clear warning", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-root-"));
-    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-legacy-"));
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
-    const warnings: string[] = [];
-    try {
-      assertGoalWorkerWorkspace({
-        workingDir: legacyDir,
-        onWarning: (message) => warnings.push(message),
-      });
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain(LEGACY_WORKING_DIR_WARNING);
-      expect(warnings[0]).toContain(legacyDir);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(legacyDir, { recursive: true, force: true });
-    }
-  });
+  it("rejects the observed dev runtime workspace for stable goals even with the legacy flag enabled", () => {
+    const workingDir = "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
 
-  it("fails closed for legacy workingDir only when configured", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-root-"));
-    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-legacy-"));
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
-    try {
-      expect(() =>
-        assertGoalWorkerWorkspace({
-          workingDir: legacyDir,
-          config: { allowLegacyWorkingDir: false },
+    expect(() =>
+      assertGoalWorkerWorkspace(
+        stablePolicy({
+          workingDir,
+          config: { allowLegacyWorkingDir: true },
+          observedInstances: ["dev"],
         }),
-      ).toThrow(/managed agent root/);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(legacyDir, { recursive: true, force: true });
+      ),
+    ).toThrow(
+      /\/home\/matt\/smithersbot-dev-home\/agent\/workspaces\/smithersbot-dev.*outside the current stable instance's own agent\/workspaces tree \(\/home\/matt\/smithersbot-home\/agent\/workspaces\).*observed\/foreign dev agent surface.*read-only for context/s,
+    );
+  });
+
+  it("rejects arbitrary out-of-root paths for stable goals", () => {
+    for (const workingDir of ["/tmp/whatever", "/home/matt/.config/smithersbot"]) {
+      expect(() => assertGoalWorkerWorkspace(stablePolicy({ workingDir }))).toThrow(
+        new RegExp(
+          `${workingDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*outside the current stable instance's own agent/workspaces tree \\(/home/matt/smithersbot-home/agent/workspaces\\)`,
+          "s",
+        ),
+      );
     }
   });
 
-  it("rejects managed private paths and private symlink targets even while legacy dirs are compatible", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-root-"));
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
-    const privateEnvDir = path.join(root, "private", "env", "sample");
-    const repoDir = path.join(root, "agent", "workspaces", "sample", "repo");
+  it("allows dev instance goals under the dev instance agent workspaces root", () => {
+    assertGoalWorkerWorkspace(
+      devPolicy({
+        workingDir: "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+      }),
+    );
+  });
+
+  it("rejects the stable instance workspace for dev goals", () => {
+    const workingDir = "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev";
+
+    expect(() => assertGoalWorkerWorkspace(devPolicy({ workingDir }))).toThrow(
+      /\/home\/matt\/smithersbot-home\/agent\/workspaces\/smithersbot-dev.*outside the current dev instance's own agent\/workspaces tree \(\/home\/matt\/smithersbot-dev-home\/agent\/workspaces\).*foreign stable gateway instance/s,
+    );
+  });
+
+  it("hard-denies private roots and private symlink targets", () => {
+    expect(() =>
+      assertGoalWorkerWorkspace(
+        stablePolicy({
+          workingDir: "/home/matt/smithersbot-home/private/env/smithersbot-dev",
+          config: { allowLegacyWorkingDir: true },
+        }),
+      ),
+    ).toThrow(/private paths/);
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "workspace-policy-"));
+    tempRoots.push(home);
+    const tempHomedir = () => home;
+    const privateEnvDir = path.join(home, "smithersbot-home", "private", "env", "sample");
+    const repoDir = path.join(home, "smithersbot-home", "agent", "workspaces", "sample");
     fs.mkdirSync(privateEnvDir, { recursive: true });
     fs.mkdirSync(repoDir, { recursive: true });
     const privateLink = path.join(repoDir, "private-env-link");
     fs.symlinkSync(privateEnvDir, privateLink, "dir");
 
-    try {
-      expect(() =>
-        assertGoalWorkerWorkspace({
-          workingDir: privateEnvDir,
-        }),
-      ).toThrow(/private paths/);
-      expect(() =>
-        assertGoalWorkerWorkspace({
-          workingDir: privateLink,
-        }),
-      ).toThrow(/private paths/);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+    expect(() =>
+      assertGoalWorkerWorkspace({
+        workingDir: privateLink,
+        env: stableEnv,
+        homedir: tempHomedir,
+      }),
+    ).toThrow(/private paths/);
   });
 });

@@ -27,6 +27,7 @@ import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import {
   loadRun,
   saveRun,
@@ -36,6 +37,7 @@ import {
   resolveRunId,
 } from "../goal/run-store.js";
 import { formatGoalError } from "../goal/errors.js";
+import { isGoalOpLocked } from "../goal/goal-lock.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import {
   resolveScoutDir,
@@ -47,6 +49,7 @@ import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { CliWorkerId } from "../config/types.goal.js";
 import type { GoalOutcome, OutputFormat, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { applyGoalResumeNoteById } from "./goal-resume-note.js";
 
 export type GoalResumeOptions = {
   yes?: boolean;
@@ -383,6 +386,9 @@ async function retryPlanning(
   try {
     ensureGlobalConventions();
 
+    // Reject a persisted/planner working dir outside the current instance's own
+    // agent/workspaces tree before any filesystem preparation.
+    assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: opts.config?.goal });
     // Ensure the workspace is a checkpoint-compatible git repo before replanning.
     ensureWorkingDir(run.workingDir);
 
@@ -504,6 +510,8 @@ async function retryPlanning(
     session.state = "awaiting_approval";
     if (planningAnswer) delete session.answers["step:planning:input"];
     run.plan = planResult;
+    // Guard the planner-selected working dir before persisting/adopting it.
+    assertGoalWorkerWorkspace({ workingDir: planResult.workingDir, config: opts.config?.goal });
     run.workingDir = planResult.workingDir;
     run.state = "awaiting_approval";
     run.lastError = undefined;
@@ -590,7 +598,7 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  const run = loadRun(resolvedId);
+  let run = loadRun(resolvedId);
   if (!run) {
     if (isJson) {
       runtime.log(JSON.stringify({ error: `Run file missing: ${resolvedId}` }));
@@ -602,11 +610,62 @@ export async function goalResumeCommand(
 
   // Terminal: done is not resumable (except explicit feedback re-execution path).
   if (run.state === "done" && !opts.allowDoneStateResume) {
+    const message =
+      "No blocked, paused, or failed steps need input/resume right now. The goal is currently done.";
     if (isJson) {
-      runtime.log(JSON.stringify({ error: "Run already completed." }));
-      throw new JsonExitError(1);
+      runtime.log(JSON.stringify({ status: "noop", message, state: run.state }));
+    } else if (!quiet) {
+      runtime.log(message);
     }
-    runtime.error("Run already completed.");
+    return undefined;
+  }
+
+  const hasBlockedSteps = run.plan?.steps.some((step) => step.status === "blocked") ?? false;
+  const activeRunLock = isGoalOpLocked(resolvedId).locked;
+  if ((run.state === "blocked" || run.state === "executing") && hasBlockedSteps && activeRunLock) {
+    const result = applyGoalResumeNoteById({
+      runId: resolvedId,
+      source: "goal_resume",
+    });
+    if (result.status === "not_found" || result.status === "missing") {
+      if (isJson) {
+        runtime.log(JSON.stringify({ error: result.message }));
+        throw new JsonExitError(1);
+      }
+      runtime.error(result.message);
+      return undefined;
+    }
+    const refreshed = loadRun(resolvedId);
+    if (refreshed) run = refreshed;
+    if (result.status === "noop") {
+      if (isJson) {
+        runtime.log(
+          JSON.stringify(
+            { status: "noop", message: result.message, state: result.run.state },
+            null,
+            2,
+          ),
+        );
+      } else if (!quiet) {
+        runtime.log(result.message);
+      }
+      return undefined;
+    }
+    if (isJson) {
+      runtime.log(
+        JSON.stringify(
+          {
+            status: "resumed",
+            message: result.message,
+            rescheduledStepIds: result.rescheduledStepIds,
+          },
+          null,
+          2,
+        ),
+      );
+    } else if (!quiet) {
+      runtime.log(result.message);
+    }
     return undefined;
   }
 
@@ -711,6 +770,9 @@ export async function goalResumeCommand(
   // Capture run fields for closure (TypeScript can't narrow across closures)
   const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
 
+  // Reject a persisted/planner working dir outside the current instance's own
+  // agent/workspaces tree before any filesystem preparation or worker dispatch.
+  assertGoalWorkerWorkspace({ workingDir, config: opts.config?.goal });
   // Ensure checkpoint-compatible workspace state before execution resumes.
   ensureWorkingDir(workingDir);
 

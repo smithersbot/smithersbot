@@ -4,6 +4,7 @@ const mockRuns = vi.hoisted(() => [] as SerializedRun[]);
 const mockHandleGoalEdit = vi.hoisted(() => vi.fn());
 const mockHandleGoalAnswer = vi.hoisted(() => vi.fn());
 const mockHandleGoalFeedback = vi.hoisted(() => vi.fn());
+const mockApplyGoalResumeNoteById = vi.hoisted(() => vi.fn());
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
@@ -21,6 +22,14 @@ vi.mock("./goal-commands.js", async (importOriginal) => {
     handleGoalEdit: (...args: unknown[]) => mockHandleGoalEdit(...args),
     handleGoalAnswer: (...args: unknown[]) => mockHandleGoalAnswer(...args),
     handleGoalFeedback: (...args: unknown[]) => mockHandleGoalFeedback(...args),
+  };
+});
+
+vi.mock("../commands/goal-resume-note.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../commands/goal-resume-note.js")>();
+  return {
+    ...actual,
+    applyGoalResumeNoteById: (...args: unknown[]) => mockApplyGoalResumeNoteById(...args),
   };
 });
 
@@ -240,8 +249,73 @@ describe("handleTelegramGoalRouting", () => {
     });
 
     expect(handled).toBe(true);
-    expect(answer).toHaveBeenCalledWith("r1", "postgres");
+    expect(answer).toHaveBeenCalledWith("r1", "postgres", "direct_reply");
     // Result delivery is now fire-and-forget inside the handler
+  });
+
+  it("reply to a Paused (resume_execution) message routes to the unified resume-note path", async () => {
+    const runs = [
+      makeRun({
+        runId: "paused1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "worker hit a provider limit; resume needed",
+          requiredInputKey: "resume_execution",
+        },
+        telegramQuestionMessages: [
+          { chatId: 9, messageId: 25, requiredInputKey: "resume_execution" },
+        ],
+      }),
+    ];
+
+    const sendReply = vi.fn(async () => {});
+    const answer = vi.fn();
+
+    const handled = await handleTelegramGoalRouting({
+      chatId: 9,
+      threadId: undefined,
+      messageText: "please continue",
+      replyToMessageId: 25,
+      runs,
+      chatMode: "chat",
+      sendReply,
+      sendPlanResult: vi.fn(async () => {}),
+      runHandlers: { edit: vi.fn(), answer },
+    });
+
+    expect(handled).toBe(true);
+    expect(answer).toHaveBeenCalledWith("paused1", "please continue", "direct_reply");
+    expect(sendReply).not.toHaveBeenCalled();
+  });
+
+  it("reply to a tracked but unusable goal message is handled (never falls through)", async () => {
+    const runs = [
+      makeRun({
+        runId: "done1",
+        state: "done",
+        telegramQuestionMessages: [{ chatId: 9, messageId: 26 }],
+      }),
+    ];
+
+    const sendReply = vi.fn(async () => {});
+    const answer = vi.fn();
+
+    const handled = await handleTelegramGoalRouting({
+      chatId: 9,
+      threadId: undefined,
+      messageText: "foo",
+      replyToMessageId: 26,
+      runs,
+      chatMode: "chat",
+      sendReply,
+      sendPlanResult: vi.fn(async () => {}),
+      runHandlers: { edit: vi.fn(), answer },
+    });
+
+    expect(handled).toBe(true);
+    expect(answer).not.toHaveBeenCalled();
+    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("currently done"));
   });
 
   it("routes reply to plan message to GOAL_EDIT", async () => {
@@ -518,6 +592,12 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     mockHandleGoalEdit.mockReset();
     mockHandleGoalAnswer.mockReset();
     mockHandleGoalFeedback.mockReset();
+    mockApplyGoalResumeNoteById.mockReset();
+    mockApplyGoalResumeNoteById.mockReturnValue({
+      status: "applied",
+      message: "Got it. Added your note and rescheduled 1 step.",
+      rescheduledStepIds: ["task-a"],
+    });
 
     const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
     const bot = {
@@ -646,6 +726,93 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     );
   });
 
+  it("records direct replies as goal-level resume notes without using handleGoalAnswer", async () => {
+    const run = makeRun({
+      runId: "direct-reply-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "task-b:input",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 420, requiredInputKey: "task-a:input" }],
+    });
+
+    const { bot } = await routeText({
+      text: "use postgres for both",
+      messageId: 704,
+      replyToMessageId: 420,
+      runs: [run],
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+      runId: "direct-reply-run",
+      source: "direct_reply",
+      userText: "use postgres for both",
+    });
+    expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
+    expectSendReplyToCurrentMessage(bot.api.sendMessage, 704);
+  });
+
+  it("records Add Details prompt replies with the add_details source", async () => {
+    const run = makeRun({
+      runId: "add-details-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "tasks:task-a,task-b:input",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 421, requiredInputKey: "add_details" }],
+    });
+
+    await routeText({
+      text: "the fix is ready",
+      messageId: 705,
+      replyToMessageId: 421,
+      runs: [run],
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+      runId: "add-details-run",
+      source: "add_details",
+      userText: "the fix is ready",
+    });
+  });
+
+  it("does not route direct replies to tracked blocked messages into repo-chat", async () => {
+    const run = makeRun({
+      runId: "repo-chat-guard",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "input_key",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 422, requiredInputKey: "input_key" }],
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const harness = makeBotHarness();
+    harness.bot.api.sendMessage.mockClear();
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "answer from reply",
+        message_id: 706,
+        reply_to_message: { message_id: 422 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalled();
+    expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
+  });
+
   it("threads lock-failed edit, answer, and feedback replies to the current message", async () => {
     for (const scenario of [
       {
@@ -753,6 +920,113 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     });
     expect(mockHandleGoalFeedback.mock.calls[0]?.[1]).toContain(
       "FULL_MULTIMESSAGE_FEEDBACK_SENTINEL_20260524_G9_G10_REPO_CHAT_GOAL_ANSWER_ADD_DETAILS",
+    );
+  });
+
+  it("buffers split Request changes (GOAL_EDIT) replies before acquiring the edit lock", async () => {
+    vi.useFakeTimers();
+    mockHandleGoalEdit.mockResolvedValue("Plan updated");
+    const run = makeRun({
+      runId: "edit-buffer-run",
+      state: "awaiting_approval",
+      telegramPlanMessage: { chatId: 42, messageId: 410 },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Please change step 1 and ",
+        message_id: 811,
+        reply_to_message: { message_id: 410 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    expect(mockHandleGoalEdit).not.toHaveBeenCalled();
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "SPLIT_EDIT_SENTINEL_combine_both_fragments_into_one_edit",
+        message_id: 812,
+        reply_to_message: { message_id: 410 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    // The edit lock must not be contended by the split fragment.
+    expect(
+      harness.bot.api.sendMessage.mock.calls.some((call) =>
+        String(call[1]).toLowerCase().includes("already being processed"),
+      ),
+    ).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 1050);
+
+    await vi.waitFor(() => {
+      expect(mockHandleGoalEdit).toHaveBeenCalledTimes(1);
+    });
+    // Lock acquired exactly once, after buffering, with the combined edit text.
+    expect(mockHandleGoalEdit.mock.calls[0]?.[1]).toBe(
+      "Please change step 1 and SPLIT_EDIT_SENTINEL_combine_both_fragments_into_one_edit",
+    );
+  });
+
+  it("appends a second Request changes fragment that lost its reply_to", async () => {
+    vi.useFakeTimers();
+    mockHandleGoalEdit.mockResolvedValue("Plan updated");
+    const run = makeRun({
+      runId: "edit-late-fragment-run",
+      state: "awaiting_approval",
+      telegramPlanMessage: { chatId: 42, messageId: 415 },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "First edit chunk ",
+        message_id: 820,
+        reply_to_message: { message_id: 415 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    // Second fragment arrives WITHOUT reply_to (Telegram dropped reply threading on the tail).
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "second chunk via global append",
+        message_id: 821,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockHandleGoalEdit).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 1050);
+    await vi.waitFor(() => {
+      expect(mockHandleGoalEdit).toHaveBeenCalledTimes(1);
+    });
+    expect(mockHandleGoalEdit.mock.calls[0]?.[1]).toBe(
+      "First edit chunk second chunk via global append",
     );
   });
 });

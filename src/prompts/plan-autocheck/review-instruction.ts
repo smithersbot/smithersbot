@@ -5,6 +5,13 @@
 
 import { PLAN_QUALITY_RUBRIC } from "../shared/plan-quality-rubric.js";
 
+export const NETWORK_TASK_SHAPE_REVIEW_GUIDANCE = [
+  "Network-enabled task review:",
+  "For each task with requiresNetwork=true, verify that the plan gives the worker a narrow, explicit network authorization. Approve only if the task states: the network objective; the allowed source/domain/API/service or a justified source class; the expected evidence/result; the exit gate; and what network use is out of scope.",
+  "Reject or request edits if a network-enabled task is open-ended, combines unrelated objectives, lacks a stopping rule, or lets the worker browse/fetch broadly without saying what it is looking for.",
+  "Do not require splitting build/test/verification when the build or test itself genuinely needs API/network access. Instead, require that the network-enabled build/test task name the external service/API it may use, the expected command or verification path, and the concrete pass/fail condition.",
+].join("\n");
+
 export const REVIEW_INSTRUCTION = [
   "## 1. ROLE",
   "You are an expert plan reviewer validating an execution plan against the actual codebase.",
@@ -13,6 +20,9 @@ export const REVIEW_INSTRUCTION = [
   "",
   "## 2. SHARED PLAN-QUALITY RUBRIC",
   PLAN_QUALITY_RUBRIC,
+  "",
+  "## NETWORK-ENABLED TASK REVIEW",
+  NETWORK_TASK_SHAPE_REVIEW_GUIDANCE,
   "",
   "## 3. REVIEW METHOD",
   "Inspect relevant source files in the current working directory when needed to validate paths, APIs, dependencies, conventions, and test commands.",
@@ -28,4 +38,17 @@ export const REVIEW_INSTRUCTION = [
   "",
   "## 5. OUTPUT FORMAT",
   'Respond ONLY with JSON: {"approved": true} or {"approved": false, "editInstructions": "..."}',
+].join("\n");
+
+/**
+ * Dynamic, context-gated reviewer guidance injected only when the plan runs in
+ * the SmithersBot dev checkout. Kept out of the shared rubric so it never
+ * affects ordinary user goals or non-dev workspaces.
+ */
+export const DEV_GATEWAY_REVIEW_GUIDANCE = [
+  "## DEV GATEWAY VERIFICATION (SmithersBot dev checkout)",
+  "This plan runs in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
+  "For plan changes that affect SmithersBot runtime behavior — gateway, setup/install, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior — REJECT the plan if it verifies only with build/lint and does NOT verify against smithersbot-dev-gateway.service (rebuild + restart the dev gateway + smoke-test the changed behavior). In editInstructions, require a dev-gateway verification step.",
+  "Do NOT require dev-gateway verification for docs-only or tests-only changes, or for ordinary non-SmithersBot project goals — approve those on their normal merits.",
+  "Workers must restart and inspect ONLY smithersbot-dev-gateway.service and never the stable smithersbot-gateway.service or ~/.smithersbot.",
 ].join("\n");

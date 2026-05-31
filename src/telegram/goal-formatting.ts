@@ -10,6 +10,7 @@ import { formatAge } from "../infra/channel-summary.js";
 import type { GoalStatusChangeEvent, ManualTestsStatus } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
+import { describeGoalOpLabel } from "../goal/goal-lock.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { clampCriticality, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
@@ -204,10 +205,18 @@ export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
 
 // Word boundaries + trailing lookaheads avoid camelCase false matches (e.g. workingDir, workingDirectory).
 const WORKING_DIR_INSTRUCTION_PATTERNS = [
+  // Explicit launch directive: "In working directory /path".
+  /\bin\s+(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+([^\n]+)/i,
   /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))[^\n]{0,200}?\bshould\s*be\s+([^\n]+)/i,
   /set\s+(?:the\s+)?(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s+to\s+([^\n]+)/i,
   /(?:\bworking\b\s*dir(?!\w)|\bworking\b\s*directory(?!\w)|\bworkdir(?!\w))\s*(?:should\s*be|is|=|:)\s*([^\n]+)/i,
 ];
+
+// Assertion/preflight wording prefixes a path with a modifier word, e.g.
+// "confirm the working directory is exactly /path" or "pwd should be exactly /path".
+// Such text is a verification instruction, NOT a directive to change the working
+// directory, so a captured path beginning with one of these modifiers is ignored.
+const WORKING_DIR_ASSERTION_MODIFIER_PATTERN = /^(?:exactly|precisely|literally|really)\b\s*/i;
 const WORKING_DIR_INSTRUCTION_PREFIX_PATTERN =
   /^(?:(?:in|at)\s+)?(?:(?:a|an|the)\s+)?(?:new\s+)?(?:folder|directory|dir)\b(?:\s+(?:called|named))?(?:\s*[:=-])?\s+/i;
 
@@ -222,6 +231,8 @@ export function cleanWorkingDirInstructionPath(rawPath: string): string {
     .trim();
   value = value.replace(/[.,;:!?]+$/, "").trim();
   value = value.replace(WORKING_DIR_INSTRUCTION_PREFIX_PATTERN, "").trim();
+  // Drop leading assertion modifiers ("exactly /path" -> "/path") so they never leak into a path.
+  value = value.replace(WORKING_DIR_ASSERTION_MODIFIER_PATTERN, "").trim();
   if (/^~[^/\\]/.test(value)) {
     value = `~/${value.slice(1)}`;
   }
@@ -308,6 +319,8 @@ export function parseWorkingDirInstruction(
   for (const pattern of WORKING_DIR_INSTRUCTION_PATTERNS) {
     const match = pattern.exec(instructions);
     if (!match?.[1]) continue;
+    // Assertion/preflight wording (e.g. "...is exactly /path") is not a launch directive.
+    if (WORKING_DIR_ASSERTION_MODIFIER_PATTERN.test(match[1].trim())) continue;
     const requestedPath = cleanWorkingDirInstructionPath(match[1]);
     if (!requestedPath) continue;
     return {
@@ -346,8 +359,44 @@ export function formatGoalWorkers(workers: CliWorkerId[]): string {
   return workers.join(", ");
 }
 
-export function formatGoalLockedMessage(runId: string, existingLabel?: string): string {
-  return `Goal \`${runId.slice(0, 8)}\` is already being processed (${existingLabel ?? "unknown"}).`;
+export interface GoalLockedMessageOptions {
+  /** The step the in-flight operation is currently working on, if known. */
+  activeStep?: string;
+  /** Command the user should retry once the active operation finishes. */
+  retryCommand?: string;
+}
+
+/**
+ * Build the "already being processed" message for a contended goal-op lock.
+ *
+ * Instead of a bare "(approve)", this names which operation is active (via the
+ * lock label), which step it is on when known, and the command to retry — so a
+ * user who hits a busy lock knows what is happening and when to try again.
+ */
+export function formatGoalLockedMessage(
+  runId: string,
+  existingLabel?: string,
+  options?: GoalLockedMessageOptions,
+): string {
+  const shortId = runId.slice(0, 8);
+  const operation = describeGoalOpLabel(existingLabel);
+  const stepSuffix = options?.activeStep ? ` (currently on step \`${options.activeStep}\`)` : "";
+  const retry = options?.retryCommand
+    ? `Try ${options.retryCommand} again after the current operation finishes.`
+    : "Try again after the current operation finishes.";
+  return `Goal \`${shortId}\` is already ${operation}${stepSuffix}. ${retry}`;
+}
+
+/**
+ * Best-effort active step for a run: the step currently in progress, else the
+ * first blocked step. Returns undefined when no step is identifiable.
+ */
+export function resolveActiveStepId(run: SerializedRun | null | undefined): string | undefined {
+  const steps = run?.plan?.steps;
+  if (!steps) return undefined;
+  const inProgress = steps.find((step) => step.status === "in_progress");
+  if (inProgress) return inProgress.id;
+  return steps.find((step) => step.status === "blocked")?.id;
 }
 
 export function isPlanAutocheckBackend(

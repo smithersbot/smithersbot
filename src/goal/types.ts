@@ -24,6 +24,7 @@ export type GoalSession = {
   stepResults: Map<string, StepResult>;
   blocked: BlockedDetail | null;
   answers: Record<string, string>;
+  resumeNotes?: ResumeNote[];
   lastError?: string;
   taskCheckpoints?: Record<string, TaskCheckpoint>;
   buildGateConfig?: PlanBuildGate;
@@ -64,6 +65,20 @@ export type RalphDetail = {
   suggestedApproach: string;
 };
 
+export type ResumeNoteSource =
+  | "resume"
+  | "add_details"
+  | "direct_reply"
+  | "goal_answer"
+  | "goal_resume";
+
+export type ResumeNote = {
+  timestamp: string;
+  source: ResumeNoteSource;
+  affectedStepIds: string[];
+  userText?: string;
+};
+
 export type PlanStep = {
   id: string;
   description: string;
@@ -93,6 +108,13 @@ export type PlanStep = {
     | "out_of_credits"
     | "auth"
     | "network"
+    // Selected/assigned backend cannot satisfy a required capability (e.g. a
+    // step with requiresNetwork=true routed to a backend that cannot enable
+    // network, with no network-capable backend available to take it over).
+    | "capability_blocked"
+    // A sandbox-level restriction (network/interface isolation) prevented the
+    // step from running; distinct from a vague retryable process error.
+    | "sandbox_blocked"
     | "other";
   /** Completion summary from mark_task_complete tool. */
   taskSummary?: string;
@@ -217,6 +239,7 @@ export type SerializedRun = {
   stepResults: Record<string, StepResult>;
   blocked: BlockedDetail | null;
   answers: Record<string, string>;
+  resumeNotes?: ResumeNote[];
   lastError?: string;
   workingDir: string;
   model: string | undefined;
@@ -242,6 +265,10 @@ export type SerializedRun = {
   autocheckBackend?: "codex" | "claude_code";
   /** Stable CLI session ID for autocheck reviewer resume. */
   autocheckSessionId?: string;
+  /** Redacted reason recorded when plan autocheck was skipped after a failure. */
+  autocheckSkipReason?: string;
+  /** Agent-visible metadata artifact for the latest skipped autocheck failure. */
+  autocheckSkipMetadataPath?: string;
   /** Suggested manual verification tests shown after completion. */
   manualTests?: ManualTestSuggestion[];
   /** Why manual test generation failed when suggestions are unavailable. */

@@ -11,9 +11,14 @@ async function prepareRoutedCommand(params: {
   argv: string[];
   commandPath: string[];
   loadPlugins?: boolean;
+  skipConfig?: boolean;
 }) {
   emitCliBanner(VERSION, { argv: params.argv });
-  await ensureConfigReady({ runtime: defaultRuntime, commandPath: params.commandPath });
+  // Some routes (the host-mediated dev-gateway path) must never read the stable
+  // config file before dispatching; they run their own minimal preflight.
+  if (!params.skipConfig) {
+    await ensureConfigReady({ runtime: defaultRuntime, commandPath: params.commandPath });
+  }
   if (params.loadPlugins) {
     ensurePluginRegistryLoaded();
   }
@@ -27,6 +32,11 @@ export async function tryRouteCli(argv: string[]): Promise<boolean> {
   if (!path[0]) return false;
   const route = findRoutedCommand(path);
   if (!route) return false;
-  await prepareRoutedCommand({ argv, commandPath: path, loadPlugins: route.loadPlugins });
+  await prepareRoutedCommand({
+    argv,
+    commandPath: path,
+    loadPlugins: route.loadPlugins,
+    skipConfig: route.skipConfig,
+  });
   return route.run(argv);
 }

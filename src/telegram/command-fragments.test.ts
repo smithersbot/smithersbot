@@ -436,6 +436,85 @@ describe("command-fragments", () => {
       expect(buffer.hasPending(key)).toBe(false);
     });
 
+    it("buffers, appends, and flushes goal_edit fragments (split Request changes)", async () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const flushCallback = vi.fn(async () => undefined);
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "7",
+        commandName: "goal_edit",
+        runId: "run-edit",
+        replyToMessageId: 410,
+      });
+
+      buffer.bufferCommand(key, {
+        commandName: "goal_edit",
+        text: "change step 1 ",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback,
+      });
+
+      expect(buffer.getPendingCommandName(key)).toBe("goal_edit");
+      expect(buffer.tryAppend(key, 101, "and step 2", 20)).toBe(true);
+
+      await buffer.flush(key);
+
+      expect(flushCallback).toHaveBeenCalledTimes(1);
+      expect(flushCallback).toHaveBeenCalledWith("change step 1 and step 2");
+    });
+
+    it("global-appends a goal_edit tail via tryAppendMatching when reply_to is lost", () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "7",
+        commandName: "goal_edit",
+        runId: "run-edit",
+        replyToMessageId: 410,
+      });
+
+      buffer.bufferCommand(key, {
+        commandName: "goal_edit",
+        text: "first ",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback: vi.fn(),
+      });
+
+      const appended = buffer.tryAppendMatching(
+        {
+          accountId: "default",
+          chatId: 42,
+          resolvedThreadId: undefined,
+          senderId: "7",
+          commandNames: ["goal_edit"],
+        },
+        101,
+        "second tail without reply_to",
+        20,
+      );
+      expect(appended).toBe(true);
+    });
+
     it("reports the pending canonical command for a buffered key", () => {
       vi.useFakeTimers();
       const buffer = new CommandFragmentBuffer();

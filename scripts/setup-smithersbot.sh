@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/setup-smithersbot.sh [--config-dir DIR] [--state-dir DIR] [--no-build] [--backend codex|claude_code]
+Usage: scripts/setup-smithersbot.sh [--config-dir DIR] [--state-dir DIR] [--no-build] [--backend codex|claude_code] [--instance default|stable|dev]
 
 Sets up local SmithersBot Telegram configuration in ~/.smithersbot by default.
 USAGE
@@ -109,20 +109,47 @@ MANAGED_ROOT_SUBDIRS=(
   "scratch"
 )
 
+select_gateway_instance() {
+  local selection=${1:-default}
+  case "${selection,,}" in
+    ""|default|stable)
+      gateway_instance_name="stable"
+      gateway_state_dir_name=".smithersbot"
+      gateway_managed_root_dir_name="smithersbot-home"
+      gateway_service_unit="smithersbot-gateway.service"
+      gateway_default_port="18789"
+      gateway_legacy_managed_root_fallback=1
+      ;;
+    dev)
+      gateway_instance_name="dev"
+      gateway_state_dir_name=".smithersbot-dev"
+      gateway_managed_root_dir_name="smithersbot-dev-home"
+      gateway_service_unit="smithersbot-dev-gateway.service"
+      gateway_default_port="18790"
+      gateway_legacy_managed_root_fallback=0
+      ;;
+    *)
+      fail "Unknown SmithersBot gateway instance \"$selection\". Allowed values: default, stable, dev."
+      ;;
+  esac
+}
+
 resolve_managed_root() {
   local override=${SMITHERSBOT_GOALS_ROOT:-}
   if [[ -n "$override" ]]; then
     expand_home "$override"
   else
     local default_root
-    local legacy_root
-    default_root=$(expand_home "~/smithersbot-home")
-    legacy_root=$(expand_home "~/smithersbot-goals")
-    if [[ ! -d "$default_root" && -d "$legacy_root" ]]; then
-      printf '%s\n' "$legacy_root"
-    else
-      printf '%s\n' "$default_root"
+    default_root=$(expand_home "~/$gateway_managed_root_dir_name")
+    if [[ "$gateway_legacy_managed_root_fallback" == "1" ]]; then
+      local legacy_root
+      legacy_root=$(expand_home "~/smithersbot-goals")
+      if [[ ! -d "$default_root" && -d "$legacy_root" ]]; then
+        printf '%s\n' "$legacy_root"
+        return 0
+      fi
     fi
+    printf '%s\n' "$default_root"
   fi
 }
 
@@ -201,6 +228,61 @@ write_env_file() {
   } >"$tmp"
   mv "$tmp" "$path"
   chmod 600 "$path"
+}
+
+read_env_value_from_file() {
+  local path=$1
+  local key=$2
+  ENV_FILE_PATH="$path" ENV_KEY="$key" node --input-type=module <<'NODE'
+import fs from "node:fs";
+
+const file = process.env.ENV_FILE_PATH;
+const key = process.env.ENV_KEY;
+if (!file || !key || !fs.existsSync(file)) process.exit(0);
+
+let raw;
+try {
+  raw = fs.readFileSync(file, "utf8");
+} catch {
+  process.exit(2);
+}
+
+for (const line of raw.split(/\r?\n/)) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#")) continue;
+  const assignment = trimmed.startsWith("export ") ? trimmed.slice("export ".length).trim() : trimmed;
+  const eq = assignment.indexOf("=");
+  if (eq <= 0) continue;
+  if (assignment.slice(0, eq).trim() !== key) continue;
+  let value = assignment.slice(eq + 1).trim();
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    value = value.slice(1, -1);
+  }
+  process.stdout.write(value);
+  process.exit(0);
+}
+NODE
+}
+
+block_dev_same_telegram_token() {
+  local token=$1
+  local stable_env_file
+  local stable_token
+  if [[ "$gateway_instance_name" != "dev" ]]; then
+    return 0
+  fi
+
+  stable_env_file=$(expand_home "~/.smithersbot/.env")
+  [[ -f "$stable_env_file" ]] || return 0
+  if ! stable_token=$(read_env_value_from_file "$stable_env_file" "TELEGRAM_BOT_TOKEN"); then
+    fail "could not read the stable Telegram bot token for the dev safety check"
+  fi
+  if [[ -n "$stable_token" && "$stable_token" == "$token" ]]; then
+    fail "dev gateway Telegram bot token must differ from the stable gateway token; create a separate dev Telegram bot token"
+  fi
 }
 
 write_config_file() {
@@ -574,7 +656,6 @@ detect_telegram_allowed_id() {
   printf 'Do not use @BotFather here. BotFather has completed his part.\n' >&2
   printf '\n' >&2
   printf 'Waiting for your Telegram message...\n' >&2
-  printf 'This can take up to 2 minutes.\n' >&2
 
   while true; do
     start=$(date +%s)
@@ -1133,10 +1214,18 @@ prompt_operator_honorific() {
   fi
 }
 
+gateway_manual_command() {
+  if [[ "$gateway_instance_name" == "dev" ]]; then
+    printf 'SMITHERSBOT_INSTANCE=dev node scripts/run-node.mjs gateway\n'
+  else
+    printf 'node scripts/run-node.mjs gateway\n'
+  fi
+}
+
 print_systemd_commands() {
   info "You can start SmithersBot manually from this checkout:"
   info ""
-  info "  node scripts/run-node.mjs gateway"
+  info "  $(gateway_manual_command)"
   info ""
   info "SmithersBot must be running before Telegram commands will work."
 }
@@ -1150,15 +1239,15 @@ print_service_start_failed() {
   info ""
   info "Check status:"
   info ""
-  info "  systemctl --user status smithersbot-gateway.service --no-pager"
+  info "  systemctl --user status $gateway_service_unit --no-pager"
   info ""
   info "View logs:"
   info ""
-  info "  journalctl --user -u smithersbot-gateway.service -n 120 --no-pager"
+  info "  journalctl --user -u $gateway_service_unit -n 120 --no-pager"
   info ""
   info "You can also start SmithersBot manually from this checkout:"
   info ""
-  info "  node scripts/run-node.mjs gateway"
+  info "  $(gateway_manual_command)"
 }
 
 wait_for_gateway_service() {
@@ -1166,7 +1255,7 @@ wait_for_gateway_service() {
   wait_seconds=${SMITHERSBOT_SETUP_SERVICE_WAIT_SECONDS:-10}
   deadline=$(($(date +%s) + wait_seconds))
   while true; do
-    if systemctl --user is-active smithersbot-gateway.service >/dev/null 2>&1; then
+    if systemctl --user is-active "$gateway_service_unit" >/dev/null 2>&1; then
       return 0
     fi
     now=$(date +%s)
@@ -1180,7 +1269,7 @@ offer_systemd() {
   local answer service_path install_log
   SETUP_RUN_MODE="manual"
   printf 'Do you want SmithersBot to run in the background and keep working after you close this terminal?\n' >&2
-  printf 'This installs and starts the user service: smithersbot-gateway.service\n' >&2
+  printf 'This installs and starts the user service: %s\n' "$gateway_service_unit" >&2
   printf '[Y/n]: ' >&2
   IFS= read -r answer
   case "$answer" in
@@ -1192,7 +1281,11 @@ offer_systemd() {
       fi
       info "Installing user service..."
       install_log=$(mktemp)
-      if ! scripts/install-smithersbot-user-service.sh >"$install_log" 2>&1; then
+      local install_args=()
+      if [[ "$gateway_instance_name" == "dev" ]]; then
+        install_args=(--instance dev)
+      fi
+      if ! scripts/install-smithersbot-user-service.sh "${install_args[@]}" >"$install_log" 2>&1; then
         info "Installing user service failed. Last log lines:"
         tail -n 80 "$install_log" >&2 || true
         rm -f "$install_log"
@@ -1201,7 +1294,7 @@ offer_systemd() {
         return 0
       fi
       rm -f "$install_log"
-      service_path="$HOME/.config/systemd/user/smithersbot-gateway.service"
+      service_path="$HOME/.config/systemd/user/$gateway_service_unit"
       info "$(success_marker) Wrote user service:"
       info "  $service_path"
       info ""
@@ -1211,7 +1304,7 @@ offer_systemd() {
         return 0
       fi
       info "Starting SmithersBot..."
-      if ! run_captured_command "Starting SmithersBot" systemctl --user enable --now smithersbot-gateway.service; then
+      if ! run_captured_command "Starting SmithersBot" systemctl --user enable --now "$gateway_service_unit"; then
         SETUP_RUN_MODE="failed"
         print_service_start_failed
         return 0
@@ -1261,7 +1354,7 @@ print_setup_complete() {
   info ""
   if [[ "$run_mode" == "service" ]]; then
     info "$(success_marker) SmithersBot is running:"
-    info "  smithersbot-gateway.service"
+    info "  $gateway_service_unit"
     info ""
     info "SmithersBot may take 1-2 minutes to answer the first Telegram message."
     info ""
@@ -1269,7 +1362,7 @@ print_setup_complete() {
   else
     info "Start SmithersBot from this checkout:"
     info ""
-    info "  node scripts/run-node.mjs gateway"
+    info "  $(gateway_manual_command)"
     info ""
     info "After it starts, open Telegram and send:"
   fi
@@ -1288,12 +1381,13 @@ print_setup_complete() {
     info ""
     info "View logs:"
     info ""
-    info "  journalctl --user -u smithersbot-gateway.service -f"
+    info "  journalctl --user -u $gateway_service_unit -f"
   fi
 }
 
-config_dir="~/.smithersbot"
-state_dir="~/.smithersbot"
+instance_selection="default"
+config_dir=""
+state_dir=""
 run_build=1
 backend=""
 
@@ -1318,6 +1412,11 @@ while [[ $# -gt 0 ]]; do
       backend=$2
       shift 2
       ;;
+    --instance)
+      [[ $# -ge 2 ]] || fail "--instance requires default, stable, or dev"
+      instance_selection=$2
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -1327,6 +1426,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+select_gateway_instance "$instance_selection"
+if [[ -z "$config_dir" ]]; then
+  config_dir="~/$gateway_state_dir_name"
+fi
+if [[ -z "$state_dir" ]]; then
+  state_dir="~/$gateway_state_dir_name"
+fi
 
 case "$backend" in
   ""|codex|claude_code) ;;
@@ -1426,6 +1533,7 @@ printf 'Telegram bot token: ' >&2
 IFS= read -rs telegram_token
 printf '\n' >&2
 [[ -n "$telegram_token" ]] || fail "Telegram bot token cannot be empty"
+block_dev_same_telegram_token "$telegram_token"
 
 info "Verifying Telegram bot..."
 bot_username=$(verify_telegram_token)

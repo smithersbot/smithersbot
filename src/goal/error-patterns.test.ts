@@ -3,6 +3,7 @@ import {
   classifyProviderError,
   classifyUsageLimit,
   extractUsageLimitResetHint,
+  isTransientOverloadText,
   isUsageLimitClassReason,
 } from "./error-patterns.js";
 import {
@@ -90,6 +91,23 @@ describe("isUsageLimitClassReason", () => {
     expect(isUsageLimitClassReason("error")).toBe(false);
     expect(isUsageLimitClassReason(undefined)).toBe(false);
     expect(isUsageLimitClassReason(null)).toBe(false);
+  });
+});
+
+describe("isTransientOverloadText", () => {
+  it("detects 529 / server 5xx / overloaded as transient overload", () => {
+    expect(isTransientOverloadText("API Error: 529 Overloaded")).toBe(true);
+    expect(isTransientOverloadText("Anthropic server-side issue (overloaded)")).toBe(true);
+    expect(isTransientOverloadText("HTTP 503 service unavailable")).toBe(true);
+  });
+
+  it("does not treat a plain quota/usage limit (or 429) as transient overload", () => {
+    // These must keep the existing usage-limit/fallback behavior, not auto-retry.
+    expect(isTransientOverloadText("Codex usage limit reached")).toBe(false);
+    expect(isTransientOverloadText("API 429: too many requests")).toBe(false);
+    expect(isTransientOverloadText("You've hit your weekly usage limit.")).toBe(false);
+    expect(isTransientOverloadText(undefined)).toBe(false);
+    expect(isTransientOverloadText("")).toBe(false);
   });
 });
 

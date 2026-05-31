@@ -6,6 +6,7 @@ export {
   resolveConfigSnapshotHash,
   writeConfigFile,
 } from "./io.js";
+export * from "./gateway-instance.js";
 export { migrateLegacyConfig } from "./legacy-migrate.js";
 export * from "./paths.js";
 export * from "./runtime-overrides.js";

@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { acquireGoalOpLock, acquirePlanningLock, isGoalOpLocked } from "./goal-lock.js";
+import {
+  acquireGoalOpLock,
+  acquirePlanningLock,
+  describeGoalOpLabel,
+  isGoalOpLocked,
+} from "./goal-lock.js";
 
 let testGoalsDir: string;
 
@@ -12,6 +17,25 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(testGoalsDir, { recursive: true, force: true });
+});
+
+describe("describeGoalOpLabel", () => {
+  it("maps known labels to present-progressive operation phrases", () => {
+    expect(describeGoalOpLabel("approve")).toBe("resuming");
+    expect(describeGoalOpLabel("resume")).toBe("resuming");
+    expect(describeGoalOpLabel("answer")).toBe("applying your last answer");
+    expect(describeGoalOpLabel("edit")).toBe("updating its plan");
+    expect(describeGoalOpLabel("feedback")).toBe("incorporating your feedback");
+    expect(describeGoalOpLabel("test")).toBe("generating manual tests");
+  });
+
+  it("uses a generic phrase for unknown labels", () => {
+    expect(describeGoalOpLabel("compaction")).toBe("busy with a compaction operation");
+  });
+
+  it("falls back to 'being processed' when the label is missing", () => {
+    expect(describeGoalOpLabel(undefined)).toBe("being processed");
+  });
 });
 
 describe("acquireGoalOpLock", () => {

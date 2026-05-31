@@ -8,6 +8,8 @@ import { defaultRuntime } from "../../runtime.js";
 import { getFlagValue, getPositiveIntFlagValue, getVerboseFlag, hasFlag } from "../argv.js";
 import { registerBrowserCli } from "../browser-cli.js";
 import { registerConfigCli } from "../config-cli.js";
+import { registerDevGatewayCommand } from "./register.dev-gateway.js";
+import { DEV_GATEWAY_COMMAND_NAME, dispatchDevGatewayCli } from "../../goal/dev-gateway-cli.js";
 import { registerGoalCommand } from "./register.goal.js";
 import { registerMemoryCli, runMemoryStatus } from "../memory-cli.js";
 import { registerAgentCommands } from "./register.agent.js";
@@ -29,6 +31,8 @@ type CommandRegisterParams = {
 type RouteSpec = {
   match: (path: string[]) => boolean;
   loadPlugins?: boolean;
+  /** Skip the global doctor/config bootstrap before dispatching this route. */
+  skipConfig?: boolean;
   run: (argv: string[]) => Promise<boolean>;
 };
 
@@ -88,6 +92,17 @@ const routeAgentsList: RouteSpec = {
     await agentsListCommand({ json, bindings }, defaultRuntime);
     return true;
   },
+};
+
+// The dev-gateway subcommand is the sanctioned host-mediated path to drive
+// smithersbot-dev-gateway.service. It must dispatch BEFORE the global config
+// bootstrap (which reads the hard-denied stable config ~/.smithersbot/
+// smithersbot.json), so it routes here with skipConfig and runs its own minimal
+// dev-context preflight inside dispatchDevGatewayCli.
+const routeDevGateway: RouteSpec = {
+  match: (path) => path[0] === DEV_GATEWAY_COMMAND_NAME,
+  skipConfig: true,
+  run: async (argv) => dispatchDevGatewayCli(argv),
 };
 
 const routeMemoryStatus: RouteSpec = {
@@ -156,6 +171,11 @@ export const commandRegistry: CommandRegistration[] = [
   {
     id: "goal",
     register: ({ program }) => registerGoalCommand(program),
+  },
+  {
+    id: "dev-gateway",
+    register: ({ program }) => registerDevGatewayCommand(program),
+    routes: [routeDevGateway],
   },
 ];
 

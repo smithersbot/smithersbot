@@ -13,6 +13,9 @@ import {
   buildGoalSummary,
   buildSuccessorMap,
   clampBackendForEnabledWorkers,
+  computeTransientBackoffMs,
+  isBackendNetworkCapable,
+  MAX_TRANSIENT_RETRY_ATTEMPTS,
   pickFallbackBackend,
   pickNextTask,
   recordTaskResult,
@@ -24,6 +27,7 @@ import {
 import { aggregateBlockedDetails } from "./blocked.js";
 import {
   classifyUsageLimit,
+  isTransientOverloadText,
   isUsageLimitClassReason,
   type UsageLimitClassReason,
 } from "./error-patterns.js";
@@ -48,7 +52,8 @@ import {
 } from "./build-gate.js";
 import type { GoalOutputChannel } from "./compact-output.js";
 import { CliTaskRunner } from "./cli-runner.js";
-import { HARD_DENIES } from "./hard-deny.js";
+import { buildDevWorkspaceHardDenies, HARD_DENIES } from "./hard-deny.js";
+import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
 import {
   autosaveIfDirty,
   buildGitHubBranchUrl,
@@ -424,6 +429,13 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     }
   }
 
+  // Dev-gateway workspace workers get a dev-aware hard-deny policy (allowing only
+  // the dev unit's systemctl/journalctl commands) while stable stays protected.
+  // Detection is checkout/cwd-based guidance and never alters runtime config.
+  const goalDenyPolicy = resolveDevGatewayWorkerContext({ workingDir }).active
+    ? buildDevWorkspaceHardDenies(HARD_DENIES)
+    : HARD_DENIES;
+
   const piRunner = new PiTaskRunner({
     workingDir,
     runId,
@@ -504,10 +516,36 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     const taskStartMs = Date.now();
     const taskTimeoutMs = resolveTaskTimeoutMs(task.durationMinutes, timeoutMs);
 
+    const networkCapable = (candidate: GoalBackendId): boolean =>
+      isBackendNetworkCapable(candidate, availability);
     let backend = clampBackendForEnabledWorkers(
-      resolveBackendForStep(task, backendOverride, defaultBackend),
+      resolveBackendForStep(task, backendOverride, defaultBackend, {
+        networkCapable,
+        networkCandidates: resolvedEnabledWorkers,
+      }),
       resolvedEnabledWorkers,
     );
+
+    // A network-required step must not run on a backend that cannot enable
+    // network. resolveBackendForStep reroutes when a capable backend exists; if
+    // none does, block deterministically (capability_blocked) instead of running
+    // without network or surfacing a vague retryable process error.
+    if (task.requiresNetwork === true && !networkCapable(backend)) {
+      const attempted = resolvedEnabledWorkers.filter((candidate) => candidate !== backend);
+      const attemptedNote =
+        attempted.length > 0
+          ? ` No network-capable backend available (also checked: ${attempted.join(", ")}).`
+          : " No alternate backend was available to take it over.";
+      const msg = `Step requires network but backend '${backend}' cannot enable it.${attemptedNote}`;
+      task.status = "blocked";
+      task.blockedReason = "capability_blocked";
+      task.blockedQuestion = msg;
+      onProgress?.(`  [blocked] ${msg}`);
+      recordTaskResult(session, task, taskStartMs, onTaskUpdate);
+      lastExecutedId = task.id;
+      continue;
+    }
+
     const availabilityResult = isBackendAvailable(backend, availability);
     if (!availabilityResult.available) {
       const reason = availabilityResult.reason ? `: ${availabilityResult.reason}` : "";
@@ -557,8 +595,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     let latestResult: TaskRunnerResult | null = null;
     let fallbackAttempted = false;
     const usageLimitEvents: UsageLimitEvent[] = [];
+    // Auto-retries spent on the same transient backend/system failure class
+    // (529 overloaded / transient server 5xx). Capped at
+    // MAX_TRANSIENT_RETRY_ATTEMPTS so a transient blip stays in a retrying state
+    // and never immediately surfaces as a user-facing block. Every path through
+    // the body below ends in `continue` (retry) or `break` (terminal), so the
+    // loop terminates without relying on a fixed attempt ceiling.
+    let transientRetryAttempts = 0;
+    // The inner guards (attempt < maxAttempts; transientRetryAttempts budget)
+    // decide when to stop; this ceiling just bounds the loop above the larger of
+    // the two budgets so transient auto-retries can exceed maxAttempts.
+    const attemptCeiling = Math.max(maxAttempts, MAX_TRANSIENT_RETRY_ATTEMPTS);
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (let attempt = 1; attempt <= attemptCeiling; attempt++) {
       const attemptBundles = loadAttemptBundles(workerDir);
 
       const completedSummaries = orderedSteps
@@ -571,10 +620,11 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         goal: session.goal,
         workingDir,
         runId,
-        denyPolicy: HARD_DENIES,
+        denyPolicy: goalDenyPolicy,
         completedSummaries,
         resumeAnswer,
         resumeQuestion,
+        resumeNotes: session.resumeNotes ?? [],
         attemptBundles,
         onProgress,
         abortSignal: effectiveAbort,
@@ -597,11 +647,59 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       if (isUsageOrRateLimit && backend !== "pi") {
         const limitReason = result.blockedReason as UsageLimitClassReason;
+        const limitText = task.blockedQuestion ?? result.question ?? "";
+
+        // A *transient* provider overload (Claude 529 / server 5xx /
+        // "overloaded") is not a quota limit: it clears on its own. Auto-retry on
+        // the same backend with exponential backoff and keep the run in a
+        // retrying state instead of surfacing a user-facing block. Only after the
+        // transient retry budget is exhausted do we fall through to the usage
+        // limit fallback/paused handling below.
+        if (
+          isTransientOverloadText(limitText) &&
+          transientRetryAttempts < MAX_TRANSIENT_RETRY_ATTEMPTS - 1
+        ) {
+          transientRetryAttempts += 1;
+          const latestAttempt = latestBundles.at(-1);
+          if (latestAttempt) {
+            appendRetryContext(
+              runId,
+              task.id,
+              formatAttemptBundleSummary(latestAttempt),
+              latestAttempt.attemptNumber,
+            );
+          }
+          appendWorkerFallbackHistoryEvent({
+            workingDir,
+            runId,
+            stepId: task.id,
+            attemptNumber: attempt + 1,
+            backend,
+            event: "transient_overload_retry",
+            status: "pending",
+            errorClass: "transient_overload",
+            onProgress,
+          });
+          task.turnsUsed = 0;
+          task.status = "pending";
+          task.blockedReason = undefined;
+          task.blockedQuestion = undefined;
+          task.failedDetail = undefined;
+          onProgress?.(
+            `  [retrying] Transient backend overload; auto-retry ${
+              transientRetryAttempts + 1
+            }/${MAX_TRANSIENT_RETRY_ATTEMPTS} after backoff.`,
+          );
+          await new Promise((r) =>
+            setTimeout(r, computeTransientBackoffMs(transientRetryAttempts - 1, retryDelayMs)),
+          );
+          continue;
+        }
+
         // out_of_credits is quota exhaustion; surface it as a usage limit (not a
         // transient rate limit) in user-facing messaging.
         const eventKind: UsageLimitKind =
           limitReason === "rate_limit" ? "rate_limit" : "usage_limit";
-        const limitText = task.blockedQuestion ?? result.question ?? "";
         const usageLimitEvent: UsageLimitEvent = {
           kind: eventKind,
           ...classifyUsageLimit({ backend, text: limitText }),
@@ -628,6 +726,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               resolvedEnabledWorkers,
               availability,
               backendOverride,
+              { requiresNetwork: task.requiresNetwork === true, networkCapable },
             );
 
         if (fallback.backend && attempt < maxAttempts) {

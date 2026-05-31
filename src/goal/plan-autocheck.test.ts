@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
-import { buildAutocheckPrompt, runPlanAutocheck } from "./plan-autocheck.js";
+import {
+  buildAutocheckPrompt,
+  checkPlanWorkingDir,
+  formatReviewerResetTime,
+  runPlanAutocheck,
+  summarizeReviewerFailureReason,
+} from "./plan-autocheck.js";
 import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
@@ -39,6 +45,14 @@ const mockDetectBackendAvailability = vi.hoisted(() =>
 vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: () => mockGetCodexAskForApprovalPlacement(),
   detectBackendAvailability: () => mockDetectBackendAvailability(),
+  isBackendAvailable: (
+    backend: string,
+    availability: { id: string; available: boolean; reason?: string }[],
+  ) => {
+    const entry = availability.find((item) => item.id === backend);
+    if (!entry) return { available: false, reason: "Unknown backend" };
+    return entry.available ? { available: true } : { available: false, reason: entry.reason };
+  },
 }));
 
 const mockBuildClaudeCodeSandboxLaunchConfig = vi.hoisted(() =>
@@ -684,7 +698,14 @@ describe("runPlanAutocheck", () => {
     expect(revisionCall.editInstructions).toContain("Raw response excerpt");
   });
 
-  it("throws a descriptive error when reviewer subprocess fails on a fresh run", async () => {
+  it("throws a descriptive error when the only available reviewer backend fails on a fresh run", async () => {
+    // Only Claude Code is available, so there is no alternate to fall back to:
+    // the single backend's failure surfaces directly.
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: true },
+    ]);
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({
         stdout: "",
@@ -703,8 +724,115 @@ describe("runPlanAutocheck", () => {
         commitRevision: vi.fn(),
       }),
     ).rejects.toThrow(/Plan autocheck worker failed: boom/);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
 
     expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    const roundDir = path.join(tmpDir, "run-fresh-fail", "autocheck", "round-1");
+    const metadataPath = path.join(roundDir, "metadata.json");
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as {
+      failure?: { reason?: string; metadataPath?: string; artifactPaths?: string[] };
+    };
+    expect(metadata.failure?.reason).toContain("Plan autocheck worker failed: boom");
+    expect(metadata.failure?.metadataPath).toBe(metadataPath);
+    expect(metadata.failure?.artifactPaths).toContain(path.join(roundDir, "failure.txt"));
+    expect(fs.readFileSync(path.join(roundDir, "failure.txt"), "utf8")).toContain("boom");
+  });
+
+  it("keeps the stable workingDir as the reviewer cwd while adding observed read roots", async () => {
+    const stableWorkingDir = path.join(
+      tmpDir,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    const observedDevAgentRoot = path.join(tmpDir, "smithersbot-dev-home", "agent");
+    const observedDevWorkspacesRoot = path.join(observedDevAgentRoot, "workspaces");
+    const observedDevHistoryRoot = path.join(observedDevAgentRoot, "history");
+    const readOnlyRoots = [observedDevAgentRoot, observedDevWorkspacesRoot, observedDevHistoryRoot];
+    fs.mkdirSync(stableWorkingDir, { recursive: true });
+    const initialPlan = { ...makePlan("Observed read roots"), workingDir: stableWorkingDir };
+    mockRunCliProcess.mockImplementationOnce(async (call: { cwd: string; args: string[] }) => {
+      expect(call.cwd).toBe(stableWorkingDir);
+      const prompt = call.args.at(-1) ?? "";
+      expect(prompt).toContain(`"workingDir": "${stableWorkingDir}"`);
+      expect(prompt).not.toContain(`"workingDir": "${observedDevWorkspacesRoot}"`);
+      return cliResult({ stdout: '{"approved":true}\n' });
+    });
+
+    const result = await runPlanAutocheck({
+      plan: initialPlan,
+      goalText: "Verify observed dev surface",
+      mode: "codex",
+      workingDir: stableWorkingDir,
+      readOnlyRoots,
+      runDir: runPath(tmpDir, "run-observed-read-roots"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.plan.workingDir).toBe(stableWorkingDir);
+    expect(mockWriteCodexNativeSandboxConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workingDir: stableWorkingDir,
+        readOnlyRoots,
+      }),
+    );
+  });
+
+  it("rejects an out-of-instance plan workingDir up front (no reviewer spawn) and feeds the revision the actionable edit", async () => {
+    // Stable instance: workspaces root resolves under SMITHERSBOT_GOALS_ROOT.
+    const validWorkingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    fs.mkdirSync(validWorkingDir, { recursive: true });
+    // makePlan() points at /tmp/workspace, which is outside the instance root.
+    const invalidPlan = makePlan("Drifted workingDir");
+    const revisedPlan = { ...makePlan("Fixed workingDir", "2"), workingDir: validWorkingDir };
+
+    mockRunCliPlanRevision.mockResolvedValueOnce({ plan: revisedPlan });
+    // Round 2 reviewer (only invoked AFTER the workingDir is fixed) approves.
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}\n' }));
+
+    const commitRevision = vi.fn();
+    const result = await runPlanAutocheck({
+      plan: invalidPlan,
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: validWorkingDir,
+      runDir: runPath(tmpDir, "run-workingdir-guard"),
+      commitRevision,
+      workspacePolicy: {
+        env: { ...process.env, SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+      },
+    });
+
+    // Round 1 was the programmatic workingDir rejection — no reviewer process.
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliPlanRevision).toHaveBeenCalledTimes(1);
+    const revisionArgs = mockRunCliPlanRevision.mock.calls[0]?.[0] as { editInstructions: string };
+    expect(revisionArgs.editInstructions).toContain("/tmp/workspace");
+    expect(revisionArgs.editInstructions).toContain("not an allowed executable goal working");
+    expect(commitRevision).toHaveBeenCalledTimes(1);
+    expect(result.approved).toBe(true);
+    expect(result.plan.workingDir).toBe(validWorkingDir);
+  });
+
+  it("skips the up-front workingDir guard when no workspacePolicy identity is supplied", async () => {
+    // Back-compat: callers that validated upstream omit workspacePolicy, so the
+    // reviewer runs even for a plan workingDir outside the test managed root.
+    const initialPlan = makePlan("No policy supplied");
+    mockRunCliProcess.mockResolvedValueOnce(cliResult({ stdout: '{"approved":true}\n' }));
+
+    const result = await runPlanAutocheck({
+      plan: initialPlan,
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: path.join(tmpDir, "workspace"),
+      runDir: runPath(tmpDir, "run-no-policy"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    expect(result.approved).toBe(true);
   });
 
   it("falls back to Codex when the Claude reviewer hits a usage limit", async () => {
@@ -816,6 +944,117 @@ describe("runPlanAutocheck", () => {
       }),
     ).rejects.toThrow(/Claude Code hit a usage limit[\s\S]*Codex hit a usage limit/);
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to Claude Code when the Codex reviewer fails on a noninteractive-stdin error", async () => {
+    // The "Reading additional input from stdin..." failure is NOT a usage limit;
+    // it must still trigger backend failover instead of a silent skip.
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "Reading additional input from stdin...",
+          exitCode: 1,
+          signal: null,
+        }),
+      )
+      .mockResolvedValueOnce(cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }));
+
+    const runId = "run-codex-stdin-fallback";
+    const result = await runPlanAutocheck({
+      plan: makePlan("Stdin fallback codex"),
+      goalText: "Ship feature",
+      mode: "codex",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, runId),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+  });
+
+  it("falls back to Codex when the Claude reviewer fails on a noninteractive-stdin error", async () => {
+    mockRunCliProcess
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: "",
+          stderr: "Reading additional input from stdin...",
+          exitCode: 1,
+          signal: null,
+        }),
+      )
+      .mockResolvedValueOnce(
+        cliResult({
+          stdout: `${JSON.stringify({ type: "result", result: JSON.stringify({ approved: true }) })}\n`,
+        }),
+      );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Stdin fallback claude"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-stdin-fallback"),
+      commitRevision: vi.fn(),
+    });
+
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "codex" });
+  });
+
+  it("uses Codex when the configured Claude backend is unavailable on PATH (no silent skip)", async () => {
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({
+        stdout: `${JSON.stringify({ type: "result", result: JSON.stringify({ approved: true }) })}\n`,
+      }),
+    );
+
+    const result = await runPlanAutocheck({
+      plan: makePlan("Configured backend unavailable"),
+      goalText: "Ship feature",
+      mode: "claude_code",
+      workingDir: tmpDir,
+      runDir: runPath(tmpDir, "run-claude-unavailable"),
+      commitRevision: vi.fn(),
+    });
+
+    // Autocheck is enabled and must not be silently skipped: the only available
+    // backend (Codex) is used even though the configured backend was Claude.
+    expect(result.approved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+  });
+
+  it("throws a clear actionable error when no reviewer backend is available", async () => {
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: false, reason: "claude not found on PATH" },
+    ]);
+
+    await expect(
+      runPlanAutocheck({
+        plan: makePlan("No backend available"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-no-backend"),
+        commitRevision: vi.fn(),
+      }),
+    ).rejects.toThrow(
+      /no review backend is available[\s\S]*codex unavailable[\s\S]*claude_code unavailable/,
+    );
+    expect(mockRunCliProcess).not.toHaveBeenCalled();
   });
 
   it("uses workingDir as reviewer cwd so the checker can inspect repo files", async () => {
@@ -1107,6 +1346,13 @@ describe("runPlanAutocheck", () => {
   it("degrades to approve with warning when resume and fresh fallback both fail", async () => {
     const runDir = runPath(tmpDir, "run-resume-fallback-double-fail");
 
+    // Only Claude Code is available, so the fresh fallback has no alternate
+    // backend to try: resume(claude) -> fresh(claude) both fail, then degrade.
+    mockDetectBackendAvailability.mockReturnValueOnce([
+      { id: "pi", available: false },
+      { id: "codex", available: false, reason: "codex not found on PATH" },
+      { id: "claude_code", available: true },
+    ]);
     mockRunCliProcess
       .mockResolvedValueOnce(
         cliResult({
@@ -1393,6 +1639,52 @@ describe("runPlanAutocheck", () => {
     expect(prompt).not.toContain("Do not repeat this context note");
   });
 
+  it("injects dev-gateway verification guidance only for the smithersbot-dev checkout", () => {
+    const devDir = path.join(os.tmpdir(), "smithersbot-home", "workspaces", "smithersbot-dev");
+    const devPrompt = buildAutocheckPrompt({
+      goalText: "Change gateway restart behavior",
+      plan: makePlan("Dev gateway change", "1", "claude_code"),
+      workingDir: devDir,
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+
+    expect(devPrompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(devPrompt).toContain("smithersbot-dev-gateway.service");
+    expect(devPrompt).toContain("REJECT the plan if it verifies only with build/lint");
+    // Docs/tests-only and ordinary project goals stay exempt.
+    expect(devPrompt).toContain("Do NOT require dev-gateway verification for docs-only");
+
+    // Use a literal absolute path OUTSIDE the dev checkout. Under vitest,
+    // os.tmpdir() itself resolves under the real smithersbot-dev workspace, so a
+    // tmpdir-based path would (correctly) be detected as the dev checkout.
+    const nonDevPrompt = buildAutocheckPrompt({
+      goalText: "Change gateway restart behavior",
+      plan: makePlan("Ordinary change", "1", "claude_code"),
+      workingDir: "/tmp/some-other-project",
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+    expect(nonDevPrompt).not.toContain("DEV GATEWAY VERIFICATION");
+  });
+
+  it("injects dev-gateway verification guidance on resume prompts too", () => {
+    const devDir = path.join(os.tmpdir(), "workspaces", "smithersbot-dev");
+    const prompt = buildAutocheckPrompt({
+      goalText: "Change worker prompt injection",
+      plan: makePlan("Dev resume change", "1", "claude_code"),
+      workingDir: devDir,
+      resume: true,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+    expect(prompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
+    expect(prompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(prompt).toContain("You are continuing plan review in an existing reviewer session.");
+  });
+
   it("repairs malformed direct decision JSON with trailing brace", async () => {
     mockRunCliProcess.mockResolvedValueOnce(
       cliResult({
@@ -1667,6 +1959,167 @@ describe("runPlanAutocheck", () => {
       expect(roundEvents[1]).toMatchObject({ status: "approved" });
     });
   });
+
+  describe("backend-availability error rendering", () => {
+    const SYSTEM_INIT_JSON =
+      '{"type":"system","subtype":"init","cwd":"/repo","tools":["Read"],"model":"sonnet"}';
+
+    it("summarizes a worker init/system JSON blob instead of printing it raw", async () => {
+      // Only Codex is available; it emits a system/init control message (exit 1)
+      // instead of a review. The surfaced error must be summarized, never raw.
+      mockDetectBackendAvailability.mockReturnValueOnce([
+        { id: "pi", available: false },
+        { id: "codex", available: true },
+        { id: "claude_code", available: false, reason: "claude not found on PATH" },
+      ]);
+      mockRunCliProcess.mockResolvedValueOnce(
+        cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+      );
+
+      let caught: unknown;
+      try {
+        await runPlanAutocheck({
+          plan: makePlan("System init blob"),
+          goalText: "Ship feature",
+          mode: "codex",
+          workingDir: tmpDir,
+          runDir: runPath(tmpDir, "run-system-init"),
+          commitRevision: vi.fn(),
+        });
+      } catch (err) {
+        caught = err;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toContain("Plan autocheck could not run");
+      expect(message).toContain("Codex");
+      expect(message).toMatch(/system\/init message/i);
+      // Never echoes the raw JSON.
+      expect(message).not.toContain('"type"');
+      expect(message).not.toContain("{");
+
+      // The persisted skip reason (which feeds the Telegram note) is also clean.
+      const failureTxt = fs.readFileSync(
+        path.join(tmpDir, "run-system-init", "autocheck", "round-1", "failure.txt"),
+        "utf8",
+      );
+      expect(failureTxt).not.toContain("{");
+      expect(failureTxt).toMatch(/system\/init message/i);
+    });
+
+    it("falls back to the alternate reviewer backend before giving up on a system/init blob", async () => {
+      // Codex emits a system/init message; autocheck must try Claude Code rather
+      // than skipping on the first failure.
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }),
+        );
+
+      const result = await runPlanAutocheck({
+        plan: makePlan("System init fallback"),
+        goalText: "Ship feature",
+        mode: "codex",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-system-init-fallback"),
+        commitRevision: vi.fn(),
+      });
+
+      expect(result.approved).toBe(true);
+      expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+      expect(mockRunCliProcess.mock.calls[0]?.[0]).toMatchObject({ command: "codex" });
+      expect(mockRunCliProcess.mock.calls[1]?.[0]).toMatchObject({ command: "/usr/bin/claude" });
+    });
+
+    it("renders a clean, actionable message naming both backends when all reviewers fail", async () => {
+      // Codex returns a rate-limit error JSON; Claude Code returns a system/init
+      // blob. Neither produces a review, so the consolidated message must name
+      // both backends and stay free of raw JSON.
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: '{"error":{"type":"rate_limit_error","message":"429 too many requests"}}',
+            stderr: "",
+            exitCode: 1,
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: SYSTEM_INIT_JSON, stderr: SYSTEM_INIT_JSON, exitCode: 1 }),
+        );
+
+      let caught: unknown;
+      try {
+        await runPlanAutocheck({
+          plan: makePlan("All reviewers fail"),
+          goalText: "Ship feature",
+          mode: "codex",
+          workingDir: tmpDir,
+          runDir: runPath(tmpDir, "run-all-fail"),
+          commitRevision: vi.fn(),
+        });
+      } catch (err) {
+        caught = err;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).not.toContain("{");
+      expect(message).not.toContain('"type"');
+      expect(message).toContain("Codex");
+      expect(message).toContain("Claude Code");
+      expect(message).toMatch(/No reviewer backend is currently available|exhausted/i);
+    });
+  });
+});
+
+describe("summarizeReviewerFailureReason", () => {
+  it("summarizes a worker init/system JSON line without printing it", () => {
+    const raw =
+      'Plan autocheck worker failed: {"type":"system","subtype":"init","model":"sonnet"} (exit=1, signal=none)';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "claude_code" });
+    expect(summary).not.toContain("{");
+    expect(summary).toContain("Claude Code");
+    expect(summary).toMatch(/system\/init message/i);
+  });
+
+  it("classifies an out-of-usage provider JSON and appends the reset time", () => {
+    const raw =
+      '{"error":{"type":"insufficient_quota","message":"You have exceeded your quota, resets at 12:20 PM EDT"}}';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "codex" });
+    expect(summary).not.toContain("{");
+    expect(summary).toMatch(/Codex is out of usage/);
+    expect(summary).toContain("12:20 PM EDT");
+  });
+
+  it("classifies a rate-limit provider JSON", () => {
+    const raw = '{"error":{"type":"rate_limit_error","message":"429 too many requests"}}';
+    const summary = summarizeReviewerFailureReason(raw, { backend: "claude_code" });
+    expect(summary).not.toContain("{");
+    expect(summary).toMatch(/Claude Code is rate limited/);
+  });
+
+  it("passes clean (non-JSON) text through unchanged so classification is preserved", () => {
+    const raw = "monthly usage limit reached. Resets at 3pm.";
+    expect(summarizeReviewerFailureReason(raw, { backend: "codex" })).toBe(raw);
+  });
+});
+
+describe("formatReviewerResetTime", () => {
+  it("formats an epoch-seconds reset into local time for the given zone", () => {
+    // 2024-06-10T08:53:20Z -> 04:53 AM EDT in America/New_York.
+    const formatted = formatReviewerResetTime("resets at 1718009600", "America/New_York");
+    expect(formatted).toMatch(/EDT/);
+    expect(formatted).toMatch(/AM|PM/);
+  });
+
+  it("formats an ISO timestamp into local time for the given zone", () => {
+    const formatted = formatReviewerResetTime("2024-06-10T16:20:00Z", "America/New_York");
+    expect(formatted).toMatch(/12:20\s?PM/);
+    expect(formatted).toMatch(/EDT/);
+  });
+
+  it("returns a relative phrase unchanged when it has no parseable absolute time", () => {
+    expect(formatReviewerResetTime("resets in 2 hours")).toBe("resets in 2 hours");
+  });
 });
 
 describe("Stage 2Q — plan-autocheck reviewer instruction", () => {
@@ -1883,5 +2336,142 @@ describe("Stage 2Q — Stage 2P regression fixtures", () => {
     expect(REVIEW_INSTRUCTION).toContain("add-repo-chat-cli-output-extraction");
     expect(REVIEW_INSTRUCTION).toContain("IMPLEMENTATION/TEST SPLITS");
     expect(REVIEW_INSTRUCTION).toContain("TSC-ONLY LOGIC STEPS");
+  });
+});
+
+describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
+  const HOME = "/home/matt";
+  const homedir = () => HOME;
+  const asDir = () => ({ isDirectory: () => true });
+  const stable = {
+    env: { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+    homedir,
+  };
+  const dev = {
+    env: { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
+    homedir,
+  };
+
+  it("rejects a stable plan whose workingDir is the observed dev-home workspace, with actionable edit instructions", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+      { ...stable, observedInstances: ["dev"], config: { allowLegacyWorkingDir: true } },
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions).toContain(
+      "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+    );
+    // Names the correct current-instance workspaces root to steer the revision.
+    expect(decision.editInstructions).toContain("/home/matt/smithersbot-home/agent/workspaces");
+    expect(decision.editInstructions.toLowerCase()).toContain("read-only");
+  });
+
+  it("rejects a stable plan with an arbitrary out-of-root workingDir", () => {
+    for (const workingDir of ["/tmp/whatever", "/home/matt/.config/smithersbot"]) {
+      const decision = checkPlanWorkingDir(workingDir, stable);
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(workingDir);
+      expect(decision.editInstructions).toContain("/home/matt/smithersbot-home/agent/workspaces");
+    }
+  });
+
+  it("accepts a stable plan whose workingDir is under the stable agent workspaces root", () => {
+    expect(
+      checkPlanWorkingDir("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev", {
+        ...stable,
+        statPath: asDir,
+      }),
+    ).toEqual({ approved: true });
+  });
+
+  it("accepts a dev-instance plan under the dev agent workspaces root", () => {
+    expect(
+      checkPlanWorkingDir("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev", {
+        ...dev,
+        statPath: asDir,
+      }),
+    ).toEqual({ approved: true });
+  });
+
+  it("rejects a dev-instance plan that points at the stable-home workspaces root", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+      dev,
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions).toContain("/home/matt/smithersbot-dev-home/agent/workspaces");
+  });
+
+  it("hard-denies private roots even with the legacy flag enabled", () => {
+    const decision = checkPlanWorkingDir(
+      "/home/matt/smithersbot-home/private/env/smithersbot-dev",
+      { ...stable, config: { allowLegacyWorkingDir: true } },
+    );
+    expect(decision.approved).toBe(false);
+    if (decision.approved) throw new Error("expected rejection");
+    expect(decision.editInstructions.toLowerCase()).toContain("private");
+  });
+
+  describe("on-disk existence / is-directory validation", () => {
+    const validDir = "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev";
+    const asFile = () => ({ isDirectory: () => false });
+
+    it("approves a valid in-root workspace directory that exists on disk", () => {
+      expect(checkPlanWorkingDir(validDir, { ...stable, statPath: asDir })).toEqual({
+        approved: true,
+      });
+    });
+
+    it("rejects a missing working directory before execution, naming the path", () => {
+      const decision = checkPlanWorkingDir(validDir, {
+        ...stable,
+        statPath: () => undefined,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(validDir);
+      expect(decision.editInstructions.toLowerCase()).toContain("does not exist");
+    });
+
+    it("rejects an existing path that is a file, not a directory", () => {
+      const decision = checkPlanWorkingDir(validDir, {
+        ...stable,
+        statPath: asFile,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions).toContain(validDir);
+      expect(decision.editInstructions.toLowerCase()).toContain("not a directory");
+    });
+
+    it("still rejects an observed-runtime workspace path even when it exists on disk", () => {
+      const decision = checkPlanWorkingDir(
+        "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev",
+        {
+          ...stable,
+          observedInstances: ["dev"],
+          config: { allowLegacyWorkingDir: true },
+          // It exists on disk, but the workspace-root guard must reject it first.
+          statPath: asDir,
+        },
+      );
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions.toLowerCase()).toContain("read-only");
+    });
+
+    it("rejects assertion/preflight wording like 'exactly /path' as a non-absolute workingDir", () => {
+      const decision = checkPlanWorkingDir(`exactly ${validDir}`, {
+        ...stable,
+        // statPath would say directory, but the value is not absolute.
+        statPath: asDir,
+      });
+      expect(decision.approved).toBe(false);
+      if (decision.approved) throw new Error("expected rejection");
+      expect(decision.editInstructions.toLowerCase()).toContain("absolute");
+    });
   });
 });

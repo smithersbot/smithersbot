@@ -84,6 +84,14 @@ vi.mock("../goal/cli-planner.js", () => ({
 
 const mockRunPlanAutocheck = vi.fn();
 vi.mock("../goal/plan-autocheck.js", () => ({
+  PlanAutocheckError: class PlanAutocheckError extends Error {
+    readonly metadata: unknown;
+    constructor(message: string, metadata: unknown) {
+      super(message);
+      this.name = "PlanAutocheckError";
+      this.metadata = metadata;
+    }
+  },
   runPlanAutocheck: (...args: unknown[]) => mockRunPlanAutocheck(...args),
 }));
 
@@ -93,6 +101,23 @@ vi.mock("../goal/git-checkpoint.js", async (importOriginal) => {
   return {
     ...actual,
     ensureWorkingDir: (...args: unknown[]) => mockEnsureWorkingDir(...args),
+  };
+});
+
+// Shared goal-execution guard: default no-op so existing telegram tests keep their
+// fixture working dirs; dedicated tests delegate to the REAL helper to prove an
+// edited/approved out-of-instance workingDir is rejected before ensureWorkingDir
+// or dispatch from the telegram flow.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("../goal/workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
+vi.mock("../goal/workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../goal/workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
   };
 });
 
@@ -500,6 +525,11 @@ describe("goal-commands telegram adapter", () => {
           },
         ],
       } as const;
+      const readOnlyRoots = [
+        "/Users/test/smithersbot-dev-home/agent",
+        "/Users/test/smithersbot-dev-home/agent/workspaces",
+        "/Users/test/smithersbot-dev-home/agent/history",
+      ];
 
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
@@ -524,7 +554,7 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Build a website", {
-        goal: { planAutocheck: "codex" },
+        goal: { planAutocheck: "codex", readOnlyRoots },
       } as never);
 
       expect(mockGoalCommand).toHaveBeenCalledOnce();
@@ -540,6 +570,8 @@ describe("goal-commands telegram adapter", () => {
           existingSessionId: undefined,
           existingBackend: undefined,
           mode: "codex",
+          workingDir: "/tmp/ws",
+          readOnlyRoots,
         }),
       );
 
@@ -559,7 +591,15 @@ describe("goal-commands telegram adapter", () => {
           return undefined;
         },
       );
-      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+      mockRunPlanAutocheck.mockRejectedValue(
+        Object.assign(new Error("autocheck failed"), {
+          metadata: {
+            reason: "reviewer failed at autocheck/round-1/failure.txt",
+            agentHistoryMetadataPath:
+              "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+          },
+        }),
+      );
 
       const { handleGoal } = await import("./goal-commands.js");
       const result = await handleGoal("Build a website", {
@@ -568,8 +608,15 @@ describe("goal-commands telegram adapter", () => {
 
       expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
       expect(result.autocheckSkipped).toBe(true);
+      expect(result.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
       const persisted = loadRun(result.runId!, testGoalsDir);
       expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.autocheckSkipReason).toBe(
+        "reviewer failed at autocheck/round-1/failure.txt",
+      );
+      expect(persisted?.autocheckSkipMetadataPath).toBe(
+        "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+      );
     });
 
     it("skips autocheck in handleGoal when planAutocheck is off", async () => {
@@ -1651,7 +1698,7 @@ describe("goal-commands telegram adapter", () => {
       expect(buttonTexts).not.toContain("▶️ Resume Goal");
     });
 
-    it("sends step_blocked update for a usage-limit block as interrupted, never 'needs input'", async () => {
+    it("sends step_blocked update for a usage-limit block as paused, never 'needs input'", async () => {
       saveRunFixture(makeRun());
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 40 });
@@ -1684,8 +1731,8 @@ describe("goal-commands telegram adapter", () => {
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      // A backend usage limit is a resume-needed interruption, NOT a user-input block.
-      expect(options.caption).toContain("<b>TASK INTERRUPTED</b> (test-run): Step 1 needs resume");
+      // A backend usage limit is a resume-needed pause, NOT a user-input block.
+      expect(options.caption).toContain("<b>TASK PAUSED</b> (test-run): Step 1 - resume needed.");
       expect(options.caption).not.toContain("needs input");
       expect(options.caption).toContain("Codex");
       expect(options.caption).toContain("resets at 5pm");
@@ -2279,12 +2326,15 @@ describe("goal-commands telegram adapter", () => {
           plan,
           stepResults: new Map(),
           autocheckSkipped: true,
+          autocheckSkipReason: "reviewer failed at autocheck/round-1/failure.txt",
         },
       });
 
       expect(sendPhoto).toHaveBeenCalledOnce();
       const options = sendPhoto.mock.calls[0]?.[2] as { caption?: string };
-      expect(options.caption).toContain("Note: Plan autocheck was skipped due to an error.");
+      expect(options.caption).toContain(
+        "Note: Plan autocheck was skipped due to an error: reviewer failed at autocheck/round-1/failure.txt.",
+      );
     });
 
     it("threads reply parameters when PNG plan delivery succeeds", async () => {
@@ -2640,7 +2690,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Usage:");
     });
 
-    it("auto-resolves key, passes quiet:true, and returns short ack", async () => {
+    it("routes answers through the goal-level resume-note command without using blocked keys", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2664,32 +2714,33 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const [id, opts] = mockGoalAnswerCommand.mock.calls[0];
       expect(id).toBe("test-run-id-1234");
-      expect(opts.key).toBe("db_password");
+      expect(opts.key).toBe("");
       expect(opts.value).toBe("s3cret");
-      expect(opts.quiet).toBe(true);
-      // Returns short ack, not captured logs
+      expect(opts.quiet).toBe(false);
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
+      expect(text).toContain("Got it.");
     });
 
-    it("returns error for non-blocked run", async () => {
+    it("uses the same goal-level answer path for non-blocked runs", async () => {
       saveRunFixture(makeRun({ state: "done", blocked: null }));
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "val");
-      expect(result).toContain("not awaiting input");
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(result).toContain("Got it.");
     });
 
-    it("treats non-blocked 'resume' answers as an explicit resume request", async () => {
+    it("does not special-case non-blocked 'resume' answers into the old resume path", async () => {
       saveRunFixture(makeRun({ state: "cancelled", blocked: null }));
       mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "All steps completed." });
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "resume");
 
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       expect(typeof result).toBe("string");
-      expect(result).toContain("Executing:");
+      expect(result).toContain("Got it.");
     });
 
     it("returns error for unknown run", async () => {
@@ -2698,7 +2749,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Run not found");
     });
 
-    it("auto-resumes execution after answering a blocked run (short ack)", async () => {
+    it("does not auto-resume execution after recording an answer note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2720,12 +2771,12 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "s3cret");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
-      expect(text).not.toContain("/goal_approve");
+      expect(text).toContain("Got it.");
     });
 
-    it("returns short ack when auto-resume results in blocked again", async () => {
+    it("does not emit contradictory blocked copy after accepting an answer note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2750,13 +2801,12 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "s3cret");
 
-      // Surfaces the blocked question so the user can answer
       expect(typeof result).toBe("string");
-      expect(result).toContain("Still blocked: Need more info");
-      expect(result).toContain("/goal_answer");
+      expect(result).toContain("Got it.");
+      expect(result).not.toContain("Still blocked");
     });
 
-    it("returns GoalPlanResult with runId and blocked when replanning still needs info", async () => {
+    it("does not replan from the answer path for planning blocks", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2780,15 +2830,11 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "postgres");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
-      expect(typeof result).not.toBe("string");
-      expect(result).toHaveProperty("runId", "test-run-id-1234");
-      expect(result).toHaveProperty("blocked", true);
-      expect((result as { text: string }).text).toContain("Still need more info");
-      expect((result as { text: string }).text).toContain("PostgreSQL or MySQL?");
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      expect(result).toContain("Got it.");
     });
 
-    it("returns undefined when onStatusChange is provided (blocked path, no stray message)", async () => {
+    it("returns the accepted-note acknowledgement even when onStatusChange is provided", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2805,13 +2851,13 @@ describe("goal-commands telegram adapter", () => {
       const statusCb = vi.fn();
       const result = await handleGoalAnswer("test-run", "s3cret", statusCb);
 
-      expect(result).toBeUndefined();
+      expect(result).toContain("Got it.");
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
-      expect(typeof opts.onStatusChange).toBe("function");
+      expect(opts.onStatusChange).toBeUndefined();
     });
 
-    it("suppresses duplicate blocked reply when resume emitted fully_blocked event", async () => {
+    it("does not surface stale fully-blocked events from the answer command", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2842,12 +2888,12 @@ describe("goal-commands telegram adapter", () => {
       const statusCb = vi.fn();
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
-      expect(result).toBeUndefined();
+      expect(result).toContain("Got it.");
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(statusCb).toHaveBeenCalledWith(expect.objectContaining({ type: "fully_blocked" }));
+      expect(statusCb).not.toHaveBeenCalled();
     });
 
-    it("returns blocked reply when resume blocks before status callback emits", async () => {
+    it("does not return stale blocked reply copy after accepting a resume note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2871,7 +2917,8 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(result).toContain("Still blocked: Need credentials");
+      expect(result).toContain("Got it.");
+      expect(result).not.toContain("Still blocked");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {
@@ -3372,7 +3419,15 @@ describe("goal-commands telegram adapter", () => {
           ],
         },
       });
-      mockRunPlanAutocheck.mockRejectedValue(new Error("autocheck failed"));
+      mockRunPlanAutocheck.mockRejectedValue(
+        Object.assign(new Error("autocheck failed"), {
+          metadata: {
+            reason: "reviewer failed at autocheck/round-1/failure.txt",
+            agentHistoryMetadataPath:
+              "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+          },
+        }),
+      );
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
       const { handleGoalEdit } = await import("./goal-commands.js");
@@ -3382,8 +3437,13 @@ describe("goal-commands telegram adapter", () => {
 
       expect(mockRunPlanAutocheck).toHaveBeenCalledOnce();
       expect(result.autocheckSkipped).toBe(true);
+      expect(result.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
       const run = loadRun("test-run-id-1234", testGoalsDir);
       expect(run?.state).toBe("awaiting_approval");
+      expect(run?.autocheckSkipReason).toBe("reviewer failed at autocheck/round-1/failure.txt");
+      expect(run?.autocheckSkipMetadataPath).toBe(
+        "/agent/history/goals/ws/run/runtime/autocheck/round-1/metadata.json",
+      );
     });
 
     it("skips autocheck in handleGoalEdit when planAutocheck is off", async () => {
@@ -5277,10 +5337,9 @@ describe("goal-commands telegram adapter", () => {
       expect(findRunnableSteps(run.plan!.steps).map((s) => s.id)).toEqual(["parent-a"]);
     });
 
-    it("gResume:<id> Resume button resumes through goalResumeCommand and normalizes answered parents", async () => {
+    it("gResume:<id> Resume button records a goal-level resume note and schedules blocked parents", async () => {
       const runId = "cccccccc-1111-2222-3333-444444444444";
       saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
-      mockGoalResumeCommand.mockImplementation(normalizingResume());
 
       const harness = makeResumeHarness();
       await harness.register();
@@ -5293,22 +5352,24 @@ describe("goal-commands telegram adapter", () => {
       });
 
       await waitForResume(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalled();
-        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
-      });
-      await waitForResume(() => {
-        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        const run = loadRun(runId, testGoalsDir)!;
+        const steps = stepsById(run);
         expect(steps.get("parent-a")!.status).toBe("pending");
         expect(steps.get("parent-b")!.status).toBe("pending");
+        expect(run.resumeNotes?.[0]).toEqual(
+          expect.objectContaining({
+            source: "resume",
+            affectedStepIds: ["parent-a", "parent-b"],
+          }),
+        );
       });
       const display = computeDisplayStatuses(loadRun(runId, testGoalsDir)!.plan!.steps);
       expect([...display.values()]).not.toContain("blocked");
     });
 
-    it("/goal_resume command resumes through goalResumeCommand and normalizes answered parents", async () => {
+    it("/goal_resume command records a goal-level resume note and schedules blocked parents", async () => {
       const runId = "dddddddd-1111-2222-3333-444444444444";
       saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
-      mockGoalResumeCommand.mockImplementation(normalizingResume());
 
       const harness = makeResumeHarness();
       await harness.register();
@@ -5323,13 +5384,16 @@ describe("goal-commands telegram adapter", () => {
       });
 
       await waitForResume(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalled();
-        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
-      });
-      await waitForResume(() => {
-        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        const run = loadRun(runId, testGoalsDir)!;
+        const steps = stepsById(run);
         expect(steps.get("parent-a")!.status).toBe("pending");
         expect(steps.get("parent-b")!.status).toBe("pending");
+        expect(run.resumeNotes?.[0]).toEqual(
+          expect.objectContaining({
+            source: "goal_resume",
+            affectedStepIds: ["parent-a", "parent-b"],
+          }),
+        );
       });
     });
 
@@ -5363,7 +5427,7 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
-    it("Add Details / answer reply routes into handleGoalAnswer -> goalAnswerCommand with the multi-task key", async () => {
+    it("Add Details / answer reply routes into handleGoalAnswer without the multi-task key", async () => {
       // The gAD ForceReply reply handler calls handleGoalAnswer(runId, value)
       // (registerTelegramGoalCommands message handler). handleGoalAnswer forwards
       // an execution-time block to goalAnswerCommand, whose auto-resume then
@@ -5378,13 +5442,13 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const [id, opts] = mockGoalAnswerCommand.mock.calls[0];
       expect(id).toBe(runId);
-      expect(opts.key).toBe("tasks:parent-a,parent-b:input");
+      expect(opts.key).toBe("");
       expect(opts.value).toBe("go ahead");
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
+      expect(text).toContain("Got it.");
     });
 
-    it("resume_execution auto-retry resumes through goalResumeCommand without storing fake user input", async () => {
+    it("resume_execution answer text is recorded through goalAnswerCommand without storing fake user input", async () => {
       const runId = "12121212-1111-2222-3333-444444444444";
       // An interrupted run recovers as state "executing"; an active lock keeps
       // loadRun from reconciling it back to a stale block.
@@ -5409,9 +5473,8 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       await handleGoalAnswer(runId, "anything the user typed");
 
-      // Resumed directly, with no fake answer injected into the run.
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
       const run = loadRun(runId, testGoalsDir)!;
       expect(run.answers).toEqual({});
     });
@@ -5751,8 +5814,7 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.telegramQuestionMessages?.[0]).toEqual({
         chatId: 42,
         messageId: 779,
-        threadId: undefined,
-        requiredInputKey: "task:1:input",
+        requiredInputKey: "add_details",
       });
     });
 
@@ -6110,6 +6172,60 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("/goal_resume records the resume note even when the run lock is held", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "fix-usage-status-refresh",
+                description: "Fix usage status refresh",
+                shortSummary: "Fix usage status refresh",
+                dependsOn: [],
+                status: "in_progress",
+                durationMinutes: 1,
+              },
+              {
+                id: "retry-blocked-step",
+                description: "Retry blocked step",
+                shortSummary: "Retry blocked step",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need details?",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
+
+      const harness = makeHarness();
+      await harness.register();
+
+      // Another operation (answer) is already holding the run lock.
+      const held = acquireGoalOpLock("test-run-id-1234", "answer");
+      expect(held.acquired).toBe(true);
+      try {
+        await harness.commandHandlers.goal_resume?.(makeCommandCtx("test-run", 805));
+
+        await waitForAssertion(() => {
+          expect(
+            harness.sendMessage.mock.calls.some(
+              (call) => String(call[1]).includes("Got it.") && hasReplyMessageId(call, 805),
+            ),
+          ).toBe(true);
+        });
+      } finally {
+        if (held.acquired) held.release();
+      }
+    });
+
     it("threads replies for /goal_approve usage responses", async () => {
       const harness = makeHarness();
       await harness.register();
@@ -6291,7 +6407,7 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
-    it("threads replies for /goal_answer usage, run-not-found, and lock responses", async () => {
+    it("threads replies for /goal_answer usage, run-not-found, and concurrent responses", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -6332,16 +6448,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run value", 914));
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run other", 915));
 
-      expect(
-        harness.sendMessage.mock.calls.some(
-          (call) =>
-            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 915),
-        ),
-      ).toBe(true);
-
       resolveAnswer?.({ status: "blocked", question: "Need details" });
       await waitForAssertion(() => {
-        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(1);
+        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -6383,7 +6492,9 @@ describe("goal-commands telegram adapter", () => {
       expect(
         harness.sendMessage.mock.calls.some(
           (call) =>
-            String(call[1]).includes("already being processed") && hasReplyMessageId(call, 919),
+            String(call[1]).includes("is already") &&
+            String(call[1]).includes("after the current operation finishes") &&
+            hasReplyMessageId(call, 919),
         ),
       ).toBe(true);
 
@@ -6406,12 +6517,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run continue", 909));
 
       await waitForAssertion(() => {
-        expect(
-          harness.sendMessage.mock.calls.some(
-            (call) =>
-              String(call[1]).includes("Run is not awaiting input") && hasReplyMessageId(call, 909),
-          ),
-        ).toBe(true);
+        expect(harness.sendMessage.mock.calls.some((call) => hasReplyMessageId(call, 909))).toBe(
+          true,
+        );
       });
     });
 
@@ -6434,11 +6542,11 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run postgres", 910));
 
       await waitForAssertion(() => {
-        const hasPhotoReply = harness.sendPhoto.mock.calls.some((call) => {
-          const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
-          return options?.reply_parameters?.message_id === 910;
-        });
-        expect(hasPhotoReply).toBe(true);
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => String(call[1]).includes("Got it.") && hasReplyMessageId(call, 910),
+          ),
+        ).toBe(true);
       });
     });
 
@@ -6495,8 +6603,29 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("buffers /goal_resume with trailing text and does not resume from the first chunk", async () => {
-      saveRunFixture(makeRun({ state: "blocked" }));
-      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need details?",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
       const { CommandFragmentBuffer, buildCommandFragmentKey } =
         await import("./command-fragments.js");
       const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
@@ -6529,9 +6658,13 @@ describe("goal-commands telegram adapter", () => {
       await commandFragmentBuffer.cancelAndFlush(key);
 
       await waitForAssertion(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
+        expect(
+          harness.sendMessage.mock.calls.some((call) => String(call[1]).includes("Got it.")),
+        ).toBe(true);
       });
-      expect(mockGoalResumeCommand.mock.calls[0]?.[0]).toBe("test-run-id-1234");
+      expect(loadRun("test-run-id-1234", testGoalsDir)?.resumeNotes?.[0]).toEqual(
+        expect.objectContaining({ source: "goal_resume" }),
+      );
     });
 
     it("threads replies for /goal_feedback background string results", async () => {
@@ -6965,5 +7098,125 @@ describe("goal-commands telegram adapter", () => {
       const { findRunByPlanMessageId } = await import("./goal-commands.js");
       expect(findRunByPlanMessageId(123, 456)).toBeUndefined();
     });
+  });
+});
+
+describe("telegram goal commands — current-instance workspace guard", () => {
+  let managedRoot: string;
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
+  const DEV_HOME = "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+  const ARBITRARY = "/tmp/tg-not-a-workspace-xyz";
+
+  beforeEach(() => {
+    testGoalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-guard-"));
+    vi.clearAllMocks();
+    managedRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "goal-tg-managed-")));
+    process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+    delete process.env.SMITHERSBOT_INSTANCE; // default (stable) instance
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+  });
+
+  afterEach(() => {
+    mockAssertGoalWorkerWorkspace.mockReset();
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
+    fs.rmSync(testGoalsDir, { recursive: true, force: true });
+    fs.rmSync(managedRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["dev-home observed path", DEV_HOME],
+    ["arbitrary /tmp path", ARBITRARY],
+  ])(
+    "handleGoalEdit rejects an out-of-instance workingDir instruction (%s) before ensureWorkingDir",
+    async (_label, badDir) => {
+      saveRunFixture(makeRun({ workingDir: path.join(managedRoot, "agent", "workspaces", "wd") }));
+      const { handleGoalEdit } = await import("./goal-commands.js");
+
+      await expect(
+        handleGoalEdit("test-run", `working dir should be ${badDir}`, {
+          goal: { planAutocheck: "off" },
+        }),
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+
+      expect(mockEnsureWorkingDir).not.toHaveBeenCalled();
+      expect(mockRunCliPlanRevision).not.toHaveBeenCalled();
+    },
+  );
+
+  it("handleGoalEdit proceeds for a valid stable workingDir instruction", async () => {
+    const valid = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    saveRunFixture(makeRun({ workingDir: path.join(managedRoot, "agent", "workspaces", "wd") }));
+    mockRunCliPlanRevision.mockResolvedValue({
+      plan: {
+        goal: "Test goal",
+        workingDir: valid,
+        summary: "Revised plan",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "pending",
+            durationMinutes: 1,
+          },
+        ],
+      },
+    });
+    mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
+
+    const { handleGoalEdit } = await import("./goal-commands.js");
+    const result = await handleGoalEdit("test-run", `working dir should be ${valid}`, {
+      goal: { planAutocheck: "off" },
+    });
+
+    expect(result.text).not.toContain("outside the current stable instance");
+    expect(mockEnsureWorkingDir).toHaveBeenCalledWith(valid);
+  });
+
+  it("handleGoalFeedback rejects an out-of-instance revised workingDir before ensureWorkingDir", async () => {
+    const originalWorkingDir = path.join(managedRoot, "agent", "workspaces", "fb");
+    fs.mkdirSync(originalWorkingDir, { recursive: true });
+    saveRunFixture(
+      makeRun({
+        state: "done",
+        workingDir: originalWorkingDir,
+        plan: {
+          goal: "Test goal",
+          workingDir: originalWorkingDir,
+          summary: "Completed plan",
+          steps: [{ id: "1", description: "Initial", dependsOn: [], status: "done" }],
+        },
+        stepResults: { "1": { stepId: "1", success: true, output: "done", durationMs: 1000 } },
+      }),
+    );
+    mockRunCliPlanRevision.mockResolvedValue({
+      plan: {
+        goal: "Test goal",
+        workingDir: DEV_HOME,
+        summary: "Feedback revised plan",
+        steps: [
+          { id: "1", description: "Initial", dependsOn: [], status: "pending" },
+          { id: "2", description: "Fix", dependsOn: ["1"], status: "pending" },
+        ],
+      },
+    });
+
+    const { handleGoalFeedback } = await import("./goal-commands.js");
+    const result = await handleGoalFeedback("test-run", "Move it and fix", {
+      goal: { planAutocheck: "off" },
+    });
+
+    // The feedback handler surfaces the guard error and never prepares the dir.
+    expect(result ?? "").toMatch(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+    expect(mockEnsureWorkingDir).not.toHaveBeenCalledWith(DEV_HOME);
   });
 });

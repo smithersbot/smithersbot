@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml/badge.svg)](https://github.com/smithersbot/smithersbot/actions/workflows/ci.yml)
 
+<p align="center"><img src="assets/smithersbot-banner.png" alt="SmithersBot banner" width="900"></p>
+
 ## Leave agents running without giving up control.
 
 SmithersBot is for people who want Claude Code and Codex to keep working together for hours, but do not want to babysit every permission prompt or blindly trust an agent with their machine.
@@ -118,6 +120,8 @@ flowchart LR
 | 🛠 Orange             | **Running**. A worker is executing this task now.                                     |
 | ✅ Green               | **Done**. Completed and verified.                                                     |
 | ⛔ Red, dashed         | **Blocked, needs you**. Genuinely stuck and blocked for user input; reply to unblock. |
+
+Each node also shows its assigned backend label (for example `Codex` or `Claude Code`). A 📡 marker to the right of that label (for example `Codex 📡`) means the task requested network access via `requiresNetwork=true`. Network is **off by default**; the 📡 marker indicates broad backend network access for that specific task only, not a global setting. Tasks without the marker run with no network.
 
 Technical interruptions, such as a failed attempt, interrupted worker, timeout, or backend usage limit, are recovered automatically when possible. On resume, SmithersBot retries from a checkpoint or falls back to the other backend, so those tasks show as pending/waiting rather than red while the Telegram message explains the cause and any reset time.
 
@@ -245,6 +249,14 @@ Codex and Claude Code handle sandboxing differently, so SmithersBot configures t
 * **Repo chat** is read-only by construction. It gets a credential-stripped environment, no writable sandbox paths, and access to the workspace plus redacted `agent/history`, not SmithersBot’s private runtime state.
 
 The sandbox configs and credential-stripped environment are the main protections. SmithersBot also injects deny instructions for secret paths and dangerous commands, but those are a backup policy layer. If the backend-native sandbox cannot be established, workers fail and escalate to the user by blocking the task. Run SmithersBot on an isolated machine: the sandbox is a strong practical boundary, not an absolute guarantee.
+
+### Network-enabled tasks and prompt injection
+
+SmithersBot builds on the existing Claude Code and Codex protections to make network-capable work more secure than a raw CLI session. Network is granted per task, not as a general worker default, and the planner/checker prompts keep network-enabled tasks narrow and auditable: what may be fetched or called, what result proves completion, and when the worker should stop. Build and test tasks can still use an external API or service when that is genuinely required, but the allowed service and pass/fail condition should be explicit.
+
+External pages, packages, issues, docs, API responses, search results, copied text, and tool output are treated as untrusted data, not authority. For network/search-enabled contexts, SmithersBot injects an Untrusted Content Rule telling the worker to analyze that content as evidence for the task and not to follow instructions from it that conflict with system, developer, user, workspace, security, or task rules. That rule is only injected when network/search access is enabled.
+
+Sandboxing, credential stripping, private-root denies, workspace boundaries, and network-off-by-default remain the primary protections. Prompt instructions are an additional backup layer; they are not the sandbox.
 
 ### Keep secrets out of the workspace
 

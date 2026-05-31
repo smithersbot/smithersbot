@@ -642,7 +642,7 @@ const FIELD_HELP: Record<string, string> = {
   "channels.telegram.repoChatBackend":
     'Read-only repo chat backend for non-command text: "codex", "claude_code", or null/off.',
   "channels.telegram.commandFragmentMaxGapMs":
-    "Max milliseconds to wait for split Telegram command paste chunks (default: 15000; clamped 3000-60000).",
+    "Max milliseconds to wait for split Telegram command paste chunks, matching the /new_goal append window (default: 2000; clamped 3000-60000 when explicitly configured).",
   "channels.telegram.commandAnchorTtlMs":
     "Milliseconds to keep a /new_goal or /repo_chat anchor after flush for follow-up paste tails (default: 60000; clamped 10000-60000).",
   "channels.telegram.streamMode":

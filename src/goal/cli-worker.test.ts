@@ -26,6 +26,13 @@ import {
   writeDenyFile,
 } from "./cli-worker.js";
 import { HARD_DENIES } from "./hard-deny.js";
+import {
+  DEV_GATEWAY_COMMAND_INVOCATION,
+  DEV_GATEWAY_OPERATION_ACTIONS,
+  DEV_GATEWAY_OPERATION_UNIT,
+  describeDevGatewayMediatedActions,
+} from "./dev-gateway-operation.js";
+import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
@@ -100,6 +107,20 @@ vi.mock("./backend-sandbox.js", async (importOriginal) => {
     writeCodexNativeSandboxConfig,
   };
 });
+
+// Worker-launch guard: default no-op so the spawn/repair tests can use their temp
+// working dirs; the "managed workspace compatibility" describe delegates to the
+// REAL helper to exercise the genuine accept/hard-deny at the worker-launch site.
+const mockAssertGoalWorkerWorkspace = vi.fn();
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
+
+const STABLE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 
 const runCliProcessMock = vi.mocked(runCliProcess);
 const resolveWorkerDirMock = vi.mocked(resolveWorkerDir);
@@ -468,6 +489,19 @@ describe("cli-worker", () => {
   });
 
   describe("managed workspace compatibility", () => {
+    // These tests exercise the genuine worker-launch guard, so delegate the mock
+    // to the real shared helper here (and reset back to no-op afterwards).
+    beforeEach(async () => {
+      const actual =
+        await vi.importActual<typeof import("./workspace-policy.js")>("./workspace-policy.js");
+      mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) =>
+        (actual.assertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args),
+      );
+    });
+    afterEach(() => {
+      mockAssertGoalWorkerWorkspace.mockReset();
+    });
+
     function makeRunCliProcessSuccess() {
       runCliProcessMock.mockResolvedValueOnce({
         stdout: "",
@@ -512,32 +546,28 @@ describe("cli-worker", () => {
       }
     });
 
-    it("allows legacy cwd by default with a warning", async () => {
+    it("hard-denies an out-of-instance legacy cwd before launching the worker (default config)", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
       const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       process.env.SMITHERSBOT_GOALS_ROOT = root;
       resolveWorkerDirMock.mockReturnValue(path.join(root, "worker"));
-      makeRunCliProcessSuccess();
-      const onProgress = vi.fn();
 
       try {
-        await executeTaskWithCliWorker({
-          backend: "codex",
-          step: makeStep(),
-          plan: { ...makePlan(), workingDir: legacyDir },
-          goal: "Build auth",
-          workingDir: legacyDir,
-          runId: "run-legacy",
-          hardDenies: HARD_DENIES,
-          timeoutMs: 100,
-          onProgress,
-        });
-
-        expect(runCliProcessMock).toHaveBeenCalledOnce();
-        expect(onProgress.mock.calls.flat().join("\n")).toContain(
-          "outside the SmithersBot managed agent root",
-        );
+        await expect(
+          executeTaskWithCliWorker({
+            backend: "codex",
+            step: makeStep(),
+            plan: { ...makePlan(), workingDir: legacyDir },
+            goal: "Build auth",
+            workingDir: legacyDir,
+            runId: "run-legacy",
+            hardDenies: HARD_DENIES,
+            timeoutMs: 100,
+          }),
+        ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+        // The worker is never launched for a rejected working dir.
+        expect(runCliProcessMock).not.toHaveBeenCalled();
       } finally {
         if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
         else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
@@ -546,7 +576,7 @@ describe("cli-worker", () => {
       }
     });
 
-    it("rejects legacy cwd when compatibility is disabled", async () => {
+    it("hard-denies an out-of-instance cwd even when the legacy flag is disabled", async () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
       const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-workspace-"));
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
@@ -565,7 +595,7 @@ describe("cli-worker", () => {
             timeoutMs: 100,
             goalConfig: { allowLegacyWorkingDir: false },
           }),
-        ).rejects.toThrow("managed agent root");
+        ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
         expect(runCliProcessMock).not.toHaveBeenCalled();
       } finally {
         if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
@@ -667,6 +697,71 @@ describe("cli-worker", () => {
       expect(args.join(" ")).not.toContain("dangerously-bypass");
     });
 
+    it("passes configured observed dev read roots to the Claude worker sandbox", () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-observed-home-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const stableHistoryRoot = path.join(testManagedRoot!, "agent", "history");
+      const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+      const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+      const devHistoryRoot = path.join(devAgentRoot, "history");
+      const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+      const devStateDir = path.join(home, ".smithersbot-dev");
+      const devPrivateChecks = [
+        devPrivateRoot,
+        path.join(devPrivateRoot, "env"),
+        path.join(devPrivateRoot, "config"),
+        path.join(devPrivateRoot, "auth"),
+        path.join(devPrivateRoot, "sessions"),
+        devStateDir,
+      ];
+      for (const dir of [
+        workingDir,
+        devAgentRoot,
+        devWorkspacesRoot,
+        devHistoryRoot,
+        ...devPrivateChecks,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+        });
+        const settingsPath = args[args.indexOf("--settings") + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+          sandbox: {
+            filesystem: { allowRead: string[]; allowWrite: string[]; denyRead: string[] };
+          };
+          permissions: { deny: string[] };
+        };
+
+        expect(args).not.toContain("--cd");
+        expect(parsed.sandbox.filesystem.allowRead).toEqual(
+          expect.arrayContaining([
+            workingDir,
+            stableHistoryRoot,
+            devAgentRoot,
+            devWorkspacesRoot,
+            devHistoryRoot,
+          ]),
+        );
+        expect(parsed.sandbox.filesystem.allowWrite).toEqual([workingDir]);
+        for (const privatePath of devPrivateChecks) {
+          expect(parsed.sandbox.filesystem.allowRead).not.toContain(privatePath);
+          expect(parsed.sandbox.filesystem.denyRead).toContain(fs.realpathSync(privatePath));
+        }
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
     it("does not use the managed root as the codex worker sandbox root", () => {
       const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
       const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-worker-root-"));
@@ -730,6 +825,58 @@ describe("cli-worker", () => {
       expect(codexNativeSandbox.configToml).toContain("enabled = true");
       expect(args).not.toContain("net.allowed=false");
       expect(args).not.toContain("--sandbox");
+    });
+
+    it("wires Claude Code worker network into sandbox settings for a requiresNetwork step without any env var", () => {
+      const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-supported-"));
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          requiresNetwork: true,
+        });
+        const settingsIdx = args.indexOf("--settings");
+        expect(settingsIdx).toBeGreaterThanOrEqual(0);
+        const settingsPath = args[settingsIdx + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+        // Allowlist-based, default-deny proxy: broad per-suffix wildcards, never a
+        // bare "*" (which the proxy rejects). *.com covers the example.com target.
+        expect(Array.isArray(parsed.sandbox.network.allowedDomains)).toBe(true);
+        expect(parsed.sandbox.network.allowedDomains).toContain("*.com");
+        expect(parsed.sandbox.network.allowedDomains).not.toContain("*");
+      } finally {
+        if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+        else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+      }
+    });
+
+    it("omits the Claude Code sandbox network grant for a non-network step", () => {
+      const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-net-none-"));
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "test",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          requiresNetwork: false,
+        });
+        const settingsIdx = args.indexOf("--settings");
+        expect(settingsIdx).toBeGreaterThanOrEqual(0);
+        const settingsPath = args[settingsIdx + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+        expect(parsed.sandbox?.network).toBeUndefined();
+      } finally {
+        if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+        else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+      }
     });
 
     it("prepends hard denies, then project conventions before worker context for codex workers", () => {
@@ -983,6 +1130,101 @@ describe("cli-worker", () => {
       expect(fs.readFileSync(configPath, "utf8")).toContain("enabled = true");
       expect(args).not.toContain("net.allowed=false");
       expect(args).not.toContain("--sandbox");
+    });
+
+    it("keeps codex execution in the stable workspace while allowing configured dev agent roots read-only", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-observed-exec-home-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      const runId = "run-observed-read-roots";
+      const stepId = "step-observed-read-roots";
+      const step = makeStep({ id: stepId });
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+      const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+      const devHistoryRoot = path.join(devAgentRoot, "history");
+      const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+      const devStateDir = path.join(home, ".smithersbot-dev");
+      const devPrivateChecks = [
+        devPrivateRoot,
+        path.join(devPrivateRoot, "env"),
+        path.join(devPrivateRoot, "config"),
+        path.join(devPrivateRoot, "auth"),
+        path.join(devPrivateRoot, "sessions"),
+        devStateDir,
+      ];
+      for (const dir of [
+        workingDir,
+        devAgentRoot,
+        devWorkspacesRoot,
+        devHistoryRoot,
+        ...devPrivateChecks,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const plan: Plan = { ...makePlan(), workingDir, steps: [step] };
+      const workerDir = path.join(workingDir, "worker", stepId);
+      const workspaceResultPath = path.join(
+        workingDir,
+        ".moltbot-goal-worker-results",
+        runId,
+        stepId,
+        "attempt-1",
+        "worker_result.json",
+      );
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockImplementationOnce(async () => {
+        fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+        fs.writeFileSync(
+          workspaceResultPath,
+          JSON.stringify({ status: "complete", summary: "Observed read roots passed through" }),
+          "utf8",
+        );
+        return {
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 20,
+        };
+      });
+
+      try {
+        await executeTaskWithCliWorker({
+          backend: "codex",
+          step,
+          plan,
+          goal: "Verify observed read roots",
+          workingDir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+          goalConfig: {
+            readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+          },
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        const args = call?.args ?? [];
+        const env = (call?.env ?? {}) as Record<string, string>;
+        const configToml = fs.readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+
+        expect(call?.cwd).toBe(workingDir);
+        expect(args[args.indexOf("--cd") + 1]).toBe(workingDir);
+        expect(args.join(" ")).not.toContain(devWorkspacesRoot);
+        expect(configToml).toContain(`${JSON.stringify(devAgentRoot)} = "read"`);
+        expect(configToml).toContain(`${JSON.stringify(devWorkspacesRoot)} = "read"`);
+        expect(configToml).toContain(`${JSON.stringify(devHistoryRoot)} = "read"`);
+        for (const privatePath of devPrivateChecks) {
+          expect(configToml).toContain(`${JSON.stringify(privatePath)} = "deny"`);
+          expect(configToml).not.toContain(`${JSON.stringify(privatePath)} = "read"`);
+        }
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     });
 
     it("launches codex with the auth-continuous generated CODEX_HOME shape", async () => {
@@ -1862,6 +2104,82 @@ describe("cli-worker", () => {
       expect(prompt).not.toContain(HARD_DENIES[0]!.pattern);
     });
 
+    it("injects the dev-gateway worker instruction only when devGatewayWorkspace is set", () => {
+      const withDev = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: true,
+      });
+      expect(withDev).toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+      // Workers are directed to the real worker-invocable command, by exact name,
+      // not raw systemctl/journalctl.
+      expect(withDev).toContain("worker-invocable command");
+      expect(withDev).toContain(DEV_GATEWAY_COMMAND_INVOCATION);
+      expect(withDev).toContain("moltbot dev-gateway restart");
+      expect(withDev).toContain("Do NOT run raw `systemctl --user ...` or `journalctl --user ...`");
+      expect(withDev).not.toContain("systemctl --user restart smithersbot-dev-gateway.service");
+      expect(withDev).toContain(
+        "Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway",
+      );
+      // Guidance appears in the dynamic body, after the goal line.
+      expect(withDev.indexOf("GOAL: Build auth")).toBeLessThan(
+        withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:"),
+      );
+      expect(withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:")).toBeLessThan(
+        withDev.indexOf("PLAN CONTEXT:"),
+      );
+    });
+
+    it("advertises exactly the three mediated dev-unit actions and never the stable unit", () => {
+      const withDev = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: true,
+      });
+
+      // Advertised tool availability is derived from the enforced policy.
+      expect(DEV_GATEWAY_OPERATION_ACTIONS).toEqual(["restart", "status", "logs"]);
+      for (const line of describeDevGatewayMediatedActions()) {
+        expect(withDev).toContain(`  - ${line}`);
+        expect(line).toContain(DEV_GATEWAY_OPERATION_UNIT);
+      }
+      // The dev unit is the only manageable unit; the stable unit is only ever
+      // referenced as protected (never as something the worker may operate on).
+      expect(withDev).toContain(DEV_GATEWAY_OPERATION_UNIT);
+      expect(withDev).not.toContain(`restart ${STABLE_UNIT}`);
+      expect(withDev).not.toContain(`status / is-active for ${STABLE_UNIT}`);
+      expect(withDev).not.toContain(`recent journal lines for ${STABLE_UNIT}`);
+      // No stop/enable/disable/reinstall is advertised for any unit.
+      expect(withDev).toContain("exposes no stop/enable/disable/reinstall");
+    });
+
+    it("omits the dev-gateway worker instruction by default", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+      });
+      expect(prompt).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+
+      const explicitlyOff = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resultPath: "/tmp/worker_result.json",
+        devGatewayWorkspace: false,
+      });
+      expect(explicitlyOff).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+    });
+
     it("includes success criteria and constraints when provided", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep({
@@ -1975,6 +2293,38 @@ describe("cli-worker", () => {
       expect(prompt).not.toContain(
         "LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):",
       );
+    });
+
+    it("includes concise deduplicated goal-level resume notes", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep({ id: "task-a" }),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resumeNotes: [
+          {
+            timestamp: "2026-05-31T14:00:00.000Z",
+            source: "goal_answer",
+            affectedStepIds: ["task-a", "task-b"],
+            userText: "Use the mock API key placeholder from the example.",
+          },
+          {
+            timestamp: "2026-05-31T14:00:00.000Z",
+            source: "goal_answer",
+            affectedStepIds: ["task-a", "task-b"],
+            userText: "Use the mock API key placeholder from the example.",
+          },
+        ],
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain("GOAL-LEVEL RESUME NOTES:");
+      expect(prompt).toContain("Timestamp: 2026-05-31T14:00:00.000Z");
+      expect(prompt).toContain("Source: /goal_answer");
+      expect(prompt).toContain("Affected steps: task-a, task-b");
+      expect(prompt).toContain("User text:");
+      expect(prompt).toContain("Use the mock API key placeholder from the example.");
+      expect(prompt.match(/Timestamp: 2026-05-31T14:00:00\.000Z/g)).toHaveLength(1);
     });
 
     it("tells workers to keep worker_result summaries concise", () => {

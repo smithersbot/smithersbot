@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import os from "node:os";
+import { safeNetworkInterfaces } from "./net-interfaces.js";
 
 export type SystemPresence = {
   host?: string;
@@ -39,7 +40,9 @@ function normalizePresenceKey(key: string | undefined): string | undefined {
 }
 
 function resolvePrimaryIPv4(): string | undefined {
-  const nets = os.networkInterfaces();
+  // Sandbox network isolation can make os.networkInterfaces() throw; degrade to
+  // the hostname instead of crashing module init / presence refresh.
+  const nets = safeNetworkInterfaces();
   const prefer = ["en0", "eth0"];
   const pick = (names: string[]) => {
     for (const name of names) {
@@ -130,6 +133,16 @@ function touchSelfPresence() {
 }
 
 initSelfPresence();
+
+/**
+ * Recompute the local gateway self-presence entry. Safe to call even when the
+ * sandbox blocks network-interface enumeration — IP resolution degrades to the
+ * hostname rather than throwing. Exported primarily so the degraded path is
+ * exercisable in tests.
+ */
+export function refreshSelfPresence(): void {
+  initSelfPresence();
+}
 
 function parsePresence(text: string): SystemPresence {
   const trimmed = text.trim();

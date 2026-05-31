@@ -1,5 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import {
+  resolveGatewayInstanceSystemdUnits,
   resolveGatewayLaunchAgentLabel,
   resolveGatewaySystemdServiceName,
 } from "../daemon/constants.js";
@@ -85,11 +87,13 @@ function normalizeSystemdUnit(raw?: string): string | null {
   return unit.endsWith(".service") ? unit : `${unit}.service`;
 }
 
-const GATEWAY_SYSTEMD_UNIT_CANDIDATES = [
-  "smithersbot-gateway",
+// Stable and dev instance units first (from the instance resolver), then the
+// historical moltbot unit names for backward compatibility.
+const GATEWAY_SYSTEMD_UNIT_CANDIDATES: readonly string[] = [
+  ...resolveGatewayInstanceSystemdUnits(),
   "moltbot-gateway-dev",
   "moltbot-gateway",
-] as const;
+];
 
 function isSystemdUnitActive(unit: string): boolean {
   const checks = [
@@ -112,6 +116,15 @@ export function resolveGatewaySystemdRestartUnit(env: NodeJS.ProcessEnv = proces
     normalizeSystemdUnit(env.MOLTBOT_SYSTEMD_UNIT) ??
     normalizeSystemdUnit(env.CLAWDBOT_SYSTEMD_UNIT);
   if (explicit) return explicit;
+
+  // An explicit instance selection (e.g. SMITHERSBOT_INSTANCE=dev injected by
+  // the dev service EnvironmentFile) maps directly to that instance's unit. A
+  // no-instance process leaves this unset and falls through to active-unit
+  // probing + the stable default below; we never infer the instance from cwd.
+  const instanceSignal = env.SMITHERSBOT_INSTANCE?.trim();
+  if (instanceSignal) {
+    return resolveGatewayInstanceIdentity(instanceSignal).serviceUnit;
+  }
 
   for (const candidate of GATEWAY_SYSTEMD_UNIT_CANDIDATES) {
     const unit = normalizeSystemdUnit(candidate);

@@ -11,7 +11,7 @@ import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
 import { GoalWorkerOutputSchema } from "./goal-schemas.js";
-import type { PlanStep, Plan } from "./types.js";
+import type { PlanStep, Plan, ResumeNote } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
 import {
   collectGitDiffSummary,
@@ -34,9 +34,16 @@ import {
   WORKER_DYNAMIC_CONTEXT_HEADER,
   WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX,
 } from "./worker-context.js";
-import { renderGroupedHardDenies } from "./hard-deny.js";
+import { buildDevWorkspaceHardDenies, renderGroupedHardDenies } from "./hard-deny.js";
+import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
+import {
+  DEV_GATEWAY_COMMAND_INVOCATION,
+  DEV_GATEWAY_OPERATION_UNIT,
+  describeDevGatewayMediatedActions,
+} from "./dev-gateway-operation.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { UNTRUSTED_CONTENT_RULE } from "../prompts/shared/untrusted-content-rule.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import {
   appendCodexNativeSandboxExecArgs,
@@ -55,6 +62,7 @@ import {
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import { formatWorkerResumeNotes } from "./resume-note-context.js";
 
 // --- Constants ---
 
@@ -65,6 +73,26 @@ const RESULT_POLL_INTERVAL_MS = 4_000;
 const RESULT_GRACE_PERIOD_MS = 10_000;
 export const REPAIR_TIMEOUT_MS = 60_000;
 const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n";
+
+// Dynamic dev-gateway worker guidance. Injected only when the goal works in the
+// smithersbot-dev checkout AND the dev gateway service is present. This is
+// guidance, not runtime config — it never changes which instance the gateway is.
+//
+// The advertised tool availability is derived from the mediated-operation policy
+// (describeDevGatewayMediatedActions), so the three actions a worker is told it
+// may use always match what executeDevGatewayOperation actually enforces: exactly
+// restart/status/logs, fixed to the dev unit, never the stable unit.
+export const DEV_GATEWAY_WORKER_INSTRUCTION = [
+  "SMITHERSBOT DEV GATEWAY WORKSPACE:",
+  `You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (${DEV_GATEWAY_OPERATION_UNIT}) is installed.`,
+  "- Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
+  "- Do NOT run raw `systemctl --user ...` or `journalctl --user ...` for the dev gateway: the worker sandbox cannot reach the user systemd bus, so those commands fail. They are also blocked for every unit except the dev gateway.",
+  `- Manage the dev gateway ONLY through the safe, worker-invocable command \`${DEV_GATEWAY_COMMAND_INVOCATION}\` (for example \`moltbot dev-gateway restart\`). It is fixed to ${DEV_GATEWAY_OPERATION_UNIT} and supports EXACTLY these three actions (no service name is ever accepted from you):`,
+  ...describeDevGatewayMediatedActions().map((line) => `  - ${line}`),
+  "- The command can never target smithersbot-gateway.service or any other unit, and exposes no stop/enable/disable/reinstall.",
+  "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, use the mediated restart action and then the status/logs actions to smoke-test the changed behavior against the dev gateway before reporting completion.",
+  "- For docs-only or tests-only changes, do not force a gateway restart unless it is needed to verify the requested behavior.",
+].join("\n");
 
 // --- Public API ---
 
@@ -86,6 +114,8 @@ export type CliWorkerParams = {
   resumeAnswer?: string;
   /** The question the step asked before blocking. */
   resumeQuestion?: string;
+  /** Goal-level resume notes added by user unblock/resume actions. */
+  resumeNotes?: ResumeNote[];
   /** Attempt number for retries. */
   attemptNumber?: number;
   /** Prior attempt bundle for retry context. */
@@ -289,6 +319,7 @@ export async function repairResultFile(params: {
   workingDir: string;
   hardDenies: HardDeny[];
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
 }): Promise<GoalWorkerOutput | null> {
   const {
     backend,
@@ -301,6 +332,7 @@ export async function repairResultFile(params: {
     workingDir,
     hardDenies,
     claudeCodeAuth = "subscription",
+    readOnlyRoots,
   } = params;
 
   const initialRead = readWorkerResultFile({ primaryPath: resultFilePath });
@@ -329,6 +361,7 @@ export async function repairResultFile(params: {
           workingDir,
           runId: `repair-${attemptNumber}`,
           purpose: "goal-worker",
+          readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -339,6 +372,7 @@ export async function repairResultFile(params: {
     denyFilePath,
     model,
     codexNativeSandbox,
+    readOnlyRoots,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -390,6 +424,7 @@ export async function executeTaskWithCliWorker(
     onProgress,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     attemptNumber = 1,
     previousAttempt,
     claudeCodeAuth = "subscription",
@@ -420,6 +455,7 @@ export async function executeTaskWithCliWorker(
           runId: `${runId}-${step.id}-attempt-${attemptNumber}`,
           purpose: "goal-worker",
           requiresNetwork: step.requiresNetwork === true,
+          readOnlyRoots: goalConfig?.readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -444,6 +480,14 @@ export async function executeTaskWithCliWorker(
     }
   }
 
+  // Detect the dev-gateway workspace from the checkout/cwd (guidance only — this
+  // never changes the running gateway's runtime config). When active, the worker
+  // gets the dev-only restart guidance and a dev-aware hard-deny list.
+  const devGateway = resolveDevGatewayWorkerContext({ workingDir });
+  const effectiveHardDenies = devGateway.active
+    ? buildDevWorkspaceHardDenies(hardDenies)
+    : hardDenies;
+
   const prompt = buildCliWorkerPrompt({
     step,
     plan,
@@ -452,12 +496,14 @@ export async function executeTaskWithCliWorker(
     lessons,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     resultPath: workspaceResultPath,
     previousAttempt,
+    devGatewayWorkspace: devGateway.active,
   });
 
   // Write artifacts
-  const denyFilePath = writeDenyFile(hardDenies, workerDir);
+  const denyFilePath = writeDenyFile(effectiveHardDenies, workerDir);
   const promptPayload = buildCliPromptPayload({
     backend,
     prompt,
@@ -480,6 +526,7 @@ export async function executeTaskWithCliWorker(
     projectConventions,
     promptPayload,
     codexNativeSandbox,
+    readOnlyRoots: goalConfig?.readOnlyRoots,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -666,6 +713,7 @@ export async function executeTaskWithCliWorker(
       workingDir,
       hardDenies,
       claudeCodeAuth,
+      readOnlyRoots: goalConfig?.readOnlyRoots,
     });
     if (repaired) {
       output = repaired;
@@ -843,8 +891,15 @@ export function buildCliWorkerPrompt(params: {
   lessons?: Array<{ pattern: string; lesson: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
+  resumeNotes?: ResumeNote[];
   resultPath: string;
   previousAttempt?: string | null;
+  /**
+   * Inject the dynamic SmithersBot dev-gateway guidance (dev-only restart
+   * policy). Set only when the goal works in the smithersbot-dev checkout and
+   * the dev gateway service is present.
+   */
+  devGatewayWorkspace?: boolean;
 }): string {
   const {
     step,
@@ -854,8 +909,10 @@ export function buildCliWorkerPrompt(params: {
     lessons,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     resultPath,
     previousAttempt,
+    devGatewayWorkspace,
   } = params;
   const lines: string[] = [];
 
@@ -865,6 +922,14 @@ export function buildCliWorkerPrompt(params: {
   lines.push("");
   lines.push(`GOAL: ${goal}`);
   lines.push("");
+  if (step.requiresNetwork === true) {
+    lines.push(UNTRUSTED_CONTENT_RULE);
+    lines.push("");
+  }
+  if (devGatewayWorkspace) {
+    lines.push(DEV_GATEWAY_WORKER_INSTRUCTION);
+    lines.push("");
+  }
   lines.push("PLAN CONTEXT:");
   lines.push(formatPlanAsContext(plan));
   lines.push("");
@@ -891,6 +956,12 @@ export function buildCliWorkerPrompt(params: {
     lines.push(`You previously asked: ${resumeQuestion ?? "a question"}`);
     lines.push(`The user answered: ${resumeAnswer}`);
     lines.push("Use this information to continue and complete the task.");
+    lines.push("");
+  }
+
+  const resumeNoteContext = formatWorkerResumeNotes(resumeNotes);
+  if (resumeNoteContext) {
+    lines.push(resumeNoteContext);
     lines.push("");
   }
 
@@ -1033,6 +1104,7 @@ export function buildCliArgs(params: {
     appendedSystemPrompt?: string;
   };
   codexNativeSandbox?: CodexNativeSandboxConfig;
+  readOnlyRoots?: string[];
 }): string[] {
   const {
     backend,
@@ -1045,6 +1117,7 @@ export function buildCliArgs(params: {
     projectConventions,
     promptPayload,
     codexNativeSandbox,
+    readOnlyRoots,
   } = params;
   const assembledPrompt =
     promptPayload ??
@@ -1064,6 +1137,7 @@ export function buildCliArgs(params: {
         runId,
         purpose: "goal-worker",
         requiresNetwork,
+        readOnlyRoots,
         sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         codexPath: "codex",
       });
@@ -1087,6 +1161,8 @@ export function buildCliArgs(params: {
     workingDir,
     runId,
     purpose: "goal-worker",
+    readOnlyRoots,
+    requiresNetwork,
   });
   const args = [
     "-p",
