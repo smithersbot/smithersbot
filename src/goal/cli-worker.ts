@@ -43,6 +43,7 @@ import {
 } from "./dev-gateway-operation.js";
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { UNTRUSTED_CONTENT_RULE } from "../prompts/shared/untrusted-content-rule.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import {
   appendCodexNativeSandboxExecArgs,
@@ -921,6 +922,10 @@ export function buildCliWorkerPrompt(params: {
   lines.push("");
   lines.push(`GOAL: ${goal}`);
   lines.push("");
+  if (step.requiresNetwork === true) {
+    lines.push(UNTRUSTED_CONTENT_RULE);
+    lines.push("");
+  }
   if (devGatewayWorkspace) {
     lines.push(DEV_GATEWAY_WORKER_INSTRUCTION);
     lines.push("");
