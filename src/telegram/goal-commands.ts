@@ -10,6 +10,7 @@ import { JsonExitError } from "../cli/cli-utils.js";
 import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
 import { goalDetailCommand } from "../commands/goal-detail.js";
+import { applyGoalResumeNoteById } from "../commands/goal-resume-note.js";
 import { goalResumeCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
 import { loadConfig, type MoltbotConfig } from "../config/config.js";
@@ -79,7 +80,6 @@ import {
   RESUME_PREFACE,
   resolveActiveStepId,
   resolveGoalOperatorHonorific,
-  resolveBlockedRequiredInputKey,
   serializedStepResultsToMap,
   START_PREFACE,
 } from "./goal-formatting.js";
@@ -1526,6 +1526,7 @@ export function registerTelegramGoalCommands({
     replyToMessageId?: number;
     lockLabel: "approve" | "resume";
     backgroundLabel: string;
+    resumeSource?: "goal_resume" | "resume";
   }): Promise<void> {
     const { rawId, chatId, threadId, replyToMessageId, lockLabel, backgroundLabel } = params;
     const resolvedId = resolveRunId(rawId);
@@ -1564,25 +1565,11 @@ export function registerTelegramGoalCommands({
         releaseGoalLock: () => undefined,
         runId: resolvedId,
         fn: async () => {
-          const cap = createCaptureRuntime();
-          try {
-            await goalResumeCommand(
-              resolvedId,
-              { yes: true, quiet: false, config: cfg },
-              cap.runtime,
-            );
-            return cap.getErrors() || cap.getLogs() || "Got it.";
-          } catch (err) {
-            if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-              return cap.getErrors() || "Resume command failed.";
-            }
-            const backendHint = resolveBackendHint(resolvedId);
-            return formatGoalError(
-              err,
-              resolvedId,
-              backendHint ? { backend: backendHint } : undefined,
-            );
-          }
+          const result = applyGoalResumeNoteById({
+            runId: resolvedId,
+            source: params.resumeSource ?? "goal_resume",
+          });
+          return result.message;
         },
         onResult: async (reply) =>
           sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
@@ -1958,7 +1945,7 @@ export function registerTelegramGoalCommands({
           chatId,
           messageId: sent.message_id,
           threadId,
-          requiredInputKey: resolveBlockedRequiredInputKey(run),
+          requiredInputKey: "add_details",
         });
       }
       return;
@@ -2021,6 +2008,7 @@ export function registerTelegramGoalCommands({
           replyToMessageId: messageId,
           lockLabel: "resume",
           backgroundLabel: "callback:resume",
+          resumeSource: "resume",
         });
       }
       return;

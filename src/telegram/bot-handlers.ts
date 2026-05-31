@@ -25,10 +25,10 @@ import {
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
+import { applyGoalResumeNoteById } from "../commands/goal-resume-note.js";
 import {
   formatGoalLockedMessage,
   buildOnStatusChange,
-  handleGoalAnswer,
   handleGoalEdit,
   handleGoalFeedback,
   handleGoalList,
@@ -158,7 +158,7 @@ export async function handleTelegramGoalRouting(params: {
   sendPlanResult: (result: GoalPlanResult) => Promise<void>;
   runHandlers: {
     edit: (runId: string, text: string) => void;
-    answer: (runId: string, text: string) => void;
+    answer: (runId: string, text: string, source?: "add_details" | "direct_reply") => void;
     feedback?: (runId: string, text: string) => void;
   };
 }): Promise<boolean> {
@@ -224,7 +224,7 @@ export async function handleTelegramGoalRouting(params: {
   }
 
   if (route.kind === "GOAL_ANSWER" && route.runId) {
-    params.runHandlers.answer(route.runId, params.messageText);
+    params.runHandlers.answer(route.runId, params.messageText, route.resumeSource);
     return true;
   }
 
@@ -936,59 +936,21 @@ export const registerTelegramHandlers = ({
 
           dispatchEdit(text);
         },
-        answer: (runId, text) => {
+        answer: (runId, text, source = "direct_reply") => {
           const dispatchAnswer = (answerText: string) => {
-            const answerLock = acquireGoalOpLock(runId, "answer");
-            if (!answerLock.acquired) {
-              void sendGoalReply(
-                bot,
-                chatId,
-                formatGoalLockedMessage(runId, answerLock.existingLabel),
-                runtime,
-                params.threadId,
-                sourceMessageId,
-              );
-              return;
-            }
-            const statusCb = buildOnStatusChange({
-              bot,
-              chatId,
-              threadId: params.threadId,
-              runtime,
+            const result = applyGoalResumeNoteById({
               runId,
+              source,
+              userText: answerText,
             });
-            runGoalInBackground({
+            void sendGoalReply(
               bot,
               chatId,
-              threadId: params.threadId,
+              result.message,
               runtime,
-              label: "goal-router:answer",
-              replyToMessageId: sourceMessageId,
-              releaseGoalLock: answerLock.release,
-              fn: () => handleGoalAnswer(runId, answerText, statusCb, cfg),
-              onResult: async (result) => {
-                if (result == null) return;
-                if (typeof result === "string") {
-                  await sendGoalReply(
-                    bot,
-                    chatId,
-                    result,
-                    runtime,
-                    params.threadId,
-                    sourceMessageId,
-                  );
-                } else {
-                  await sendGoalPlanResult({
-                    bot,
-                    chatId,
-                    runtime,
-                    result,
-                    threadId: params.threadId,
-                    replyToMessageId: sourceMessageId,
-                  });
-                }
-              },
-            });
+              params.threadId,
+              sourceMessageId,
+            );
           };
 
           if (replyToMessageId != null) {

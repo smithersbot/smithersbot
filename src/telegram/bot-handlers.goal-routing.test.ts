@@ -4,6 +4,7 @@ const mockRuns = vi.hoisted(() => [] as SerializedRun[]);
 const mockHandleGoalEdit = vi.hoisted(() => vi.fn());
 const mockHandleGoalAnswer = vi.hoisted(() => vi.fn());
 const mockHandleGoalFeedback = vi.hoisted(() => vi.fn());
+const mockApplyGoalResumeNoteById = vi.hoisted(() => vi.fn());
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
@@ -21,6 +22,14 @@ vi.mock("./goal-commands.js", async (importOriginal) => {
     handleGoalEdit: (...args: unknown[]) => mockHandleGoalEdit(...args),
     handleGoalAnswer: (...args: unknown[]) => mockHandleGoalAnswer(...args),
     handleGoalFeedback: (...args: unknown[]) => mockHandleGoalFeedback(...args),
+  };
+});
+
+vi.mock("../commands/goal-resume-note.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../commands/goal-resume-note.js")>();
+  return {
+    ...actual,
+    applyGoalResumeNoteById: (...args: unknown[]) => mockApplyGoalResumeNoteById(...args),
   };
 });
 
@@ -240,11 +249,11 @@ describe("handleTelegramGoalRouting", () => {
     });
 
     expect(handled).toBe(true);
-    expect(answer).toHaveBeenCalledWith("r1", "postgres");
+    expect(answer).toHaveBeenCalledWith("r1", "postgres", "direct_reply");
     // Result delivery is now fire-and-forget inside the handler
   });
 
-  it("reply to a Paused (resume_execution) message gives a resume instruction, not an answer", async () => {
+  it("reply to a Paused (resume_execution) message routes to the unified resume-note path", async () => {
     const runs = [
       makeRun({
         runId: "paused1",
@@ -276,8 +285,8 @@ describe("handleTelegramGoalRouting", () => {
     });
 
     expect(handled).toBe(true);
-    expect(answer).not.toHaveBeenCalled();
-    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("/goal_resume"));
+    expect(answer).toHaveBeenCalledWith("paused1", "please continue", "direct_reply");
+    expect(sendReply).not.toHaveBeenCalled();
   });
 
   it("reply to a tracked but unusable goal message is handled (never falls through)", async () => {
@@ -306,7 +315,7 @@ describe("handleTelegramGoalRouting", () => {
 
     expect(handled).toBe(true);
     expect(answer).not.toHaveBeenCalled();
-    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("done1".slice(0, 8)));
+    expect(sendReply).toHaveBeenCalledWith(expect.stringContaining("currently done"));
   });
 
   it("routes reply to plan message to GOAL_EDIT", async () => {
@@ -583,6 +592,12 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     mockHandleGoalEdit.mockReset();
     mockHandleGoalAnswer.mockReset();
     mockHandleGoalFeedback.mockReset();
+    mockApplyGoalResumeNoteById.mockReset();
+    mockApplyGoalResumeNoteById.mockReturnValue({
+      status: "applied",
+      message: "Got it. Added your note and rescheduled 1 step.",
+      rescheduledStepIds: ["task-a"],
+    });
 
     const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
     const bot = {
@@ -709,6 +724,93 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
         reply_parameters: { message_id: 400 },
       }),
     );
+  });
+
+  it("records direct replies as goal-level resume notes without using handleGoalAnswer", async () => {
+    const run = makeRun({
+      runId: "direct-reply-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "task-b:input",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 420, requiredInputKey: "task-a:input" }],
+    });
+
+    const { bot } = await routeText({
+      text: "use postgres for both",
+      messageId: 704,
+      replyToMessageId: 420,
+      runs: [run],
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+      runId: "direct-reply-run",
+      source: "direct_reply",
+      userText: "use postgres for both",
+    });
+    expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
+    expectSendReplyToCurrentMessage(bot.api.sendMessage, 704);
+  });
+
+  it("records Add Details prompt replies with the add_details source", async () => {
+    const run = makeRun({
+      runId: "add-details-run",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "tasks:task-a,task-b:input",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 421, requiredInputKey: "add_details" }],
+    });
+
+    await routeText({
+      text: "the fix is ready",
+      messageId: 705,
+      replyToMessageId: 421,
+      runs: [run],
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+      runId: "add-details-run",
+      source: "add_details",
+      userText: "the fix is ready",
+    });
+  });
+
+  it("does not route direct replies to tracked blocked messages into repo-chat", async () => {
+    const run = makeRun({
+      runId: "repo-chat-guard",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "input_key",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 422, requiredInputKey: "input_key" }],
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const harness = makeBotHarness();
+    harness.bot.api.sendMessage.mockClear();
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "answer from reply",
+        message_id: 706,
+        reply_to_message: { message_id: 422 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalled();
+    expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
   });
 
   it("threads lock-failed edit, answer, and feedback replies to the current message", async () => {
