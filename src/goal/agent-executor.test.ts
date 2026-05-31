@@ -2769,6 +2769,41 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.answers["task:1:input"]).toBeUndefined();
   });
 
+  it("passes goal-level resume notes into worker context for a scheduled step", async () => {
+    const step = makeStep({ id: "task-a", backend: "codex", status: "pending" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.resumeNotes = [
+      {
+        timestamp: "2026-05-31T14:00:00.000Z",
+        source: "direct_reply",
+        affectedStepIds: ["task-a", "task-b"],
+        userText: "The missing detail applies to both tasks.",
+      },
+    ];
+
+    let capturedContext: TaskRunnerContext | undefined;
+    mockCliExecute.mockImplementationOnce(async (context) => {
+      capturedContext = context;
+      return {
+        status: "complete",
+        summary: "Used resume note",
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-resume-note-context",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(capturedContext?.resumeNotes).toEqual(session.resumeNotes);
+  });
+
   it("does not spawn the LLM post-execution review after a completed goal", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
