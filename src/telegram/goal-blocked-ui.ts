@@ -21,7 +21,7 @@ export type BlockedSurfaceLevel = "task" | "goal";
  *             (historical behavior); task-level offers Stop only.
  *  - paused   Resume is the action for both levels; no Add Details (the user
  *             does not need to provide anything, just resume).
- *  - failed   Resuming will not help — only Stop; the copy explains the fix.
+ *  - failed   User may fix/accept the issue and retry with Resume/Add Details.
  *  - retrying Auto-retrying; no user-input prompt, only Stop.
  */
 function buildBlockedKeyboard(
@@ -41,6 +41,7 @@ function buildBlockedKeyboard(
     case "paused":
       return buildInlineKeyboard([[resume, stop]]);
     case "failed":
+      return buildInlineKeyboard([[addDetails], [resume, stop]]);
     case "retrying":
       return buildInlineKeyboard([[stop]]);
   }
@@ -134,7 +135,7 @@ export function buildBlockedSurfaceCopy(params: {
           level === "task"
             ? `**TASK FAILED** (${runIdPrefix}): ${subject} hit a non-retryable error.`
             : `**GOAL FAILED** (${runIdPrefix}): a non-retryable error needs fixing.`,
-        actionHint: `Fix the underlying auth/config/capability issue (or replan), then start a new run - resuming alone will not help.`,
+        actionHint: `Fix or accept the underlying issue, then tap ▶️ Resume Goal, tap ✏️ Add Details, or use /goal_resume ${runIdPrefix}.`,
       };
     case "retrying":
       return {

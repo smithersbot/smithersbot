@@ -436,6 +436,7 @@ describe("routeTelegramText", () => {
     });
     expect(route.kind).toBe("GOAL_ANSWER");
     expect(route.runId).toBe("r1");
+    expect(route.resumeSource).toBe("direct_reply");
   });
 
   it("matches older question message in the array", () => {
@@ -464,6 +465,7 @@ describe("routeTelegramText", () => {
     });
     expect(route.kind).toBe("GOAL_ANSWER");
     expect(route.runId).toBe("r1");
+    expect(route.resumeSource).toBe("direct_reply");
   });
 
   it("does not store an answer when the run is no longer blocked but still notices the reply", () => {
@@ -487,14 +489,14 @@ describe("routeTelegramText", () => {
     // goal path with a clear notice instead.
     expect(route.kind).toBe("GOAL_NOTICE");
     expect(route.runId).toBe("r1");
-    expect(route.replyText).toContain("r1".slice(0, 8));
+    expect(route.replyText).toContain("currently done");
   });
 
   // ---------------------------------------------------------------------------
   // Paused / interrupted reply routing (resume_execution)
   // ---------------------------------------------------------------------------
 
-  it("routes a reply to a Paused (resume_execution) message to GOAL_NOTICE, not GOAL_ANSWER", () => {
+  it("routes a reply to a Paused (resume_execution) message to the unified resume-note path", () => {
     const runs = [
       makeRun({
         runId: "paused1",
@@ -516,10 +518,9 @@ describe("routeTelegramText", () => {
       replyToMessageId: 70,
       runs,
     });
-    expect(route.kind).toBe("GOAL_NOTICE");
+    expect(route.kind).toBe("GOAL_ANSWER");
     expect(route.runId).toBe("paused1");
-    expect(route.replyText).toContain("/goal_resume");
-    expect(route.replyText).toContain("Resume Goal");
+    expect(route.resumeSource).toBe("direct_reply");
   });
 
   it("routes a reply to a true user-input block (task:<id>:input) to GOAL_ANSWER", () => {
@@ -544,6 +545,57 @@ describe("routeTelegramText", () => {
     });
     expect(route.kind).toBe("GOAL_ANSWER");
     expect(route.runId).toBe("blocked1");
+    expect(route.resumeSource).toBe("direct_reply");
+  });
+
+  it("routes an Add Details force-reply prompt to the add_details source", () => {
+    const runs = [
+      makeRun({
+        runId: "blocked1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Which database?",
+          requiredInputKey: "task:1:input",
+        },
+        telegramQuestionMessages: [{ chatId: 1, messageId: 72, requiredInputKey: "add_details" }],
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "use postgres",
+      replyToMessageId: 72,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("blocked1");
+    expect(route.resumeSource).toBe("add_details");
+  });
+
+  it("routes replies to any tracked message on a blocked run to the unified resume-note path", () => {
+    const runs = [
+      makeRun({
+        runId: "blocked1",
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt: "Need input",
+          requiredInputKey: "tasks:task-a,task-b:input",
+        },
+        telegramPlanMessage: { chatId: 1, messageId: 73 },
+      }),
+    ];
+    const route = routeTelegramText({
+      chatId: 1,
+      threadId: undefined,
+      messageText: "retry both",
+      replyToMessageId: 73,
+      runs,
+    });
+    expect(route.kind).toBe("GOAL_ANSWER");
+    expect(route.runId).toBe("blocked1");
+    expect(route.resumeSource).toBe("direct_reply");
   });
 
   it("notices a reply to a tracked question message of a cancelled run (never CHAT)", () => {

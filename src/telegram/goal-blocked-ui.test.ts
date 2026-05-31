@@ -99,11 +99,11 @@ describe("category-driven blocked keyboards", () => {
     expect(goal).toContain(`gResume:${PREFIX}`);
   });
 
-  it("Failed surfaces offer only Stop (resuming will not help)", () => {
+  it("Failed surfaces offer Resume and Add Details so the user can retry after fixing", () => {
     const cbs = callbackDataSet(buildTaskBlockedInlineKeyboard(PREFIX, "failed"));
-    expect(cbs).toEqual([`gStop:${PREFIX}`]);
-    expect(cbs).not.toContain(`gResume:${PREFIX}`);
-    expect(cbs).not.toContain(`gAD:${PREFIX}`);
+    expect(cbs).toContain(`gStop:${PREFIX}`);
+    expect(cbs).toContain(`gResume:${PREFIX}`);
+    expect(cbs).toContain(`gAD:${PREFIX}`);
   });
 
   it("defaults to the blocked keyboard when no category is passed", () => {
@@ -149,7 +149,8 @@ describe("buildBlockedSurfaceCopy", () => {
     });
     expect(copy.title).toContain("GOAL FAILED");
     expect(copy.actionHint).toMatch(/fix/i);
-    expect(copy.actionHint).toMatch(/resuming alone will not help/i);
+    expect(copy.actionHint).toContain("Resume");
+    expect(copy.actionHint).toContain("Add Details");
   });
 
   it("Retrying copy says no action is needed", () => {
