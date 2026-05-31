@@ -2,21 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonExitError, runCommandWithRuntime } from "../cli/cli-utils.js";
+import { runCommandWithRuntime } from "../cli/cli-utils.js";
+import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import { saveRun, loadRun } from "../goal/run-store.js";
 import { computeDisplayStatuses } from "../goal/execution-status.js";
 import type { BackendAvailability } from "../goal/backend-types.js";
 import type { Plan, PlanStep, SerializedRun } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
-
-/** Run an async fn, swallowing JsonExitError (expected in JSON-mode error tests). */
-async function catchJsonExit(fn: () => Promise<unknown>): Promise<void> {
-  try {
-    await fn();
-  } catch (err) {
-    if (!(err instanceof JsonExitError)) throw err;
-  }
-}
 
 let testGoalsDir: string;
 
@@ -206,13 +198,13 @@ describe("goal-resume command", () => {
     fs.rmSync(testGoalsDir, { recursive: true, force: true });
   });
 
-  it("refuses to resume a completed run", async () => {
+  it("reports a completed run as an idempotent no-op", async () => {
     saveRun(makeRun({ runId: "done-run", state: "done" }));
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     const result = await goalResumeCommand("done-run", {}, rt);
     expect(result).toBeUndefined();
-    expect(rt.errors).toContain("Run already completed.");
+    expect(rt.logs.join("\n")).toContain("The goal is currently done.");
   });
 
   it("allows resuming a done run when explicitly enabled for feedback", async () => {
@@ -318,6 +310,63 @@ describe("goal-resume command", () => {
     expect(persisted?.state).toBe("done");
 
     fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("records a resume note while another step is executing without rejecting on the run lock", async () => {
+    const runId = "resume-while-executing";
+    saveRun(
+      makeRun({
+        runId,
+        state: "executing",
+        plan: {
+          goal: "Test goal",
+          summary: "Mixed state",
+          steps: [
+            {
+              id: "blocked-step",
+              description: "Blocked step",
+              shortSummary: "Blocked step",
+              dependsOn: [],
+              status: "blocked",
+              blockedReason: "user_input",
+              blockedQuestion: "Need input.",
+            },
+            {
+              id: "running-step",
+              description: "Running step",
+              shortSummary: "Running step",
+              dependsOn: [],
+              status: "in_progress",
+            },
+          ],
+        },
+      }),
+    );
+    const held = acquireGoalOpLock(runId, "resume", testGoalsDir);
+    expect(held.acquired).toBe(true);
+
+    try {
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { quiet: false }, rt);
+
+      expect(result).toBeUndefined();
+      expect(rt.errors).toEqual([]);
+      expect(rt.logs.join("\n")).toContain("Got it. Resuming 1 step.");
+      const updated = loadRun(runId, testGoalsDir);
+      expect(updated?.resumeNotes?.[0]).toMatchObject({
+        source: "goal_resume",
+        affectedStepIds: ["blocked-step"],
+      });
+      expect(updated?.plan?.steps.find((step) => step.id === "blocked-step")?.status).toBe(
+        "pending",
+      );
+      expect(updated?.plan?.steps.find((step) => step.id === "running-step")?.status).toBe(
+        "in_progress",
+      );
+    } finally {
+      if (held.acquired) held.release();
+    }
   });
 
   it("retries execution-time git blocks without requiring /goal_answer", async () => {
@@ -621,13 +670,15 @@ describe("goal-resume command", () => {
       rt,
     );
 
-    expect(result?.status).toBe("done");
-    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
-    const capturedSession = mockExecuteGoalWithAgent.mock.calls[0]?.[0].session;
-    expect(capturedSession.answers["task:done-step:input"]).toBe(
-      "Regenerate generated files first.",
-    );
-    expect(capturedSession.plan?.steps[0]?.status).toBe("done");
+    expect(result).toBeUndefined();
+    expect(mockExecuteGoalWithAgent).not.toHaveBeenCalled();
+    const updated = loadRun(runId, testGoalsDir);
+    expect(updated?.resumeNotes?.[0]).toMatchObject({
+      source: "goal_answer",
+      affectedStepIds: ["done-step"],
+      userText: "Regenerate generated files first.",
+    });
+    expect(updated?.plan?.steps[0]?.status).toBe("pending");
 
     fs.rmSync(workDir, { recursive: true, force: true });
   });
@@ -678,15 +729,16 @@ describe("goal-resume command", () => {
     expect(parsed.requiredInputKey).toBe("creds_key");
   });
 
-  it("--output json produces strict JSON for done error", async () => {
+  it("--output json produces strict JSON for done no-op", async () => {
     saveRun(makeRun({ runId: "done-output-json", state: "done" }));
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
-    await catchJsonExit(() => goalResumeCommand("done-output-json", { output: "json" }, rt));
+    await goalResumeCommand("done-output-json", { output: "json" }, rt);
     const raw = rt.logs.join("");
     expect(raw.trimStart()[0]).toBe("{");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    expect(parsed.error).toBe("Run already completed.");
+    expect(parsed.status).toBe("noop");
+    expect(parsed.message).toContain("The goal is currently done.");
   });
 
   it("errors for unknown run ID", async () => {
@@ -707,7 +759,7 @@ describe("goal-resume command", () => {
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
     await goalResumeCommand("abcdef12", {}, rt);
-    expect(rt.errors).toContain("Run already completed.");
+    expect(rt.logs.join("\n")).toContain("The goal is currently done.");
   });
 
   it("cancelled run without a plan suggests --replan", async () => {
@@ -737,13 +789,14 @@ describe("goal-resume command", () => {
     expect(rt.errors.join("\n")).toContain("--replan");
   });
 
-  it("done run in JSON mode outputs error JSON", async () => {
+  it("done run in JSON mode outputs no-op JSON", async () => {
     saveRun(makeRun({ runId: "done-json", state: "done" }));
     const { goalResumeCommand } = await import("./goal-resume.js");
     const rt = mockRuntime();
-    await catchJsonExit(() => goalResumeCommand("done-json", { json: true }, rt));
+    await goalResumeCommand("done-json", { json: true }, rt);
     const parsed = JSON.parse(rt.logs.join("")) as Record<string, unknown>;
-    expect(parsed.error).toBe("Run already completed.");
+    expect(parsed.status).toBe("noop");
+    expect(parsed.message).toContain("The goal is currently done.");
   });
 
   // --- Cancel vs reject ---
@@ -1047,14 +1100,19 @@ describe("goal-resume command", () => {
     expect(allLogs).toContain("All steps already completed.");
   });
 
-  it("resume after answering runs remaining steps", async () => {
+  it("answering a blocked run records a resume note and schedules remaining steps", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-answered-ws-"));
     // Start with a blocked run that has a pending step
     saveRun(
       makeRun({
         runId: "answered-run",
         state: "blocked",
-        plan: samplePlan,
+        plan: {
+          ...samplePlan,
+          steps: samplePlan.steps.map((step, index) =>
+            index === 0 ? { ...step, status: "blocked", blockedReason: "user_input" } : step,
+          ),
+        },
         blocked: { blockedAt: "execution", prompt: "Need input", requiredInputKey: "some_key" },
         workingDir: workDir,
       }),
@@ -1069,13 +1127,16 @@ describe("goal-resume command", () => {
       answerRt,
     );
 
-    // Auto-resume should complete the run
-    expect(result).toBeDefined();
-    expect(result!.status).toBe("done");
+    expect(result).toBeUndefined();
 
+    acquireGoalOpLock("answered-run", "test", testGoalsDir);
     const finalRun = loadRun("answered-run", testGoalsDir);
-    expect(finalRun?.state).toBe("done");
-    expect(finalRun!.answers.some_key).toBe("the_answer");
+    expect(finalRun?.state).toBe("executing");
+    expect(finalRun!.resumeNotes?.[0]).toMatchObject({
+      source: "goal_answer",
+      userText: "the_answer",
+    });
+    expect(finalRun!.plan?.steps.every((step) => step.status !== "blocked")).toBe(true);
     expect(finalRun!.blocked).toBeNull();
     fs.rmSync(workDir, { recursive: true, force: true });
   });

@@ -948,139 +948,12 @@ export async function handleGoalAnswer(
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
-  // "executing" state means process crashed mid-execution - resume directly without needing an answer
-  if (run.state === "executing") {
-    const prefix = resolvedId.slice(0, 8);
-    const cap = createCaptureRuntime();
-    const trackedStatus = trackBlockedStatusChange(onStatusChange);
-    try {
-      const outcome = await goalResumeCommand(
-        resolvedId,
-        {
-          yes: true,
-          quiet: true,
-          config,
-          onStatusChange: trackedStatus.onStatusChange,
-        },
-        cap.runtime,
-      );
-
-      const errors = cap.getErrors();
-      if (errors) return errors;
-
-      if (outcome?.status === "blocked") {
-        if (trackedStatus.didSendFullyBlocked()) return undefined;
-        return `Run blocked: ${outcome.question}`;
-      }
-
-      // onStatusChange already sent notifications for done/step-level events
-      if (trackedStatus.onStatusChange) return undefined;
-
-      return `Resuming interrupted run: ${prefix}...`;
-    } catch (err) {
-      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-        return cap.getErrors() || "Resume command failed.";
-      }
-      const backendHint = resolveBackendHint(resolvedId);
-      return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
-    }
-  }
-
-  if (run.state !== "blocked") {
-    const normalizedValue = value.trim().toLowerCase();
-    // Defensive fallback: some Telegram resume flows can end up on /goal_answer.
-    // If the user sent "resume", treat it as an explicit resume request.
-    if (
-      normalizedValue === "resume" &&
-      (run.state === "awaiting_approval" || run.state === "cancelled")
-    ) {
-      return handleGoalApprove(resolvedId, onStatusChange, config);
-    }
-    const suffix = run.lastError ? ` Last error: ${run.lastError}` : "";
-    return `Run is not awaiting input (state: ${run.state}).${suffix}`;
-  }
-  if (!run.blocked) {
-    return `Run is in "${run.state}" but has no blocked details.`;
-  }
-
-  const blockedAt = run.blocked.blockedAt ?? "execution";
-
-  if (blockedAt === "planning") {
-    const key = run.blocked.requiredInputKey;
-    const prefix = resolvedId.slice(0, 8);
-    const cap = createCaptureRuntime();
-    try {
-      await goalAnswerCommand(resolvedId, { key, value, quiet: true, config }, cap.runtime);
-
-      const answerErrors = cap.getErrors();
-      if (answerErrors) return answerErrors;
-
-      const outcome = await goalResumeCommand(resolvedId, { quiet: true, config }, cap.runtime);
-      const errors = cap.getErrors();
-      if (errors) return errors;
-
-      if (outcome?.status === "blocked") {
-        return {
-          text: `Still need more info:\n\n${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`,
-          runId: resolvedId,
-          blocked: true,
-        };
-      }
-
-      const updated = loadRun(resolvedId);
-      const plan = updated?.plan;
-      if (plan) {
-        const stepResults = serializedStepResultsToMap(updated);
-        const planText = formatPlanOutput(plan, {
-          diagram: "none",
-          format: "md",
-          stepResults,
-        });
-        const parts: string[] = [planText, `\nRun ID: \`${prefix}\``];
-        return {
-          text: parts.join("\n"),
-          runId: resolvedId,
-          revision: updated?.planRevision ?? 1,
-          plan,
-          stepResults,
-        };
-      }
-
-      return `Replanned: ${prefix}. Use /goal_approve ${prefix} to execute.`;
-    } catch (err) {
-      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
-        return cap.getErrors() || "Answer command failed.";
-      }
-      const backendHint = resolveBackendHint(resolvedId);
-      return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
-    }
-  }
-
-  // blocked (execution-time): save answer and auto-resume execution
-  const key = run.blocked.requiredInputKey;
-  const prefix = resolvedId.slice(0, 8);
   const cap = createCaptureRuntime();
-  const trackedStatus = trackBlockedStatusChange(onStatusChange);
   try {
-    const outcome = await goalAnswerCommand(
-      resolvedId,
-      { key, value, quiet: true, config, onStatusChange: trackedStatus.onStatusChange },
-      cap.runtime,
-    );
-
+    await goalAnswerCommand(resolvedId, { key: "", value, quiet: false, config }, cap.runtime);
     const errors = cap.getErrors();
     if (errors) return errors;
-
-    if (outcome?.status === "blocked") {
-      if (trackedStatus.didSendFullyBlocked()) return undefined;
-      return `Still blocked: ${outcome.question}\n\nAnswer: /goal_answer ${prefix} <your answer>`;
-    }
-
-    // When onStatusChange is wired, it already sent DAG PNGs for done/step-level events —
-    // return undefined so callers don't send a stray message after the notifications.
-    if (trackedStatus.onStatusChange) return undefined;
-
-    return `Resuming: ${prefix}...`;
+    return cap.getLogs() || "Got it.";
   } catch (err) {
     if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
       return cap.getErrors() || "Answer command failed.";
@@ -1665,6 +1538,55 @@ export function registerTelegramGoalCommands({
         threadId,
         replyToMessageId,
       );
+      return;
+    }
+    if (lockLabel === "resume") {
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          replyToMessageId,
+        );
+        return;
+      }
+      runGoalInBackground({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        label: backgroundLabel,
+        preface: getGoalExecutionPreface(run.state, resolveGoalOperatorHonorific(cfg)),
+        replyToMessageId,
+        releaseGoalLock: () => undefined,
+        runId: resolvedId,
+        fn: async () => {
+          const cap = createCaptureRuntime();
+          try {
+            await goalResumeCommand(
+              resolvedId,
+              { yes: true, quiet: false, config: cfg },
+              cap.runtime,
+            );
+            return cap.getErrors() || cap.getLogs() || "Got it.";
+          } catch (err) {
+            if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+              return cap.getErrors() || "Resume command failed.";
+            }
+            const backendHint = resolveBackendHint(resolvedId);
+            return formatGoalError(
+              err,
+              resolvedId,
+              backendHint ? { backend: backendHint } : undefined,
+            );
+          }
+        },
+        onResult: async (reply) =>
+          sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
+      });
       return;
     }
     const lockResult = acquireGoalOpLock(resolvedId, lockLabel);
@@ -2872,21 +2794,6 @@ export function registerTelegramGoalCommands({
       return;
     }
     const dispatchAnswer = (answerText: string) => {
-      const answerLock = acquireGoalOpLock(answerRunId, "answer");
-      if (!answerLock.acquired) {
-        void sendGoalReply(
-          bot,
-          resolved.chatId,
-          formatGoalLockedMessage(answerRunId, answerLock.existingLabel, {
-            activeStep: resolveActiveStepId(loadRun(answerRunId)),
-            retryCommand: "/goal_answer",
-          }),
-          runtime,
-          resolved.threadIdForSend,
-          replyToMessageId,
-        );
-        return;
-      }
       const statusCb = buildOnStatusChange({
         bot,
         chatId: resolved.chatId,
@@ -2902,7 +2809,6 @@ export function registerTelegramGoalCommands({
         label: "goal_answer",
         preface: buildPlanningPreface(resolved.operatorHonorific),
         replyToMessageId,
-        releaseGoalLock: answerLock.release,
         runId: answerRunId,
         fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
         onResult: async (result) => {
