@@ -1022,6 +1022,62 @@ describe("session serialization", () => {
     expect(step?.executedBackend).toBe("codex");
   });
 
+  it("round-trips resume notes through serialization", () => {
+    const session: GoalSession = {
+      goal: "Resume note round-trip",
+      state: "executing",
+      plan: null,
+      stepResults: new Map(),
+      blocked: null,
+      answers: {},
+      resumeNotes: [
+        {
+          timestamp: "2026-05-30T12:00:00.000Z",
+          source: "direct_reply",
+          affectedStepIds: ["task-a", "task-b"],
+          userText: "Use the staging endpoint.",
+        },
+      ],
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "resume-note-rt",
+      workingDir: "/tmp/ws",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+    });
+
+    expect(serialized.resumeNotes).toEqual(session.resumeNotes);
+    const restored = serializedToSession(serialized);
+    expect(restored.resumeNotes).toEqual(session.resumeNotes);
+  });
+
+  it("defaults legacy runs without resumeNotes to an empty array", () => {
+    const serialized: SerializedRun = {
+      runId: "legacy-no-resume-notes",
+      goal: "Legacy run",
+      state: "blocked",
+      plan: null,
+      stepResults: {},
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "task:one:input",
+      },
+      answers: {},
+      workingDir: "/tmp",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+      updatedAt: "2026-01-30T00:00:00.000Z",
+    };
+
+    const session = serializedToSession(serialized);
+    expect(session.resumeNotes).toEqual([]);
+  });
+
   it("handles empty stepResults", () => {
     const serialized: SerializedRun = {
       runId: "empty-id",

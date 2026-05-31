@@ -24,6 +24,7 @@ export type GoalSession = {
   stepResults: Map<string, StepResult>;
   blocked: BlockedDetail | null;
   answers: Record<string, string>;
+  resumeNotes?: ResumeNote[];
   lastError?: string;
   taskCheckpoints?: Record<string, TaskCheckpoint>;
   buildGateConfig?: PlanBuildGate;
@@ -62,6 +63,20 @@ export type RalphDetail = {
   specificErrors: string;
   keyInsight: string;
   suggestedApproach: string;
+};
+
+export type ResumeNoteSource =
+  | "resume"
+  | "add_details"
+  | "direct_reply"
+  | "goal_answer"
+  | "goal_resume";
+
+export type ResumeNote = {
+  timestamp: string;
+  source: ResumeNoteSource;
+  affectedStepIds: string[];
+  userText?: string;
 };
 
 export type PlanStep = {
@@ -224,6 +239,7 @@ export type SerializedRun = {
   stepResults: Record<string, StepResult>;
   blocked: BlockedDetail | null;
   answers: Record<string, string>;
+  resumeNotes?: ResumeNote[];
   lastError?: string;
   workingDir: string;
   model: string | undefined;
