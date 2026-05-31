@@ -87,7 +87,9 @@ describe("src/goal/worker-context — backend unification", () => {
       "pnpm build",
       "pnpm lint",
       "Before reporting completion, list the exact verification commands you ran",
-      "Do NOT restart the gateway service during goal execution.",
+      "never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service`",
+      "Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`",
+      "`node ./smithersbot.mjs dev-gateway restart|status|logs`",
     ];
     for (const needle of needles) {
       expect(WORKER_CONTEXT).toContain(needle);
