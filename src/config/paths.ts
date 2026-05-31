@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {
+  resolveGatewayInstanceFromEnv,
+  resolveGatewayInstanceIdentity,
+} from "./gateway-instance.js";
 import type { MoltbotConfig } from "./types.js";
 
 /**
@@ -18,7 +22,6 @@ export const isNixMode = resolveIsNixMode();
 
 const LEGACY_STATE_DIRNAME = ".clawdbot";
 const MOLTBOT_STATE_DIRNAME = ".moltbot";
-const SMITHERSBOT_STATE_DIRNAME = ".smithersbot";
 const CONFIG_FILENAME = "smithersbot.json";
 const MOLTBOT_CONFIG_FILENAME = "moltbot.json";
 const LEGACY_CONFIG_FILENAME = "clawdbot.json";
@@ -32,7 +35,7 @@ function moltbotStateDir(homedir: () => string = os.homedir): string {
 }
 
 function smithersbotStateDir(homedir: () => string = os.homedir): string {
-  return path.join(homedir(), SMITHERSBOT_STATE_DIRNAME);
+  return resolveGatewayInstanceIdentity("stable", homedir).stateDir;
 }
 
 export function resolveLegacyStateDir(homedir: () => string = os.homedir): string {
@@ -58,7 +61,9 @@ export function resolveStateDir(
     env.MOLTBOT_STATE_DIR?.trim() ||
     env.CLAWDBOT_STATE_DIR?.trim();
   if (override) return resolveUserPath(override);
-  const canonicalDir = smithersbotStateDir(homedir);
+  const instance = resolveGatewayInstanceFromEnv(env, homedir);
+  const canonicalDir = instance.stateDir;
+  if (!instance.legacyStateFallbacks) return canonicalDir;
   if (fs.existsSync(canonicalDir)) return canonicalDir;
   const moltbotDir = moltbotStateDir(homedir);
   if (fs.existsSync(moltbotDir)) return moltbotDir;
@@ -194,6 +199,14 @@ export function resolveDefaultConfigCandidates(
     candidates.push(path.join(resolveUserPath(legacyStateDirOverride), LEGACY_CONFIG_FILENAME));
   }
 
+  const instance = resolveGatewayInstanceFromEnv(env, homedir);
+  if (!instance.legacyStateFallbacks) {
+    candidates.push(path.join(instance.stateDir, CONFIG_FILENAME));
+    candidates.push(path.join(instance.stateDir, MOLTBOT_CONFIG_FILENAME));
+    candidates.push(path.join(instance.stateDir, LEGACY_CONFIG_FILENAME));
+    return [...new Set(candidates)];
+  }
+
   candidates.push(path.join(smithersbotStateDir(homedir), CONFIG_FILENAME));
   candidates.push(path.join(smithersbotStateDir(homedir), MOLTBOT_CONFIG_FILENAME));
   candidates.push(path.join(smithersbotStateDir(homedir), LEGACY_CONFIG_FILENAME));
@@ -206,7 +219,7 @@ export function resolveDefaultConfigCandidates(
   return candidates;
 }
 
-export const DEFAULT_GATEWAY_PORT = 18789;
+export const DEFAULT_GATEWAY_PORT = resolveGatewayInstanceIdentity("stable").defaultPort;
 
 /**
  * Gateway lock directory (ephemeral).
@@ -249,7 +262,10 @@ export function resolveGatewayPort(
   cfg?: MoltbotConfig,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  const envRaw = env.CLAWDBOT_GATEWAY_PORT?.trim();
+  const envRaw =
+    env.SMITHERSBOT_GATEWAY_PORT?.trim() ||
+    env.MOLTBOT_GATEWAY_PORT?.trim() ||
+    env.CLAWDBOT_GATEWAY_PORT?.trim();
   if (envRaw) {
     const parsed = Number.parseInt(envRaw, 10);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
@@ -258,5 +274,5 @@ export function resolveGatewayPort(
   if (typeof configPort === "number" && Number.isFinite(configPort)) {
     if (configPort > 0) return configPort;
   }
-  return DEFAULT_GATEWAY_PORT;
+  return resolveGatewayInstanceFromEnv(env).defaultPort;
 }

@@ -30,6 +30,20 @@ export function isUsageLimitClassReason(
   return reason === "out_of_credits" || reason === "usage_limit" || reason === "rate_limit";
 }
 
+/**
+ * True when an error/blocked text represents a *transient* provider/server
+ * overload (HTTP 5xx, 529, "overloaded", "server-side issue", "service
+ * unavailable") rather than a quota/usage limit. Such failures clear on their
+ * own, so — unlike a usage/quota limit — they are safe to auto-retry on the same
+ * backend with exponential backoff before surfacing a user-facing (paused)
+ * block. This mirrors how the planner already treats Anthropic 529s as transient
+ * overload (anthropic_overloaded), distinct from a rate/usage limit.
+ */
+export function isTransientOverloadText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return PROVIDER_TRANSIENT_OVERLOAD_RE.test(text);
+}
+
 function matchesErrorKind(kind: ProviderErrorKind, text: string): boolean {
   switch (kind) {
     case "rate_limit":

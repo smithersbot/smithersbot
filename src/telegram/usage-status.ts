@@ -12,6 +12,9 @@ import type {
   TelegramTopicConfig,
 } from "../config/types.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
+import { readClaudeCliCredentialsCached } from "../agents/cli-credentials.js";
+import { fetchClaudeUsage } from "../infra/provider-usage.fetch.claude.js";
+import type { ProviderUsageSnapshot } from "../infra/provider-usage.types.js";
 import { classifyUsageLimitEvent } from "../goal/usage-limit-classifier.js";
 import {
   describeUsageLimitEvent,
@@ -40,6 +43,10 @@ const CLAUDE_STATUSLINE_CACHE_REL = path.join("claude-code", "statusline.json");
 // numbers no longer reflect current quota.
 const STALE_THRESHOLD_MS = 15 * 60 * 1000;
 const CLAUDE_REFRESH_TIMEOUT_MS = 20_000;
+// The deterministic OAuth usage API refresh replaces the fragile interactive
+// `claude` statusLine spawn (which hangs when the TUI never reaches the state
+// that renders the status line, producing the "refresh timed out" symptom).
+const CLAUDE_API_USAGE_TIMEOUT_MS = 8_000;
 const CLAUDE_REFRESH_POLL_MS = 250;
 const CLAUDE_REFRESH_OUTPUT_MAX_BYTES = 128 * 1024;
 
@@ -389,6 +396,177 @@ export function refreshClaudeStatuslineCache(
   }
 }
 
+export type ClaudeApiUsageRefreshResult =
+  | { status: "refreshed" }
+  | { status: "auth_missing"; reason: string }
+  | { status: "unavailable"; reason: string };
+
+export type ClaudeApiUsageRefreshParams = {
+  cachePath: string;
+  nowMs: number;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+  readCredential?: () => string | null;
+  fetchUsage?: typeof fetchClaudeUsage;
+  fetchFn?: typeof fetch;
+  writeCache?: (cachePath: string, raw: string) => void;
+  timeoutMs?: number;
+};
+
+function describeError(err: unknown): string {
+  return err instanceof Error && err.message ? err.message : String(err);
+}
+
+const CLAUDE_API_AUTH_ERROR_RE =
+  /\b(?:401|403|unauthor|forbidden|invalid token|expired|not logged in|login|scope)\b/i;
+
+function classifyClaudeApiError(error: string): ClaudeApiUsageRefreshResult {
+  if (CLAUDE_API_AUTH_ERROR_RE.test(error)) {
+    return {
+      status: "auth_missing",
+      reason: `Claude Code usage API rejected the token (${error})`,
+    };
+  }
+  return { status: "unavailable", reason: `Claude usage API error (${error})` };
+}
+
+function defaultWriteStatuslineCache(cachePath: string, raw: string): void {
+  fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+  const tmp = `${cachePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, raw);
+  fs.renameSync(tmp, cachePath);
+}
+
+function defaultReadClaudeUsageCredential(homeDir?: string): string | null {
+  const cred = readClaudeCliCredentialsCached(homeDir ? { homeDir } : undefined);
+  if (!cred) return null;
+  return cred.type === "oauth" ? cred.access : cred.token;
+}
+
+// Deterministically refresh the Claude usage cache via the OAuth usage API the
+// Claude Code CLI itself authenticates against, then write the same statusline
+// JSON shape the legacy spawn refresh produced. This avoids spawning the
+// interactive `claude` TUI (which no longer renders the status line within the
+// timeout window) and either returns fresh quota or a classified, actionable
+// unavailability reason — never a stale value masked as fresh.
+export async function refreshClaudeUsageCacheViaApi(
+  params: ClaudeApiUsageRefreshParams,
+): Promise<ClaudeApiUsageRefreshResult> {
+  const readCredential =
+    params.readCredential ?? (() => defaultReadClaudeUsageCredential(params.homeDir));
+  let token: string | null;
+  try {
+    token = readCredential();
+  } catch (err) {
+    return {
+      status: "auth_missing",
+      reason: `Claude Code credentials unreadable (${describeError(err)})`,
+    };
+  }
+  if (!token) {
+    return {
+      status: "auth_missing",
+      reason: "Claude Code is not logged in (no OAuth credentials found)",
+    };
+  }
+
+  const fetchUsage = params.fetchUsage ?? fetchClaudeUsage;
+  const fetchFn = params.fetchFn ?? fetch;
+  const timeoutMs = params.timeoutMs ?? CLAUDE_API_USAGE_TIMEOUT_MS;
+  let snapshot: ProviderUsageSnapshot;
+  try {
+    snapshot = await fetchUsage(token, timeoutMs, fetchFn);
+  } catch (err) {
+    return {
+      status: "unavailable",
+      reason: `Claude usage API request failed (${describeError(err)})`,
+    };
+  }
+  if (snapshot.error) return classifyClaudeApiError(snapshot.error);
+
+  const fiveHour = snapshot.windows.find((w) => w.label === "5h");
+  const sevenDay = snapshot.windows.find((w) => w.label === "Week");
+  if (!fiveHour || fiveHour.resetAt == null || !sevenDay || sevenDay.resetAt == null) {
+    return {
+      status: "unavailable",
+      reason: "Claude usage API did not return both 5-hour and weekly reset windows",
+    };
+  }
+
+  const raw = JSON.stringify({
+    rate_limits: {
+      five_hour: {
+        used_percentage: fiveHour.usedPercent,
+        resets_at: new Date(fiveHour.resetAt).toISOString(),
+      },
+      seven_day: {
+        used_percentage: sevenDay.usedPercent,
+        resets_at: new Date(sevenDay.resetAt).toISOString(),
+      },
+    },
+  });
+  const write = params.writeCache ?? defaultWriteStatuslineCache;
+  try {
+    write(params.cachePath, raw);
+  } catch (err) {
+    return {
+      status: "unavailable",
+      reason: `Failed to write Claude usage cache (${describeError(err)})`,
+    };
+  }
+  return { status: "refreshed" };
+}
+
+function claudeApiResultToRefreshResult(
+  result: ClaudeApiUsageRefreshResult,
+): ClaudeStatuslineRefreshResult {
+  if (result.status === "refreshed") return { status: "refreshed" };
+  return { status: result.status, reason: result.reason };
+}
+
+export type BuildUsageStatusWithRefreshOptions = BuildUsageStatusOptions & {
+  refreshClaudeUsageViaApi?:
+    | ((params: ClaudeApiUsageRefreshParams) => Promise<ClaudeApiUsageRefreshResult>)
+    | false;
+};
+
+// Async entry point used by the live command: refreshes Claude usage through the
+// deterministic OAuth API when the cache is stale, then renders the message from
+// the (now fresh) cache. Falls back to a classified unavailability note instead
+// of the interactive spawn refresh that hangs.
+export async function buildUsageStatusMessageWithClaudeRefresh(
+  options: BuildUsageStatusWithRefreshOptions = {},
+): Promise<string> {
+  const env = options.env ?? process.env;
+  const homeDir = options.homeDir ?? os.homedir();
+  const nowMs = options.nowMs ?? Date.now();
+  const readCache = options.readCache ?? defaultReadCache;
+  const cachePath = options.cachePath ?? resolveClaudeStatuslineCachePath(homeDir, env);
+
+  const existing = readCompleteClaudeStatusline(readCache(cachePath))?.entry;
+  const cacheIsStale = !existing || nowMs - existing.mtimeMs > STALE_THRESHOLD_MS;
+  if (!cacheIsStale || options.refreshClaudeUsageViaApi === false) {
+    return buildUsageStatusMessage({ ...options, refreshClaudeStatusline: false });
+  }
+
+  const apiRefresh = options.refreshClaudeUsageViaApi ?? refreshClaudeUsageCacheViaApi;
+  let apiResult: ClaudeApiUsageRefreshResult;
+  try {
+    apiResult = await apiRefresh({ cachePath, nowMs, env, homeDir });
+  } catch (err) {
+    apiResult = {
+      status: "unavailable",
+      reason: `Claude usage refresh failed (${describeError(err)})`,
+    };
+  }
+
+  if (apiResult.status === "refreshed") {
+    return buildUsageStatusMessage({ ...options, refreshClaudeStatusline: false });
+  }
+  const refreshResult = claudeApiResultToRefreshResult(apiResult);
+  return buildUsageStatusMessage({ ...options, refreshClaudeStatusline: () => refreshResult });
+}
+
 function formatPercent(value: number | undefined): string {
   return value == null ? "?" : `${Math.round(value)}%`;
 }
@@ -670,7 +848,7 @@ type RegisterUsageStatusCommandParams = {
     messageThreadId?: number,
   ) => { groupConfig?: TelegramGroupConfig; topicConfig?: TelegramTopicConfig };
   shouldSkipUpdate: (ctx: unknown) => boolean;
-  buildMessage?: () => string;
+  buildMessage?: () => string | Promise<string>;
 };
 
 async function sendUsageStatusMessage(
@@ -699,7 +877,7 @@ export function registerUsageStatusCommand({
   shouldSkipUpdate,
   buildMessage,
 }: RegisterUsageStatusCommandParams): void {
-  const build = buildMessage ?? (() => buildUsageStatusMessage());
+  const build = buildMessage ?? (() => buildUsageStatusMessageWithClaudeRefresh());
   bot.command(USAGE_STATUS_COMMAND, async (ctx: TelegramUsageStatusContext) => {
     const msg = ctx.message;
     if (!msg) return;
@@ -722,7 +900,7 @@ export function registerUsageStatusCommand({
     await sendUsageStatusMessage(
       bot,
       msg.chat.id,
-      build(),
+      await build(),
       auth.isGroup ? auth.resolvedThreadId : msg.message_thread_id,
     );
   });

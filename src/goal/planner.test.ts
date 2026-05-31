@@ -11,6 +11,10 @@ import {
   parsePlanResultFromText,
   PlanParseError,
 } from "./planner.js";
+import {
+  DEV_GATEWAY_PLANNER_GUIDANCE,
+  WORKSPACE_SCOPE_PLANNER_GUIDANCE,
+} from "../prompts/planner/system-prompt.js";
 import { PLAN_QUALITY_RUBRIC } from "../prompts/shared/plan-quality-rubric.js";
 import type { ScoutResult } from "./scout.js";
 import type { GoalLlmClient } from "./types.js";
@@ -55,6 +59,16 @@ describe("planner", () => {
       expect(prompt).toContain('Use "claude_code" for testing tasks');
     });
 
+    it("restricts requiresNetwork guidance to genuine network needs, not normal local build/test", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("requiresNetwork");
+      // Network is off by default and only for genuine network work.
+      expect(prompt).toMatch(/web fetch\/search/);
+      expect(prompt).toMatch(/download/i);
+      // Must explicitly steer away from setting it for normal local build/test.
+      expect(prompt).toMatch(/Do NOT set it for normal local build\/test/);
+    });
+
     it("does not offer pi as an assignable backend (disabled for launch)", () => {
       // Pi is disabled for launch: the planner/scout must not be told it can
       // assign pi. Check the backend union and selection rules across modes.
@@ -71,6 +85,68 @@ describe("planner", () => {
       expect(() => buildPlanSystemPrompt([])).toThrow(
         "No worker backend available. Install Codex or Claude Code and rerun.",
       );
+    });
+
+    it("includes the current-instance-only goal working directory constraint", () => {
+      for (const workers of [["claude_code", "codex"], ["codex"], ["claude_code"]] as const) {
+        const prompt = buildPlanSystemPrompt([...workers]);
+        expect(prompt).toContain(WORKSPACE_SCOPE_PLANNER_GUIDANCE);
+        expect(prompt).toContain("GOAL WORKING DIRECTORY SCOPE (strict):");
+        expect(prompt).toContain("/home/matt/smithersbot-home/agent/workspaces/<workspace>");
+        expect(prompt).toContain("/home/matt/smithersbot-dev-home/agent/workspaces/<workspace>");
+        expect(prompt).toContain("are READ-ONLY/context-only and MUST NOT be chosen as workingDir");
+      }
+    });
+
+    it("appends dev-gateway verification guidance only when the dev option is set", () => {
+      const withDev = buildPlanSystemPrompt(["claude_code", "codex"], {
+        devGatewayVerification: true,
+      });
+      const withoutDev = buildPlanSystemPrompt(["claude_code", "codex"], {
+        devGatewayVerification: false,
+      });
+      const noOpts = buildPlanSystemPrompt(["claude_code", "codex"]);
+
+      expect(withDev).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      expect(withDev).toContain("smithersbot-dev-gateway.service");
+      expect(withoutDev).not.toContain("DEV GATEWAY VERIFICATION");
+      expect(noOpts).not.toContain("DEV GATEWAY VERIFICATION");
+    });
+  });
+
+  describe("dev-gateway planner guidance gating", () => {
+    const validPlanJson = JSON.stringify({
+      workingDir: "/tmp/moltbot",
+      summary: "Change gateway restart behavior",
+      steps: [
+        {
+          id: "edit-restart",
+          description: "Update restart resolver and verify with a focused test",
+          dependsOn: [],
+          durationMinutes: 10,
+          backend: "claude_code",
+        },
+      ],
+    });
+
+    // A literal path whose final segment is smithersbot-dev marks the dev
+    // checkout; a non-dev path must never trigger the guidance.
+    const DEV_CWD = "/tmp/agent/workspaces/smithersbot-dev";
+    const NON_DEV_CWD = "/tmp/moltbot-planner-cwd";
+
+    async function systemPromptForCwd(cwd: string): Promise<string> {
+      const complete = vi.fn().mockResolvedValue({ text: validPlanJson });
+      const client: GoalLlmClient = { complete };
+      await generatePlan(client, "Change gateway restart behavior", cwd);
+      return complete.mock.calls[0][0].systemPrompt as string;
+    }
+
+    it("injects dev-gateway guidance when planning in the smithersbot-dev checkout", async () => {
+      expect(await systemPromptForCwd(DEV_CWD)).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    });
+
+    it("omits dev-gateway guidance for non-dev workspaces", async () => {
+      expect(await systemPromptForCwd(NON_DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
     });
   });
 
