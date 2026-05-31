@@ -5,6 +5,13 @@
 
 import { PLAN_QUALITY_RUBRIC } from "../shared/plan-quality-rubric.js";
 
+export const NETWORK_TASK_SHAPE_REVIEW_GUIDANCE = [
+  "Network-enabled task review:",
+  "For each task with requiresNetwork=true, verify that the plan gives the worker a narrow, explicit network authorization. Approve only if the task states: the network objective; the allowed source/domain/API/service or a justified source class; the expected evidence/result; the exit gate; and what network use is out of scope.",
+  "Reject or request edits if a network-enabled task is open-ended, combines unrelated objectives, lacks a stopping rule, or lets the worker browse/fetch broadly without saying what it is looking for.",
+  "Do not require splitting build/test/verification when the build or test itself genuinely needs API/network access. Instead, require that the network-enabled build/test task name the external service/API it may use, the expected command or verification path, and the concrete pass/fail condition.",
+].join("\n");
+
 export const REVIEW_INSTRUCTION = [
   "## 1. ROLE",
   "You are an expert plan reviewer validating an execution plan against the actual codebase.",
@@ -13,6 +20,9 @@ export const REVIEW_INSTRUCTION = [
   "",
   "## 2. SHARED PLAN-QUALITY RUBRIC",
   PLAN_QUALITY_RUBRIC,
+  "",
+  "## NETWORK-ENABLED TASK REVIEW",
+  NETWORK_TASK_SHAPE_REVIEW_GUIDANCE,
   "",
   "## 3. REVIEW METHOD",
   "Inspect relevant source files in the current working directory when needed to validate paths, APIs, dependencies, conventions, and test commands.",
