@@ -188,7 +188,8 @@ describe("repo-chat-worker", () => {
       const appendIdx = args.indexOf("--append-system-prompt");
       const appendedPrompt = args[appendIdx + 1] ?? "";
       expect(appendedPrompt).toContain(REPO_CHAT_READ_ONLY_PROMPT);
-      expect(appendedPrompt).toContain("Moltbot");
+      expect(appendedPrompt).toContain("SmithersBot");
+      expect(appendedPrompt).not.toContain("The current product naming convention is `moltbot`");
       expect(args).toContain("--output-format");
       expect(args).toContain("json");
       expect(args).not.toContain("stream-json");
