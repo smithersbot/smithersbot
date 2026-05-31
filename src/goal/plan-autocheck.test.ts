@@ -2342,6 +2342,7 @@ describe("Stage 2Q — Stage 2P regression fixtures", () => {
 describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
   const HOME = "/home/matt";
   const homedir = () => HOME;
+  const asDir = () => ({ isDirectory: () => true });
   const stable = {
     env: { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
     homedir,
@@ -2378,13 +2379,19 @@ describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
 
   it("accepts a stable plan whose workingDir is under the stable agent workspaces root", () => {
     expect(
-      checkPlanWorkingDir("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev", stable),
+      checkPlanWorkingDir("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev", {
+        ...stable,
+        statPath: asDir,
+      }),
     ).toEqual({ approved: true });
   });
 
   it("accepts a dev-instance plan under the dev agent workspaces root", () => {
     expect(
-      checkPlanWorkingDir("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev", dev),
+      checkPlanWorkingDir("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev", {
+        ...dev,
+        statPath: asDir,
+      }),
     ).toEqual({ approved: true });
   });
 
@@ -2410,7 +2417,6 @@ describe("checkPlanWorkingDir (executable workingDir autocheck guard)", () => {
 
   describe("on-disk existence / is-directory validation", () => {
     const validDir = "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev";
-    const asDir = () => ({ isDirectory: () => true });
     const asFile = () => ({ isDirectory: () => false });
 
     it("approves a valid in-root workspace directory that exists on disk", () => {
