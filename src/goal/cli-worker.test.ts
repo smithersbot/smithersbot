@@ -2295,6 +2295,38 @@ describe("cli-worker", () => {
       );
     });
 
+    it("includes concise deduplicated goal-level resume notes", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep({ id: "task-a" }),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        resumeNotes: [
+          {
+            timestamp: "2026-05-31T14:00:00.000Z",
+            source: "goal_answer",
+            affectedStepIds: ["task-a", "task-b"],
+            userText: "Use the mock API key placeholder from the example.",
+          },
+          {
+            timestamp: "2026-05-31T14:00:00.000Z",
+            source: "goal_answer",
+            affectedStepIds: ["task-a", "task-b"],
+            userText: "Use the mock API key placeholder from the example.",
+          },
+        ],
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain("GOAL-LEVEL RESUME NOTES:");
+      expect(prompt).toContain("Timestamp: 2026-05-31T14:00:00.000Z");
+      expect(prompt).toContain("Source: /goal_answer");
+      expect(prompt).toContain("Affected steps: task-a, task-b");
+      expect(prompt).toContain("User text:");
+      expect(prompt).toContain("Use the mock API key placeholder from the example.");
+      expect(prompt.match(/Timestamp: 2026-05-31T14:00:00\.000Z/g)).toHaveLength(1);
+    });
+
     it("tells workers to keep worker_result summaries concise", () => {
       const prompt = buildCliWorkerPrompt({
         step: makeStep(),

@@ -33,6 +33,7 @@ import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-run
 import type { Plan, PlanStep } from "./types.js";
 import { classifyProviderError } from "./error-patterns.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
+import { formatWorkerResumeNotes } from "./resume-note-context.js";
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
@@ -189,10 +190,13 @@ export class PiTaskRunner implements TaskRunner {
                 context.plan.steps.length,
                 context.resumeAnswer,
                 context.resumeQuestion,
-                firstTurnOpts,
+                { ...firstTurnOpts, resumeNotes: context.resumeNotes },
               )
             : turnsUsed === 0
-              ? buildFirstTaskPrompt(context.task, context.plan.steps.length, firstTurnOpts)
+              ? buildFirstTaskPrompt(context.task, context.plan.steps.length, {
+                  ...firstTurnOpts,
+                  resumeNotes: context.resumeNotes,
+                })
               : buildContinuePrompt(context.task, turnsUsed, this.maxTurnsPerTask);
 
         context.onProgress?.(`  [turn ${turnsUsed + 1}/${this.maxTurnsPerTask}]`);
@@ -553,7 +557,12 @@ function buildGoalSystemPrompt(
 function buildFirstTaskPrompt(
   task: PlanStep,
   totalTasks: number,
-  opts?: { nodeSpec?: string | null; workingNotes?: string | null; priorAttempt?: string | null },
+  opts?: {
+    nodeSpec?: string | null;
+    workingNotes?: string | null;
+    priorAttempt?: string | null;
+    resumeNotes?: TaskRunnerContext["resumeNotes"];
+  },
 ): string {
   const lines: string[] = [];
   lines.push(`Work on this task: ${task.description}`);
@@ -580,6 +589,11 @@ function buildFirstTaskPrompt(
     lines.push(opts.priorAttempt);
     lines.push("");
     lines.push("Try a different approach. Do not repeat what failed.");
+  }
+  const resumeNoteContext = formatWorkerResumeNotes(opts?.resumeNotes);
+  if (resumeNoteContext) {
+    lines.push("");
+    lines.push(resumeNoteContext);
   }
   lines.push("");
   lines.push(
@@ -608,7 +622,12 @@ function buildResumeTaskPrompt(
   totalTasks: number,
   answer: string,
   question?: string,
-  opts?: { nodeSpec?: string | null; workingNotes?: string | null; priorAttempt?: string | null },
+  opts?: {
+    nodeSpec?: string | null;
+    workingNotes?: string | null;
+    priorAttempt?: string | null;
+    resumeNotes?: TaskRunnerContext["resumeNotes"];
+  },
 ): string {
   const lines: string[] = [];
   lines.push(`Continue working on this task: ${task.description}`);
@@ -632,6 +651,11 @@ function buildResumeTaskPrompt(
     lines.push(opts.priorAttempt);
     lines.push("");
     lines.push("Try a different approach. Do not repeat what failed.");
+  }
+  const resumeNoteContext = formatWorkerResumeNotes(opts?.resumeNotes);
+  if (resumeNoteContext) {
+    lines.push("");
+    lines.push(resumeNoteContext);
   }
   lines.push("");
   lines.push(`You previously asked the user: ${question ?? "a question"}`);

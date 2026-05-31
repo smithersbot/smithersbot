@@ -624,6 +624,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         completedSummaries,
         resumeAnswer,
         resumeQuestion,
+        resumeNotes: session.resumeNotes ?? [],
         attemptBundles,
         onProgress,
         abortSignal: effectiveAbort,

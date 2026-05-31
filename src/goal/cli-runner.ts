@@ -56,6 +56,7 @@ export class CliTaskRunner implements TaskRunner {
       onProgress: context.onProgress,
       resumeAnswer: context.resumeAnswer,
       resumeQuestion: context.resumeQuestion,
+      resumeNotes: context.resumeNotes,
       attemptNumber,
       previousAttempt,
       claudeCodeAuth: this.claudeCodeAuth,

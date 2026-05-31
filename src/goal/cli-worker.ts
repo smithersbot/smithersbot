@@ -11,7 +11,7 @@ import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
 import { GoalWorkerOutputSchema } from "./goal-schemas.js";
-import type { PlanStep, Plan } from "./types.js";
+import type { PlanStep, Plan, ResumeNote } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
 import {
   collectGitDiffSummary,
@@ -61,6 +61,7 @@ import {
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import { formatWorkerResumeNotes } from "./resume-note-context.js";
 
 // --- Constants ---
 
@@ -112,6 +113,8 @@ export type CliWorkerParams = {
   resumeAnswer?: string;
   /** The question the step asked before blocking. */
   resumeQuestion?: string;
+  /** Goal-level resume notes added by user unblock/resume actions. */
+  resumeNotes?: ResumeNote[];
   /** Attempt number for retries. */
   attemptNumber?: number;
   /** Prior attempt bundle for retry context. */
@@ -420,6 +423,7 @@ export async function executeTaskWithCliWorker(
     onProgress,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     attemptNumber = 1,
     previousAttempt,
     claudeCodeAuth = "subscription",
@@ -491,6 +495,7 @@ export async function executeTaskWithCliWorker(
     lessons,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     resultPath: workspaceResultPath,
     previousAttempt,
     devGatewayWorkspace: devGateway.active,
@@ -885,6 +890,7 @@ export function buildCliWorkerPrompt(params: {
   lessons?: Array<{ pattern: string; lesson: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
+  resumeNotes?: ResumeNote[];
   resultPath: string;
   previousAttempt?: string | null;
   /**
@@ -902,6 +908,7 @@ export function buildCliWorkerPrompt(params: {
     lessons,
     resumeAnswer,
     resumeQuestion,
+    resumeNotes,
     resultPath,
     previousAttempt,
     devGatewayWorkspace,
@@ -944,6 +951,12 @@ export function buildCliWorkerPrompt(params: {
     lines.push(`You previously asked: ${resumeQuestion ?? "a question"}`);
     lines.push(`The user answered: ${resumeAnswer}`);
     lines.push("Use this information to continue and complete the task.");
+    lines.push("");
+  }
+
+  const resumeNoteContext = formatWorkerResumeNotes(resumeNotes);
+  if (resumeNoteContext) {
+    lines.push(resumeNoteContext);
     lines.push("");
   }
 
