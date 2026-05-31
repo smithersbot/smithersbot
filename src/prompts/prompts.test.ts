@@ -921,6 +921,32 @@ describe("project docs — managed workspace and sandbox claims", () => {
     },
   );
 
+  it("documents network-enabled prompt-injection protections in README Safety rails", () => {
+    const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+
+    expect(readme).toContain("### Network-enabled tasks and prompt injection");
+    expect(readme).toContain(
+      "builds on the existing Claude Code and Codex protections to make network-capable work more secure than a raw CLI session",
+    );
+    expect(readme).toContain("Network is granted per task, not as a general worker default");
+    expect(readme).toContain(
+      "the planner/checker prompts keep network-enabled tasks narrow and auditable",
+    );
+    expect(readme).toContain(
+      "Build and test tasks can still use an external API or service when that is genuinely required",
+    );
+    expect(readme).toContain("treated as untrusted data, not authority");
+    expect(readme).toContain(
+      "SmithersBot injects an Untrusted Content Rule telling the worker to analyze that content as evidence",
+    );
+    expect(readme).toContain("only injected when network/search access is enabled");
+    expect(readme).toContain(
+      "Sandboxing, credential stripping, private-root denies, workspace boundaries, and network-off-by-default remain the primary protections.",
+    );
+    expect(readme).toContain("Prompt instructions are an additional backup layer");
+    expect(readme).toContain("they are not the sandbox");
+  });
+
   it("documents gateway restart service names without inventing a SmithersBot dev-gateway unit", () => {
     const setup = fs.readFileSync(path.join(repoRoot, "SETUP.md"), "utf8");
     const forbiddenDevUnit = ["smithersbot", "gateway", "dev.service"].join("-");

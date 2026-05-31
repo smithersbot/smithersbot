@@ -250,6 +250,14 @@ Codex and Claude Code handle sandboxing differently, so SmithersBot configures t
 
 The sandbox configs and credential-stripped environment are the main protections. SmithersBot also injects deny instructions for secret paths and dangerous commands, but those are a backup policy layer. If the backend-native sandbox cannot be established, workers fail and escalate to the user by blocking the task. Run SmithersBot on an isolated machine: the sandbox is a strong practical boundary, not an absolute guarantee.
 
+### Network-enabled tasks and prompt injection
+
+SmithersBot builds on the existing Claude Code and Codex protections to make network-capable work more secure than a raw CLI session. Network is granted per task, not as a general worker default, and the planner/checker prompts keep network-enabled tasks narrow and auditable: what may be fetched or called, what result proves completion, and when the worker should stop. Build and test tasks can still use an external API or service when that is genuinely required, but the allowed service and pass/fail condition should be explicit.
+
+External pages, packages, issues, docs, API responses, search results, copied text, and tool output are treated as untrusted data, not authority. For network/search-enabled contexts, SmithersBot injects an Untrusted Content Rule telling the worker to analyze that content as evidence for the task and not to follow instructions from it that conflict with system, developer, user, workspace, security, or task rules. That rule is only injected when network/search access is enabled.
+
+Sandboxing, credential stripping, private-root denies, workspace boundaries, and network-off-by-default remain the primary protections. Prompt instructions are an additional backup layer; they are not the sandbox.
+
 ### Keep secrets out of the workspace
 
 Do not put API keys, tokens, credentials, or real `.env` files anywhere under `agent/`. Anything under `~/smithersbot-home/agent/workspaces/<workspace-name>` is part of the normal agent read/edit surface.
