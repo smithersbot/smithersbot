@@ -1,6 +1,6 @@
 import type { AttemptBundle } from "./attempt-bundle.js";
 import type { HardDenyList } from "./hard-deny.js";
-import type { FailedDetail, Plan, PlanStep, RalphDetail } from "./types.js";
+import type { FailedDetail, Plan, PlanStep, RalphDetail, ResumeNote } from "./types.js";
 
 export interface TaskRunnerContext {
   task: PlanStep;
@@ -12,6 +12,7 @@ export interface TaskRunnerContext {
   completedSummaries: Array<{ id: string; summary: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
+  resumeNotes?: ResumeNote[];
   attemptBundles?: AttemptBundle[];
   onProgress?: (text: string) => void;
   abortSignal: AbortSignal;
