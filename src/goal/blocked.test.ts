@@ -54,6 +54,15 @@ describe("aggregateBlockedDetails", () => {
     });
   });
 
+  it("keeps legacy aggregate answer keys readable for blocked user-input tasks", () => {
+    const detail = aggregateBlockedDetails([
+      makeStep({ id: "task-a", status: "blocked", blockedReason: "user_input" }),
+      makeStep({ id: "task-b", status: "blocked", blockedReason: "user_input" }),
+    ]);
+
+    expect(detail?.requiredInputKey).toBe("tasks:task-a,task-b:input");
+  });
+
   it("uses resume_execution for in_progress-only steps", () => {
     const detail = aggregateBlockedDetails([
       makeStep({

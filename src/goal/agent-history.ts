@@ -144,6 +144,12 @@ export function mirrorGoalRunToAgentHistory(run: SerializedRun): void {
         }
       : null,
     lastError: run.lastError ? truncateSafeExcerpt(run.lastError) : undefined,
+    autocheckSkipReason: run.autocheckSkipReason
+      ? truncateSafeExcerpt(run.autocheckSkipReason)
+      : undefined,
+    autocheckSkipMetadataPath: run.autocheckSkipMetadataPath
+      ? truncateSafeExcerpt(run.autocheckSkipMetadataPath)
+      : undefined,
     buildGateResults: sanitizeBuildGateResults(run),
     githubPushOutcome: sanitizeGithubPushOutcome(run),
   };

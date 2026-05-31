@@ -139,6 +139,45 @@ function managedWorkspace(name: string): string {
 const shouldRunGit = process.env.MOLTBOT_TEST_GIT === "1" && canRunGit();
 const describeGit = shouldRunGit ? describe : describe.skip;
 
+describe("ensureWorkingDir current-instance workspace guard", () => {
+  // The strict goal-execution guard (shared assertGoalWorkerWorkspace helper) must
+  // reject an out-of-current-instance working dir BEFORE ensureWorkingDir performs
+  // any filesystem mutation (mkdir / git init / staging). The current instance here
+  // is the default (stable) instance, so the managed temp root is its own
+  // agent/workspaces tree and the dev-home surface is a foreign/observed root.
+  it("rejects the observed dev-home workspace path before any fs mutation", () => {
+    const devHome = "/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    expect(() => ensureWorkingDir(devHome)).toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+  });
+
+  it("rejects an arbitrary out-of-root path before any fs mutation", () => {
+    const outside = path.join(tempBaseOutsideRepo(), "definitely-not-a-managed-workspace-xyz");
+    expect(() => ensureWorkingDir(outside)).toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+    // Never created: the guard throws before mkdirSync.
+    expect(fs.existsSync(outside)).toBe(false);
+  });
+
+  it("allows allowOutsideManagedRoot to bypass the goal-execution guard", () => {
+    const outside = tracked(mkdtempSync(path.join(tempBaseOutsideRepo(), "guard-bypass-")));
+    // Bypassed: no guard throw (create-repo semantics). May still touch git, which
+    // is outside the scope of this assertion.
+    expect(() => ensureWorkingDir(outside, { allowOutsideManagedRoot: true })).not.toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+  });
+
+  it("does not reject a valid managed workspace path with the guard", () => {
+    const valid = managedWorkspace("guard-valid");
+    expect(() => ensureWorkingDir(valid)).not.toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
+  });
+});
+
 describe("git-checkpoint branch naming", () => {
   it("buildRunBranchName prefixes UTC timestamp before run id", () => {
     expect(buildRunBranchName("run1", "2026-02-25T15:04:05.999Z")).toBe(
@@ -295,11 +334,14 @@ describeGit("git-checkpoint", () => {
     expect(isWorkingTreeClean(dir)).toBe(true);
   });
 
-  it("rejects a plain folder outside managed workspaces with an actionable message", () => {
+  it("rejects a plain folder outside the current instance workspaces with an actionable message", () => {
     const outside = tracked(mkdtempSync(path.join(tempBaseOutsideRepo(), "outside-managed-")));
 
-    expect(() => ensureWorkingDir(outside)).toThrow(/managed workspaces root/);
-    expect(() => ensureWorkingDir(outside)).toThrow(/git init/);
+    // The shared goal-execution guard fires first and rejects any out-of-current-
+    // instance working dir before the legacy managed-root/git-init messaging.
+    expect(() => ensureWorkingDir(outside)).toThrow(
+      /outside the current stable instance's own agent\/workspaces tree/,
+    );
     // Never auto-initialized outside the managed root.
     expect(fs.existsSync(path.join(outside, ".git"))).toBe(false);
     // Never surfaces the raw git error.

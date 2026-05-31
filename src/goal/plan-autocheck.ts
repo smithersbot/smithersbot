@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ClaudeCodeAuthMode, CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
-import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
+import {
+  DEV_GATEWAY_REVIEW_GUIDANCE,
+  REVIEW_INSTRUCTION,
+} from "../prompts/plan-autocheck/review-instruction.js";
 import {
   appendAgentHistoryEventBestEffort,
   parseBackendUsage,
@@ -9,9 +12,11 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
+  isBackendAvailable,
 } from "./backend-availability.js";
 import { runWithBackendFallback } from "./phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
@@ -28,14 +33,19 @@ import {
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
 import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
+import { classifyProviderError, extractUsageLimitResetHint } from "./error-patterns.js";
+import { backendDisplayName } from "./usage-limit-message.js";
 import { runCliPlanRevision } from "./cli-planner.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
 import { extractJson } from "./planner.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { Plan } from "./types.js";
+import { assertWorkingDirInsideCurrentInstanceWorkspaces } from "./workspace-policy.js";
+import type { GoalConfig } from "../config/types.goal.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import { resolveAgentGoalHistoryDir } from "../config/managed-paths.js";
 
 const DEFAULT_AUTOCHECK_MAX_ROUNDS = 3;
 const DEFAULT_AUTOCHECK_TIMEOUT_MS = 7_200_000;
@@ -61,12 +71,18 @@ export type PlanAutocheckParams = {
   workingDir: string;
   claudeCodeAuth?: ClaudeCodeAuthMode;
   enabledWorkers?: CliWorkerId[];
+  readOnlyRoots?: string[];
   runDir: string;
   existingSessionId?: string;
   existingBackend?: string;
   commitRevision: (params: PlanAutocheckCommitRevisionParams) => Promise<void> | void;
   model?: string;
   timeoutMs?: number;
+  /**
+   * Optional identity override for the up-front executable-workingDir check.
+   * Defaults to the running process identity (process.env / os.homedir).
+   */
+  workspacePolicy?: PlanWorkingDirPolicyOptions;
 };
 
 export type PlanAutocheckResult = {
@@ -80,6 +96,123 @@ export type PlanAutocheckResult = {
 };
 
 type AutocheckDecision = { approved: true } | { approved: false; editInstructions: string };
+
+/**
+ * Override hooks that let callers/tests deterministically resolve the current
+ * gateway instance identity when validating a plan's executable workingDir.
+ * Mirrors the shared workspace-policy guard options — identity is taken from
+ * the explicit instance/env/homedir helpers, NEVER inferred from the checkout.
+ */
+export type PlanWorkingDirPolicyOptions = {
+  config?: GoalConfig;
+  env?: NodeJS.ProcessEnv;
+  homedir?: () => string;
+  instance?: string | null;
+  observedInstances?: Iterable<string> | null;
+  /**
+   * Injectable on-disk stat used for the existence/is-directory check. Defaults
+   * to fs.statSync; tests override it to deterministically model a missing path
+   * or a file (not a directory) without touching the real filesystem.
+   */
+  statPath?: (candidate: string) => { isDirectory(): boolean } | undefined;
+};
+
+function defaultStatPath(candidate: string): { isDirectory(): boolean } | undefined {
+  try {
+    return fs.statSync(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+function rejectPlanWorkingDir(workingDir: string, detail: string): AutocheckDecision {
+  return {
+    approved: false,
+    editInstructions:
+      `Reject: the plan workingDir "${workingDir}" is not an allowed executable goal working directory. ` +
+      `${detail} ` +
+      "Edit the plan so workingDir is an absolute path to an existing directory inside the current gateway " +
+      "instance's own agent/workspaces tree; observed/foreign-instance surfaces are read-only context and must " +
+      "not be used as the executable workingDir.",
+  };
+}
+
+/**
+ * Programmatic plan-autocheck layer for the executable goal working directory.
+ *
+ * Reuses the SAME shared rejection/identity helper as the workspace-policy
+ * guard (do not fork): a plan whose workingDir does not resolve inside the
+ * current gateway instance's own agent/workspaces tree is rejected with
+ * actionable edit instructions that name the rejected path and the correct
+ * current-instance workspaces root. This is the up-front autocheck layer — the
+ * executor and build gate remain the hard enforcement boundary.
+ */
+export function checkPlanWorkingDir(
+  workingDir: string,
+  options: PlanWorkingDirPolicyOptions = {},
+): AutocheckDecision {
+  // 1) Must be a non-empty, absolute/resolved path. Assertion-text artifacts
+  // such as "exactly /path" (a relative-looking token) never reach the
+  // executor as a valid workingDir, so reject them up front by their shape.
+  if (typeof workingDir !== "string" || workingDir.trim().length === 0) {
+    return rejectPlanWorkingDir(String(workingDir), "It is empty or not a string.");
+  }
+  if (!path.isAbsolute(workingDir)) {
+    return rejectPlanWorkingDir(
+      workingDir,
+      "It is not an absolute/resolved path (assertion/preflight wording such as " +
+        '"exactly /path" is not a valid working-directory directive).',
+    );
+  }
+
+  // 2) Current-instance workspace-root / private-root / foreign-instance
+  // enforcement (the same shared guard as the executor). This runs BEFORE the
+  // on-disk check so an observed/foreign workspace is rejected even if it
+  // happens to exist on disk.
+  try {
+    assertWorkingDirInsideCurrentInstanceWorkspaces({ workingDir, ...options });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return rejectPlanWorkingDir(workingDir, detail);
+  }
+
+  // 3) The path must exist on disk and be a directory (not a file). The
+  // executor/build-gate remains the final hard-stop, but catching this here
+  // means autocheck never approves a plan that will only fail later because the
+  // working directory is missing.
+  const statPath = options.statPath ?? defaultStatPath;
+  const stat = statPath(workingDir);
+  if (!stat) {
+    return rejectPlanWorkingDir(workingDir, "It does not exist on disk.");
+  }
+  if (!stat.isDirectory()) {
+    return rejectPlanWorkingDir(workingDir, "It exists but is a file, not a directory.");
+  }
+
+  return { approved: true };
+}
+
+export type PlanAutocheckFailureMetadata = {
+  runId: string;
+  workingDir: string;
+  backend: PlanAutocheckBackend;
+  round: number;
+  attemptLabel: string;
+  reason: string;
+  metadataPath: string;
+  agentHistoryMetadataPath: string;
+  artifactPaths: string[];
+};
+
+export class PlanAutocheckError extends Error {
+  readonly metadata: PlanAutocheckFailureMetadata;
+
+  constructor(message: string, metadata: PlanAutocheckFailureMetadata, cause?: unknown) {
+    super(message, cause instanceof Error ? { cause } : undefined);
+    this.name = "PlanAutocheckError";
+    this.metadata = metadata;
+  }
+}
 
 type ParsedReviewerOutput = {
   text: string;
@@ -298,8 +431,101 @@ function describeCliFailure(result: RunCliProcessResult): string {
   return `exit=${result.exitCode ?? "unknown"}`;
 }
 
+/** True when the text contains a JSON object literal (e.g. a worker init/system
+ * message or a provider error blob). Such blobs must never reach the
+ * user-facing message verbatim. */
+function looksLikeJsonBlob(text: string): boolean {
+  return /\{\s*"[^"]+"\s*:/.test(text) || /^\s*[[{]/.test(text);
+}
+
+/**
+ * Format a reset-time hint in the gateway's local timezone when the hint
+ * contains a parseable absolute timestamp (epoch seconds/ms or ISO), e.g.
+ * "12:20 PM EDT". When the hint carries no parseable absolute time (e.g. a
+ * relative phrase like "resets in 2 hours"), the original phrase is returned
+ * unchanged. `timeZone` is exposed for deterministic tests; production defaults
+ * to the process (gateway) local timezone.
+ */
+export function formatReviewerResetTime(
+  raw: string | undefined,
+  timeZone?: string,
+): string | undefined {
+  const text = (raw ?? "").trim();
+  if (!text) return undefined;
+  let date: Date | undefined;
+  const epochMatch = /\b(\d{10,13})\b/.exec(text);
+  if (epochMatch) {
+    const digits = epochMatch[1]!;
+    const value = Number(digits);
+    if (Number.isFinite(value)) {
+      date = new Date(digits.length >= 13 ? value : value * 1000);
+    }
+  }
+  if (!date) {
+    const isoMatch =
+      /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:[.\d]*)?(?:Z|[+-]\d{2}:?\d{2})?/.exec(text);
+    if (isoMatch) {
+      const parsed = new Date(isoMatch[0]);
+      if (!Number.isNaN(parsed.getTime())) date = parsed;
+    }
+  }
+  if (!date || Number.isNaN(date.getTime())) return text;
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+    ...(timeZone ? { timeZone } : {}),
+  }).format(date);
+}
+
+/**
+ * Convert a raw reviewer-failure blob (CLI stderr/stdout, which may contain a
+ * worker init/system JSON line or a provider error JSON) into a concise,
+ * human-readable one-liner that NEVER includes raw JSON. Provider errors are
+ * classified via the shared error-patterns helpers (out-of-usage,
+ * rate-limited, auth-failed, unavailable) and a reset time is appended (local
+ * time when a parseable timestamp is present) when the provider reported one.
+ *
+ * Text that contains no JSON blob is returned (single-lined, truncated)
+ * unchanged so the downstream usage-limit classification/messaging in
+ * phase-fallback stays intact.
+ */
+export function summarizeReviewerFailureReason(
+  rawText: string | null | undefined,
+  options: { backend?: PlanAutocheckBackend; timeZone?: string } = {},
+): string {
+  const text = (rawText ?? "").trim();
+  if (!text) return "the reviewer produced no output";
+  // Clean text passes through untouched so phase-fallback's usage-limit
+  // classification (which inspects this text) is preserved exactly.
+  if (!looksLikeJsonBlob(text)) return truncateDetail(text);
+
+  const name = options.backend ? backendDisplayName(options.backend) : "the reviewer";
+  if (/"type"\s*:\s*"system"/i.test(text) || /"subtype"\s*:\s*"init"/i.test(text)) {
+    return `${name} returned a system/init message instead of a plan review (the backend is unavailable or not logged in).`;
+  }
+
+  const appendReset = (lead: string): string => {
+    const hint = extractUsageLimitResetHint(text);
+    if (!hint) return `${lead}.`;
+    const formatted = formatReviewerResetTime(hint, options.timeZone) ?? hint;
+    return `${lead} (resets ${formatted.replace(/^resets?\s+/i, "")}).`;
+  };
+
+  const kind = classifyProviderError({ text });
+  if (kind === "out_of_credits") return appendReset(`${name} is out of usage`);
+  if (kind === "rate_limit") return appendReset(`${name} is rate limited`);
+  if (kind === "auth")
+    return `${name} authentication failed (not logged in or invalid credentials).`;
+  if (kind === "network") return `${name} hit a network error reaching the provider.`;
+  return `${name} returned an unrecognized response instead of a plan review.`;
+}
+
 function parseFailureEditInstructions(backend: PlanAutocheckBackend, raw: string): string {
-  const excerpt = truncateDetail(raw);
+  // Summarize so a worker init/system JSON blob (or provider error JSON) is
+  // never echoed verbatim into the revision/edit-instructions stream.
+  const excerpt = truncateDetail(summarizeReviewerFailureReason(raw, { backend }));
   return [
     `Autocheck (${backend}) reviewer response could not be parsed as decision JSON.`,
     "Please tighten the plan with clearer concrete file/function references, dependency ordering, and verification steps.",
@@ -525,11 +751,18 @@ export function buildAutocheckPrompt(params: {
 }): string {
   const snapshot = buildPlanSnapshot(params.plan);
   const userEditInstructionsSection = buildUserEditInstructionsSection(params.userEditInstructions);
+  // Guidance only — detect the dev checkout from the working dir to require
+  // dev-gateway verification for runtime-affecting changes. Never flips runtime
+  // instance config (see src/config/gateway-instance.ts).
+  const devGatewaySection = isSmithersbotDevWorkspace(params.workingDir)
+    ? [DEV_GATEWAY_REVIEW_GUIDANCE, ""]
+    : [];
 
   if (params.resume) {
     return [
       REVIEW_INSTRUCTION,
       "",
+      ...devGatewaySection,
       "You are continuing plan review in an existing reviewer session.",
       "Re-review this updated plan and answer: Is this plan ready to execute?",
       "",
@@ -556,6 +789,7 @@ export function buildAutocheckPrompt(params: {
   return [
     REVIEW_INSTRUCTION,
     "",
+    ...devGatewaySection,
     "You are an independent plan reviewer.",
     "Question: Is this plan ready to execute?",
     "",
@@ -589,6 +823,42 @@ function writeJsonArtifact(filePath: string, value: unknown): void {
   }
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function collectRoundArtifactPaths(roundDir: string): string[] {
+  try {
+    return fs
+      .readdirSync(roundDir)
+      .filter(
+        (name) =>
+          name.endsWith(".stdout.txt") ||
+          name.endsWith(".stderr.txt") ||
+          name.endsWith("_failure.txt") ||
+          name === "failure.txt",
+      )
+      .sort()
+      .map((name) => path.join(roundDir, name));
+  } catch {
+    return [];
+  }
+}
+
+function agentHistoryRuntimePath(params: {
+  workingDir: string;
+  runId: string;
+  runDir: string;
+  artifactPath: string;
+}): string {
+  const workspaceName = workspaceNameFromWorkingDir(params.workingDir);
+  return path.join(
+    resolveAgentGoalHistoryDir(workspaceName, params.runId),
+    "runtime",
+    path.relative(params.runDir, params.artifactPath),
+  );
+}
+
 function redactTextArtifactIfExists(filePath: string): void {
   try {
     if (!fs.existsSync(filePath)) return;
@@ -612,6 +882,7 @@ async function runReviewerAttempt(params: {
   attemptLabel: string;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
   sessionId?: string;
   model?: string;
   stdoutPath: string;
@@ -627,6 +898,7 @@ async function runReviewerAttempt(params: {
           workingDir: params.workingDir,
           runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
           purpose: "repo-chat",
+          readOnlyRoots: params.readOnlyRoots,
         })
       : undefined;
   const codexSandbox =
@@ -635,6 +907,7 @@ async function runReviewerAttempt(params: {
           workingDir: params.workingDir,
           runId: `${params.runId}-autocheck-r${params.round}-${params.attemptLabel}`,
           purpose: "repo-chat",
+          readOnlyRoots: params.readOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -733,8 +1006,14 @@ async function runReviewerAttempt(params: {
       artifactPaths: [params.stdoutPath, params.stderrPath, launchHistory.promptArtifactPath],
       extra: { exitCode: procResult.exitCode, signal: procResult.signal },
     });
+    // Summarize so a worker init/system JSON line or provider error blob is
+    // never carried verbatim in the error message (and thus never reaches the
+    // user-facing autocheck-skip note).
     throw new ReviewerCliError(
-      `Plan autocheck worker failed: ${describeCliFailure(procResult)}`,
+      `Plan autocheck worker failed: ${summarizeReviewerFailureReason(
+        describeCliFailure(procResult),
+        { backend: params.backend },
+      )}`,
       procResult,
     );
   }
@@ -810,10 +1089,18 @@ function describeError(err: unknown): string {
 
 /**
  * Run a fresh (no-session) reviewer attempt for the configured backend, falling
- * back once to the other backend on a usage/rate limit when it is available on
- * PATH. The fallback always starts fresh; if it is used, the returned sessionId
- * is cleared so later rounds do not try to resume a session bound to a backend
- * the caller is not tracking. Each backend is tried at most once.
+ * back to the other backend whenever the configured one cannot produce a review
+ * — unavailable, out of quota, auth-failed, usage-limited, stdin-blocked, or any
+ * other pre-review failure. This mirrors the general backend-failover behavior
+ * used elsewhere (lessons/manual-tests) so autocheck is never silently skipped
+ * just because one backend failed: Codex falls back to Claude Code and Claude
+ * Code falls back to Codex whenever the alternate is available on PATH. The
+ * configured backend is ordered first; backends that are not available are
+ * dropped from the attempt list entirely. The fallback always starts fresh; if
+ * it is used, the returned sessionId is cleared so later rounds do not try to
+ * resume a session bound to a backend the caller is not tracking. Each backend
+ * is tried at most once. Only when every available backend fails does this throw
+ * a clear, actionable error.
  */
 async function runFreshReviewerAttempt(params: {
   backend: PlanAutocheckBackend;
@@ -823,6 +1110,7 @@ async function runFreshReviewerAttempt(params: {
   round: number;
   timeoutMs: number;
   claudeCodeAuth: ClaudeCodeAuthMode;
+  readOnlyRoots?: string[];
   model?: string;
   roundDir: string;
   attemptLabel: string;
@@ -830,16 +1118,42 @@ async function runFreshReviewerAttempt(params: {
 }): Promise<ReviewerAttemptResult> {
   const primary = params.backend;
   const other: PlanAutocheckBackend = primary === "claude_code" ? "codex" : "claude_code";
-  const otherAvailable =
-    detectBackendAvailability().find((entry) => entry.id === other)?.available === true;
-  const backends: PlanAutocheckBackend[] = otherAvailable ? [primary, other] : [primary];
+  const availability = detectBackendAvailability();
+  const primaryStatus = isBackendAvailable(primary, availability);
+  const otherStatus = isBackendAvailable(other, availability);
+  // Order the configured backend first, then the alternate, including only
+  // backends that are actually available on PATH. This makes autocheck fall
+  // back between Codex and Claude Code (in either direction) instead of being
+  // silently skipped when the configured backend is unavailable or fails.
+  const backends: PlanAutocheckBackend[] = [
+    ...(primaryStatus.available ? [primary] : []),
+    ...(otherStatus.available ? [other] : []),
+  ];
+  if (backends.length === 0) {
+    const reasonOf = (
+      backend: PlanAutocheckBackend,
+      status: ReturnType<typeof isBackendAvailable>,
+    ): string =>
+      status.available
+        ? `${backend} available`
+        : `${backend} unavailable (${status.reason ?? "unknown"})`;
+    throw new Error(
+      "Plan autocheck cannot run: no review backend is available. " +
+        `${reasonOf(primary, primaryStatus)}; ${reasonOf(other, otherStatus)}.`,
+    );
+  }
 
   let lastError: unknown;
+  const backendFailures: { backend: PlanAutocheckBackend; reason: string }[] = [];
   const outcome = await runWithBackendFallback<{
     result: ReviewerAttemptResult;
     usedBackend: PlanAutocheckBackend;
   }>({
     backends,
+    // Fall back to the alternate backend on ANY pre-review failure (not just
+    // usage/rate limits), so a noninteractive-stdin crash, auth failure, or
+    // process error triggers failover instead of a silent autocheck skip.
+    fallbackOnAnyError: true,
     onProgress: params.onProgress,
     attempt: async (backend) => {
       const labelSuffix =
@@ -854,6 +1168,7 @@ async function runFreshReviewerAttempt(params: {
           attemptLabel: labelSuffix,
           timeoutMs: params.timeoutMs,
           claudeCodeAuth: params.claudeCodeAuth,
+          readOnlyRoots: params.readOnlyRoots,
           model: params.model,
           stdoutPath: path.join(params.roundDir, `${labelSuffix}.stdout.txt`),
           stderrPath: path.join(params.roundDir, `${labelSuffix}.stderr.txt`),
@@ -861,6 +1176,11 @@ async function runFreshReviewerAttempt(params: {
         return { ok: true, value: { result, usedBackend: backend } };
       } catch (err) {
         lastError = err;
+        const rawErrorText = describeError(err);
+        backendFailures.push({
+          backend,
+          reason: summarizeReviewerFailureReason(rawErrorText, { backend }),
+        });
         appendAutocheckHistoryBestEffort({
           workingDir: params.workingDir,
           runId: params.runId,
@@ -870,9 +1190,9 @@ async function runFreshReviewerAttempt(params: {
           round: params.round,
           attemptLabel: labelSuffix,
           errorClass: err instanceof Error ? err.name : "error",
-          outputSummary: describeError(err),
+          outputSummary: rawErrorText,
         });
-        return { ok: false, errorText: describeError(err) };
+        return { ok: false, errorText: rawErrorText };
       }
     },
   });
@@ -883,10 +1203,21 @@ async function runFreshReviewerAttempt(params: {
     return usedBackend === primary ? result : { ...result, sessionId: undefined };
   }
 
-  // Preserve the original error type for non-usage failures; otherwise surface
-  // the consolidated usage-limit history.
-  if (outcome.usageLimitEvents.length > 0) {
+  // When EVERY attempted backend hit a usage/rate limit, surface the
+  // consolidated usage-limit history (already names each backend + reset time,
+  // never raw JSON).
+  if (outcome.usageLimitEvents.length > 0 && outcome.usageLimitEvents.length === backends.length) {
     throw new Error(outcome.message);
+  }
+  // Otherwise at least one attempt failed for a non-usage reason (worker
+  // init/system JSON, auth failure, crash, ...) — possibly mixed with usage
+  // limits. Build a clean, actionable message naming EACH failing backend and
+  // why, never echoing the raw worker/provider JSON.
+  if (backendFailures.length > 0) {
+    const reasons = backendFailures.map((failure) => failure.reason).join("; ");
+    throw new Error(
+      `Plan autocheck could not run: ${reasons}. No reviewer backend is currently available.`,
+    );
   }
   throw lastError ?? new Error("Plan autocheck reviewer attempt failed.");
 }
@@ -895,6 +1226,61 @@ function clampMaxRounds(value: number | undefined): number {
   if (value == null || Number.isNaN(value)) return DEFAULT_AUTOCHECK_MAX_ROUNDS;
   if (value <= 0) return 0;
   return Math.trunc(value);
+}
+
+function recordAutocheckFailure(params: {
+  runId: string;
+  goalsDir: string;
+  runDir: string;
+  workingDir: string;
+  backend: PlanAutocheckBackend;
+  round: number;
+  attemptLabel: string;
+  roundDir: string;
+  err: unknown;
+}): PlanAutocheckError {
+  // Summarize before persisting/surfacing so no raw worker/provider JSON can
+  // reach the user-facing autocheck-skip note (clean text passes through).
+  const reason = redactSecretValues(summarizeReviewerFailureReason(describeError(params.err)));
+  const failurePath = path.join(params.roundDir, "failure.txt");
+  const metadataPath = path.join(params.roundDir, "metadata.json");
+  writeTextArtifact(failurePath, `${reason}\n`);
+  const artifactPaths = uniqueStrings([...collectRoundArtifactPaths(params.roundDir), failurePath]);
+  const metadata: PlanAutocheckFailureMetadata = {
+    runId: params.runId,
+    workingDir: params.workingDir,
+    backend: params.backend,
+    round: params.round,
+    attemptLabel: params.attemptLabel,
+    reason,
+    metadataPath,
+    agentHistoryMetadataPath: agentHistoryRuntimePath({
+      workingDir: params.workingDir,
+      runId: params.runId,
+      runDir: params.runDir,
+      artifactPath: metadataPath,
+    }),
+    artifactPaths,
+  };
+  writeJsonArtifact(metadataPath, {
+    backend: params.backend,
+    approved: false,
+    round: params.round,
+    attemptLabel: params.attemptLabel,
+    failure: {
+      reason,
+      metadataPath,
+      agentHistoryMetadataPath: metadata.agentHistoryMetadataPath,
+      artifactPaths,
+    },
+  });
+  mirrorAutocheckRuntimeBestEffort({
+    workingDir: params.workingDir,
+    runId: params.runId,
+    goalsDir: params.goalsDir,
+    round: params.round,
+  });
+  return new PlanAutocheckError(`Plan autocheck failed: ${reason}`, metadata, params.err);
 }
 
 /**
@@ -951,44 +1337,123 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     let resumeFailure: string | undefined;
     let result: ReviewerAttemptResult;
 
-    const canResume = Boolean(sessionId && sessionBackend === backend);
-    if (canResume && sessionId) {
-      resumeAttempted = true;
-      attemptLabel = "resume";
-      prompt = buildAutocheckPrompt({
-        goalText: params.goalText,
-        plan: currentPlan,
+    // Up-front, programmatic executable-workingDir guard. A plan whose
+    // workingDir escapes the current instance's own agent/workspaces tree is
+    // rejected here (before spawning the reviewer) and fed into the revision
+    // loop with actionable edit instructions, using the SAME shared helper as
+    // the executor/build-gate hard stop. Active when a workspacePolicy identity
+    // is supplied (the gateway threads the running-instance identity); callers
+    // that have already validated the workingDir upstream may omit it.
+    const workingDirDecision = params.workspacePolicy
+      ? checkPlanWorkingDir(currentPlan.workingDir, params.workspacePolicy)
+      : ({ approved: true } as AutocheckDecision);
+    if (!workingDirDecision.approved) {
+      writeTextArtifact(
+        path.join(roundDir, "workingdir_rejection.txt"),
+        `${workingDirDecision.editInstructions}\n`,
+      );
+      appendAutocheckHistoryBestEffort({
         workingDir: params.workingDir,
-        resume: true,
-        priorFeedback: feedbackHistory,
-        contextNotes,
-        userEditInstructions: params.userEditInstructions,
+        runId,
+        backend,
+        event: "result",
+        status: "rejected",
+        round: roundNumber,
+        attemptLabel: "workingdir-guard",
+        outputSummary: workingDirDecision.editInstructions,
       });
-
-      try {
-        result = await runReviewerAttempt({
-          backend,
-          prompt,
+      result = {
+        stdout: workingDirDecision.editInstructions,
+        stderr: "",
+        durationMs: 0,
+        responseText: workingDirDecision.editInstructions,
+        sessionId,
+        decision: workingDirDecision,
+      };
+    } else {
+      const canResume = Boolean(sessionId && sessionBackend === backend);
+      if (canResume && sessionId) {
+        resumeAttempted = true;
+        attemptLabel = "resume";
+        prompt = buildAutocheckPrompt({
+          goalText: params.goalText,
+          plan: currentPlan,
           workingDir: params.workingDir,
-          runId,
-          round: roundNumber,
-          attemptLabel,
-          timeoutMs,
-          claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-          sessionId,
-          model: params.model,
-          stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
-          stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+          resume: true,
+          priorFeedback: feedbackHistory,
+          contextNotes,
+          userEditInstructions: params.userEditInstructions,
         });
-        resumeSucceeded = true;
-      } catch (err) {
-        resumeFailure = describeError(err);
-        writeTextArtifact(path.join(roundDir, "resume_failure.txt"), `${resumeFailure}\n`);
-        contextNotes.push(
-          `Round ${roundNumber}: session resume failed (${resumeFailure}). Started a fresh reviewer session.`,
-        );
 
-        attemptLabel = "fresh-fallback";
+        try {
+          result = await runReviewerAttempt({
+            backend,
+            prompt,
+            workingDir: params.workingDir,
+            runId,
+            round: roundNumber,
+            attemptLabel,
+            timeoutMs,
+            claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+            readOnlyRoots: params.readOnlyRoots,
+            sessionId,
+            model: params.model,
+            stdoutPath: path.join(roundDir, `${attemptLabel}.stdout.txt`),
+            stderrPath: path.join(roundDir, `${attemptLabel}.stderr.txt`),
+          });
+          resumeSucceeded = true;
+        } catch (err) {
+          resumeFailure = describeError(err);
+          writeTextArtifact(path.join(roundDir, "resume_failure.txt"), `${resumeFailure}\n`);
+          contextNotes.push(
+            `Round ${roundNumber}: session resume failed (${resumeFailure}). Started a fresh reviewer session.`,
+          );
+
+          attemptLabel = "fresh-fallback";
+          prompt = buildAutocheckPrompt({
+            goalText: params.goalText,
+            plan: currentPlan,
+            workingDir: params.workingDir,
+            resume: false,
+            priorFeedback: feedbackHistory,
+            contextNotes,
+            userEditInstructions: params.userEditInstructions,
+          });
+          try {
+            result = await runFreshReviewerAttempt({
+              backend,
+              prompt,
+              workingDir: params.workingDir,
+              runId,
+              round: roundNumber,
+              timeoutMs,
+              claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+              readOnlyRoots: params.readOnlyRoots,
+              model: params.model,
+              roundDir,
+              attemptLabel,
+            });
+          } catch (freshErr) {
+            const freshFallbackFailure = describeError(freshErr);
+            writeTextArtifact(
+              path.join(roundDir, "fresh_fallback_failure.txt"),
+              `${freshFallbackFailure}\n`,
+            );
+            const warning =
+              `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
+              "Auto-approving plan to keep execution unblocked; verify results via the build/test/lint gate.";
+            contextNotes.push(warning);
+            result = {
+              stdout: warning,
+              stderr: freshFallbackFailure,
+              durationMs: 0,
+              responseText: warning,
+              sessionId: undefined,
+              decision: { approved: true },
+            };
+          }
+        }
+      } else {
         prompt = buildAutocheckPrompt({
           goalText: params.goalText,
           plan: currentPlan,
@@ -1007,52 +1472,25 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
             round: roundNumber,
             timeoutMs,
             claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
+            readOnlyRoots: params.readOnlyRoots,
             model: params.model,
             roundDir,
             attemptLabel,
           });
-        } catch (freshErr) {
-          const freshFallbackFailure = describeError(freshErr);
-          writeTextArtifact(
-            path.join(roundDir, "fresh_fallback_failure.txt"),
-            `${freshFallbackFailure}\n`,
-          );
-          const warning =
-            `Round ${roundNumber}: fresh reviewer fallback also failed (${freshFallbackFailure}). ` +
-            "Auto-approving plan to keep execution unblocked; verify results via the build/test/lint gate.";
-          contextNotes.push(warning);
-          result = {
-            stdout: warning,
-            stderr: freshFallbackFailure,
-            durationMs: 0,
-            responseText: warning,
-            sessionId: undefined,
-            decision: { approved: true },
-          };
+        } catch (err) {
+          throw recordAutocheckFailure({
+            runId,
+            goalsDir,
+            runDir: params.runDir,
+            workingDir: params.workingDir,
+            backend,
+            round: roundNumber,
+            attemptLabel,
+            roundDir,
+            err,
+          });
         }
       }
-    } else {
-      prompt = buildAutocheckPrompt({
-        goalText: params.goalText,
-        plan: currentPlan,
-        workingDir: params.workingDir,
-        resume: false,
-        priorFeedback: feedbackHistory,
-        contextNotes,
-        userEditInstructions: params.userEditInstructions,
-      });
-      result = await runFreshReviewerAttempt({
-        backend,
-        prompt,
-        workingDir: params.workingDir,
-        runId,
-        round: roundNumber,
-        timeoutMs,
-        claudeCodeAuth: params.claudeCodeAuth ?? "subscription",
-        model: params.model,
-        roundDir,
-        attemptLabel,
-      });
     }
 
     sessionId = result.sessionId;

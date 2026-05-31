@@ -30,6 +30,7 @@ import {
   buildClaudeSandboxProbeCommand,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
+  claudeCodeSandboxNetworkCapability,
   appendCodexNativeSandboxExecArgs,
   classifyClaudeSubscriptionAuthProbeFailure,
   codexNativeSandboxStatus,
@@ -533,6 +534,71 @@ describe("Codex native sandbox auth continuity", () => {
     }
   });
 
+  it("adds configured observed dev agent roots without moving a stable goal-worker execution root", () => {
+    const home = "/home/matt";
+    const stableWorkingDir = path.join(
+      home,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    const stableHistoryRoot = path.join(home, "smithersbot-home", "agent", "history");
+    const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+    const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+    const devHistoryRoot = path.join(devAgentRoot, "history");
+    const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+    const devStateDir = path.join(home, ".smithersbot-dev");
+    const devPrivateChecks = [
+      devPrivateRoot,
+      path.join(devPrivateRoot, "env"),
+      path.join(devPrivateRoot, "config"),
+      path.join(devPrivateRoot, "auth"),
+      path.join(devPrivateRoot, "sessions"),
+      devStateDir,
+    ];
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+
+    try {
+      withEnv({ SMITHERSBOT_GOALS_ROOT: undefined, SMITHERSBOT_INSTANCE: undefined }, () => {
+        const config = buildCodexNativeSandboxConfig({
+          workingDir: stableWorkingDir,
+          runId: "observed-dev-read-roots",
+          purpose: "goal-worker",
+          readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+          sandboxRoot: HOST_TEMP_ROOT,
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        expect(config.executionRoot).toBe(stableWorkingDir);
+        expect(config.args).toContain(stableWorkingDir);
+        expect(config.allowedReadPaths).toEqual(
+          expect.arrayContaining([
+            stableWorkingDir,
+            stableHistoryRoot,
+            devAgentRoot,
+            devWorkspacesRoot,
+            devHistoryRoot,
+          ]),
+        );
+        expect(config.writablePaths).toContain(stableWorkingDir);
+        expect(config.writablePaths).not.toContain(devAgentRoot);
+        expect(config.configToml).toContain(`${JSON.stringify(devAgentRoot)} = "read"`);
+        expect(config.configToml).toContain(`${JSON.stringify(devWorkspacesRoot)} = "read"`);
+        expect(config.configToml).toContain(`${JSON.stringify(devHistoryRoot)} = "read"`);
+
+        for (const privatePath of devPrivateChecks) {
+          expect(config.deniedReadPaths).toContain(privatePath);
+          expect(config.allowedReadPaths).not.toContain(privatePath);
+          expect(config.configToml).toContain(`${JSON.stringify(privatePath)} = "deny"`);
+          expect(config.configToml).not.toContain(`${JSON.stringify(privatePath)} = "read"`);
+        }
+      });
+    } finally {
+      homedirSpy.mockRestore();
+    }
+  });
+
   // (e)+(f) Both the generated CODEX_HOME/auth.json and the real ~/.codex/auth.json
   // are blocked from the sandboxed shell: the generated reference is a symlink to
   // the real auth source, and that source is in the deny list.
@@ -673,6 +739,68 @@ describe("Claude Code native sandbox settings", () => {
     expect(config.settingsPath).not.toContain("/agent/workspaces/smithersbot/repo");
   });
 
+  it("reports Claude Code sandbox network supported per-step without any env-var opt-in", () => {
+    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    try {
+      // No env var set: per-step policy alone makes Claude eligible to attempt network.
+      delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      const cap = claudeCodeSandboxNetworkCapability();
+      expect(cap.supported).toBe(true);
+      expect(cap.reason).not.toMatch(/SMITHERSBOT_CLAUDE_SANDBOX_NETWORK/);
+      expect(cap.reason).toMatch(/requiresNetwork=true/);
+    } finally {
+      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+    }
+  });
+
+  it("omits a network grant for normal repo-local steps (network off by default)", () => {
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "no-network",
+      purpose: "goal-worker",
+    });
+    expect(config.settings.sandbox.network).toBeUndefined();
+  });
+
+  it("wires a network grant when requiresNetwork=true with no env var set", () => {
+    const previous = process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    try {
+      const config = buildClaudeCodeSandboxSettingsConfig({
+        workingDir: MOCK_WORKING_DIR,
+        runId: "net-supported",
+        purpose: "goal-worker",
+        requiresNetwork: true,
+      });
+      // Claude Code's network proxy is default-deny and allowlist-based with no
+      // universal allow-all token, so the grant is a list of per-suffix wildcards
+      // (each `*.<tld>` matches any host under that suffix, including the apex).
+      const network = config.settings.sandbox.network;
+      expect(network).toBeDefined();
+      expect(Array.isArray(network?.allowedDomains)).toBe(true);
+      // Every entry is a per-suffix wildcard; a bare "*" (which the proxy rejects)
+      // must never be emitted.
+      expect(network?.allowedDomains.every((d) => /^\*\.[a-z]+$/.test(d))).toBe(true);
+      expect(network?.allowedDomains).not.toContain("*");
+      // example.com (the live-test target) is covered by the *.com wildcard.
+      expect(network?.allowedDomains).toContain("*.com");
+    } finally {
+      if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+      else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+    }
+  });
+
+  it("omits the network grant when requiresNetwork is false (network off by default)", () => {
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "net-false",
+      purpose: "goal-worker",
+      requiresNetwork: false,
+    });
+    expect(config.settings.sandbox.network).toBeUndefined();
+  });
+
   it("writes fail-closed sandbox settings and denies private/env reads while allowing workspace files", () => {
     const settingsRoot = fs.mkdtempSync(path.join(HOST_TEMP_ROOT, "claude-sandbox-settings-"));
     const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
@@ -811,6 +939,73 @@ describe("Claude Code native sandbox settings", () => {
     // No workspace-relative / recursive Read-tool patterns.
     expect(perm.some((rule) => rule.startsWith("Read(./"))).toBe(false);
     expect(perm.some((rule) => rule.includes("Read(**/"))).toBe(false);
+  });
+
+  it("adds configured observed dev agent roots to Claude allowRead while sealing dev private state", () => {
+    const home = "/home/matt";
+    const stableWorkingDir = path.join(
+      home,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    const stablePrivateRoot = path.join(home, "smithersbot-home", "private");
+    const stableHistoryRoot = path.join(home, "smithersbot-home", "agent", "history");
+    const devAgentRoot = path.join(home, "smithersbot-dev-home", "agent");
+    const devWorkspacesRoot = path.join(devAgentRoot, "workspaces");
+    const devHistoryRoot = path.join(devAgentRoot, "history");
+    const devPrivateRoot = path.join(home, "smithersbot-dev-home", "private");
+    const devStateDir = path.join(home, ".smithersbot-dev");
+    const devPrivateChecks = [
+      devPrivateRoot,
+      path.join(devPrivateRoot, "env"),
+      path.join(devPrivateRoot, "config"),
+      path.join(devPrivateRoot, "auth"),
+      path.join(devPrivateRoot, "sessions"),
+      devStateDir,
+    ];
+    const isSameOrInside = (candidate: string, parent: string) =>
+      candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
+    const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+
+    try {
+      const config = buildClaudeCodeSandboxSettingsConfig({
+        workingDir: stableWorkingDir,
+        runId: "observed-dev-claude",
+        purpose: "goal-worker",
+        readOnlyRoots: [devAgentRoot, devWorkspacesRoot, devHistoryRoot],
+        denyReadDeps: {
+          homedir: () => home,
+          privateRoot: () => stablePrivateRoot,
+          pathExists: () => true,
+          realPath: (candidate) => candidate,
+          readDir: () => [],
+          isRegularFile: () => false,
+          isDirectory: () => false,
+        },
+      });
+      const { allowRead, allowWrite, denyRead } = config.settings.sandbox.filesystem;
+
+      expect(allowRead).toEqual(
+        expect.arrayContaining([
+          stableWorkingDir,
+          stableHistoryRoot,
+          devAgentRoot,
+          devWorkspacesRoot,
+          devHistoryRoot,
+        ]),
+      );
+      expect(allowWrite).toEqual([stableWorkingDir]);
+
+      for (const privatePath of devPrivateChecks) {
+        expect(denyRead).toContain(privatePath);
+        expect(allowRead.some((root) => isSameOrInside(root, privatePath))).toBe(false);
+        expect(config.settings.permissions.deny).toContain(`Read(${privatePath}/**)`);
+      }
+    } finally {
+      homedirSpy.mockRestore();
+    }
   });
 
   it("keeps repo-chat Claude settings read-only except explicit extra writable paths", () => {

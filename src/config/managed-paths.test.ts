@@ -3,12 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  isObservedAgentPathAllowed,
   isPathInsideAgentRoot,
   isPathInsideManagedRoot,
   isPathInsidePrivateRoot,
   isPathInsideWorkspacesRoot,
   resolveAgentRoot,
   resolveManagedRoot,
+  resolveObservedAgentRoot,
+  resolveObservedWorkspacesRoot,
   resolvePrivateEnvFile,
   resolvePrivateRoot,
   resolveWorkspaceRepoDir,
@@ -41,6 +44,78 @@ describe("managed paths", () => {
     fs.mkdirSync(legacyRoot);
 
     expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(legacyRoot);
+  });
+
+  it("resolves the dev managed root from an explicit dev instance", () => {
+    const legacyRoot = path.join(tmpDir, "smithersbot-goals");
+    fs.mkdirSync(legacyRoot);
+
+    expect(
+      resolveManagedRoot({ SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv, () => tmpDir),
+    ).toBe(path.join(tmpDir, "smithersbot-dev-home"));
+  });
+
+  it("does not use the legacy fallback when an instance is selected explicitly", () => {
+    const legacyRoot = path.join(tmpDir, "smithersbot-goals");
+    fs.mkdirSync(legacyRoot);
+
+    expect(
+      resolveManagedRoot({ SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv, () => tmpDir),
+    ).toBe(path.join(tmpDir, "smithersbot-home"));
+  });
+
+  it("resolves the smithersbot-dev workspace name under the selected instance root", () => {
+    const home = "/home/matt";
+
+    expect(resolveWorkspaceRepoDir("smithersbot-dev", {} as NodeJS.ProcessEnv, () => home)).toBe(
+      "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+    );
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
+        () => home,
+      ),
+    ).toBe("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev");
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
+        () => home,
+      ),
+    ).toBe("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev");
+  });
+
+  it("keeps an explicit managed-root override over the selected instance root", () => {
+    const override = path.join(tmpDir, "custom-root");
+
+    expect(
+      resolveWorkspaceRepoDir(
+        "smithersbot-dev",
+        { SMITHERSBOT_INSTANCE: "dev", SMITHERSBOT_GOALS_ROOT: override } as NodeJS.ProcessEnv,
+        () => "/home/matt",
+      ),
+    ).toBe(path.join(override, "agent", "workspaces", "smithersbot-dev"));
+  });
+
+  it("does not infer dev managed root from a smithersbot-dev working directory", () => {
+    const prevCwd = process.cwd();
+    const devCheckout = path.join(
+      tmpDir,
+      "smithersbot-home",
+      "agent",
+      "workspaces",
+      "smithersbot-dev",
+    );
+    fs.mkdirSync(devCheckout, { recursive: true });
+    try {
+      process.chdir(devCheckout);
+      expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(
+        path.join(tmpDir, "smithersbot-home"),
+      );
+    } finally {
+      process.chdir(prevCwd);
+    }
   });
 
   it("keeps workspace projects under agent and private env outside agent", () => {
@@ -143,5 +218,67 @@ describe("managed paths", () => {
     fs.symlinkSync(privateTarget, workspacePath);
 
     expect(() => resolveWorkspaceRepoDir("escape", env, homedir)).toThrow(/managed agent root/);
+  });
+
+  describe("observed-instance surface", () => {
+    let devAgentRoot: string;
+    let devPrivateRoot: string;
+    let devStateDir: string;
+    // Root the observed instance under the real temp dir so fixtures are writable.
+    let devHome: () => string;
+    const observed = () => ({ observedInstances: ["dev"], homedir: devHome });
+
+    beforeEach(() => {
+      devHome = () => tmpDir;
+      const devManagedRoot = path.join(tmpDir, "smithersbot-dev-home");
+      devAgentRoot = path.join(devManagedRoot, "agent");
+      devPrivateRoot = path.join(devManagedRoot, "private");
+      devStateDir = path.join(tmpDir, ".smithersbot-dev");
+      for (const dir of [
+        path.join(devAgentRoot, "workspaces"),
+        path.join(devAgentRoot, "history", "goals"),
+        path.join(devAgentRoot, "history", "repo-chats"),
+        path.join(devAgentRoot, "history", "index"),
+        path.join(devPrivateRoot, "env"),
+        devStateDir,
+      ]) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+    });
+
+    it("resolves the dev agent surface from the explicit identity mapping", () => {
+      expect(resolveObservedAgentRoot("dev", observed())).toBe(devAgentRoot);
+      expect(resolveObservedWorkspacesRoot("dev", observed())).toBe(
+        path.join(devAgentRoot, "workspaces"),
+      );
+    });
+
+    it("allows agent workspaces/history and rejects private/state", () => {
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "workspaces", "ws"), "dev", observed()),
+      ).toBe(true);
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "history", "index"), "dev", observed()),
+      ).toBe(true);
+      expect(isObservedAgentPathAllowed(devPrivateRoot, "dev", observed())).toBe(false);
+      expect(isObservedAgentPathAllowed(devStateDir, "dev", observed())).toBe(false);
+    });
+
+    it("rejects symlinks under the agent root that escape into private", () => {
+      const secret = path.join(devPrivateRoot, "env", ".env");
+      fs.writeFileSync(secret, "TOKEN=secret");
+      const link = path.join(devAgentRoot, "workspaces", "leak");
+      fs.symlinkSync(secret, link);
+      expect(isObservedAgentPathAllowed(link, "dev", observed())).toBe(false);
+    });
+
+    it("denies everything with no opt-in and leaves own resolution unchanged", () => {
+      const noOptIn = { observedInstances: [] as string[], homedir };
+      expect(
+        isObservedAgentPathAllowed(path.join(devAgentRoot, "workspaces"), "dev", noOptIn),
+      ).toBe(false);
+      // Own managed-root resolution is unaffected by observation opt-in.
+      expect(resolveManagedRoot(env, homedir)).toBe(path.join(tmpDir, "managed"));
+    });
   });
 });

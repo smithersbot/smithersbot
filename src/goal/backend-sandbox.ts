@@ -6,8 +6,12 @@ import {
   isPathInsideAgentRoot,
   isPathInsidePrivateRoot,
   resolveAgentRoot,
+  resolveObservedInspectionTarget,
+  resolveObservedSealedRoots,
   resolvePrivateRoot,
+  type ObservedInspectionTarget,
 } from "../config/managed-paths.js";
+import type { GatewayInstanceName } from "../config/gateway-instance.js";
 import { stripClaudeSubscriptionAuthEnv } from "./claude-code-env.js";
 
 export type CodexSandboxPurpose = "goal-worker" | "repo-chat";
@@ -81,6 +85,18 @@ export type ClaudeCodeSandboxSettingsConfig = {
         allowWrite: string[];
         denyRead: string[];
       };
+      // Present only when a step opts in via requiresNetwork=true. Omitted
+      // (no network) for normal repo-local steps. Mirrors Codex's
+      // [permissions.smithersbot.network] enabled grant.
+      //
+      // Claude Code's sandbox network proxy is allowlist-based and DEFAULT-DENY:
+      // an unmatched host is refused at the proxy (HTTP 403 on CONNECT). There is
+      // no universal allow-all token (bare "*"/"**"/"*.*" match nothing). Broad
+      // egress is expressed as a list of per-suffix wildcards
+      // (CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS) where each `*.<tld>` matches any
+      // host under that suffix including the apex. We grant that for a
+      // requiresNetwork step.
+      network?: { allowedDomains: string[] };
     };
     permissions: {
       deny: string[];
@@ -150,16 +166,182 @@ export type ClaudeSubscriptionAuthProbeReport = {
 
 const DEFAULT_CODEX_SANDBOX_ROOT = "/var/tmp";
 const CODEX_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CODEX_SANDBOX_LIVE_PROBES";
+
+/**
+ * Broad network allowlist for a Claude Code `requiresNetwork=true` step.
+ *
+ * Claude Code's sandbox network proxy is allowlist-based and DEFAULT-DENY, and
+ * (unlike Codex's unrestricted `[permissions.smithersbot.network] enabled=true`)
+ * it has NO universal allow-all token. The documented/observed `allowedDomains`
+ * wildcard is a single leading label, `*.<suffix>`, which matches any host under
+ * that suffix INCLUDING the apex (`*.com` matches `example.com` and
+ * `api.example.com`). A bare `"*"`, `"**"`, or `"*.*"` matches nothing and the
+ * proxy returns HTTP 403 on CONNECT. The non-interactive goal worker cannot use
+ * the `dangerouslyDisableSandbox` escape hatch (it has no human to approve the
+ * fallback), so the only way to actually open egress for the step is to pre-allow
+ * domains here.
+ *
+ * We therefore grant per-suffix wildcards across the common public TLDs. This
+ * covers the overwhelming majority of real external endpoints (the live test's
+ * example.com is matched by `*.com`). It is intentionally NOT a security boundary
+ * equal to Codex's full grant: an exotic TLD or a bare-IP host the step happens
+ * to need is still denied by the proxy and surfaces as a real Claude sandbox
+ * capability error (curl exit 56 / HTTP 403 from proxy), never a silent success.
+ */
+const CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS: readonly string[] = [
+  "*.com",
+  "*.org",
+  "*.net",
+  "*.io",
+  "*.dev",
+  "*.ai",
+  "*.co",
+  "*.app",
+  "*.cloud",
+  "*.gov",
+  "*.edu",
+  "*.mil",
+  "*.info",
+  "*.biz",
+  "*.xyz",
+  "*.me",
+  "*.us",
+  "*.uk",
+  "*.eu",
+  "*.ca",
+  "*.de",
+  "*.fr",
+  "*.jp",
+  "*.au",
+  "*.in",
+  "*.sh",
+  "*.tech",
+];
 const DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT = DEFAULT_CODEX_SANDBOX_ROOT;
 const CLAUDE_SANDBOX_LIVE_PROBES_ENV = "SMITHERSBOT_CLAUDE_SANDBOX_LIVE_PROBES";
 const KNOWN_CLAUDE_LIBX32_BWRAP_ERROR =
   "bwrap: Can't mount tmpfs on /newroot/libx32: No such file or directory";
 const CLAUDE_AUTH_OK_REPLY = "claude-auth-ok";
+const OBSERVABLE_GATEWAY_INSTANCES: GatewayInstanceName[] = ["stable", "dev"];
+const PRIVATE_RUNTIME_SUBDIRS = ["env", "config", "auth", "sessions"];
+
+/**
+ * Classify the working dir against the explicitly opted-in observed instances,
+ * but only for repo-chat (the read-only inspection surface). Goal-worker runs
+ * never target another instance's surface, so they keep the current process's
+ * own resolution untouched.
+ */
+function observedInspectionTarget(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): ObservedInspectionTarget {
+  if (params.purpose !== "repo-chat") return { kind: "none" };
+  return resolveObservedInspectionTarget(params.workingDir);
+}
+
+/**
+ * Read-scope agent root for a repo-chat sandbox: the observed instance's agent
+ * root when inspecting an allowed observed surface, else the current process's
+ * own agent root. Throws on an observed private/state target.
+ */
+function resolveRepoChatAgentRoot(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): string {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind === "sealed") {
+    throw new Error("Backend execution cannot run from SmithersBot private paths.");
+  }
+  return observed.kind === "agent" ? observed.agentRoot : resolveAgentRoot();
+}
+
+/**
+ * Extra deny roots that seal an observed instance's private state (its private
+ * root and state dir) against a broad filesystem read grant. Empty unless the
+ * working dir targets an explicitly opted-in observed instance.
+ */
+function observedSealedDenyRoots(params: {
+  workingDir: string;
+  purpose: CodexSandboxPurpose;
+}): string[] {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind !== "agent") return [];
+  return expandedObservedSealedDenyRoots(observed.instance);
+}
+
+function expandedObservedSealedDenyRoots(instance: GatewayInstanceName): string[] {
+  const sealed = resolveObservedSealedRoots(instance, { observedInstances: [instance] });
+  return uniqueValues([
+    sealed.privateRoot,
+    ...PRIVATE_RUNTIME_SUBDIRS.map((name) => path.join(sealed.privateRoot, name)),
+    sealed.stateDir,
+  ]);
+}
+
+function expandConfiguredPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("~")) {
+    return path.resolve(trimmed.replace(/^~(?=$|[\\/])/, os.homedir()));
+  }
+  return path.resolve(trimmed);
+}
+
+function observedReadOnlyTarget(root: string): ObservedInspectionTarget {
+  for (const instance of OBSERVABLE_GATEWAY_INSTANCES) {
+    const target = resolveObservedInspectionTarget(root, { observedInstances: [instance] });
+    if (target.kind !== "none") return target;
+  }
+  return { kind: "none" };
+}
+
+function resolveConfiguredReadOnlyRoots(readOnlyRoots: readonly string[] = []): {
+  allowedReadRoots: string[];
+  sealedDenyRoots: string[];
+} {
+  const allowedReadRoots: string[] = [];
+  const sealedDenyRoots: string[] = [];
+
+  for (const rawRoot of readOnlyRoots) {
+    if (!rawRoot.trim()) continue;
+    const root = expandConfiguredPath(rawRoot);
+    const observed = observedReadOnlyTarget(root);
+
+    if (observed.kind === "agent") {
+      allowedReadRoots.push(root);
+      sealedDenyRoots.push(...expandedObservedSealedDenyRoots(observed.instance));
+      continue;
+    }
+    if (observed.kind === "sealed") {
+      sealedDenyRoots.push(...expandedObservedSealedDenyRoots(observed.instance));
+      continue;
+    }
+
+    if (isPathInsidePrivateRoot(root)) {
+      sealedDenyRoots.push(resolvePrivateRoot());
+      continue;
+    }
+
+    allowedReadRoots.push(root);
+  }
+
+  return {
+    allowedReadRoots: uniqueValues(allowedReadRoots),
+    sealedDenyRoots: uniqueValues(sealedDenyRoots),
+  };
+}
 
 export function resolveManagedExecutionRoot(params: {
   workingDir: string;
   purpose: CodexSandboxPurpose;
 }): string {
+  const observed = observedInspectionTarget(params);
+  if (observed.kind === "sealed") {
+    throw new Error("Backend execution cannot run from SmithersBot private paths.");
+  }
+  if (observed.kind === "agent") {
+    return observed.agentRoot;
+  }
+
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Backend execution cannot run from SmithersBot private paths.");
   }
@@ -248,8 +430,13 @@ function resolveRealCodexAuthSource(): string {
   return path.join(realCodexHome, "auth.json");
 }
 
-function buildCodexDeniedReadPaths(workingDir: string, authSourcePath: string): string[] {
+function buildCodexDeniedReadPaths(
+  workingDir: string,
+  authSourcePath: string,
+  extraDeniedRoots: string[] = [],
+): string[] {
   return uniqueValues([
+    ...extraDeniedRoots,
     path.join(workingDir, ".env"),
     path.join(workingDir, ".env.local"),
     path.join(workingDir, ".env.production"),
@@ -276,10 +463,12 @@ function buildCodexDeniedReadPaths(workingDir: string, authSourcePath: string): 
 
 function buildCodexPermissionProfileToml(params: {
   executionRoot: string;
+  allowedReadPaths: string[];
   deniedReadPaths: string[];
   writablePaths: string[];
   requiresNetwork?: boolean;
 }): string {
+  const writablePathSet = new Set(params.writablePaths);
   const filesystemLines = [
     "[permissions.smithersbot.filesystem]",
     "glob_scan_max_depth = 8",
@@ -293,6 +482,9 @@ function buildCodexPermissionProfileToml(params: {
     `${tomlQuotedKey(params.executionRoot)} = "${
       params.writablePaths.includes(params.executionRoot) ? "write" : "read"
     }"`,
+    ...params.allowedReadPaths
+      .filter((readPath) => readPath !== params.executionRoot && !writablePathSet.has(readPath))
+      .map((readPath) => `${tomlQuotedKey(readPath)} = "read"`),
     ...params.writablePaths
       .filter((writablePath) => writablePath !== params.executionRoot)
       .map((writablePath) => `${tomlQuotedKey(writablePath)} = "write"`),
@@ -356,6 +548,7 @@ export function buildCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
@@ -375,10 +568,20 @@ export function buildCodexNativeSandboxConfig(params: {
   const helperPath = path.join(helperDir, "codex-linux-sandbox");
   const authSourcePath = resolveRealCodexAuthSource();
   const authReferencePath = path.join(codexHome, "auth.json");
+  const repoChatAgentRoot = resolveRepoChatAgentRoot(params);
+  const configuredReadOnlyRoots = resolveConfiguredReadOnlyRoots(params.readOnlyRoots);
   const allowedReadPaths =
     params.purpose === "repo-chat"
-      ? uniqueValues([resolveAgentRoot(), params.workingDir])
-      : uniqueValues([params.workingDir, path.join(resolveAgentRoot(), "history")]);
+      ? uniqueValues([
+          repoChatAgentRoot,
+          params.workingDir,
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ])
+      : uniqueValues([
+          params.workingDir,
+          path.join(resolveAgentRoot(), "history"),
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ]);
   const writablePaths =
     params.purpose === "repo-chat"
       ? uniqueValues(params.extraWritablePaths ?? [])
@@ -387,9 +590,16 @@ export function buildCodexNativeSandboxConfig(params: {
           path.join(params.workingDir, ".git"),
           ...(params.extraWritablePaths ?? []),
         ]);
-  const deniedReadPaths = buildCodexDeniedReadPaths(params.workingDir, authSourcePath);
+  // Codex grants a broad `/`=read base, so an observed instance's private root
+  // and state dir must be explicitly denied to seal dev private state.
+  const deniedReadPaths = buildCodexDeniedReadPaths(
+    params.workingDir,
+    authSourcePath,
+    uniqueValues([...observedSealedDenyRoots(params), ...configuredReadOnlyRoots.sealedDenyRoots]),
+  );
   const configToml = buildCodexPermissionProfileToml({
     executionRoot,
+    allowedReadPaths,
     deniedReadPaths,
     writablePaths,
     requiresNetwork: params.requiresNetwork,
@@ -422,6 +632,7 @@ export function writeCodexNativeSandboxConfig(params: {
   runId: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
   codexPath?: string;
@@ -746,6 +957,7 @@ function isSensitiveCredentialFileName(name: string): boolean {
 function buildClaudeSensitiveFileDenies(
   workingDir: string,
   deps: ResolvedClaudeDenyDeps,
+  extraScanDirs: string[] = [],
 ): string[] {
   const { homedir, privateRoot, pathExists, realPath, readDir, isRegularFile, isDirectory } = deps;
   const home = homedir();
@@ -782,6 +994,14 @@ function buildClaudeSensitiveFileDenies(
         maxDepth: 1,
         namePredicate: isSensitiveCredentialFileName,
       })),
+      // Observed-instance sealed roots (e.g. dev private + ~/.smithersbot-dev):
+      // scan a few levels deep so dev .env / auth / config / session files become
+      // exact-file denies, the reliable Bash-deny mechanism.
+      ...extraScanDirs.map((dir) => ({
+        dir,
+        maxDepth: 3,
+        namePredicate: isSensitiveCredentialFileName,
+      })),
     ];
 
   for (const scan of scans) {
@@ -797,13 +1017,18 @@ function buildClaudeSensitiveFileDenies(
   return resolveExistingRealFiles(candidates, { pathExists, realPath, isRegularFile });
 }
 
-function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+function buildClaudeDenyReadPaths(
+  workingDir: string,
+  deps: ClaudeDenyReadDeps = {},
+  extraDenyDirs: string[] = [],
+): string[] {
   const resolved = resolveClaudeDenyDeps(deps);
   const { homedir, privateRoot, pathExists, realPath } = resolved;
   const home = homedir();
   // Directory denies kept as defense-in-depth (proven safe for bwrap startup). On their
   // own these do NOT reliably block sandboxed Bash child reads — see buildClaudeSensitiveFileDenies.
-  const protectedDirs = [privateRoot(), path.join(home, ".claude")];
+  // extraDenyDirs seal an observed instance's private root + state dir.
+  const protectedDirs = [privateRoot(), path.join(home, ".claude"), ...extraDenyDirs];
   // Literal top-level repo env files (kept explicit for back-compat with the proven matrix).
   const protectedFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
     path.join(workingDir, name),
@@ -813,7 +1038,7 @@ function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps =
     realPath,
   });
   // Exact existing sensitive regular files — the reliable Bash-deny mechanism.
-  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved);
+  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved, extraDenyDirs);
   return uniqueValues([...dirAndLiteralDenies, ...exactFileDenies]);
 }
 
@@ -826,7 +1051,11 @@ function buildClaudeDenyReadPaths(workingDir: string, deps: ClaudeDenyReadDeps =
  * symlink) and deny repo env files by absolute literal path (workspace-relative or
  * recursive double-star Read forms make Claude scan node_modules at startup and hang).
  */
-function buildClaudeReadToolDenies(workingDir: string, deps: ClaudeDenyReadDeps = {}): string[] {
+function buildClaudeReadToolDenies(
+  workingDir: string,
+  deps: ClaudeDenyReadDeps = {},
+  extraDenyDirs: string[] = [],
+): string[] {
   const { homedir, pathExists, realPath } = resolveClaudeDenyDeps(deps);
   const home = homedir();
   const repoEnvFiles = [".env", ".env.local", ".env.production", ".env.test"].map((name) =>
@@ -846,38 +1075,100 @@ function buildClaudeReadToolDenies(workingDir: string, deps: ClaudeDenyReadDeps 
   const repoEnvDenies = resolveExistingRealPaths(repoEnvFiles, { pathExists, realPath }).map(
     (p) => `Read(${p})`,
   );
-  const homeDenies = resolveExistingRealPaths(homeCredentialDirs, { pathExists, realPath }).map(
-    (d) => `Read(${d}/**)`,
-  );
+  const homeDenies = resolveExistingRealPaths([...homeCredentialDirs, ...extraDenyDirs], {
+    pathExists,
+    realPath,
+  }).map((d) => `Read(${d}/**)`);
   return [...repoEnvDenies, ...homeDenies];
+}
+
+/**
+ * Whether the Claude Code sandbox is eligible to attempt broad network for a
+ * single sandboxed invocation (the equivalent of Codex's
+ * `[permissions.smithersbot.network] enabled = true`).
+ *
+ * Policy: a planned step's `requiresNetwork=true` is sufficient to attempt
+ * Claude network activation — there is no hidden operator env-var opt-in. The
+ * grant is written into that one invocation's generated sandbox settings via
+ * `sandbox.network.allowedDomains` (broad per-suffix wildcards — see
+ * CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS) and is never applied to steps that did
+ * not request it. Network remains off by default for normal steps.
+ *
+ * This reports eligibility only; it does not prove the installed Claude build
+ * honors the network setting at runtime. A genuine runtime/sandbox failure to
+ * enable network must still surface as capability_blocked/sandbox_blocked via
+ * the live-probe/blocker plumbing in backend selection (agent-executor-helpers.ts),
+ * which classifies the real Claude sandbox error rather than an env-var hint.
+ *
+ * The `env` parameter is retained for signature stability but no longer gates
+ * the result: we do not read SMITHERSBOT_CLAUDE_SANDBOX_NETWORK.
+ */
+export function claudeCodeSandboxNetworkCapability(_env: NodeJS.ProcessEnv = process.env): {
+  supported: boolean;
+  reason: string;
+} {
+  return {
+    supported: true,
+    reason:
+      "Claude Code sandbox network is activated per step: a planned requiresNetwork=true " +
+      "step requests network for that single invocation (off by default otherwise).",
+  };
 }
 
 export function buildClaudeCodeSandboxSettingsConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
+  requiresNetwork?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
   }
+  // Read-scope to an observed instance's agent root when inspecting it (throws on
+  // an observed private/state target); seal that instance's private/state dirs.
+  const agentRoot = resolveRepoChatAgentRoot(params);
+  const configuredReadOnlyRoots = resolveConfiguredReadOnlyRoots(params.readOnlyRoots);
+  const extraDenyDirs = uniqueValues([
+    ...observedSealedDenyRoots(params),
+    ...configuredReadOnlyRoots.sealedDenyRoots,
+  ]);
 
   const settingsRoot = params.settingsRoot ?? DEFAULT_CLAUDE_SANDBOX_SETTINGS_ROOT;
   const settingsDir = path.join(
     settingsRoot,
     `smithersbot-claude-${safeRunIdSegment(params.runId)}`,
   );
-  const agentRoot = resolveAgentRoot();
   const allowRead =
     params.purpose === "repo-chat"
-      ? uniqueValues([agentRoot, params.workingDir])
-      : uniqueValues([params.workingDir, path.join(agentRoot, "history")]);
+      ? uniqueValues([agentRoot, params.workingDir, ...configuredReadOnlyRoots.allowedReadRoots])
+      : uniqueValues([
+          params.workingDir,
+          path.join(agentRoot, "history"),
+          ...configuredReadOnlyRoots.allowedReadRoots,
+        ]);
   const allowWrite =
     params.purpose === "repo-chat"
       ? uniqueValues(params.extraWritablePaths ?? [])
       : uniqueValues([params.workingDir, ...(params.extraWritablePaths ?? [])]);
+
+  // requiresNetwork=true must never be silently ignored: either write a real
+  // network grant (when the build supports it) or throw a clear capability error
+  // so the caller routes the step to a network-capable backend (or blocks).
+  let networkGrant: { allowedDomains: string[] } | undefined;
+  if (params.requiresNetwork === true) {
+    const capability = claudeCodeSandboxNetworkCapability();
+    if (!capability.supported) {
+      throw new Error(`Claude Code cannot satisfy requiresNetwork=true: ${capability.reason}`);
+    }
+    // Grant broad per-suffix wildcards; Claude's proxy is default-deny and has no
+    // universal allow-all token, so an explicit allowlist is the only way to open
+    // egress for the step. See CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS.
+    networkGrant = { allowedDomains: [...CLAUDE_SANDBOX_BROAD_NETWORK_DOMAINS] };
+  }
 
   return {
     settingsDir,
@@ -890,14 +1181,15 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
         filesystem: {
           allowRead,
           allowWrite,
-          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps),
+          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps, extraDenyDirs),
         },
+        ...(networkGrant ? { network: networkGrant } : {}),
       },
       permissions: {
         // Read-tool denies, filtered to existing real paths because Claude Code enforces
         // them via the same bubblewrap mounts as the sandbox filesystem denies (an absent
         // ~/.aws or a symlinked ~/.clawdbot would fail bwrap startup). See builder doc.
-        deny: buildClaudeReadToolDenies(params.workingDir, params.denyReadDeps),
+        deny: buildClaudeReadToolDenies(params.workingDir, params.denyReadDeps, extraDenyDirs),
       },
     },
   };
@@ -907,9 +1199,11 @@ export function writeClaudeCodeSandboxSettings(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
+  requiresNetwork?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
   if (
@@ -930,8 +1224,10 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   workingDir: string;
   runId: string;
   purpose: ClaudeSandboxPurpose;
+  readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
+  requiresNetwork?: boolean;
 }): ClaudeCodeLaunchSandboxConfig {
   const config = writeClaudeCodeSandboxSettings({
     ...params,

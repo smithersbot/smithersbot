@@ -13,7 +13,7 @@ const EXAMPLES = [
     "Send via your web session and print JSON result.",
   ],
   ["moltbot gateway --port 18789", "Run the WebSocket Gateway locally."],
-  ["moltbot --dev gateway", "Run a dev Gateway (isolated state/config) on ws://127.0.0.1:19001."],
+  ["moltbot --dev gateway", "Run a dev Gateway (isolated state/config) on ws://127.0.0.1:18790."],
   ["moltbot gateway --force", "Kill anything bound to the default gateway port, then start it."],
   ["moltbot gateway ...", "Gateway control via WebSocket."],
   [
@@ -33,7 +33,7 @@ export function configureProgramHelp(program: Command, ctx: ProgramContext) {
     .version(ctx.programVersion)
     .option(
       "--dev",
-      "Dev profile: isolate state under ~/.clawdbot-dev, default gateway port 19001, and shift derived ports (browser/canvas)",
+      "Dev profile: select the dev gateway instance (isolated state/config under ~/.smithersbot-dev, default gateway port 18790)",
     )
     .option(
       "--profile <name>",

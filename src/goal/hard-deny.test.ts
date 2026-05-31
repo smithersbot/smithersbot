@@ -4,7 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SECRET_PATH_DENY_REASON, SECRET_PATH_PATTERNS } from "../security/secret-paths.js";
 import {
+  DEV_GATEWAY_WORKSPACE_DENY_REASON,
   HARD_DENIES,
+  buildDevWorkspaceHardDenies,
   checkCommandDeny,
   checkPathDeny,
   renderGroupedHardDenies,
@@ -98,6 +100,69 @@ describe("checkPathDeny", () => {
     for (const filePath of ["README.md", "SETUP.md", "AGENTS.md", "package.json"]) {
       expect(checkPathDeny(filePath)).toBeNull();
     }
+  });
+});
+
+describe("checkPathDeny dev-instance private roots", () => {
+  // Issue 2 from the stable-to-dev isolation verification: a stable worker could
+  // enumerate ~/.smithersbot-dev and ~/smithersbot-dev-home/private. Child
+  // enumeration and content reads must be denied; exact-path metadata of the
+  // known root may remain visible, and the dev agent surface stays inspectable.
+  it("denies enumeration and content reads under ~/.smithersbot-dev", () => {
+    for (const filePath of [
+      "~/.smithersbot-dev/smithersbot.json",
+      "~/.smithersbot-dev/sessions/abc.json",
+      "~/.smithersbot-dev/config",
+    ]) {
+      const deny = checkPathDeny(filePath);
+      expect(deny?.reason).toBe(SECRET_PATH_DENY_REASON);
+      expect(deny?.pattern).toBe("~/.smithersbot-dev/**");
+    }
+  });
+
+  it("denies enumeration and content reads under ~/smithersbot-dev-home/private", () => {
+    for (const filePath of [
+      "~/smithersbot-dev-home/private/env",
+      "~/smithersbot-dev-home/private/config",
+      "~/smithersbot-dev-home/private/auth",
+      "~/smithersbot-dev-home/private/sessions",
+      "~/smithersbot-dev-home/private/env/ws/.env",
+      "~/smithersbot-dev-home/private/auth/auth.json",
+    ]) {
+      const deny = checkPathDeny(filePath);
+      expect(deny?.reason).toBe(SECRET_PATH_DENY_REASON);
+      expect(deny?.pattern).toBe("~/smithersbot-dev-home/private/**");
+    }
+  });
+
+  it("leaves exact-path metadata of the known private roots visible", () => {
+    // Bare-root stat (ls -ld) is acceptable because both gateways run as the same
+    // OS user; only child enumeration / content reads are denied.
+    expect(checkPathDeny("~/.smithersbot-dev")).toBeNull();
+    expect(checkPathDeny("~/smithersbot-dev-home/private")).toBeNull();
+  });
+
+  it("keeps the dev agent-visible surface inspectable", () => {
+    for (const filePath of [
+      "~/smithersbot-dev-home/agent/workspaces",
+      "~/smithersbot-dev-home/agent/workspaces/smithersbot-dev/package.json",
+      "~/smithersbot-dev-home/agent/history",
+      "~/smithersbot-dev-home/agent/history/goals/run.md",
+    ]) {
+      expect(checkPathDeny(filePath)).toBeNull();
+    }
+  });
+
+  it("preserves the dev private-root denies in buildDevWorkspaceHardDenies", () => {
+    const denies = buildDevWorkspaceHardDenies();
+    expect(checkPathDeny("~/.smithersbot-dev/smithersbot.json", denies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    expect(checkPathDeny("~/smithersbot-dev-home/private/env/ws/.env", denies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
+    // Agent surface stays inspectable under the dev-workspace deny list too.
+    expect(checkPathDeny("~/smithersbot-dev-home/agent/history", denies)).toBeNull();
   });
 });
 
@@ -334,5 +399,104 @@ describe("checkCommandDeny", () => {
   it("allows normal safe commands", () => {
     expect(checkCommandDeny("pnpm test")).toBeNull();
     expect(checkCommandDeny('echo "vercel deploy docs"')).toBeNull();
+  });
+
+  describe("default/stable workers keep denying all gateway restarts", () => {
+    it("denies the dev gateway restart in the default (stable) deny list", () => {
+      expect(
+        checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service")?.pattern,
+      ).toBe("systemctl --user restart");
+    });
+
+    it("denies the stable gateway restart in the default deny list", () => {
+      expect(
+        checkCommandDeny("systemctl --user restart smithersbot-gateway.service")?.pattern,
+      ).toBe("systemctl --user restart");
+    });
+  });
+});
+
+describe("buildDevWorkspaceHardDenies", () => {
+  const devDenies = buildDevWorkspaceHardDenies();
+
+  it("allows restarting/inspecting only the dev gateway unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service", devDenies),
+    ).toBeNull();
+    expect(
+      checkCommandDeny(
+        "systemctl --user status smithersbot-dev-gateway.service --no-pager",
+        devDenies,
+      ),
+    ).toBeNull();
+    expect(
+      checkCommandDeny(
+        "journalctl --user -u smithersbot-dev-gateway.service -n 80 --no-pager",
+        devDenies,
+      ),
+    ).toBeNull();
+    // Bare unit name (no .service suffix) is still recognized as the dev unit.
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway", devDenies),
+    ).toBeNull();
+  });
+
+  it("still denies restarting the stable gateway unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
+  it("denies a unit-less or non-dev gateway restart", () => {
+    expect(checkCommandDeny("systemctl --user restart", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+    expect(
+      checkCommandDeny("systemctl restart smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
+  it("denies restarting an arbitrary (non-dev, non-stable) service name", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart some-random.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(checkCommandDeny("systemctl --user restart nginx", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+    // A unit whose name merely embeds the dev unit string is not the dev unit.
+    expect(
+      checkCommandDeny(
+        "systemctl --user restart smithersbot-dev-gateway.service.evil.service",
+        devDenies,
+      )?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
+  it("denies stable install/manage paths (enable/start/stop) for the stable unit", () => {
+    expect(
+      checkCommandDeny("systemctl --user enable --now smithersbot-gateway.service", devDenies)
+        ?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(
+      checkCommandDeny("systemctl --user start smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+    expect(checkCommandDeny("systemctl --user stop smithersbot-gateway", devDenies)?.reason).toBe(
+      DEV_GATEWAY_WORKSPACE_DENY_REASON,
+    );
+  });
+
+  it("keeps the moltbot gateway restart and unrelated denies intact", () => {
+    expect(checkCommandDeny("moltbot gateway restart", devDenies)?.pattern).toBe(
+      "moltbot gateway restart",
+    );
+    expect(checkCommandDeny("sudo whoami", devDenies)?.pattern).toBe("sudo");
+    expect(checkCommandDeny("npm publish", devDenies)?.pattern).toBe("npm publish");
+  });
+
+  it("keeps ~/.smithersbot stable-config mutation denied", () => {
+    expect(checkPathDeny("~/.smithersbot/.env", devDenies)?.reason).toBe(SECRET_PATH_DENY_REASON);
+    expect(checkPathDeny("~/.smithersbot/smithersbot.json", devDenies)?.reason).toBe(
+      SECRET_PATH_DENY_REASON,
+    );
   });
 });

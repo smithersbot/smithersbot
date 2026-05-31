@@ -8,6 +8,13 @@ import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import {
+  isBackendNetworkCapable,
+  MAX_TRANSIENT_RETRY_ATTEMPTS,
+  pickFallbackBackend,
+  resolveBackendForStep,
+} from "./agent-executor-helpers.js";
+import { classifyStepCategory } from "./run-category.js";
 type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
@@ -25,6 +32,10 @@ const mockRunCliProcess = vi.fn();
 const mockResolveClaudeBinary = vi.fn();
 const mockExtractRunLessons = vi.fn();
 const mockMirrorGoalRuntimeToAgentHistory = vi.fn();
+const mockAssertGoalWorkerWorkspace = vi.fn();
+let actualAssertGoalWorkerWorkspace:
+  | (typeof import("./workspace-policy.js"))["assertGoalWorkerWorkspace"]
+  | undefined;
 const attemptBundlesByDir = new Map<string, AttemptBundle[]>();
 const WORKER_DIR = "/tmp/moltbot-goal-test/worker";
 const constructedCliBackends: Array<Exclude<GoalBackendId, "pi">> = [];
@@ -66,6 +77,20 @@ vi.mock("./cli-runner.js", () => ({
 vi.mock("./pi-runner.js", () => ({
   PiTaskRunner: MockPiTaskRunner,
 }));
+
+// The shared goal-execution guard is fully exercised in workspace-policy.test.ts.
+// Here it routes through a controllable mock: default no-op so the orchestration
+// tests can use their fixture working dirs, while dedicated tests delegate to the
+// real implementation to prove executeGoalWithAgent rejects an out-of-instance
+// planResult.workingDir BEFORE any worker launch or build gate.
+vi.mock("./workspace-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./workspace-policy.js")>();
+  actualAssertGoalWorkerWorkspace = actual.assertGoalWorkerWorkspace;
+  return {
+    ...actual,
+    assertGoalWorkerWorkspace: (...args: unknown[]) => mockAssertGoalWorkerWorkspace(...args),
+  };
+});
 
 vi.mock("./backend-availability.js", () => ({
   detectBackendAvailability: () => availability,
@@ -346,6 +371,64 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     }
   });
 
+  it("blocks a network-required step as capability_blocked only when no network-capable backend is available", async () => {
+    // Under the requiresNetwork policy both codex and claude_code are
+    // network-eligible, so a step only blocks when BOTH are unavailable (no env
+    // var is involved). pi has no sandbox network wiring.
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not on PATH" },
+      { id: "claude_code", available: false, reason: "not on PATH" },
+    ];
+    const step = makeStep({ backend: "claude_code", requiresNetwork: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-capability-blocked",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("capability_blocked");
+    // Names the backend that lacked network and that another was checked.
+    expect(step.blockedQuestion).toContain("claude_code");
+    expect(step.blockedQuestion).toContain("codex");
+    // The worker is never launched for an unsatisfiable network step.
+    expect(mockCliExecute).not.toHaveBeenCalled();
+  });
+
+  it("runs a network-required step on Claude Code (no env var) when it is the only available backend", async () => {
+    // Codex unavailable, claude_code available: the network step must run on
+    // Claude Code under the per-step policy — not block — with no
+    // SMITHERSBOT_CLAUDE_SANDBOX_NETWORK opt-in set.
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    availability = [
+      { id: "pi", available: true },
+      { id: "codex", available: false, reason: "not on PATH" },
+      { id: "claude_code", available: true },
+    ];
+    mockCliExecute.mockResolvedValueOnce({ status: "complete", summary: "Fetched", turnsUsed: 1 });
+    const step = makeStep({ backend: "claude_code", requiresNetwork: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-network-claude-only",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    expect(step.executedBackend).toBe("claude_code");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
   it("clears stale run-level blocker fields on transition to done", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
@@ -440,6 +523,75 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         (event as { type?: string }).type === "all_done",
     );
     expect(allDoneEvent?.reviewUrl).toBe(reviewUrl);
+  });
+
+  it("push policy: pushes only to origin and never to a public remote", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("push-policy-origin-only");
+    mockGithubPushGit({
+      privateRepo: true,
+      pushedSha: "feedfacecafebeef1234567890abcdef12345678",
+    });
+    mockCliExecute.mockResolvedValueOnce({ status: "complete", summary: "ok", turnsUsed: 1 });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-push-policy-origin",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true } } },
+      serializedRun: { createdAt: "2026-05-25T12:00:00.000Z" } as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("done");
+    const pushCalls = mockExecFileSync.mock.calls.filter((call) => {
+      const argv = Array.isArray(call[1]) ? call[1].map(String) : [];
+      return call[0] === "git" && argv.includes("push");
+    });
+    // A push happened, every push targeted origin, and none ever targeted public.
+    expect(pushCalls.length).toBeGreaterThan(0);
+    for (const call of pushCalls) {
+      const argv = (call[1] as string[]).map(String);
+      expect(argv).toContain("origin");
+      expect(argv).not.toContain("public");
+    }
+    expect(session.githubPushOutcome?.remote).toBe("origin");
+  });
+
+  it("push policy: performs no push before the run completes its gates (blocked step → no push)", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = makeGitWorkingDir("push-policy-no-early-push");
+    mockGithubPushGit({ privateRepo: true });
+    mockCliExecute.mockResolvedValueOnce({
+      status: "blocked",
+      question: "Need input",
+      blockedReason: "user_input",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-push-policy-no-early",
+      workingDir,
+      gitCheckpointConfig: { enabled: true },
+      config: { goal: { githubPush: { enabled: true } } },
+      serializedRun: { createdAt: "2026-05-25T12:00:00.000Z" } as SerializedRun,
+    });
+
+    expect(outcome.status).toBe("blocked");
+    const pushCalls = mockExecFileSync.mock.calls.filter((call) => {
+      const argv = Array.isArray(call[1]) ? call[1].map(String) : [];
+      return call[0] === "git" && argv.includes("push");
+    });
+    // No git push is issued until the run reaches its post-gate completion path.
+    expect(pushCalls).toHaveLength(0);
+    expect(session.githubPushOutcome?.attempted ?? false).toBe(false);
   });
 
   it("persists completion artifacts before emitting the all_done status update", async () => {
@@ -728,40 +880,13 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.githubPushOutcome?.branch).toBe(runBranch);
   });
 
-  it("allows legacy workingDir by default with a warning", async () => {
-    const root = "/tmp/smithersbot-managed-agent-executor";
-    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
-    process.env.SMITHERSBOT_GOALS_ROOT = root;
-    const step = makeStep({ backend: "codex" });
-    const plan = makePlan([step]);
-    const session = makeSession(plan);
-    const onProgress = vi.fn();
-    mockCliExecute.mockResolvedValueOnce({
-      status: "complete",
-      summary: "All set",
-      turnsUsed: 1,
+  it("rejects an out-of-current-instance planResult.workingDir before launching any worker", async () => {
+    // Delegate the guard to the real implementation for this test so the genuine
+    // hard-deny (not a mock) is what stops execution.
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
     });
-
-    try {
-      const { executeGoalWithAgent } = await import("./agent-executor.js");
-      const outcome = await executeGoalWithAgent({
-        session,
-        runId: "run-legacy-warning",
-        workingDir: "/tmp/moltbot-goal-test",
-        onProgress,
-      });
-
-      expect(outcome.status).toBe("done");
-      expect(onProgress.mock.calls.flat().join("\n")).toContain(
-        "outside the SmithersBot managed agent root",
-      );
-    } finally {
-      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
-      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
-    }
-  });
-
-  it("rejects legacy workingDir when compatibility is disabled", async () => {
     const root = "/tmp/smithersbot-managed-agent-executor";
     const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     process.env.SMITHERSBOT_GOALS_ROOT = root;
@@ -774,15 +899,54 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       await expect(
         executeGoalWithAgent({
           session,
-          runId: "run-legacy-reject",
+          runId: "run-out-of-instance-reject",
+          // Out-of-root: not under <root>/agent/workspaces.
           workingDir: "/tmp/moltbot-goal-test",
-          config: { goal: { allowLegacyWorkingDir: false } },
         }),
-      ).rejects.toThrow("managed agent root");
+      ).rejects.toThrow(/outside the current stable instance's own agent\/workspaces tree/);
+      // The guard fires before any worker launch or build gate runs.
       expect(mockCliExecute).not.toHaveBeenCalled();
+      expect(mockBuildDefaultSastCommand).not.toHaveBeenCalled();
     } finally {
+      mockAssertGoalWorkerWorkspace.mockReset();
       if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+    }
+  });
+
+  it("accepts a valid current-instance planResult.workingDir under agent/workspaces", async () => {
+    mockAssertGoalWorkerWorkspace.mockImplementation((...args: unknown[]) => {
+      if (!actualAssertGoalWorkerWorkspace) throw new Error("guard not initialized");
+      return (actualAssertGoalWorkerWorkspace as (...a: unknown[]) => void)(...args);
+    });
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-executor-valid-"));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const validWorkingDir = path.join(root, "agent", "workspaces", "smithersbot-dev");
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    plan.workingDir = validWorkingDir;
+    const session = makeSession(plan);
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+
+    try {
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId: "run-valid-instance",
+        workingDir: validWorkingDir,
+      });
+      expect(outcome.status).toBe("done");
+      expect(mockCliExecute).toHaveBeenCalled();
+    } finally {
+      mockAssertGoalWorkerWorkspace.mockReset();
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -1373,6 +1537,85 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(executedCliBackends).toEqual(["codex"]);
     expect(step.blockedQuestion).toContain("Codex hit a rate limit");
     expect(step.blockedQuestion).toContain("single enabled worker");
+  });
+
+  it("auto-retries a transient 529 overload with backoff instead of surfacing a user-input block", async () => {
+    // A single Claude 529/Overloaded must NOT immediately become a user-visible
+    // block. The run stays retrying (auto-retry with backoff) and only pauses
+    // after the transient retry budget is spent.
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const progress: string[] = [];
+
+    // Always a transient overload; never recovers within the budget.
+    mockCliExecute.mockResolvedValue({
+      status: "blocked",
+      question: "API Error: 529 Overloaded",
+      blockedReason: "rate_limit",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-transient-529-pause",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+      onProgress: (message) => progress.push(message),
+    });
+
+    expect(outcome.status).toBe("blocked");
+    // Up to 5 attempts (initial + 4 auto-retries) on the same backend before pausing.
+    expect(executedCliBackends).toHaveLength(MAX_TRANSIENT_RETRY_ATTEMPTS);
+    expect(executedCliBackends.every((backend) => backend === "claude_code")).toBe(true);
+    // It is never a user-input block; the derived category is resumable "paused".
+    expect(step.blockedReason).not.toBe("user_input");
+    expect(classifyStepCategory(step)).toBe("paused");
+    // It emitted retrying (not blocked) progress while auto-retrying.
+    expect(progress.some((line) => line.includes("[retrying] Transient backend overload"))).toBe(
+      true,
+    );
+  });
+
+  it("recovers from a transient overload on a later auto-retry without surfacing a block", async () => {
+    const step = makeStep({ backend: "claude_code" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    mockCliExecute
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "API Error: 529 Overloaded",
+        blockedReason: "rate_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "blocked",
+        question: "Anthropic server-side issue (overloaded)",
+        blockedReason: "rate_limit",
+        turnsUsed: 1,
+      })
+      .mockResolvedValueOnce({
+        status: "complete",
+        summary: "Recovered after transient overload",
+        turnsUsed: 1,
+      });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-transient-529-recovers",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.status).toBe("done");
+    // Two transient retries then success — the run never surfaced a block.
+    expect(executedCliBackends).toEqual(["claude_code", "claude_code", "claude_code"]);
   });
 
   it("falls back from Claude Code to Codex when Claude Code hits a rate limit", async () => {
@@ -2526,6 +2769,41 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.answers["task:1:input"]).toBeUndefined();
   });
 
+  it("passes goal-level resume notes into worker context for a scheduled step", async () => {
+    const step = makeStep({ id: "task-a", backend: "codex", status: "pending" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.resumeNotes = [
+      {
+        timestamp: "2026-05-31T14:00:00.000Z",
+        source: "direct_reply",
+        affectedStepIds: ["task-a", "task-b"],
+        userText: "The missing detail applies to both tasks.",
+      },
+    ];
+
+    let capturedContext: TaskRunnerContext | undefined;
+    mockCliExecute.mockImplementationOnce(async (context) => {
+      capturedContext = context;
+      return {
+        status: "complete",
+        summary: "Used resume note",
+        turnsUsed: 1,
+      };
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-resume-note-context",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(capturedContext?.resumeNotes).toEqual(session.resumeNotes);
+  });
+
   it("does not spawn the LLM post-execution review after a completed goal", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
@@ -3405,5 +3683,119 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       // Final global state after draining all runnable work: blocked (Task 7 + deps).
       expect(outcome.status).toBe("blocked");
     });
+  });
+});
+
+describe("network-aware backend selection (requiresNetwork parity)", () => {
+  const netStep = (overrides: Partial<PlanStep>): PlanStep => ({
+    id: "s",
+    description: "d",
+    dependsOn: [],
+    status: "pending",
+    ...overrides,
+  });
+  const codexCapable = (b: GoalBackendId) => b === "codex";
+
+  it("reroutes a network-required step off a network-incapable backend to a capable one", () => {
+    const step = netStep({ backend: "claude_code", requiresNetwork: true });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("codex");
+  });
+
+  it("keeps the chosen backend for non-network steps even if it cannot network", () => {
+    const step = netStep({ backend: "claude_code" });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("claude_code");
+  });
+
+  it("leaves a network-required step on the incapable backend when no capable candidate exists (caller blocks)", () => {
+    const step = netStep({ backend: "claude_code", requiresNetwork: true });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: codexCapable,
+      networkCandidates: ["claude_code"],
+    });
+    expect(resolved).toBe("claude_code");
+  });
+
+  it("never falls back a network-required step to a network-incapable backend", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      { requiresNetwork: true, networkCapable: codexCapable },
+    );
+    expect(result.backend).toBeNull();
+    expect(result.reason).toBe("fallback_unavailable");
+    expect(result.detail).toContain("cannot enable network");
+  });
+
+  it("falls back a usage-limited Codex network step to Claude Code (no env var, claude_code is network-capable)", () => {
+    delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    // Use the real capability predicate: under the requiresNetwork policy
+    // claude_code is network-eligible with no env-var opt-in.
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      {
+        requiresNetwork: true,
+        networkCapable: (b: GoalBackendId) => isBackendNetworkCapable(b, avail, {}),
+      },
+    );
+    expect(result.backend).toBe("claude_code");
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("still falls back normally for non-network steps", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      { requiresNetwork: false, networkCapable: codexCapable },
+    );
+    expect(result.backend).toBe("claude_code");
+  });
+
+  it("classifies backend network capability: codex yes, claude_code yes (no env var), pi no", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+      { id: "pi", available: false, reason: "disabled" },
+    ];
+    expect(isBackendNetworkCapable("codex", avail, {})).toBe(true);
+    // Under the requiresNetwork policy, Claude Code is network-eligible by
+    // default — no SMITHERSBOT_CLAUDE_SANDBOX_NETWORK opt-in required.
+    expect(isBackendNetworkCapable("claude_code", avail, {})).toBe(true);
+    // pi has no sandbox network wiring.
+    expect(isBackendNetworkCapable("pi", avail, {})).toBe(false);
+    // An unavailable backend can never provide network, even claude_code.
+    expect(
+      isBackendNetworkCapable("claude_code", [{ id: "claude_code", available: false }], {}),
+    ).toBe(false);
+    expect(isBackendNetworkCapable("codex", [{ id: "codex", available: false }], {})).toBe(false);
   });
 });

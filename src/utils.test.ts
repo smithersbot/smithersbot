@@ -133,6 +133,22 @@ describe("resolveConfigDir", () => {
       await fs.promises.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("uses the explicit dev instance state dir without stable fallback", async () => {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "smithersbot-config-dir-"));
+    try {
+      const stableDir = path.join(root, ".smithersbot");
+      await fs.promises.mkdir(stableDir, { recursive: true });
+      const resolved = resolveConfigDir(
+        { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
+        () => root,
+      );
+
+      expect(resolved).toBe(path.join(root, ".smithersbot-dev"));
+    } finally {
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resolveJidToE164", () => {

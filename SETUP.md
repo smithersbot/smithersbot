@@ -278,6 +278,20 @@ the default Telegram preface, `Right away, sir.`
 
 The setup wizard is a shell wizard for launch, not a TUI.
 
+### Developing SmithersBot itself (optional)
+
+Most users can skip this. If you are developing SmithersBot and want a second,
+isolated dev gateway (`smithersbot-dev-gateway.service`, `~/.smithersbot-dev`,
+`~/smithersbot-dev-home`, port `18790`, separate Telegram bot) running alongside
+the stable gateway, run setup with `--instance dev` and see
+[docs/DEV_GATEWAY.md](docs/DEV_GATEWAY.md) for the full workflow:
+
+```bash
+bash scripts/setup-smithersbot.sh --instance dev
+```
+
+The no-arg setup flow above is unchanged.
+
 ## 8. Run Telegram smoke tests
 
 Open your SmithersBot Telegram bot and send:

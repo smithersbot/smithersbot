@@ -4,4 +4,8 @@
 // This module re-exports it so existing imports keep resolving while the prompt
 // body has a single source of truth.
 
-export { REPO_CHAT_CONTEXT } from "../prompts/repo-chat/repo-chat-context.js";
+export {
+  REPO_CHAT_CONTEXT,
+  buildRepoChatContext,
+  type RepoChatContextOptions,
+} from "../prompts/repo-chat/repo-chat-context.js";

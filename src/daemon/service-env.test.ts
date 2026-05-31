@@ -223,6 +223,8 @@ describe("buildServiceEnvironment", () => {
     } else {
       expect(env.PATH).toContain("/usr/bin");
     }
+    expect(env.SMITHERSBOT_GATEWAY_PORT).toBe("18789");
+    expect(env.SMITHERSBOT_INSTANCE).toBeUndefined();
     expect(env.CLAWDBOT_GATEWAY_PORT).toBe("18789");
     expect(env.CLAWDBOT_GATEWAY_TOKEN).toBe("secret");
     expect(env.CLAWDBOT_SERVICE_MARKER).toBe("moltbot");
@@ -232,6 +234,35 @@ describe("buildServiceEnvironment", () => {
     if (process.platform === "darwin") {
       expect(env.CLAWDBOT_LAUNCHD_LABEL).toBe("bot.molt.gateway");
     }
+  });
+
+  it("can carry explicit dev instance service environment", () => {
+    const env = buildServiceEnvironment({
+      env: { HOME: "/home/matt" },
+      port: 18790,
+      instance: "dev",
+      systemdUnit: "smithersbot-dev-gateway.service",
+    });
+
+    expect(env.SMITHERSBOT_INSTANCE).toBe("dev");
+    expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/home/matt/smithersbot-dev-home");
+    expect(env.SMITHERSBOT_GATEWAY_PORT).toBe("18790");
+    expect(env.CLAWDBOT_GATEWAY_PORT).toBe("18790");
+    expect(env.CLAWDBOT_SYSTEMD_UNIT).toBe("smithersbot-dev-gateway.service");
+  });
+
+  it("uses env instance/root signals without deriving them from a workspace name", () => {
+    const env = buildServiceEnvironment({
+      env: {
+        HOME: "/home/matt",
+        SMITHERSBOT_INSTANCE: "dev",
+        SMITHERSBOT_GOALS_ROOT: "/explicit/dev-root",
+      },
+      port: 18790,
+    });
+
+    expect(env.SMITHERSBOT_INSTANCE).toBe("dev");
+    expect(env.SMITHERSBOT_GOALS_ROOT).toBe("/explicit/dev-root");
   });
 
   it("uses profile-specific unit and label", () => {

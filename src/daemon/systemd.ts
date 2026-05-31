@@ -157,6 +157,34 @@ async function execSystemctl(
   }
 }
 
+async function execJournalctl(
+  args: string[],
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  try {
+    const { stdout, stderr } = await execFileAsync("journalctl", args, {
+      encoding: "utf8",
+    });
+    return {
+      stdout: String(stdout ?? ""),
+      stderr: String(stderr ?? ""),
+      code: 0,
+    };
+  } catch (error) {
+    const e = error as {
+      stdout?: unknown;
+      stderr?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    return {
+      stdout: typeof e.stdout === "string" ? e.stdout : "",
+      stderr:
+        typeof e.stderr === "string" ? e.stderr : typeof e.message === "string" ? e.message : "",
+      code: typeof e.code === "number" ? e.code : 1,
+    };
+  }
+}
+
 export async function isSystemdUserServiceAvailable(): Promise<boolean> {
   const res = await execSystemctl(["--user", "status"]);
   if (res.code === 0) return true;
@@ -299,6 +327,48 @@ export async function isSystemdServiceEnabled(args: {
   const unitName = `${serviceName}.service`;
   const res = await execSystemctl(["--user", "is-enabled", unitName]);
   return res.code === 0;
+}
+
+export type SystemdServiceActiveState = {
+  active: boolean;
+  state: string;
+  exitCode: number;
+  detail?: string;
+};
+
+export async function readSystemdServiceActiveState(args: {
+  env?: Record<string, string | undefined>;
+}): Promise<SystemdServiceActiveState> {
+  await assertSystemdAvailable();
+  const serviceName = resolveSystemdServiceName(args.env ?? {});
+  const unitName = `${serviceName}.service`;
+  const res = await execSystemctl(["--user", "is-active", unitName]);
+  const output = (res.stdout || res.stderr).trim();
+  const active = res.code === 0 && output === "active";
+  return {
+    active,
+    state: output || "unknown",
+    exitCode: res.code,
+    ...(res.code === 0 ? {} : { detail: output || undefined }),
+  };
+}
+
+export async function readSystemdServiceRecentLogs(args: {
+  env?: Record<string, string | undefined>;
+  lines?: number;
+}): Promise<string> {
+  await assertSystemdAvailable();
+  const serviceName = resolveSystemdServiceName(args.env ?? {});
+  const unitName = `${serviceName}.service`;
+  const lines = args.lines ?? 80;
+  if (!Number.isInteger(lines) || lines < 1) {
+    throw new Error("journalctl recent log line count must be a positive integer.");
+  }
+  const res = await execJournalctl(["--user", "-u", unitName, "-n", String(lines), "--no-pager"]);
+  if (res.code !== 0) {
+    throw new Error(`journalctl failed: ${res.stderr || res.stdout}`.trim());
+  }
+  return res.stdout;
 }
 
 export async function readSystemdServiceRuntime(

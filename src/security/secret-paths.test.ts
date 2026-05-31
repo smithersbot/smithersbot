@@ -30,6 +30,10 @@ describe("secret paths", () => {
     expect(SECRET_PATH_PATTERNS).toContain("~/.smithersbot/**");
     expect(SECRET_PATH_PATTERNS).toContain("~/.codex/**");
     expect(SECRET_PATH_PATTERNS).toContain("*.pem");
+    // Dev-instance private roots must be covered too (Issue 2 from the
+    // stable-to-dev isolation verification).
+    expect(SECRET_PATH_PATTERNS).toContain("~/.smithersbot-dev/**");
+    expect(SECRET_PATH_PATTERNS).toContain("~/smithersbot-dev-home/private/**");
   });
 
   it.each([
@@ -43,11 +47,26 @@ describe("secret paths", () => {
     "~/.clawdbot/clawdbot.json",
     "~/.clawdbot/credentials/oauth.json",
     "~/.clawdbot-dev/.env",
+    "~/.smithersbot-dev/smithersbot.json",
+    "~/.smithersbot-dev/sessions/abc.json",
+    "~/smithersbot-dev-home/private/env/ws/.env",
+    "~/smithersbot-dev-home/private/config/config.json",
+    "~/smithersbot-dev-home/private/auth/auth.json",
+    "~/smithersbot-dev-home/private/sessions/session.json",
     "~/.claude/settings.json",
     "~/.codex/config.toml",
   ])("blocks canonical and legacy home config path %s", (filePath) => {
     const homeDir = makeTmpDir();
     expect(isSecretPath(filePath, { homeDir })).toBe(true);
+  });
+
+  it.each([
+    "smithersbot-dev-home/agent/workspaces/smithersbot-dev/src/index.ts",
+    "smithersbot-dev-home/agent/history/goals/run.md",
+    "smithersbot-dev-home/agent/history/repo-chats/chat.md",
+  ])("keeps dev agent-visible surface readable %s", (relativePath) => {
+    const homeDir = makeTmpDir();
+    expect(isSecretPath(`~/${relativePath}`, { homeDir })).toBe(false);
   });
 
   it.each([

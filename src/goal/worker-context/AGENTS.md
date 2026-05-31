@@ -73,7 +73,7 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - If verification fails, inspect the output, fix the implementation, and rerun the affected command. Do not mark the task complete until the modified behavior has been exercised end to end.
 - If an environment limitation blocks verification, report the exact command and the blocker rather than declaring success.
 
-**Do NOT restart the gateway service during goal execution.** If verification requires a restart, mark the task blocked and ask the operator to restart.
+**Gateway restart safety:** never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service` during goal execution. Ordinary non-SmithersBot workspaces must block and ask the operator if verification requires a gateway restart. Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`, preferably through the approved product path `node ./smithersbot.mjs dev-gateway restart|status|logs`. Raw broad `systemd`/`systemctl` control remains forbidden unless the existing approved safe path explicitly permits it.
 
 ## Working with the Codebase
 
