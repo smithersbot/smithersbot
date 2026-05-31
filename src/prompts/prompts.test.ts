@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 
 import { resolveScoutTemplatePath, SCOUT_PROMPT_TEMPLATE_FILE } from "./scout/loader.js";
 import { buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts } from "./planner/system-prompt.js";
-import { REVIEW_INSTRUCTION } from "./plan-autocheck/review-instruction.js";
+import {
+  DEV_GATEWAY_REVIEW_GUIDANCE,
+  REVIEW_INSTRUCTION,
+} from "./plan-autocheck/review-instruction.js";
 import { PLAN_QUALITY_RUBRIC } from "./shared/plan-quality-rubric.js";
 import { MANUAL_TESTS_SYSTEM_PROMPT } from "./manual-tests/system-prompt.js";
 import {
@@ -227,10 +230,56 @@ describe("src/prompts/ — worker context", () => {
       "pnpm build",
       "pnpm lint",
       "Before reporting completion, list the exact verification commands you ran",
-      "Do NOT restart the gateway service during goal execution.",
+      "Gateway restart safety",
+      "stable/default `smithersbot-gateway.service`",
+      "Ordinary non-SmithersBot workspaces must block",
+      "Only for SmithersBot runtime changes in the SmithersBot dev checkout",
+      "`smithersbot-dev-gateway.service`",
+      "node ./smithersbot.mjs dev-gateway restart|status|logs",
+      "Raw broad `systemd`/`systemctl` control remains forbidden",
     ];
     for (const needle of needles) {
       expect(WORKER_CONTEXT).toContain(needle);
+    }
+  });
+
+  it("keeps gateway restart guidance dev-only and stable-safe", () => {
+    const forbiddenDevUnit = ["smithersbot", "gateway", "dev.service"].join("-");
+    const stableRestartInstruction = ["systemctl", "restart", "smithersbot-gateway.service"].join(
+      " ",
+    );
+    const basePlannerPrompt = buildPlanSystemPromptFromPrompts(["codex"]);
+    const devPlannerPrompt = buildPlanSystemPromptFromPrompts(["codex"], {
+      devGatewayVerification: true,
+    });
+    const prompts = [
+      WORKER_CONTEXT,
+      devPlannerPrompt,
+      DEV_GATEWAY_REVIEW_GUIDANCE,
+      MANUAL_TESTS_SYSTEM_PROMPT,
+    ];
+
+    expect(WORKER_CONTEXT).toContain(
+      "never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service`",
+    );
+    expect(WORKER_CONTEXT).toContain(
+      "Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`",
+    );
+    expect(WORKER_CONTEXT).toContain("Ordinary non-SmithersBot workspaces must block");
+    expect(WORKER_CONTEXT).not.toContain(
+      "Do NOT restart the gateway service during goal execution",
+    );
+
+    expect(basePlannerPrompt).not.toContain("DEV GATEWAY VERIFICATION");
+    expect(devPlannerPrompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(devPlannerPrompt).toContain("Workers may restart and inspect ONLY");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("smithersbot-dev-gateway.service");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("never the stable smithersbot-gateway.service");
+    expect(REVIEW_INSTRUCTION).not.toContain("smithersbot-dev-gateway.service");
+
+    for (const prompt of prompts) {
+      expect(prompt).not.toContain(forbiddenDevUnit);
+      expect(prompt).not.toContain(stableRestartInstruction);
     }
   });
 
