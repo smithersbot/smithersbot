@@ -413,6 +413,30 @@ describe("src/prompts/ — repo-chat context and delivery", () => {
     expect(REPO_CHAT_CONTEXT_FROM_CONSUMER).toBe(REPO_CHAT_CONTEXT);
   });
 
+  it("identifies repo-chat as SmithersBot while keeping Moltbot only as legacy compatibility", () => {
+    const mirrorDir = path.join(repoRoot, "src", "repo-chat", "repo-chat-context");
+    const surfaces = [
+      REPO_CHAT_CONTEXT,
+      fs.readFileSync(path.join(mirrorDir, "AGENTS.md"), "utf8"),
+      fs.readFileSync(path.join(mirrorDir, "CLAUDE.md"), "utf8"),
+    ];
+
+    for (const surface of surfaces) {
+      expect(surface).toContain("# SmithersBot — Repository Chat Reference");
+      expect(surface).toContain("running inside the SmithersBot gateway");
+      expect(surface).toContain("SmithersBot is a Telegram-controlled messaging bot");
+      expect(surface).toContain(
+        "Naming: `smithersbot` for current CLI/package/paths, `SmithersBot` for product/docs.",
+      );
+      expect(surface).toContain("Deprecated `moltbot` names");
+      expect(surface).toContain("~/.moltbot/goals/<runId>/");
+      expect(surface).not.toContain("# Moltbot — Repository Chat Reference");
+      expect(surface).not.toContain("running inside the Moltbot gateway");
+      expect(surface).not.toContain("Moltbot is a Telegram-controlled messaging bot");
+      expect(surface).not.toContain("Naming: `moltbot` for CLI/package/paths");
+    }
+  });
+
   it("references the Stage 2S agent-history mirror and excludes the private tree", () => {
     expect(REPO_CHAT_CONTEXT).toContain("agent/history/goals/");
     expect(REPO_CHAT_CONTEXT).toContain("agent/history/repo-chats/");
@@ -444,6 +468,8 @@ describe("src/prompts/ — repo-chat context and delivery", () => {
     });
     expect(codexInstruction).toContain("RESPONSE FILE");
     expect(codexInstruction).toContain("/tmp/answer.md");
+    expect(codexInstruction).toContain("SMITHERSBOT_EOF");
+    expect(codexInstruction).not.toContain("MOLTBOT_EOF");
     expect(CODEX_STYLE_DIRECTIVE).toContain("final answer");
   });
 
