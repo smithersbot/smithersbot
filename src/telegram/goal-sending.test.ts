@@ -307,8 +307,8 @@ describe("sendBlockedNotification", () => {
     expect(text).toMatch(/fix/i);
     const keyboard = JSON.stringify(sendMessage.mock.calls[0]?.[2]?.reply_markup?.inline_keyboard);
     expect(keyboard).toContain("gStop:");
-    expect(keyboard).not.toContain("gResume:");
-    expect(keyboard).not.toContain("gAD:");
+    expect(keyboard).toContain("gResume:");
+    expect(keyboard).toContain("gAD:");
   });
 
   it("threads replyToMessageId into overflow DAG caption replies", async () => {

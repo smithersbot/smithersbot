@@ -5337,10 +5337,9 @@ describe("goal-commands telegram adapter", () => {
       expect(findRunnableSteps(run.plan!.steps).map((s) => s.id)).toEqual(["parent-a"]);
     });
 
-    it("gResume:<id> Resume button resumes through goalResumeCommand and normalizes answered parents", async () => {
+    it("gResume:<id> Resume button records a goal-level resume note and schedules blocked parents", async () => {
       const runId = "cccccccc-1111-2222-3333-444444444444";
       saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
-      mockGoalResumeCommand.mockImplementation(normalizingResume());
 
       const harness = makeResumeHarness();
       await harness.register();
@@ -5353,22 +5352,24 @@ describe("goal-commands telegram adapter", () => {
       });
 
       await waitForResume(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalled();
-        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
-      });
-      await waitForResume(() => {
-        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        const run = loadRun(runId, testGoalsDir)!;
+        const steps = stepsById(run);
         expect(steps.get("parent-a")!.status).toBe("pending");
         expect(steps.get("parent-b")!.status).toBe("pending");
+        expect(run.resumeNotes?.[0]).toEqual(
+          expect.objectContaining({
+            source: "resume",
+            affectedStepIds: ["parent-a", "parent-b"],
+          }),
+        );
       });
       const display = computeDisplayStatuses(loadRun(runId, testGoalsDir)!.plan!.steps);
       expect([...display.values()]).not.toContain("blocked");
     });
 
-    it("/goal_resume command resumes through goalResumeCommand and normalizes answered parents", async () => {
+    it("/goal_resume command records a goal-level resume note and schedules blocked parents", async () => {
       const runId = "dddddddd-1111-2222-3333-444444444444";
       saveRunFixture(makeColliderRun({ runId, parentBAnswered: true }));
-      mockGoalResumeCommand.mockImplementation(normalizingResume());
 
       const harness = makeResumeHarness();
       await harness.register();
@@ -5383,13 +5384,16 @@ describe("goal-commands telegram adapter", () => {
       });
 
       await waitForResume(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalled();
-        expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
-      });
-      await waitForResume(() => {
-        const steps = stepsById(loadRun(runId, testGoalsDir)!);
+        const run = loadRun(runId, testGoalsDir)!;
+        const steps = stepsById(run);
         expect(steps.get("parent-a")!.status).toBe("pending");
         expect(steps.get("parent-b")!.status).toBe("pending");
+        expect(run.resumeNotes?.[0]).toEqual(
+          expect.objectContaining({
+            source: "goal_resume",
+            affectedStepIds: ["parent-a", "parent-b"],
+          }),
+        );
       });
     });
 
@@ -5810,8 +5814,7 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.telegramQuestionMessages?.[0]).toEqual({
         chatId: 42,
         messageId: 779,
-        threadId: undefined,
-        requiredInputKey: "task:1:input",
+        requiredInputKey: "add_details",
       });
     });
 
@@ -6185,6 +6188,16 @@ describe("goal-commands telegram adapter", () => {
                 shortSummary: "Fix usage status refresh",
                 dependsOn: [],
                 status: "in_progress",
+                durationMinutes: 1,
+              },
+              {
+                id: "retry-blocked-step",
+                description: "Retry blocked step",
+                shortSummary: "Retry blocked step",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need details?",
                 durationMinutes: 1,
               },
             ],
@@ -6590,8 +6603,29 @@ describe("goal-commands telegram adapter", () => {
     });
 
     it("buffers /goal_resume with trailing text and does not resume from the first chunk", async () => {
-      saveRunFixture(makeRun({ state: "blocked" }));
-      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Done." });
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need details?",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
       const { CommandFragmentBuffer, buildCommandFragmentKey } =
         await import("./command-fragments.js");
       const commandFragmentBuffer = new CommandFragmentBuffer(undefined, 3000, 60000);
@@ -6624,9 +6658,13 @@ describe("goal-commands telegram adapter", () => {
       await commandFragmentBuffer.cancelAndFlush(key);
 
       await waitForAssertion(() => {
-        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
+        expect(
+          harness.sendMessage.mock.calls.some((call) => String(call[1]).includes("Got it.")),
+        ).toBe(true);
       });
-      expect(mockGoalResumeCommand.mock.calls[0]?.[0]).toBe("test-run-id-1234");
+      expect(loadRun("test-run-id-1234", testGoalsDir)?.resumeNotes?.[0]).toEqual(
+        expect.objectContaining({ source: "goal_resume" }),
+      );
     });
 
     it("threads replies for /goal_feedback background string results", async () => {
