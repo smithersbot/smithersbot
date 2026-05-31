@@ -2690,7 +2690,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Usage:");
     });
 
-    it("auto-resolves key, passes quiet:true, and returns short ack", async () => {
+    it("routes answers through the goal-level resume-note command without using blocked keys", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2714,32 +2714,33 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const [id, opts] = mockGoalAnswerCommand.mock.calls[0];
       expect(id).toBe("test-run-id-1234");
-      expect(opts.key).toBe("db_password");
+      expect(opts.key).toBe("");
       expect(opts.value).toBe("s3cret");
-      expect(opts.quiet).toBe(true);
-      // Returns short ack, not captured logs
+      expect(opts.quiet).toBe(false);
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
+      expect(text).toContain("Got it.");
     });
 
-    it("returns error for non-blocked run", async () => {
+    it("uses the same goal-level answer path for non-blocked runs", async () => {
       saveRunFixture(makeRun({ state: "done", blocked: null }));
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "val");
-      expect(result).toContain("not awaiting input");
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(result).toContain("Got it.");
     });
 
-    it("treats non-blocked 'resume' answers as an explicit resume request", async () => {
+    it("does not special-case non-blocked 'resume' answers into the old resume path", async () => {
       saveRunFixture(makeRun({ state: "cancelled", blocked: null }));
       mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "All steps completed." });
 
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "resume");
 
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       expect(typeof result).toBe("string");
-      expect(result).toContain("Executing:");
+      expect(result).toContain("Got it.");
     });
 
     it("returns error for unknown run", async () => {
@@ -2748,7 +2749,7 @@ describe("goal-commands telegram adapter", () => {
       expect(result).toContain("Run not found");
     });
 
-    it("auto-resumes execution after answering a blocked run (short ack)", async () => {
+    it("does not auto-resume execution after recording an answer note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2770,12 +2771,12 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "s3cret");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
-      expect(text).not.toContain("/goal_approve");
+      expect(text).toContain("Got it.");
     });
 
-    it("returns short ack when auto-resume results in blocked again", async () => {
+    it("does not emit contradictory blocked copy after accepting an answer note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2800,13 +2801,12 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       const result = await handleGoalAnswer("test-run", "s3cret");
 
-      // Surfaces the blocked question so the user can answer
       expect(typeof result).toBe("string");
-      expect(result).toContain("Still blocked: Need more info");
-      expect(result).toContain("/goal_answer");
+      expect(result).toContain("Got it.");
+      expect(result).not.toContain("Still blocked");
     });
 
-    it("returns GoalPlanResult with runId and blocked when replanning still needs info", async () => {
+    it("does not replan from the answer path for planning blocks", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2830,15 +2830,11 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "postgres");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
-      expect(typeof result).not.toBe("string");
-      expect(result).toHaveProperty("runId", "test-run-id-1234");
-      expect(result).toHaveProperty("blocked", true);
-      expect((result as { text: string }).text).toContain("Still need more info");
-      expect((result as { text: string }).text).toContain("PostgreSQL or MySQL?");
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      expect(result).toContain("Got it.");
     });
 
-    it("returns undefined when onStatusChange is provided (blocked path, no stray message)", async () => {
+    it("returns the accepted-note acknowledgement even when onStatusChange is provided", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2855,13 +2851,13 @@ describe("goal-commands telegram adapter", () => {
       const statusCb = vi.fn();
       const result = await handleGoalAnswer("test-run", "s3cret", statusCb);
 
-      expect(result).toBeUndefined();
+      expect(result).toContain("Got it.");
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
-      expect(typeof opts.onStatusChange).toBe("function");
+      expect(opts.onStatusChange).toBeUndefined();
     });
 
-    it("suppresses duplicate blocked reply when resume emitted fully_blocked event", async () => {
+    it("does not surface stale fully-blocked events from the answer command", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2892,12 +2888,12 @@ describe("goal-commands telegram adapter", () => {
       const statusCb = vi.fn();
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
-      expect(result).toBeUndefined();
+      expect(result).toContain("Got it.");
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(statusCb).toHaveBeenCalledWith(expect.objectContaining({ type: "fully_blocked" }));
+      expect(statusCb).not.toHaveBeenCalled();
     });
 
-    it("returns blocked reply when resume blocks before status callback emits", async () => {
+    it("does not return stale blocked reply copy after accepting a resume note", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -2921,7 +2917,8 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "resume", statusCb);
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(result).toContain("Still blocked: Need credentials");
+      expect(result).toContain("Got it.");
+      expect(result).not.toContain("Still blocked");
     });
 
     it("still returns error strings even when onStatusChange is provided (answer path)", async () => {
@@ -5426,7 +5423,7 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
-    it("Add Details / answer reply routes into handleGoalAnswer -> goalAnswerCommand with the multi-task key", async () => {
+    it("Add Details / answer reply routes into handleGoalAnswer without the multi-task key", async () => {
       // The gAD ForceReply reply handler calls handleGoalAnswer(runId, value)
       // (registerTelegramGoalCommands message handler). handleGoalAnswer forwards
       // an execution-time block to goalAnswerCommand, whose auto-resume then
@@ -5441,13 +5438,13 @@ describe("goal-commands telegram adapter", () => {
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
       const [id, opts] = mockGoalAnswerCommand.mock.calls[0];
       expect(id).toBe(runId);
-      expect(opts.key).toBe("tasks:parent-a,parent-b:input");
+      expect(opts.key).toBe("");
       expect(opts.value).toBe("go ahead");
       const text = typeof result === "string" ? result : (result as { text: string }).text;
-      expect(text).toContain("Resuming:");
+      expect(text).toContain("Got it.");
     });
 
-    it("resume_execution auto-retry resumes through goalResumeCommand without storing fake user input", async () => {
+    it("resume_execution answer text is recorded through goalAnswerCommand without storing fake user input", async () => {
       const runId = "12121212-1111-2222-3333-444444444444";
       // An interrupted run recovers as state "executing"; an active lock keeps
       // loadRun from reconciling it back to a stale block.
@@ -5472,9 +5469,8 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalAnswer } = await import("./goal-commands.js");
       await handleGoalAnswer(runId, "anything the user typed");
 
-      // Resumed directly, with no fake answer injected into the run.
-      expect(mockGoalResumeCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
       const run = loadRun(runId, testGoalsDir)!;
       expect(run.answers).toEqual({});
     });
@@ -6173,7 +6169,7 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
-    it("/goal_resume reports the active operation and step when the lock is held", async () => {
+    it("/goal_resume records the resume note even when the run lock is held", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -6205,17 +6201,13 @@ describe("goal-commands telegram adapter", () => {
       try {
         await harness.commandHandlers.goal_resume?.(makeCommandCtx("test-run", 805));
 
-        const lockMsg = harness.sendMessage.mock.calls.find(
-          (call) => String(call[1]).includes("is already") && hasReplyMessageId(call, 805),
-        );
-        expect(lockMsg).toBeDefined();
-        // The harness renders markdown to HTML, so backtick code spans become
-        // <code>…</code>; assert on the text that survives rendering.
-        const text = String(lockMsg?.[1]);
-        expect(text).toContain("applying your last answer");
-        expect(text).toContain("currently on step");
-        expect(text).toContain("fix-usage-status-refresh");
-        expect(text).toContain("Try /goal_resume again after the current operation finishes.");
+        await waitForAssertion(() => {
+          expect(
+            harness.sendMessage.mock.calls.some(
+              (call) => String(call[1]).includes("Got it.") && hasReplyMessageId(call, 805),
+            ),
+          ).toBe(true);
+        });
       } finally {
         if (held.acquired) held.release();
       }
@@ -6402,7 +6394,7 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
-    it("threads replies for /goal_answer usage, run-not-found, and lock responses", async () => {
+    it("threads replies for /goal_answer usage, run-not-found, and concurrent responses", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -6443,18 +6435,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run value", 914));
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run other", 915));
 
-      expect(
-        harness.sendMessage.mock.calls.some(
-          (call) =>
-            String(call[1]).includes("is already") &&
-            String(call[1]).includes("after the current operation finishes") &&
-            hasReplyMessageId(call, 915),
-        ),
-      ).toBe(true);
-
       resolveAnswer?.({ status: "blocked", question: "Need details" });
       await waitForAssertion(() => {
-        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(1);
+        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -6521,12 +6504,9 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run continue", 909));
 
       await waitForAssertion(() => {
-        expect(
-          harness.sendMessage.mock.calls.some(
-            (call) =>
-              String(call[1]).includes("Run is not awaiting input") && hasReplyMessageId(call, 909),
-          ),
-        ).toBe(true);
+        expect(harness.sendMessage.mock.calls.some((call) => hasReplyMessageId(call, 909))).toBe(
+          true,
+        );
       });
     });
 
@@ -6549,11 +6529,11 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run postgres", 910));
 
       await waitForAssertion(() => {
-        const hasPhotoReply = harness.sendPhoto.mock.calls.some((call) => {
-          const options = call[2] as { reply_parameters?: { message_id?: number } } | undefined;
-          return options?.reply_parameters?.message_id === 910;
-        });
-        expect(hasPhotoReply).toBe(true);
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) => String(call[1]).includes("Got it.") && hasReplyMessageId(call, 910),
+          ),
+        ).toBe(true);
       });
     });
 
