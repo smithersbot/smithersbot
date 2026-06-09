@@ -1,6 +1,7 @@
 import { applyResumeNote } from "../goal/resume-note.js";
 import { loadRun, resolveRunId, saveRun, serializedToSession } from "../goal/run-store.js";
 import type { ResumeNoteSource, SerializedRun } from "../goal/types.js";
+import { buildResumePreface } from "../telegram/goal-formatting.js";
 
 export type GoalResumeNoteResult =
   | {
@@ -29,9 +30,10 @@ function formatNoEligibleMessage(state: string): string {
 
 function formatAppliedMessage(source: ResumeNoteSource, count: number): string {
   if (source === "goal_resume" || source === "resume") {
+    if (count === 0) return "Got it. Resuming the goal now.";
     return `Got it. Resuming ${count} step${count === 1 ? "" : "s"}.`;
   }
-  return `Got it. Added your note and rescheduled ${count} step${count === 1 ? "" : "s"}.`;
+  return buildResumePreface();
 }
 
 export function applyGoalResumeNoteById(params: {

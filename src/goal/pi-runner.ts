@@ -30,7 +30,7 @@ import {
 import { resolveScoutDir } from "./scout.js";
 import type { HardDenyList } from "./hard-deny.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
-import type { Plan, PlanStep } from "./types.js";
+import type { Plan, PlanStep, WorkerContextSummary } from "./types.js";
 import { classifyProviderError } from "./error-patterns.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { formatWorkerResumeNotes } from "./resume-note-context.js";
@@ -484,7 +484,7 @@ function autoGenerateWorkingNotes(
 function buildGoalSystemPrompt(
   goal: string,
   plan: Plan | null,
-  completedSummaries: Array<{ id: string; summary: string }>,
+  completedSummaries: WorkerContextSummary[],
   workingJournal: string | null,
   hardDenies: HardDenyList,
 ): string {

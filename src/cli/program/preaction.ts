@@ -1,11 +1,11 @@
 import type { Command } from "commander";
 import { defaultRuntime } from "../../runtime.js";
 import { emitCliBanner } from "../banner.js";
-import { getCommandPath, getVerboseFlag, hasHelpOrVersion } from "../argv.js";
+import { getCommandPath, getVerboseFlag, hasHelpOrVersion, hasJsonOutputFlag } from "../argv.js";
 import { ensureConfigReady } from "./config-guard.js";
 import { ensurePluginRegistryLoaded } from "../plugin-registry.js";
 import { isTruthyEnvValue } from "../../infra/env.js";
-import { setVerbose } from "../../globals.js";
+import { setJsonOutputMode, setVerbose } from "../../globals.js";
 import { resolveCliName } from "../cli-name.js";
 
 function setProcessTitleForCommand(actionCommand: Command) {
@@ -26,6 +26,7 @@ export function registerPreActionHooks(program: Command, programVersion: string)
   program.hook("preAction", async (_thisCommand, actionCommand) => {
     setProcessTitleForCommand(actionCommand);
     const argv = process.argv;
+    setJsonOutputMode(hasJsonOutputFlag(argv));
     if (hasHelpOrVersion(argv)) return;
     const commandPath = getCommandPath(argv, 2);
     const hideBanner =

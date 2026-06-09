@@ -1,5 +1,8 @@
 import type { Command } from "commander";
+import os from "node:os";
+import path from "node:path";
 
+import { resolveManagedRoot, resolveScratchRoot } from "../../config/managed-paths.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
   DEV_GATEWAY_COMMAND_NAME,
@@ -11,9 +14,15 @@ import {
   type DevGatewayOperationResult,
 } from "../../goal/dev-gateway-operation.js";
 import {
+  requestHostMediatedDevGatewayOperation,
+  type DevGatewayMediatedResult,
+} from "../../goal/dev-gateway-mediation.js";
+import {
   resolveDevGatewayWorkerContext,
   type DevGatewayWorkerContext,
 } from "../../goal/dev-gateway-workspace.js";
+import { loadConfig } from "../../config/config.js";
+import type { GoalConfig } from "../../config/types.goal.js";
 import { runCommandWithRuntime } from "../cli-utils.js";
 
 /**
@@ -30,21 +39,92 @@ export class DevGatewayCommandError extends Error {
 
 export type DevGatewayCliDeps = {
   /** Dev-context gate: same resolver that drives DEV_GATEWAY_WORKER_INSTRUCTION. */
-  resolveContext: (params: { workingDir: string }) => DevGatewayWorkerContext;
+  resolveContext: (params: { workingDir: string; cfg?: GoalConfig }) => DevGatewayWorkerContext;
+  /** Goal config source for dev-capability kill-switch plumbing. */
+  loadGoalConfig: () => GoalConfig | undefined;
   /** The mediated operation; hard-fixed to the dev unit, action-only. */
   execute: (request: unknown) => Promise<DevGatewayOperationResult>;
+  /** Worker->host file-drop mediation used from sandboxed goal workers. */
+  requestMediated: (params: {
+    action: DevGatewayOperationAction;
+    runId: string;
+    taskId: string;
+  }) => Promise<DevGatewayMediatedResult>;
+  env: NodeJS.ProcessEnv;
   cwd: () => string;
   log: (message: string) => void;
 };
 
 const defaultDeps: DevGatewayCliDeps = {
   resolveContext: resolveDevGatewayWorkerContext,
+  loadGoalConfig: () => loadConfig()?.goal,
   execute: executeDevGatewayOperation,
+  requestMediated: requestHostMediatedDevGatewayOperation,
+  env: process.env,
   cwd: () => process.cwd(),
   log: (message: string) => process.stdout.write(`${message}\n`),
 };
 
-function renderResult(result: DevGatewayOperationResult): string {
+const RAW_HOST_CONTROL_PATTERNS = [
+  /Failed to connect to bus/gi,
+  /D-Bus/gi,
+  /DBus/gi,
+  /systemctl --user unavailable/gi,
+  /No data available/gi,
+];
+const MANAGED_PATH_PLACEHOLDER = "[managed-path]";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function scrubManagedPaths(input: string, env: NodeJS.ProcessEnv): string {
+  const roots = [resolveScratchRoot(env, os.homedir), resolveManagedRoot(env, os.homedir)]
+    .map((root) => path.resolve(root))
+    .sort((a, b) => b.length - a.length);
+  let text = input;
+  for (const root of roots) {
+    const pattern = new RegExp(`${escapeRegExp(root)}(?:[/\\\\][^\\s"'<>)]*)?`, "g");
+    text = text.replace(pattern, MANAGED_PATH_PLACEHOLDER);
+  }
+  return text;
+}
+
+function sanitizeDevGatewayCliText(input: string, env: NodeJS.ProcessEnv = process.env): string {
+  let text = input;
+  for (const pattern of RAW_HOST_CONTROL_PATTERNS) {
+    text = text.replace(pattern, "[host-control unavailable]");
+  }
+  return scrubManagedPaths(text, env);
+}
+
+function sanitizeMediatedResult(
+  result: DevGatewayMediatedResult,
+  env: NodeJS.ProcessEnv,
+): DevGatewayMediatedResult {
+  return {
+    ...result,
+    message: sanitizeDevGatewayCliText(result.message, env),
+    ...(result.stdout !== undefined
+      ? { stdout: sanitizeDevGatewayCliText(result.stdout, env) }
+      : {}),
+    ...(result.stderr !== undefined
+      ? { stderr: sanitizeDevGatewayCliText(result.stderr, env) }
+      : {}),
+  };
+}
+
+function isMediatedResult(
+  result: DevGatewayOperationResult | DevGatewayMediatedResult,
+): result is DevGatewayMediatedResult {
+  return "ok" in result;
+}
+
+function renderResult(result: DevGatewayOperationResult | DevGatewayMediatedResult): string {
+  if (isMediatedResult(result)) {
+    const detail = result.stdout?.trim() ? `\n${result.stdout.trim()}` : "";
+    return `${result.action} ${result.serviceUnit}: ${result.message}${detail}`;
+  }
   if (result.action === "restart") {
     return `restart ${result.serviceUnit}: ${result.output.trim() || "ok"}`;
   }
@@ -59,6 +139,17 @@ function renderResult(result: DevGatewayOperationResult): string {
     ].join("\n");
   }
   return `logs ${result.serviceUnit}:\n${result.logs}`;
+}
+
+function resolveSandboxedWorkerCorrelation(env: NodeJS.ProcessEnv): {
+  runId: string;
+  taskId: string;
+} | null {
+  if (env.SMITHERSBOT_GOAL_WORKER !== "1") return null;
+  const runId = env.SMITHERSBOT_GOAL_RUN_ID?.trim();
+  const taskId = env.SMITHERSBOT_GOAL_TASK_ID?.trim();
+  if (!runId || !taskId) return null;
+  return { runId, taskId };
 }
 
 /**
@@ -80,10 +171,13 @@ export async function runDevGatewayCliAction(
   action: string,
   options: { json?: boolean } = {},
   deps: Partial<DevGatewayCliDeps> = {},
-): Promise<DevGatewayOperationResult> {
+): Promise<DevGatewayOperationResult | DevGatewayMediatedResult> {
   const d = { ...defaultDeps, ...deps };
 
-  const context = d.resolveContext({ workingDir: d.cwd() });
+  const context = d.resolveContext({
+    workingDir: d.cwd(),
+    cfg: deps.loadGoalConfig ? d.loadGoalConfig() : undefined,
+  });
   if (!context.active) {
     throw new DevGatewayCommandError(
       context.isDevWorkspace
@@ -104,8 +198,35 @@ export async function runDevGatewayCliAction(
     );
   }
 
-  const result = await d.execute({ action });
+  const worker = resolveSandboxedWorkerCorrelation(d.env);
+  const result = worker
+    ? await (async () => {
+        try {
+          return sanitizeMediatedResult(
+            await d.requestMediated({
+              action: action as DevGatewayOperationAction,
+              runId: worker.runId,
+              taskId: worker.taskId,
+            }),
+            d.env,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new DevGatewayCommandError(
+            sanitizeDevGatewayCliText(
+              message.trim()
+                ? message
+                : "Dev-gateway host mediation is unavailable from this worker.",
+              d.env,
+            ),
+          );
+        }
+      })()
+    : await d.execute({ action });
   d.log(options.json ? JSON.stringify(result, null, 2) : renderResult(result));
+  if (isMediatedResult(result) && !result.ok) {
+    throw new DevGatewayCommandError(result.message);
+  }
   return result;
 }
 

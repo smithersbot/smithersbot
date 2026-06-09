@@ -15,7 +15,7 @@ describe("runtime overrides", () => {
 
   it("sets and applies nested overrides", () => {
     const cfg = {
-      messages: { responsePrefix: "[moltbot]" },
+      messages: { responsePrefix: "[smithersbot]" },
     } as MoltbotConfig;
     setConfigOverride("messages.responsePrefix", "[debug]");
     const next = applyConfigOverrides(cfg);

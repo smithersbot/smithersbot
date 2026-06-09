@@ -98,6 +98,134 @@ export type AgentSurfaceAudit = {
   };
 };
 
+export type AgentPromptHistorySurface = {
+  surface: string;
+  sourceFile: string;
+  promptAssembly: string;
+  storedPrompt: boolean;
+  historyWriter: string;
+  phase: string;
+};
+
+export function buildAgentPromptHistorySurfaceAudit(): AgentPromptHistorySurface[] {
+  return [
+    {
+      surface: "scout",
+      sourceFile: "src/goal/cli-planner.ts",
+      promptAssembly: "buildScoutPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "scout",
+    },
+    {
+      surface: "planner-cli",
+      sourceFile: "src/goal/cli-planner.ts",
+      promptAssembly: "buildPlanningPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "planner",
+    },
+    {
+      surface: "planner-api",
+      sourceFile: "src/goal/planner.ts",
+      promptAssembly: "buildPlanSystemPrompt + buildPlannerUserMessage",
+      storedPrompt: true,
+      historyWriter: "completeGoalLlmWithHistory",
+      phase: "planner-api",
+    },
+    {
+      surface: "plan-revision",
+      sourceFile: "src/goal/cli-planner.ts, src/goal/planner.ts",
+      promptAssembly: "buildPlanRevisionPrompt / generatePlanRevision",
+      storedPrompt: true,
+      historyWriter:
+        "writeCriticalAgentLaunchEvent for CLI revision; API revision remains legacy-test-only",
+      phase: "plan-revision",
+    },
+    {
+      surface: "checker-autocheck",
+      sourceFile: "src/goal/plan-autocheck.ts",
+      promptAssembly: "buildPlanAutocheckPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "plan-autocheck",
+    },
+    {
+      surface: "worker",
+      sourceFile: "src/goal/cli-worker.ts",
+      promptAssembly: "buildWorkerPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "worker",
+    },
+    {
+      surface: "worker-summary",
+      sourceFile: "src/goal/agent-executor.ts",
+      promptAssembly: "worker summary generation prompt",
+      storedPrompt: true,
+      historyWriter: "worker summary artifact + Source links",
+      phase: "worker-summary",
+    },
+    {
+      surface: "reporter",
+      sourceFile: "src/goal/post-execution-report.ts",
+      promptAssembly: "buildGenerateReportPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "report",
+    },
+    {
+      surface: "manual-test",
+      sourceFile: "src/goal/post-execution-report.ts, src/goal/manual-tests.ts",
+      promptAssembly: "buildManualTestDisplayPrompt / buildCombinedManualTestsPrompt",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "manual-test",
+    },
+    {
+      surface: "continuation-assessment",
+      sourceFile: "src/goal/continuation.ts",
+      promptAssembly: "CONTINUATION_SYSTEM_PROMPT + buildContinuationUserMessage",
+      storedPrompt: true,
+      historyWriter: "completeGoalLlmWithHistory",
+      phase: "continuation-assessment",
+    },
+    {
+      surface: "continuation-from-achieved",
+      sourceFile: "src/goal/continuation.ts",
+      promptAssembly:
+        "buildAchievedContinuationSystemPrompt + buildAchievedContinuationUserMessage",
+      storedPrompt: true,
+      historyWriter: "completeGoalLlmWithHistory",
+      phase: "continuation-from-achieved",
+    },
+    {
+      surface: "continuation-request-edit",
+      sourceFile: "src/goal/continuation.ts",
+      promptAssembly: "buildRevisionSystemPrompt + buildRevisionUserMessage",
+      storedPrompt: true,
+      historyWriter: "completeGoalLlmWithHistory",
+      phase: "continuation-request-edit",
+    },
+    {
+      surface: "approve-continuation",
+      sourceFile: "src/goal/goal-brief.ts",
+      promptAssembly: "snapshotAndRewriteGoalBriefOnApprove prompt",
+      storedPrompt: true,
+      historyWriter: "Goal Brief artifact with Source links",
+      phase: "approve-continuation",
+    },
+    {
+      surface: "lessons",
+      sourceFile: "src/goal/lessons.ts",
+      promptAssembly: "lesson extraction prompts",
+      storedPrompt: true,
+      historyWriter: "writeCriticalAgentLaunchEvent",
+      phase: "lessons",
+    },
+  ];
+}
+
 const NO_DANGEROUS_FLAGS = true;
 
 /**

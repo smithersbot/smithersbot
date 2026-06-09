@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramAccountConfig } from "../config/types.js";
 import {
   findRepoChatSessionByMessageId,
+  loadRepoChatSession,
   resetRepoChatStoreIndexForTests,
 } from "../repo-chat/repo-chat-store.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { buildCommandFragmentKey, CommandFragmentBuffer } from "./command-fragments.js";
 import {
   dispatchTelegramRepoChatForInboundText,
+  handleRepoChatShowMoreCallback,
   registerTelegramRepoChatCommands,
 } from "./repo-chat-commands.js";
 
@@ -192,6 +194,40 @@ describe("repo-chat-commands", () => {
     });
   });
 
+  it("sanitizes provider auth/config errors before sending repo-chat failures to Telegram", async () => {
+    runRepoChatWorkerMock.mockRejectedValue(
+      new Error(
+        'No API key found for provider "anthropic". Auth store: /tmp/agent/auth-profiles.json (agentDir: /tmp/agent).',
+      ),
+    );
+    markdownToTelegramChunksMock.mockImplementation((markdown: string) => [
+      { html: markdown, text: markdown },
+    ]);
+    const sendMessageMock = vi.fn().mockResolvedValue({ message_id: 803 });
+    const bot = { api: { sendMessage: sendMessageMock } };
+
+    const started = dispatchTelegramRepoChatForInboundText({
+      bot: bot as never,
+      runtime: buildRuntime(),
+      telegramCfg: buildTelegramCfg(),
+      chatId: 101,
+      prompt: "What changed?",
+      sourceMessageId: 800,
+      replyToMessageId: undefined,
+      claudeCodeAuth: "subscription",
+    });
+
+    expect(started).toBe(true);
+
+    await waitForAssertion(() => {
+      const text = String(sendMessageMock.mock.calls[0]?.[1] ?? "");
+      expect(text).toContain("Repo chat failed: AI authentication is unavailable.");
+      expect(text).not.toContain('No API key found for provider "anthropic"');
+      expect(text).not.toContain("auth-profiles.json");
+      expect(text).not.toContain("auth-store");
+    });
+  });
+
   it("replying to a non-last bot chunk id stays on repo-chat routing and resumes the session", async () => {
     runRepoChatWorkerMock
       .mockResolvedValueOnce({
@@ -360,7 +396,7 @@ describe("repo-chat-commands", () => {
     });
   });
 
-  it("caps repo-chat replies to 8 chunks and appends a truncation notice", async () => {
+  it("sends long repo-chat replies as a first page with recoverable Show More overflow", async () => {
     runRepoChatWorkerMock.mockResolvedValue({
       text: "very long worker output",
       cliSessionId: "session-cap",
@@ -395,7 +431,25 @@ describe("repo-chat-commands", () => {
     await waitForAssertion(() => {
       expect(sendMessageMock).toHaveBeenCalledTimes(8);
       const lastCall = sendMessageMock.mock.calls.at(-1);
-      expect(lastCall?.[1]).toBe("[Response truncated]");
+      expect(lastCall?.[1]).toBe("<b>chunk 8</b>");
+      expect(lastCall?.[2]).toEqual(
+        expect.objectContaining({
+          parse_mode: "HTML",
+          reply_markup: expect.objectContaining({
+            inline_keyboard: [
+              [
+                expect.objectContaining({
+                  text: "Show More",
+                  callback_data: expect.stringMatching(/^rcm:[^:]+:[a-f0-9]{8}:0$/),
+                }),
+              ],
+            ],
+          }),
+        }),
+      );
+      expect(sendMessageMock.mock.calls.map((call) => call[1])).not.toContain(
+        "[Response truncated]",
+      );
 
       const session = findRepoChatSessionByMessageId({ chatId: 303, messageId: 1008 });
       expect(session).toBeDefined();
@@ -407,7 +461,80 @@ describe("repo-chat-commands", () => {
         ]),
       );
       expect(session?.messageRefs).toHaveLength(9);
+      expect(session?.overflowReplies).toHaveLength(1);
+      expect(session?.overflowReplies?.[0]?.chunks.map((chunk) => chunk.text)).toEqual([
+        "chunk 9",
+        "chunk 10",
+        "chunk 11",
+        "chunk 12",
+      ]);
     });
+  });
+
+  it("sends stored repo-chat overflow chunks from the Show More callback and indexes them", async () => {
+    runRepoChatWorkerMock.mockResolvedValue({
+      text: "very long worker output",
+      cliSessionId: "session-more",
+    });
+
+    markdownToTelegramChunksMock.mockReturnValue(
+      Array.from({ length: 10 }, (_, index) => ({
+        html: `<b>chunk ${index + 1}</b>`,
+        text: `chunk ${index + 1}`,
+      })),
+    );
+
+    let nextMessageId = 2000;
+    const sendMessageMock = vi.fn().mockImplementation(async () => ({
+      message_id: ++nextMessageId,
+    }));
+    const bot = { api: { sendMessage: sendMessageMock } };
+
+    expect(
+      dispatchTelegramRepoChatForInboundText({
+        bot: bot as never,
+        runtime: buildRuntime(),
+        telegramCfg: buildTelegramCfg(),
+        chatId: 606,
+        prompt: "Return long output",
+        sourceMessageId: 1999,
+        replyToMessageId: undefined,
+        claudeCodeAuth: "subscription",
+      }),
+    ).toBe(true);
+
+    let callbackData = "";
+    await waitForAssertion(() => {
+      const lastOptions = sendMessageMock.mock.calls.at(-1)?.[2] as {
+        reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+      };
+      callbackData = lastOptions.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data ?? "";
+      expect(callbackData).toMatch(/^rcm:[^:]+:[a-f0-9]{8}:0$/);
+    });
+
+    sendMessageMock.mockClear();
+    await handleRepoChatShowMoreCallback({
+      bot: bot as never,
+      runtime: buildRuntime(),
+      chatId: 606,
+      data: callbackData,
+      replyToMessageId: 2008,
+    });
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(2);
+    expect(sendMessageMock.mock.calls.map((call) => call[1])).toEqual([
+      "<b>chunk 9</b>",
+      "<b>chunk 10</b>",
+    ]);
+    expect(sendMessageMock.mock.calls.at(-1)?.[2]).not.toHaveProperty("reply_markup");
+    const stored = loadRepoChatSession(callbackData.split(":")[1] ?? "");
+    expect(stored?.messageRefs).toEqual(
+      expect.arrayContaining([
+        { chatId: 606, messageId: 2009 },
+        { chatId: 606, messageId: 2010 },
+      ]),
+    );
+    expect(findRepoChatSessionByMessageId({ chatId: 606, messageId: 2010 })?.id).toBe(stored?.id);
   });
 
   it("sets a repo_chat anchor after a buffered command flush", async () => {

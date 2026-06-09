@@ -163,7 +163,7 @@ describe("config identity defaults", () => {
         JSON.stringify(
           {
             messages: {
-              messagePrefix: "[moltbot]",
+              messagePrefix: "[smithersbot]",
               responsePrefix: "🦞",
             },
             channels: {

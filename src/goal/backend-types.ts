@@ -33,6 +33,8 @@ export type BackendTaskResult = {
   /** Parsed + schema-validated output (null if parsing/validation failed). */
   output: GoalWorkerOutput | null;
   turnsUsed: number;
+  /** Backend-native session/thread id parsed from CLI JSONL/stdout, when available. */
+  sessionId?: string;
   rawStdout?: string;
   rawStderr?: string;
 };

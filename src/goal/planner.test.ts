@@ -6,6 +6,7 @@ import {
   buildPlanSystemPrompt,
   buildPlannerUserMessage,
   extractJson,
+  formatPlanAsContext,
   generatePlan,
   generatePlanRevision,
   parsePlanResultFromText,
@@ -15,9 +16,10 @@ import {
   DEV_GATEWAY_PLANNER_GUIDANCE,
   WORKSPACE_SCOPE_PLANNER_GUIDANCE,
 } from "../prompts/planner/system-prompt.js";
+import { PLAN_QUALITY_PRINCIPLES } from "../prompts/shared/plan-quality-principles.js";
 import { PLAN_QUALITY_RUBRIC } from "../prompts/shared/plan-quality-rubric.js";
 import type { ScoutResult } from "./scout.js";
-import type { GoalLlmClient } from "./types.js";
+import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
 
 function mockClient(response: string): GoalLlmClient {
   return {
@@ -26,6 +28,19 @@ function mockClient(response: string): GoalLlmClient {
 }
 
 const TEST_CWD = "/tmp/moltbot-planner-cwd";
+const DEV_CAPS_ENV = "SMITHERSBOT_DEV_CAPS";
+
+async function withDevCapsEnv<T>(value: string | undefined, fn: () => Promise<T> | T): Promise<T> {
+  const previous = process.env[DEV_CAPS_ENV];
+  if (value === undefined) delete process.env[DEV_CAPS_ENV];
+  else process.env[DEV_CAPS_ENV] = value;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env[DEV_CAPS_ENV];
+    else process.env[DEV_CAPS_ENV] = previous;
+  }
+}
 
 function parsePromptContractPlan(goal: string, plan: Record<string, unknown>) {
   const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
@@ -62,11 +77,13 @@ describe("planner", () => {
     it("restricts requiresNetwork guidance to genuine network needs, not normal local build/test", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
       expect(prompt).toContain("requiresNetwork");
+      expect(prompt).toContain("requiresDevGatewayControl");
       // Network is off by default and only for genuine network work.
       expect(prompt).toMatch(/web fetch\/search/);
       expect(prompt).toMatch(/download/i);
       // Must explicitly steer away from setting it for normal local build/test.
       expect(prompt).toMatch(/Do NOT set it for normal local build\/test/);
+      expect(prompt).toMatch(/distinct from requiresNetwork/);
     });
 
     it("does not offer pi as an assignable backend (disabled for launch)", () => {
@@ -81,6 +98,29 @@ describe("planner", () => {
       }
     });
 
+    it("carries a one-line GLOSSARY.md pointer and a scout-node source-mapping line", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("GLOSSARY.md");
+      expect(prompt).toContain("Map each step back to its scout node/evidence");
+    });
+
+    it("includes shared plan-quality principles and only the planner bug-fix note", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+
+      expect(prompt).toContain(PLAN_QUALITY_PRINCIPLES);
+      expect(prompt).toContain("complete, independently-verifiable slice of the outcome");
+      expect(prompt).toContain("observable behavior end-to-end");
+      expect(prompt).toContain("don't add indirection that earns nothing");
+      expect(prompt).toContain("Consider an alternative approach before committing");
+      expect(prompt).toContain(
+        "For Plans whose purpose is fixing a hard or intermittent bug, scope an early Task that establishes a reproduction/verification signal before fixes.",
+      );
+      expect(prompt).not.toContain("docs/goal-engine-guides/testing-guidance.md");
+      expect(prompt).not.toContain("docs/goal-engine-guides/diagnosis-guide.md");
+      expect(prompt).not.toContain("ranked hypotheses");
+      expect(prompt).not.toContain("mock only at true");
+    });
+
     it("throws the canonical setup error when no worker backend is available", () => {
       expect(() => buildPlanSystemPrompt([])).toThrow(
         "No worker backend available. Install Codex or Claude Code and rerun.",
@@ -92,8 +132,8 @@ describe("planner", () => {
         const prompt = buildPlanSystemPrompt([...workers]);
         expect(prompt).toContain(WORKSPACE_SCOPE_PLANNER_GUIDANCE);
         expect(prompt).toContain("GOAL WORKING DIRECTORY SCOPE (strict):");
-        expect(prompt).toContain("/home/matt/smithersbot-home/agent/workspaces/<workspace>");
-        expect(prompt).toContain("/home/matt/smithersbot-dev-home/agent/workspaces/<workspace>");
+        expect(prompt).toContain("<managed-root>/agent/workspaces/<workspace>");
+        expect(prompt).toContain("<dev-managed-root>/agent/workspaces/<workspace>");
         expect(prompt).toContain("are READ-ONLY/context-only and MUST NOT be chosen as workingDir");
       }
     });
@@ -109,9 +149,55 @@ describe("planner", () => {
 
       expect(withDev).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
       expect(withDev).toContain("smithersbot-dev-gateway.service");
+      expect(withDev).toContain(
+        'smithersbot harness command --instance dev /new_goal "<smoke goal>"',
+      );
+      expect(withDev).toContain("smithersbot harness command --instance dev /goal_status <runId>");
+      expect(withDev).toContain(
+        'smithersbot harness command --instance dev /goal_answer <runId> "<answer>"',
+      );
+      expect(withDev).toContain("smithersbot harness command --instance dev /goal_resume <runId>");
+      expect(withDev).toContain(
+        "smithersbot harness callback --instance dev <action> <runId> [text...]",
+      );
+      expect(withDev).toContain('smithersbot harness reply --instance dev <kind> <runId> "<text>"');
+      expect(withDev).toContain(
+        "instance name, target gateway port, state root, and run.json path under the selected target state root",
+      );
+      expect(withDev).toContain("dev-owned vs stable-owned");
+      expect(withDev).toContain('agent --message "/new_goal ..."');
+      expect(withDev).toContain('goal "..."');
+      expect(withDev).toContain(
+        "Do not claim Telegram is required for flows already supported by `smithersbot harness`",
+      );
       expect(withoutDev).not.toContain("DEV GATEWAY VERIFICATION");
       expect(noOpts).not.toContain("DEV GATEWAY VERIFICATION");
     });
+  });
+
+  it("parses requiresDevGatewayControl distinctly from requiresNetwork", () => {
+    const { result } = parsePromptContractPlan("Verify the dev gateway", {
+      workingDir: "/tmp/moltbot",
+      summary: "Verify dev gateway",
+      shortSummary: "Verify dev gateway",
+      steps: [
+        {
+          id: "live-dev-gateway",
+          description: "Run mediated dev-gateway status and logs",
+          shortSummary: "Verify dev gateway",
+          successCriteria: "Mediated status/logs evidence is captured",
+          constraints: ["Do not enable network"],
+          dependsOn: [],
+          durationMinutes: 5,
+          backend: "codex",
+          requiresDevGatewayControl: true,
+          requiresNetwork: false,
+        },
+      ],
+    });
+
+    expect(result.steps[0]?.requiresDevGatewayControl).toBe(true);
+    expect(result.steps[0]?.requiresNetwork).toBeUndefined();
   });
 
   describe("dev-gateway planner guidance gating", () => {
@@ -141,12 +227,80 @@ describe("planner", () => {
       return complete.mock.calls[0][0].systemPrompt as string;
     }
 
-    it("injects dev-gateway guidance when planning in the smithersbot-dev checkout", async () => {
-      expect(await systemPromptForCwd(DEV_CWD)).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    async function revisionSystemPromptForCwd(
+      cwd: string,
+      goalConfig?: Parameters<typeof generatePlanRevision>[6],
+    ): Promise<string> {
+      const complete = vi.fn().mockResolvedValue({ text: validPlanJson });
+      const client: GoalLlmClient = { complete };
+      await generatePlanRevision(
+        client,
+        "Change gateway restart behavior",
+        cwd,
+        {
+          goal: "Change gateway restart behavior",
+          workingDir: cwd,
+          summary: "Current plan",
+          steps: [
+            {
+              id: "edit-restart",
+              description: "Update restart resolver and verify with a focused test",
+              dependsOn: [],
+              status: "pending",
+              durationMinutes: 10,
+              backend: "codex",
+            },
+          ],
+        },
+        "Tighten the dev-gateway verification step",
+        undefined,
+        goalConfig,
+      );
+      return complete.mock.calls[0][0].systemPrompt as string;
+    }
+
+    it("omits dev-gateway guidance when planning in the smithersbot-dev checkout by default", async () => {
+      expect(await systemPromptForCwd(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      expect(await systemPromptForCwd(DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
     });
 
     it("omits dev-gateway guidance for non-dev workspaces", async () => {
       expect(await systemPromptForCwd(NON_DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
+    });
+
+    it("omits dev-gateway guidance when goal config turns dev capabilities off", async () => {
+      const complete = vi.fn().mockResolvedValue({ text: validPlanJson });
+      const client: GoalLlmClient = { complete };
+      await generatePlan(
+        client,
+        "Change gateway restart behavior",
+        DEV_CWD,
+        undefined,
+        undefined,
+        undefined,
+        { devCapabilities: "off" },
+      );
+      expect(complete.mock.calls[0][0].systemPrompt as string).not.toContain(
+        DEV_GATEWAY_PLANNER_GUIDANCE,
+      );
+    });
+
+    it("omits dev-gateway guidance when the env kill switch is off", async () => {
+      await withDevCapsEnv("off", async () => {
+        expect(await systemPromptForCwd(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      });
+    });
+
+    it("applies default and off dev-gateway guidance gates to revision prompts", async () => {
+      expect(await revisionSystemPromptForCwd(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      expect(await revisionSystemPromptForCwd(DEV_CWD, { devCapabilities: "off" })).not.toContain(
+        DEV_GATEWAY_PLANNER_GUIDANCE,
+      );
+      await withDevCapsEnv("off", async () => {
+        expect(await revisionSystemPromptForCwd(DEV_CWD)).not.toContain(
+          DEV_GATEWAY_PLANNER_GUIDANCE,
+        );
+      });
     });
   });
 
@@ -476,11 +630,13 @@ describe("planner", () => {
     });
 
     it("falls back short summaries when planner omits them", async () => {
+      const longSummary =
+        "Implement authentication flow updates for multiple clients and verify behavior across staging and production environments while documenting every migration step in detail";
+      expect(longSummary.length).toBeGreaterThan(140);
       const client = mockClient(
         JSON.stringify({
           workingDir: "/tmp/moltbot",
-          summary:
-            "Implement authentication flow updates for multiple clients and verify behavior across environments",
+          summary: longSummary,
           steps: [
             {
               id: "run-tests",
@@ -498,8 +654,36 @@ describe("planner", () => {
       if (!("blocked" in plan)) {
         expect(plan.shortSummary.startsWith("Implement authentication flow updates")).toBe(true);
         expect(plan.shortSummary.endsWith("...")).toBe(true);
-        expect(plan.shortSummary.length).toBeLessThanOrEqual(80);
+        // Goal Summary / plan.shortSummary is clamped to 140 characters.
+        expect(plan.shortSummary.length).toBeLessThanOrEqual(140);
         expect(plan.steps[0].shortSummary).toBe("Run tests");
+      }
+    });
+
+    it("clamps plan.shortSummary to 140 characters on the planner path", async () => {
+      const explicitShort = "x".repeat(200);
+      const client = mockClient(
+        JSON.stringify({
+          workingDir: "/tmp/moltbot",
+          summary: "Long goal summary text",
+          shortSummary: explicitShort,
+          steps: [
+            {
+              id: "run-tests",
+              description: "Run tests",
+              dependsOn: [],
+              durationMinutes: 10,
+              backend: "claude_code",
+            },
+          ],
+        }),
+      );
+
+      const plan = await generatePlan(client, "Clamp check", TEST_CWD);
+      expect("blocked" in plan).toBe(false);
+      if (!("blocked" in plan)) {
+        expect(plan.shortSummary.length).toBe(140);
+        expect(plan.shortSummary.endsWith("...")).toBe(true);
       }
     });
 
@@ -942,7 +1126,7 @@ describe("planner", () => {
       expect(msg).toBe(`Goal: Fix tests\nCurrent workspace path: ${TEST_CWD}`);
     });
 
-    it("includes scout report and plan draft when scout succeeded", () => {
+    it("emits a compact scout node/edge summary + Source Link, not a full JSON dump", () => {
       const scout: ScoutResult = {
         status: "success",
         report: {
@@ -958,17 +1142,128 @@ describe("planner", () => {
               uncertainty: 1,
             },
           ],
-          edges: [],
+          edges: [{ from: "n1", to: "n2", why: "n2 depends on n1" }],
         },
         planDraft: "BEGIN_PLAN_DRAFT\nGOAL_ID: abc-123\ngraph TD\nEND_PLAN_DRAFT",
       };
-      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout);
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout, "run-xyz");
       expect(msg).toContain("Goal: Fix tests");
       expect(msg).toContain(`Current workspace path: ${TEST_CWD}`);
-      expect(msg).toContain("Scout Report");
+
+      // Compact node/edge summary (one line per node field), not a JSON blob.
+      expect(msg).toContain("Scout nodes:");
+      expect(msg).toContain("- n1 (Impl)");
+      expect(msg).toContain("objective: Do X");
+      expect(msg).toContain("verification: pnpm test");
+      expect(msg).toContain("effort/risk/uncertainty: 3/2/1");
+      expect(msg).toContain("Scout edges:");
+      expect(msg).toContain("- n1 -> n2: n2 depends on n1");
+
+      // Source Links to the mirrored artifacts replace the inlined full report.
+      expect(msg).toContain("Source Link: full ScoutReport:");
+      expect(msg).toContain("scout_report.json");
+      expect(msg).toContain("Source Link: full plan draft:");
+      expect(msg).toContain("plan_draft.md");
+      expect(msg).toContain("node_specs");
+
+      // The full JSON.stringify dump of the report must be gone.
+      expect(msg).not.toContain('"goal_id": "abc-123"');
+      expect(msg).not.toContain('"nodes": [');
+      expect(msg).not.toContain(JSON.stringify(scout.report, null, 2));
+
+      // Plan draft is kept as a bounded excerpt with mapping guidance.
+      expect(msg).toContain("Plan Draft (excerpt)");
       expect(msg).toContain("BEGIN_PLAN_DRAFT");
-      expect(msg).toContain('"n1"');
       expect(msg).toContain("Normalize");
+    });
+
+    it("omits Source Links when no runId is available", () => {
+      const scout: ScoutResult = {
+        status: "success",
+        report: { goal_id: "abc-123", nodes: [], edges: [] },
+        planDraft: "draft",
+      };
+      const msg = buildPlannerUserMessage("Fix tests", TEST_CWD, scout);
+      expect(msg).toContain("Scout nodes:");
+      expect(msg).not.toContain("Source Link:");
+    });
+  });
+
+  describe("formatPlanAsContext", () => {
+    function makePlanStep(overrides: Partial<PlanStep>): PlanStep {
+      return {
+        id: "step-1",
+        description: "Do the first task",
+        shortSummary: "Do first task",
+        dependsOn: [],
+        status: "pending",
+        ...overrides,
+      };
+    }
+
+    it("preserves byte-for-byte output when options are omitted", () => {
+      const plan: Plan = {
+        goal: "Fix tests",
+        workingDir: TEST_CWD,
+        summary: "Fix the tests",
+        shortSummary: "Fix tests",
+        steps: [
+          makePlanStep({ id: "inspect", description: "Inspect failing tests" }),
+          makePlanStep({
+            id: "repair",
+            description: "Repair failing tests",
+            dependsOn: ["inspect"],
+          }),
+        ],
+      };
+
+      expect(formatPlanAsContext(plan)).toBe(
+        [
+          "Summary: Fix the tests",
+          "",
+          "- Task inspect: Inspect failing tests",
+          "- Task repair: Repair failing tests (depends on: inspect)",
+        ].join("\n"),
+      );
+    });
+
+    it("links large plans while keeping the current task inline", () => {
+      const steps: PlanStep[] = Array.from({ length: 5 }, (_, index) => {
+        const number = index + 1;
+        return makePlanStep({
+          id: `step-${number}`,
+          description: `Full step ${number} description ${number === 3 ? "STAYS" : "SHOULD NOT APPEAR"}`,
+          shortSummary: `Short step ${number}`,
+          dependsOn: number === 1 ? [] : [`step-${number - 1}`],
+        });
+      });
+      const plan: Plan = {
+        goal: "Fix tests",
+        workingDir: TEST_CWD,
+        summary: "Fix the tests",
+        shortSummary: "Fix tests",
+        steps,
+      };
+
+      const context = formatPlanAsContext(plan, {
+        currentStepId: "step-3",
+        planLinkPath: "agent/history/goals/workspace/run/runtime/scout/execution_plan.json",
+        nodeSpecsDir: "agent/history/goals/workspace/run/runtime/scout/node_specs",
+        stepThreshold: 3,
+      });
+
+      expect(context).toContain("Large plan: 5 tasks");
+      expect(context).toContain(
+        "Source Link: Full plan: agent/history/goals/workspace/run/runtime/scout/execution_plan.json",
+      );
+      expect(context).toContain(
+        "Source Link: Node specs: agent/history/goals/workspace/run/runtime/scout/node_specs/",
+      );
+      expect(context).toContain("- Task step-3: Full step 3 description STAYS");
+      expect(context).toContain("- step-1: Short step 1");
+      expect(context).toContain("- step-5: Short step 5 (depends on: step-4)");
+      expect(context).not.toContain("- Task step-1: Full step 1 description SHOULD NOT APPEAR");
+      expect(context).not.toContain("- Task step-5: Full step 5 description SHOULD NOT APPEAR");
     });
   });
 
@@ -1030,6 +1325,17 @@ describe("planner", () => {
       const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
       expect(prompt).toContain("MISSING FOCUSED REGRESSIONS");
       expect(prompt).toContain("command-handler, config-schema, prompt, worker-behavior");
+    });
+
+    it("rejects re-delegated investigation and fork-shaped success criteria", () => {
+      const prompt = buildPlanSystemPrompt(["claude_code", "codex"]);
+      expect(prompt).toContain("GOAL-ECHO / RE-DELEGATED INVESTIGATION");
+      expect(prompt).toContain("FORK-SHAPED SUCCESS CRITERIA");
+      expect(prompt).toContain("Inline scout findings into worker-facing steps");
+      expect(prompt).toContain("decided approach and evidence path");
+      expect(prompt).toContain(
+        "inline scout findings and evidence paths instead of asking the worker to rediscover resolved design or investigation decisions",
+      );
     });
 
     it("preserves an allowance for final verification-matrix and report steps", () => {

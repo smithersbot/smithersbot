@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import { resetMessageIndex } from "./goal-message-index.js";
-import { buildBlockedCaption, describeBlockedStep } from "./goal-blocked-ui.js";
+import {
+  buildBlockedCaption,
+  buildGoalBlockedInlineKeyboard,
+  describeBlockedStep,
+} from "./goal-blocked-ui.js";
 import {
   computeDisplayStatuses,
   findRunnableSteps,
@@ -12,6 +16,7 @@ import {
 } from "../goal/execution-status.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import type { PlanStep, SerializedRun } from "../goal/types.js";
+import { markdownToTelegramHtml } from "./format.js";
 // NOTE: normalizeAnsweredUserInputBlocks is imported lazily inside the resume
 // mock below. A static import would eagerly pull agent-executor -> cli-worker ->
 // planner into the module graph, which trips the hoisted planner vi.mock factory
@@ -51,8 +56,11 @@ vi.mock("../commands/goal.js", () => ({
 }));
 
 const mockGoalResumeCommand = vi.fn();
+const mockResumePostExecutionReportingCommand = vi.fn();
 vi.mock("../commands/goal-resume.js", () => ({
   goalResumeCommand: (...args: unknown[]) => mockGoalResumeCommand(...args),
+  resumePostExecutionReportingCommand: (...args: unknown[]) =>
+    mockResumePostExecutionReportingCommand(...args),
 }));
 
 const mockGoalStatusCommand = vi.fn();
@@ -78,8 +86,14 @@ vi.mock("../commands/goal-stop.js", () => ({
 // goal-list.js no longer imported by goal-commands (Telegram uses listRuns directly)
 
 const mockRunCliPlanRevision = vi.fn();
+const mockRunCliPlanForContinuation = vi.fn();
 vi.mock("../goal/cli-planner.js", () => ({
   runCliPlanRevision: (...args: unknown[]) => mockRunCliPlanRevision(...args),
+  // Continuation Approve (commit "continuation-approve-fresh-plan") routes through
+  // runCliPlanForContinuation, not runCliPlanRevision — keep this export in sync
+  // with src/goal/cli-planner.ts so the continuation-approve tests don't throw
+  // `No "runCliPlanForContinuation" export is defined on the ... mock`.
+  runCliPlanForContinuation: (...args: unknown[]) => mockRunCliPlanForContinuation(...args),
 }));
 
 const mockRunPlanAutocheck = vi.fn();
@@ -261,6 +275,22 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
     telegramFeedbackPromptMessages: overrides.telegramFeedbackPromptMessages,
     ...overrides,
   });
+}
+
+async function withTempManagedRoot<T>(fn: (managedRoot: string) => Promise<T>): Promise<T> {
+  const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+  const previousInstance = process.env.SMITHERSBOT_INSTANCE;
+  const managedRoot = path.join(testGoalsDir, "managed-root");
+  process.env.SMITHERSBOT_GOALS_ROOT = managedRoot;
+  delete process.env.SMITHERSBOT_INSTANCE;
+  try {
+    return await fn(managedRoot);
+  } finally {
+    if (previousManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+    else process.env.SMITHERSBOT_GOALS_ROOT = previousManagedRoot;
+    if (previousInstance === undefined) delete process.env.SMITHERSBOT_INSTANCE;
+    else process.env.SMITHERSBOT_INSTANCE = previousInstance;
+  }
 }
 
 describe("goal-commands telegram adapter", () => {
@@ -654,6 +684,80 @@ describe("goal-commands telegram adapter", () => {
       expect(result.text).toContain("/goal_answer");
       expect(result.blocked).toBe(true);
       expect(result.runId).toBeDefined();
+    });
+
+    it("renders synchronous Needs Decision replies from structured decisions without duplicate headings", async () => {
+      const liveFailureGoal =
+        "my goal is to start a business that makes $10m per year in revenue that I own the majority of.";
+      const decisions = [
+        {
+          id: "first-plan-scope",
+          question: "What should the first Plan do toward this Goal?",
+          options: [
+            {
+              key: "A",
+              label:
+                "Research and propose a shortlist of promising business directions based on your constraints",
+              recommended: true,
+            },
+            { key: "B", label: "Draft a business plan for a specific idea you provide" },
+            {
+              key: "C",
+              label:
+                "Build a first MVP, landing page, or other computer-based artifact for a specific idea you provide",
+            },
+          ],
+        },
+      ];
+      mockGoalCommand.mockImplementation(
+        async (_opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log(
+            "Decision needed: Decision needed: CLARIFICATION NEEDED (A) Research [recommended] (B) Draft (C) Build",
+          );
+          return {
+            status: "blocked",
+            question:
+              "Decision needed: What should the first Plan do toward this Goal? (A) Research [recommended] (B) Draft (C) Build",
+            requiredInputKey: "step:planning:input",
+            blockedAt: "planning",
+            decisions,
+          };
+        },
+      );
+
+      const { handleGoal } = await import("./goal-commands.js");
+      const result = await handleGoal(liveFailureGoal);
+
+      const decisionBody = result.text.split(/\n+\*\*Goal ID:\*\*/)[0].trimEnd();
+      expect(decisionBody).toBe(
+        [
+          "**Decision(s) Needed:**",
+          "**Decision 1.** What should the first Plan do toward this Goal?",
+          "**(A)** Research and propose a shortlist of promising business directions based on your constraints **(Recommended)**",
+          "**(B)** Draft a business plan for a specific idea you provide",
+          "**(C)** Build a first MVP, landing page, or other computer-based artifact for a specific idea you provide",
+        ].join("\n"),
+      );
+      expect(result.decisions).toEqual(decisions);
+      expect(result.blocked).toBe(true);
+      expect(result.text).toContain(`**Goal ID:** ${result.runId?.slice(0, 8)}`);
+      expect(markdownToTelegramHtml(result.text)).toContain("<b>Goal ID:</b>");
+      expect(result.text).not.toContain("Answer: /goal_answer");
+      expect(result.text).not.toContain("/goal_answer <your answer>");
+      expect(result.text.match(/Decision\(s\) Needed:/g) ?? []).toHaveLength(1);
+      expect(result.text).toContain("**Decision 1.**");
+      expect(result.text).toContain("**(A)**");
+      expect(result.text).toContain("**(B)**");
+      expect(result.text).toContain("**(C)**");
+      expect(result.text).toContain("**(Recommended)**");
+      expect(result.text).not.toContain("[recommended]");
+      expect(result.text).not.toContain("Decision needed: Decision needed:");
+      expect(result.text).not.toContain("CLARIFICATION NEEDED");
+      expect(result.text).not.toMatch(/\*\*Decision needed\*\*/);
+      expect(decisionBody.split("\n")).toHaveLength(5);
+      for (const line of decisionBody.split("\n")) {
+        expect(line.match(/\*\*\([ABC]\)\*\*/g) ?? []).toHaveLength(line.includes("**(") ? 1 : 0);
+      }
     });
 
     it("flags externally cancelled planning runs so the stop response is not duplicated", async () => {
@@ -1117,6 +1221,75 @@ describe("goal-commands telegram adapter", () => {
       expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it("retries /goal_status DAG photo without stale reply parameters", async () => {
+      saveRunFixture(makeRun());
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+      mockRenderMermaidToPng.mockReturnValue({ buffer: Buffer.from("png") });
+
+      const sendPhoto = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 12 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 13 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalStatusResponse } = await import("./goal-commands.js");
+
+      await sendGoalStatusResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 77,
+      });
+
+      expect(sendPhoto).toHaveBeenCalledTimes(2);
+      expect(sendPhoto.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ reply_parameters: { message_id: 77 } }),
+      );
+      expect(sendPhoto.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("falls back to text for /goal_status when DAG rendering fails and retries stale replies", async () => {
+      saveRunFixture(makeRun());
+      mockGoalStatusCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("State: awaiting_approval");
+        },
+      );
+      mockRenderMermaidToPng.mockReturnValue(undefined);
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 14 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalStatusResponse } = await import("./goal-commands.js");
+
+      await sendGoalStatusResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 78,
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(String(sendMessage.mock.calls[0]?.[1])).toContain("Run: test-run-id-1234");
+      expect(sendMessage.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ reply_parameters: { message_id: 78 } }),
+      );
+      expect(sendMessage.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+    });
+
     it("uses blocked notification delivery for blocked runs and persists reply tracking", async () => {
       saveRunFixture(
         makeRun({
@@ -1258,6 +1431,42 @@ describe("goal-commands telegram adapter", () => {
       expect(sendMessage).not.toHaveBeenCalled();
     });
 
+    it("falls back to text for /goal_detail when DAG rendering fails and retries stale replies", async () => {
+      saveRunFixture(makeRun());
+      mockGoalDetailCommand.mockImplementation(
+        async (_id: unknown, _opts: unknown, runtime: { log: (...args: unknown[]) => void }) => {
+          runtime.log("Run: test-run-id-1234");
+          runtime.log("**Steps**");
+          runtime.log("- 1. pending Step one");
+        },
+      );
+      mockRenderMermaidToPng.mockReturnValue(undefined);
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 15 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { createCaptureRuntime, sendGoalDetailResponse } = await import("./goal-commands.js");
+
+      await sendGoalDetailResponse({
+        bot,
+        chatId: 42,
+        rawId: "test-run",
+        runtime: createCaptureRuntime().runtime,
+        replyToMessageId: 80,
+      });
+
+      expect(sendPhoto).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(String(sendMessage.mock.calls[0]?.[1])).toContain("<b>Steps</b>");
+      expect(sendMessage.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ reply_parameters: { message_id: 80 } }),
+      );
+      expect(sendMessage.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+    });
+
     it("falls back to text when the run has no plan", async () => {
       saveRunFixture(makeRun({ plan: null }));
       mockGoalDetailCommand.mockImplementation(
@@ -1340,11 +1549,14 @@ describe("goal-commands telegram adapter", () => {
         caption?: string;
         reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
       };
-      expect(options.caption).toContain("✅ Done: Test goal");
+      expect(options.caption).toContain("✅ <b>Plan Done:</b> Test goal");
       expect(options.caption).not.toContain("DONE (test-run)");
       expect(options.reply_markup?.inline_keyboard).toEqual([
-        [{ text: "🔍 Test Detail", callback_data: "gTD:test-run" }],
-        [{ text: "🔄 Incorporate Feedback", callback_data: "gIF:test-run" }],
+        [
+          { text: "🔍 Test Detail", callback_data: "gTD:test-run" },
+          { text: "🔄 Incorporate Feedback", callback_data: "gIF:test-run" },
+        ],
+        [{ text: "📄 View Report", callback_data: "gVR:test-run" }],
       ]);
       const updatedRun = loadRun("test-run-id-1234", testGoalsDir);
       expect(updatedRun?.telegramDoneMessage).toEqual({
@@ -1354,12 +1566,221 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
+    it("folds achieved status into Plan Done and does not send a separate achieved continuation message", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          postExecutionReport: {
+            planCompleted: true,
+            goalAchieved: true,
+            summary: "Shipped the requested fix.",
+            filesChanged: ["src/example.ts"],
+            verificationCommands: ["pnpm vitest run src/example.test.ts"],
+            manualTests: [],
+            nextPlanRecommended: false,
+            nextPlanSummary: null,
+            nextPlanPrompt: null,
+            decisionsNeeded: [],
+            failureOrBlockedReason: null,
+          },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "Done plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "1",
+            description: "Step one",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Test goal\n**Progress** 1/1\n**Retries** 0 retries",
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      const options = sendPhoto.mock.calls[0]?.[2] as {
+        caption?: string;
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
+      expect(options.caption).toContain("✅ <b>Plan Done:</b> Test goal");
+      expect(options.caption).toContain("✅ <b>Goal appears achieved</b>");
+      expect(options.caption).toContain("No next plan is recommended right now.");
+      expect(options.caption).not.toContain("\n\n");
+      expect(options.reply_markup?.inline_keyboard).toEqual([
+        [
+          { text: "🔍 Test Detail", callback_data: "gTD:test-run" },
+          { text: "🔄 Incorporate Feedback", callback_data: "gIF:test-run" },
+        ],
+        [
+          { text: "📄 View Report", callback_data: "gVR:test-run" },
+          { text: "🧭 Continue Goal", callback_data: "gCG:test-run" },
+        ],
+      ]);
+      expect(sendMessage).not.toHaveBeenCalledWith(
+        42,
+        expect.stringContaining("No next plan is recommended right now."),
+        expect.anything(),
+      );
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it("sends exactly one separate continuation message for a staged goal with remaining work", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "done",
+          goal: "This goal has two stages. Stage 1 creates the first artifact. Stage 2 continues this same goal with another plan that creates the second artifact.",
+          planNumber: 1,
+          planRevision: 2,
+          activePlanRevision: 2,
+          postExecutionReport: {
+            planCompleted: true,
+            goalAchieved: false,
+            summary: "Stage 1 completed, but Stage 2 remains from the original goal.",
+            filesChanged: ["first-artifact.txt"],
+            verificationCommands: ["test -f first-artifact.txt"],
+            manualTests: [],
+            nextPlanRecommended: true,
+            nextPlanSummary:
+              "Create the second artifact for Stage 2 with the exact requested content.",
+            nextPlanPrompt:
+              "Create the Stage 2 artifact in the same workspace with the exact requested content, then verify it exists.",
+            decisionsNeeded: [],
+            failureOrBlockedReason: null,
+          },
+          pendingContinuation: {
+            proposalId: "stage-two-proposal-1234",
+            fromPlanNumber: 1,
+            fromRevision: 2,
+            goalAchieved: false,
+            briefSummary:
+              "Create the second artifact for Stage 2 with the exact requested content.",
+            proposedPrompt:
+              "Create the Stage 2 artifact in the same workspace with the exact requested content, then verify it exists.",
+            runAt: "now",
+            status: "pending",
+            createdAt: "2026-06-03T00:00:00.000Z",
+          },
+          plan: {
+            goal: "This goal has two stages. Stage 1 creates the first artifact. Stage 2 continues this same goal with another plan that creates the second artifact.",
+            workingDir: "/tmp/ws",
+            summary: "Complete only Stage 1 and leave Stage 2 for continuation.",
+            shortSummary: "Stage 1 only",
+            steps: [
+              {
+                id: "stage-1",
+                description: "Create only the first-stage artifact.",
+                shortSummary: "Create first artifact",
+                dependsOn: [],
+                status: "done",
+              },
+            ],
+          },
+        }),
+      );
+
+      const sendPhoto = vi.fn().mockResolvedValue({ message_id: 10 });
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 11 });
+      const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
+      const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
+      const onStatusChange = buildOnStatusChange({
+        bot,
+        chatId: 42,
+        runtime: createCaptureRuntime().runtime,
+        runId: "test-run-id-1234",
+      });
+
+      await onStatusChange({
+        type: "all_done",
+        steps: [
+          {
+            id: "stage-1",
+            description: "Create only the first-stage artifact.",
+            dependsOn: [],
+            status: "done",
+          },
+        ],
+        summary: "✅ Done: Stage 1 only\n**Progress** 1/1\n**Retries** 0 retries",
+      });
+
+      expect(sendPhoto).toHaveBeenCalledOnce();
+      expect(sendMessage).toHaveBeenCalledOnce();
+      const sentText = String(sendMessage.mock.calls[0]?.[1] ?? "");
+      expect(sentText).toContain("🧭 <b>Continue this goal with a new plan?</b>");
+      expect(sentText).toContain("<b>Next Plan Summary:</b>");
+      expect(sentText).toContain(
+        "Create the second artifact for Stage 2 with the exact requested content.",
+      );
+      expect(sentText).toContain("<b>Goal ID:</b> test-run");
+      expect(sentText).not.toContain("\n\n");
+      expect(sentText).not.toContain("Goal appears achieved");
+      const options = sendMessage.mock.calls[0]?.[2] as {
+        reply_parameters?: { message_id: number };
+        reply_markup?: { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+      };
+      expect(options.reply_parameters).toEqual({ message_id: 10 });
+      expect(options.reply_markup?.inline_keyboard).toEqual([
+        [
+          expect.objectContaining({ text: "❤️ Approve" }),
+          expect.objectContaining({ text: "🔍 View Prompt" }),
+        ],
+        [expect.objectContaining({ text: "📝 Request Edit" })],
+      ]);
+      expect(loadRun("test-run-id-1234", testGoalsDir)?.pendingContinuation).toMatchObject({
+        goalAchieved: false,
+        briefSummary: "Create the second artifact for Stage 2 with the exact requested content.",
+        proposedPrompt:
+          "Create the Stage 2 artifact in the same workspace with the exact requested content, then verify it exists.",
+        status: "pending",
+      });
+    });
+
     it("builds done-message inline keyboard callbacks", async () => {
       const { buildGoalDoneInlineKeyboard } = await import("./goal-commands.js");
       expect(buildGoalDoneInlineKeyboard("abc12345")).toEqual({
         inline_keyboard: [
-          [{ text: "🔍 Test Detail", callback_data: "gTD:abc12345" }],
-          [{ text: "🔄 Incorporate Feedback", callback_data: "gIF:abc12345" }],
+          [
+            { text: "🔍 Test Detail", callback_data: "gTD:abc12345" },
+            { text: "🔄 Incorporate Feedback", callback_data: "gIF:abc12345" },
+          ],
+          [{ text: "📄 View Report", callback_data: "gVR:abc12345" }],
+        ],
+      });
+      expect(buildGoalDoneInlineKeyboard("abc12345", { goalAchieved: true })).toEqual({
+        inline_keyboard: [
+          [
+            { text: "🔍 Test Detail", callback_data: "gTD:abc12345" },
+            { text: "🔄 Incorporate Feedback", callback_data: "gIF:abc12345" },
+          ],
+          [
+            { text: "📄 View Report", callback_data: "gVR:abc12345" },
+            { text: "🧭 Continue Goal", callback_data: "gCG:abc12345" },
+          ],
         ],
       });
     });
@@ -1962,6 +2383,8 @@ describe("goal-commands telegram adapter", () => {
         .fn()
         .mockRejectedValueOnce(new Error("send down"))
         .mockRejectedValueOnce(new Error("send down"))
+        .mockRejectedValueOnce(new Error("send down"))
+        .mockRejectedValueOnce(new Error("send down"))
         .mockResolvedValue({ message_id: 999 });
       const bot = { api: { sendPhoto, sendMessage } } as unknown as import("grammy").Bot;
       const { buildOnStatusChange, createCaptureRuntime } = await import("./goal-commands.js");
@@ -1989,6 +2412,7 @@ describe("goal-commands telegram adapter", () => {
       {
         eventType: "step_blocked",
         expectedFallbackText: "<b>TASK BLOCKED</b> (test-run): Step 1 needs input",
+        expectedRunId: true,
         event: {
           type: "step_blocked",
           stepId: "1",
@@ -2007,6 +2431,7 @@ describe("goal-commands telegram adapter", () => {
       {
         eventType: "fully_blocked",
         expectedFallbackText: "<b>GOAL BLOCKED</b> (test-run): no runnable steps",
+        expectedRunId: true,
         event: {
           type: "fully_blocked",
           steps: [
@@ -2022,7 +2447,8 @@ describe("goal-commands telegram adapter", () => {
       },
       {
         eventType: "plan_revised",
-        expectedFallbackText: "plan_revised",
+        expectedFallbackText: "Plan revised summary",
+        expectedRunId: false,
         event: {
           type: "plan_revised",
           revision: 2,
@@ -2039,7 +2465,8 @@ describe("goal-commands telegram adapter", () => {
       },
       {
         eventType: "all_done",
-        expectedFallbackText: "all_done",
+        expectedFallbackText: "Done summary",
+        expectedRunId: false,
         event: {
           type: "all_done",
           summary: "Done summary",
@@ -2055,7 +2482,7 @@ describe("goal-commands telegram adapter", () => {
       },
     ])(
       "swallows DAG exceptions and posts fallback text for $eventType status updates",
-      async ({ event, expectedFallbackText }) => {
+      async ({ event, expectedFallbackText, expectedRunId }) => {
         saveRunFixture(makeRun());
         mockRenderMermaidToPng.mockImplementationOnce(() => {
           throw new Error("render failed");
@@ -2079,7 +2506,9 @@ describe("goal-commands telegram adapter", () => {
         const fallbackText = sendMessage.mock.calls[0]?.[1];
         expect(typeof fallbackText).toBe("string");
         expect(fallbackText).toContain(expectedFallbackText);
-        expect(fallbackText).toContain("test-run");
+        if (expectedRunId) {
+          expect(fallbackText).toContain("test-run");
+        }
       },
     );
   });
@@ -2120,7 +2549,7 @@ describe("goal-commands telegram adapter", () => {
         ],
       } as const;
 
-      saveRunFixture(makeRun({ plan }));
+      saveRunFixture(makeRun({ plan, planNumber: 2, planRevision: 5 }));
 
       const sendPhoto = vi.fn().mockResolvedValue({ message_id: 88 });
       const sendMessage = vi.fn().mockResolvedValue({ message_id: 89 });
@@ -2145,7 +2574,9 @@ describe("goal-commands telegram adapter", () => {
       expect(options.caption).toContain("<b>Goal ID:</b> test-run");
       expect(options.caption).toContain("<b>Workspace:</b> /tmp/ws");
       expect(options.caption).toContain("<b>Workers:</b> Claude Code");
-      expect(options.caption).toContain("<b>Plan:</b> Ship secure checkout");
+      expect(options.caption).toContain("<b>Plan 2:</b> Ship secure checkout");
+      expect(options.caption).not.toContain("Revision 5");
+      expect(options.caption?.toLowerCase()).not.toContain("cycle");
       expect(options.caption).not.toContain("Long plan summary");
     });
 
@@ -2367,7 +2798,7 @@ describe("goal-commands telegram adapter", () => {
       expect(options.reply_parameters).toEqual({ message_id: 77 });
     });
 
-    it("threads reply parameters when DAG send falls back to text", async () => {
+    it("sends text fallback without depending on the original reply target", async () => {
       const plan = makeRun().plan!;
       saveRunFixture(makeRun({ plan }));
       mockRenderMermaidToPng.mockReturnValueOnce(null);
@@ -2396,7 +2827,7 @@ describe("goal-commands telegram adapter", () => {
       const options = sendMessage.mock.calls[0]?.[2] as {
         reply_parameters?: { message_id: number };
       };
-      expect(options.reply_parameters).toEqual({ message_id: 78 });
+      expect(options.reply_parameters).toBeUndefined();
       expect(mockRepairMermaidDiagram).not.toHaveBeenCalled();
     });
 
@@ -2531,7 +2962,7 @@ describe("goal-commands telegram adapter", () => {
       expect(sendMessageOptions.reply_markup).toBeDefined();
     });
 
-    it("threads reply parameters when sendGoalPlanMessage fallback is used", async () => {
+    it("sends plan message fallback without depending on the original reply target", async () => {
       const plan = makeRun().plan!;
       saveRunFixture(makeRun({ plan }));
 
@@ -2562,10 +2993,10 @@ describe("goal-commands telegram adapter", () => {
       const options = sendMessage.mock.calls[1]?.[2] as {
         reply_parameters?: { message_id: number };
       };
-      expect(options.reply_parameters).toEqual({ message_id: 79 });
+      expect(options.reply_parameters).toBeUndefined();
     });
 
-    it("threads reply parameters when plan delivery reaches minimal fallback", async () => {
+    it("sends minimal fallback without depending on the original reply target", async () => {
       const plan = makeRun().plan!;
       saveRunFixture(makeRun({ plan }));
 
@@ -2600,7 +3031,7 @@ describe("goal-commands telegram adapter", () => {
         reply_parameters?: { message_id: number };
         reply_markup?: unknown;
       };
-      expect(options.reply_parameters).toEqual({ message_id: 80 });
+      expect(options.reply_parameters).toBeUndefined();
       expect(options.reply_markup).toBeDefined();
     });
   });
@@ -2806,22 +3237,70 @@ describe("goal-commands telegram adapter", () => {
       expect(result).not.toContain("Still blocked");
     });
 
-    it("does not replan from the answer path for planning blocks", async () => {
+    it("auto-resumes planning for a planning Needs Decision answer and renders the plan card", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
+          plan: null,
           blocked: {
             blockedAt: "planning",
             prompt: "Which DB?",
             requiredInputKey: "step:planning:input",
+            decisions: [
+              {
+                id: "db",
+                question: "Which DB?",
+                options: [
+                  { key: "A", label: "Postgres", recommended: true },
+                  { key: "B", label: "MySQL" },
+                ],
+              },
+            ],
           },
         }),
       );
 
-      mockGoalAnswerCommand.mockResolvedValue(undefined);
-      mockGoalResumeCommand.mockResolvedValue({
+      // goalAnswerCommand records the answer then auto-resumes planning. Simulate
+      // that resume by leaving the run in awaiting_approval with a fresh plan.
+      mockGoalAnswerCommand.mockImplementation(async () => {
+        saveRunFixture(makeRun({ state: "awaiting_approval", blocked: null }));
+        return undefined;
+      });
+
+      const { handleGoalAnswer } = await import("./goal-commands.js");
+      const result = await handleGoalAnswer("test-run", "postgres");
+
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      // The planning answer was recorded quietly (no verbose decision logging).
+      const opts = mockGoalAnswerCommand.mock.calls[0][1] as Record<string, unknown>;
+      expect(opts.quiet).toBe(true);
+      // Resumed plan card (not a string ack), and never the old "Recorded..." copy.
+      expect(typeof result).toBe("object");
+      const card = result as { plan?: unknown; text: string };
+      expect(card.plan).toBeDefined();
+      expect(card.text).not.toContain("Recorded your decision answer");
+      expect(card.text).not.toContain("Use /goal_resume");
+    });
+
+    it("surfaces a clear blocker when planning auto-resume re-blocks on another decision", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          plan: null,
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Which DB?",
+            requiredInputKey: "step:planning:input",
+            decisions: [
+              { id: "db", question: "Which DB?", options: [{ key: "A", label: "Postgres" }] },
+            ],
+          },
+        }),
+      );
+
+      mockGoalAnswerCommand.mockResolvedValue({
         status: "blocked",
-        question: "PostgreSQL or MySQL?",
+        question: "Need the schema name too",
         requiredInputKey: "step:planning:input",
         blockedAt: "planning",
       });
@@ -2830,8 +3309,9 @@ describe("goal-commands telegram adapter", () => {
       const result = await handleGoalAnswer("test-run", "postgres");
 
       expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
-      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
-      expect(result).toContain("Got it.");
+      expect(typeof result).toBe("string");
+      expect(result).toContain("Need the schema name too");
+      expect(result).not.toContain("Recorded your decision answer");
     });
 
     it("returns the accepted-note acknowledgement even when onStatusChange is provided", async () => {
@@ -2959,6 +3439,19 @@ describe("goal-commands telegram adapter", () => {
       saveRunFixture(
         makeRun({
           state: "done",
+          planNumber: 1,
+          planRevision: 1,
+          pendingContinuation: {
+            proposalId: "proposal-feedback-1",
+            fromPlanNumber: 1,
+            fromRevision: 1,
+            goalAchieved: false,
+            briefSummary: "A next plan is pending.",
+            proposedPrompt: "Continue with another plan.",
+            runAt: "now",
+            status: "pending",
+            createdAt: "2026-01-30T00:02:00.000Z",
+          },
           plan: {
             goal: "Test goal",
             workingDir: "/tmp/ws",
@@ -3053,6 +3546,14 @@ describe("goal-commands telegram adapter", () => {
       const updated = loadRun("test-run-id-1234", testGoalsDir);
       expect(updated?.planRevision).toBe(2);
       expect(updated?.activePlanRevision).toBe(2);
+      expect(updated?.planNumber).toBe(1);
+      expect(updated?.pendingContinuation).toBeUndefined();
+      expect(updated?.continuationHistory).toEqual([
+        expect.objectContaining({
+          proposalId: "proposal-feedback-1",
+          status: "superseded",
+        }),
+      ]);
       expect(updated?.planHistory).toHaveLength(1);
     });
 
@@ -3166,9 +3667,9 @@ describe("goal-commands telegram adapter", () => {
       );
       expect(allDoneCall).toBeDefined();
       const allDoneEvent = allDoneCall?.[0] as { summary: string };
-      expect(allDoneEvent.summary).toContain("✅ Done: Ship login reliability fixes");
+      expect(allDoneEvent.summary).toContain("✅ **Plan Done:** Ship login reliability fixes");
       expect(allDoneEvent.summary).not.toContain(
-        "✅ Done: Very long goal that should not be used as the compact done headline",
+        "✅ **Plan Done:** Very long goal that should not be used as the compact done headline",
       );
       expect(allDoneEvent.summary).toContain("Note: Manual test generation failed.");
       const summaryLines = allDoneEvent.summary.trim().split("\n");
@@ -3279,7 +3780,9 @@ describe("goal-commands telegram adapter", () => {
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "add a README step");
 
-      expect(result.text).toContain("Revision 2");
+      expect(result.text).toContain("Plan 1");
+      expect(result.text).not.toContain("Revision 2");
+      expect(result.text.toLowerCase()).not.toContain("cycle");
       expect(result.text).toContain("Revised Plan");
       expect(result.runId).toBe("test-run-id-1234");
       expect(result.revision).toBe(2);
@@ -3289,6 +3792,7 @@ describe("goal-commands telegram adapter", () => {
       expect(run).toBeDefined();
       expect(run!.planRevision).toBe(2);
       expect(run!.activePlanRevision).toBe(2);
+      expect(run!.planNumber).toBe(1);
       expect(run!.planHistory).toHaveLength(1);
       expect(run!.planHistory![0].revision).toBe(1);
       expect(run!.planHistory![0].editInstructions).toBe("add a README step");
@@ -3397,6 +3901,8 @@ describe("goal-commands telegram adapter", () => {
       expect(run?.autocheckMaxRounds).toBe(3);
       expect(run?.autocheckBackend).toBe("claude_code");
       expect(run?.autocheckSessionId).toBe("session-new");
+      expect(run?.planNumber).toBe(1);
+      expect(run?.planRevision).toBe(2);
       expect(run?.state).toBe("awaiting_approval");
     });
 
@@ -3689,7 +4195,7 @@ describe("goal-commands telegram adapter", () => {
     it("updates run working dir from conversational correction phrasing", async () => {
       const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-root-"));
       const originalDir = path.join(workspaceRoot, "moltbot");
-      const newDir = path.join(workspaceRoot, "earnlayer-marketing");
+      const newDir = path.join(workspaceRoot, "acme-marketing");
       fs.mkdirSync(originalDir, { recursive: true });
       fs.mkdirSync(newDir, { recursive: true });
       saveRunFixture(makeRun({ workingDir: originalDir }));
@@ -3734,7 +4240,7 @@ describe("goal-commands telegram adapter", () => {
     it("resolves hyphenless working dir hints to an existing sibling directory", async () => {
       const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "goal-edit-wd-fuzzy-"));
       const originalDir = path.join(workspaceRoot, "moltbot");
-      const newDir = path.join(workspaceRoot, "earnlayer-marketing");
+      const newDir = path.join(workspaceRoot, "acme-marketing");
       fs.mkdirSync(originalDir, { recursive: true });
       fs.mkdirSync(newDir, { recursive: true });
       saveRunFixture(makeRun({ workingDir: originalDir }));
@@ -3758,7 +4264,7 @@ describe("goal-commands telegram adapter", () => {
       mockFormatPlanOutput.mockReturnValue("## Revised Plan\n1. Step one");
 
       const { handleGoalEdit } = await import("./goal-commands.js");
-      await handleGoalEdit("test-run", "working dir should be earnlayermarketing");
+      await handleGoalEdit("test-run", "working dir should be acmemarketing");
 
       expect(mockRunCliPlanRevision).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3869,7 +4375,8 @@ describe("goal-commands telegram adapter", () => {
 
       const { handleGoalEdit } = await import("./goal-commands.js");
       const result = await handleGoalEdit("test-run", "use a framework");
-      expect(result.text).toContain("Revision blocked");
+      expect(result.text).toContain("Plan update blocked");
+      expect(result.text).not.toContain("Revision blocked");
       expect(result.text).toContain("What framework?");
       expect(result.blocked).toBe(true);
     });
@@ -5569,6 +6076,19 @@ describe("goal-commands telegram adapter", () => {
       };
     }
 
+    async function waitForCallback(assertion: () => void, timeoutMs = 2000): Promise<void> {
+      const start = Date.now();
+      for (;;) {
+        try {
+          assertion();
+          return;
+        } catch (err) {
+          if (Date.now() - start > timeoutMs) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+    }
+
     it("routes gTD callback to manual test detail message", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(
@@ -5673,6 +6193,82 @@ describe("goal-commands telegram adapter", () => {
       expect(sentText).toContain('Use "Incorporate Feedback" if you notice any issues.');
     });
 
+    it("routes gVR (View Report) callback to the stored post-execution report content", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "done",
+          postExecutionReport: {
+            planCompleted: true,
+            goalAchieved: false,
+            summary: "Implemented the login redirect and added tests.",
+            filesChanged: ["src/login.ts"],
+            verificationCommands: ["pnpm vitest run src/login.test.ts"],
+            manualTests: [
+              {
+                description: "Verify login redirect",
+                criticality: 7,
+                detail: "Log in and confirm redirect to dashboard.",
+              },
+            ],
+            nextPlanRecommended: false,
+            nextPlanSummary: null,
+            nextPlanPrompt: null,
+            decisionsNeeded: [],
+            failureOrBlockedReason: null,
+          },
+        }),
+      );
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gVR:abcdef12"));
+
+      expect(harness.answerCallbackQuery).toHaveBeenCalledWith("cb-1");
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("<b>Post-Execution Report:</b>");
+      expect(sentText).toContain("Implemented the login redirect and added tests.");
+      expect(sentText).toContain("<b>Sources:</b>");
+      expect(sentText).toContain("Test Details:");
+      expect(sentText).toContain("Continuation message:");
+      expect(sentText).toContain("View Prompt:");
+      expect(sentText).not.toContain("Verify login redirect");
+      expect(sentText).not.toContain("Next Plan:");
+      expect(sentText).not.toContain("Proposed prompt:");
+      expect(sentText).not.toContain("Decision(s) needed:");
+    });
+
+    it("routes gRP (Resume Post Execution) to reporting-only resume without rerunning the plan", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "reporting_failed",
+          postExecutionReportingFailureReason: "Both backends usage-limited.",
+        }),
+      );
+      mockResumePostExecutionReportingCommand.mockResolvedValue({
+        status: "done",
+        summary: "Reporting retried.",
+      });
+      const harness = makeCallbackHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gRP:abcdef12"));
+
+      await waitForCallback(() =>
+        expect(mockResumePostExecutionReportingCommand).toHaveBeenCalledTimes(1),
+      );
+      // Reporting-only resume must NOT rerun the completed plan.
+      expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+      const opts = mockResumePostExecutionReportingCommand.mock.calls[0]?.[1] as Record<
+        string,
+        unknown
+      >;
+      expect(typeof opts.onStatusChange).toBe("function");
+    });
+
     it("routes gIF callback to force-reply prompt and persists prompt tracking", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(makeRun({ runId, state: "done" }));
@@ -5730,6 +6326,37 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("retries ge force-reply without stale reply parameters and tracks the retried prompt", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId }));
+      const harness = makeCallbackHarness();
+      harness.sendMessage
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 783 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("ge:abcdef12:1", 551));
+
+      expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+      expect(harness.sendMessage.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          reply_parameters: { message_id: 551 },
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+      expect(harness.sendMessage.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+      expect(harness.sendMessage.mock.calls[1]?.[2]).toEqual(
+        expect.objectContaining({
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+      expect(loadRun(runId, testGoalsDir)?.telegramEditPromptMessages?.[0]).toEqual({
+        chatId: 42,
+        messageId: 783,
+        threadId: undefined,
+      });
+    });
+
     it("sends fallback message when gIF force-reply prompt fails", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(makeRun({ runId, state: "done" }));
@@ -5758,6 +6385,32 @@ describe("goal-commands telegram adapter", () => {
               ?.reply_parameters?.message_id === 552,
         ),
       ).toBe(true);
+    });
+
+    it("retries gIF force-reply without stale reply parameters and tracks the retried prompt", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(makeRun({ runId, state: "done" }));
+      const harness = makeCallbackHarness();
+      harness.sendMessage
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 784 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gIF:abcdef12", 552));
+
+      expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+      expect(harness.sendMessage.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          reply_parameters: { message_id: 552 },
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+      expect(harness.sendMessage.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+      expect(loadRun(runId, testGoalsDir)?.telegramFeedbackPromptMessages?.[0]).toEqual({
+        chatId: 42,
+        messageId: 784,
+        threadId: undefined,
+      });
     });
 
     it("routes gAD callback to force-reply prompt and persists question tracking", async () => {
@@ -5818,6 +6471,47 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
+    it("routes the '☑️ Make Decision(s)' planning button through the existing gAD answer/reply flow", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Decision needed",
+            requiredInputKey: "planning:decision",
+          },
+        }),
+      );
+      // The planning Needs Decision keyboard exposes the Make Decision(s) button;
+      // its callback_data must dispatch through the existing gAD handler.
+      const keyboard = buildGoalBlockedInlineKeyboard(runId.slice(0, 8), "blocked", {
+        planningDecision: true,
+      });
+      const makeDecisions = (keyboard?.inline_keyboard ?? [])
+        .flat()
+        .find((btn) => (btn as { text: string }).text === "☑️ Make Decision(s)") as
+        | { callback_data: string }
+        | undefined;
+      expect(makeDecisions?.callback_data).toBe(`gAD:${runId.slice(0, 8)}`);
+
+      const harness = makeCallbackHarness();
+      harness.sendMessage.mockResolvedValue({ message_id: 779 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx(makeDecisions!.callback_data, 502));
+
+      // Reaches the existing gAD force-reply prompt — no second answer mechanism.
+      expect(harness.sendMessage).toHaveBeenCalledWith(
+        42,
+        expect.any(String),
+        expect.objectContaining({
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+    });
+
     it("sends fallback message when gAD force-reply prompt fails", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(
@@ -5856,6 +6550,42 @@ describe("goal-commands telegram adapter", () => {
               ?.reply_parameters?.message_id === 553,
         ),
       ).toBe(true);
+    });
+
+    it("retries gAD force-reply without stale reply parameters and tracks the retried prompt", async () => {
+      const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Need credentials",
+            requiredInputKey: "task:1:input",
+          },
+        }),
+      );
+      const harness = makeCallbackHarness();
+      harness.sendMessage
+        .mockRejectedValueOnce(new Error("Bad Request: replied message not found"))
+        .mockResolvedValueOnce({ message_id: 785 });
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gAD:abcdef12", 553));
+
+      expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+      expect(harness.sendMessage.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          reply_parameters: { message_id: 553 },
+          reply_markup: expect.objectContaining({ force_reply: true }),
+        }),
+      );
+      expect(harness.sendMessage.mock.calls[1]?.[2]).not.toHaveProperty("reply_parameters");
+      expect(loadRun(runId, testGoalsDir)?.telegramQuestionMessages?.[0]).toEqual({
+        chatId: 42,
+        messageId: 785,
+        requiredInputKey: "add_details",
+      });
     });
 
     it("falls back to persisted done-message id when callback message_id is missing", async () => {
@@ -6172,6 +6902,105 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
+    it("/goal_resume uses the execution resume path for a run-level resume_execution marker", async () => {
+      const runId = "12345678-1111-2222-3333-444444444444";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "worker interrupted - resume needed",
+            requiredInputKey: "resume_execution",
+          },
+          plan: {
+            goal: "Resume interrupted goal",
+            workingDir: "/tmp/ws",
+            summary: "Resume interrupted goal",
+            shortSummary: "Resume interrupted goal",
+            steps: [
+              {
+                id: "resume-work",
+                description: "Resume work",
+                shortSummary: "Resume work",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
+      mockGoalStatusCommand.mockResolvedValue("GOAL PAUSED: worker interrupted - resume needed.");
+      mockGoalResumeCommand.mockImplementation(async (id: string) => {
+        const run = loadRun(id, testGoalsDir)!;
+        run.state = "executing";
+        run.blocked = null;
+        saveRun(run, testGoalsDir);
+        return { status: "done", summary: "Resumed." };
+      });
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_status?.(makeCommandCtx("12345678", 806));
+      await harness.commandHandlers.goal_resume?.(makeCommandCtx("12345678", 807));
+
+      await waitForAssertion(() => expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1));
+      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      const run = loadRun(runId, testGoalsDir)!;
+      expect(run.state).toBe("executing");
+      expect(run.blocked).toBeNull();
+      expect(run.resumeNotes ?? []).toEqual([]);
+      const sentText = harness.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+      expect(sentText).toContain("Right away");
+      expect(sentText).not.toContain("No blocked, paused, or failed steps need input/resume");
+    });
+
+    it("gResume uses the same execution resume path for a run-level resume_execution marker", async () => {
+      const runId = "87654321-1111-2222-3333-444444444444";
+      saveRunFixture(
+        makeRun({
+          runId,
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "worker interrupted - resume needed",
+            requiredInputKey: "resume_execution",
+          },
+          plan: {
+            goal: "Resume interrupted goal",
+            workingDir: "/tmp/ws",
+            summary: "Resume interrupted goal",
+            shortSummary: "Resume interrupted goal",
+            steps: [
+              {
+                id: "resume-work",
+                description: "Resume work",
+                shortSummary: "Resume work",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
+      mockGoalResumeCommand.mockResolvedValue({ status: "done", summary: "Resumed." });
+
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.callbackHandler(makeCallbackCtx("gResume:87654321", 808));
+
+      await waitForAssertion(() => expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1));
+      expect(mockGoalResumeCommand.mock.calls[0][0]).toBe(runId);
+      expect(loadRun(runId, testGoalsDir)?.resumeNotes ?? []).toEqual([]);
+      const sentText = harness.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+      expect(sentText).not.toContain("rescheduled");
+      expect(sentText).not.toContain("No blocked, paused, or failed steps need input/resume");
+    });
+
     it("/goal_resume records the resume note even when the run lock is held", async () => {
       saveRunFixture(
         makeRun({
@@ -6348,6 +7177,109 @@ describe("goal-commands telegram adapter", () => {
       expect(hasPhotoReply).toBe(true);
     });
 
+    it("displays wiki/goal-brief.md for the Goal Brief callback", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+        saveRunFixture(makeRun({ runId, state: "awaiting_approval", workingDir: "/tmp/ws" }));
+        const briefPath = path.join(
+          managedRoot,
+          "agent",
+          "history",
+          "goals",
+          "ws",
+          runId,
+          "wiki",
+          "goal-brief.md",
+        );
+        fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+        fs.writeFileSync(
+          briefPath,
+          ["# Goal Brief", "", "Goal Summary: Ship approval UI", "Sources"].join("\n"),
+        );
+
+        const harness = makeHarness();
+        await harness.register();
+
+        await harness.callbackHandler(makeCallbackCtx("gB:abcdef12:1", 904));
+
+        expect(harness.setMessageReaction).toHaveBeenCalledWith(42, 904, [
+          { type: "emoji", emoji: "👀" },
+        ]);
+        expect(
+          harness.sendMessage.mock.calls.some(
+            (call) =>
+              String(call[1]).includes("Goal Summary: Ship approval UI") &&
+              hasReplyMessageId(call, 904),
+          ),
+        ).toBe(true);
+        // The Goal Brief send path renders major headings bold and compacts
+        // blank lines (no '\n\n' runs) for clean Telegram display.
+        const briefCall = harness.sendMessage.mock.calls.find(
+          (call) =>
+            String(call[1]).includes("Goal Summary: Ship approval UI") &&
+            hasReplyMessageId(call, 904),
+        )!;
+        expect(String(briefCall[1])).toContain("<b>Goal Brief</b>");
+        expect(String(briefCall[1])).not.toContain("\n\n");
+      });
+    });
+
+    it("reads the stored Goal Brief path even when the run workingDir changed", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+        const storedBriefPath = path.join(
+          managedRoot,
+          "agent",
+          "history",
+          "goals",
+          "original-ws",
+          runId,
+          "wiki",
+          "goal-brief.md",
+        );
+        fs.mkdirSync(path.dirname(storedBriefPath), { recursive: true });
+        fs.writeFileSync(
+          storedBriefPath,
+          ["# Goal Brief", "", "Goal Summary: Stored path wins"].join("\n"),
+        );
+        saveRunFixture(
+          makeRun({
+            runId,
+            state: "awaiting_approval",
+            workingDir: "/tmp/final-ws",
+            goalBriefPath: storedBriefPath,
+          }),
+        );
+
+        const harness = makeHarness();
+        await harness.register();
+
+        await harness.callbackHandler(makeCallbackCtx("gB:abcdef12:1", 904));
+
+        const sentText = harness.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+        expect(sentText).toContain("Goal Summary: Stored path wins");
+        expect(sentText).not.toContain("Goal Brief is missing");
+      });
+    });
+
+    it("shows a clear error when the Goal Brief callback cannot find wiki/goal-brief.md", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const runId = "abcdef12-3456-7890-abcd-ef1234567890";
+        saveRunFixture(makeRun({ runId, state: "awaiting_approval", workingDir: "/tmp/ws" }));
+
+        const harness = makeHarness();
+        await harness.register();
+
+        await harness.callbackHandler(makeCallbackCtx("gB:abcdef12:1", 904));
+
+        const sentText = harness.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+        expect(sentText).toContain("Goal Brief is missing for abcdef12");
+        expect(sentText).toContain(
+          path.join(managedRoot, "agent", "history", "goals", "ws", runId, "wiki", "goal-brief.md"),
+        );
+      });
+    });
+
     it("threads replies for gStop callback responses", async () => {
       const runId = "abcdef12-3456-7890-abcd-ef1234567890";
       saveRunFixture(makeRun({ runId, state: "blocked" }));
@@ -6407,7 +7339,7 @@ describe("goal-commands telegram adapter", () => {
       ).toBe(true);
     });
 
-    it("threads replies for /goal_answer usage, run-not-found, and concurrent responses", async () => {
+    it("threads replies for /goal_answer usage/run-not-found and preserves notes when locked", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
@@ -6416,13 +7348,31 @@ describe("goal-commands telegram adapter", () => {
             prompt: "Need details",
             requiredInputKey: "task:1:input",
           },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need details",
+                durationMinutes: 1,
+              },
+            ],
+          },
         }),
       );
-      let resolveAnswer: ((value: unknown) => void) | undefined;
-      mockGoalAnswerCommand.mockImplementation(
+      let resolveResume: ((value: unknown) => void) | undefined;
+      mockGoalResumeCommand.mockImplementation(
         () =>
           new Promise((resolve) => {
-            resolveAnswer = resolve;
+            resolveResume = resolve;
           }),
       );
 
@@ -6448,10 +7398,24 @@ describe("goal-commands telegram adapter", () => {
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run value", 914));
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run other", 915));
 
-      resolveAnswer?.({ status: "blocked", question: "Need details" });
       await waitForAssertion(() => {
-        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(2);
+        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
       });
+      const run = loadRun("test-run-id-1234");
+      expect(run?.resumeNotes?.map((note) => note.userText)).toEqual(["value", "other"]);
+      expect(
+        harness.sendMessage.mock.calls.filter((call) =>
+          String(call[1]).includes("Right away, sir. Resuming the goal now."),
+        ),
+      ).toHaveLength(1);
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("did not start") || String(call[1]).includes("is already"),
+        ),
+      ).toBe(false);
+
+      resolveResume?.({ status: "blocked", question: "Need details" });
     });
 
     it("threads replies for /goal_feedback usage, run-not-found, and lock responses", async () => {
@@ -6523,31 +7487,43 @@ describe("goal-commands telegram adapter", () => {
       });
     });
 
-    it("threads replies for /goal_answer background plan results", async () => {
+    it("threads replies for /goal_answer planning auto-resume results", async () => {
       saveRunFixture(
         makeRun({
           state: "blocked",
+          plan: null,
           blocked: {
             blockedAt: "planning",
             prompt: "Need a value",
-            requiredInputKey: "db_type",
+            requiredInputKey: "step:planning:input",
+            decisions: [
+              { id: "db", question: "Need a value", options: [{ key: "A", label: "Postgres" }] },
+            ],
           },
         }),
       );
-      mockGoalAnswerCommand.mockResolvedValue({ status: "done" });
-      mockGoalResumeCommand.mockResolvedValue({ status: "done" });
+      // The planning answer records + auto-resumes; simulate the resumed plan by
+      // leaving the run in awaiting_approval so a threaded plan card is sent.
+      mockGoalAnswerCommand.mockImplementation(async () => {
+        saveRunFixture(makeRun({ state: "awaiting_approval", blocked: null }));
+        return undefined;
+      });
       const harness = makeHarness();
       await harness.register();
 
       await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run postgres", 910));
 
       await waitForAssertion(() => {
-        expect(
-          harness.sendMessage.mock.calls.some(
-            (call) => String(call[1]).includes("Got it.") && hasReplyMessageId(call, 910),
-          ),
-        ).toBe(true);
+        expect(harness.sendMessage.mock.calls.some((call) => hasReplyMessageId(call, 910))).toBe(
+          true,
+        );
       });
+      expect(mockGoalAnswerCommand).toHaveBeenCalledOnce();
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) => String(call[1]) === "Right away, sir." && hasReplyMessageId(call, 910),
+        ),
+      ).toBe(true);
     });
 
     it("combines split /goal_answer text before answering the blocked step", async () => {
@@ -6559,9 +7535,26 @@ describe("goal-commands telegram adapter", () => {
             prompt: "Need a value",
             requiredInputKey: "db_type",
           },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "blocked",
+                blockedReason: "user_input",
+                blockedQuestion: "Need a value",
+                durationMinutes: 1,
+              },
+            ],
+          },
         }),
       );
-      mockGoalAnswerCommand.mockResolvedValue({ status: "done" });
       mockGoalResumeCommand.mockResolvedValue({ status: "done" });
       const { CommandFragmentBuffer, buildCommandFragmentKey } =
         await import("./command-fragments.js");
@@ -6595,11 +7588,66 @@ describe("goal-commands telegram adapter", () => {
       await commandFragmentBuffer.cancelAndFlush(key);
 
       await waitForAssertion(() => {
-        expect(mockGoalAnswerCommand).toHaveBeenCalledTimes(1);
+        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
       });
-      expect(mockGoalAnswerCommand.mock.calls[0]?.[1]).toEqual(
-        expect.objectContaining({ value: "postgres" }),
+      expect(loadRun("test-run-id-1234")?.resumeNotes?.[0]).toMatchObject(
+        expect.objectContaining({ source: "goal_answer", userText: "postgres" }),
       );
+      expect(
+        harness.sendMessage.mock.calls.some((call) =>
+          String(call[1]).includes("Right away, sir. Resuming the goal now."),
+        ),
+      ).toBe(true);
+    });
+
+    it("uses the execution resume path for /goal_answer on a run-level resume marker", async () => {
+      saveRunFixture(
+        makeRun({
+          state: "blocked",
+          blocked: {
+            blockedAt: "execution",
+            prompt: "Run was interrupted.",
+            requiredInputKey: "resume_execution",
+          },
+          plan: {
+            goal: "Test goal",
+            workingDir: "/tmp/ws",
+            summary: "A test plan",
+            shortSummary: "A test plan",
+            steps: [
+              {
+                id: "1",
+                description: "Step one",
+                shortSummary: "Step one",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+        }),
+      );
+      mockGoalResumeCommand.mockResolvedValue({ status: "done" });
+      const harness = makeHarness();
+      await harness.register();
+
+      await harness.commandHandlers.goal_answer?.(makeCommandCtx("test-run carry on", 932));
+
+      await waitForAssertion(() => {
+        expect(mockGoalResumeCommand).toHaveBeenCalledTimes(1);
+      });
+      expect(mockGoalAnswerCommand).not.toHaveBeenCalled();
+      expect(loadRun("test-run-id-1234")?.resumeNotes?.[0]).toMatchObject({
+        source: "goal_answer",
+        userText: "carry on",
+      });
+      expect(
+        harness.sendMessage.mock.calls.some(
+          (call) =>
+            String(call[1]).includes("Right away, sir. Resuming the goal now.") &&
+            hasReplyMessageId(call, 932),
+        ),
+      ).toBe(true);
     });
 
     it("buffers /goal_resume with trailing text and does not resume from the first chunk", async () => {
@@ -7097,6 +8145,223 @@ describe("goal-commands telegram adapter", () => {
 
       const { findRunByPlanMessageId } = await import("./goal-commands.js");
       expect(findRunByPlanMessageId(123, 456)).toBeUndefined();
+    });
+  });
+
+  describe("handleGoalContinuationApprove — Goal Brief snapshot/update", () => {
+    const PRIOR_BRIEF = [
+      "# Goal Brief",
+      "",
+      "## Goal Summary",
+      "Ship the two-stage goal.",
+      "",
+      "## Long Goal Summary",
+      "Full two stage goal: stage 1 then stage 2.",
+      "",
+      "## Original User Ask",
+      "This goal has two stages. Stage 1 then Stage 2.",
+      "",
+      "## Key Decision summaries",
+      "None yet.",
+      "",
+      "## First Plan Intent",
+      "Stage 1 only: create goal1.txt and stop.",
+      "",
+      "## Remaining Work",
+      "Stage 2 remains: create goal2.txt with the exact text: goal 2 completed!",
+      "",
+      "## Observation Point",
+      "Stop after goal1.txt is created.",
+      "",
+      "## Manual Tests",
+      "Check goal1.txt content equals 'goal 1 completed!'.",
+      "",
+      "## Sources",
+      "- scout report",
+      "",
+    ].join("\n");
+
+    function continuationRun(
+      managedRoot: string,
+      overrides: { editMessage?: string; status?: "pending" | "edited" } = {},
+    ): { run: SerializedRun; briefPath: string } {
+      const runId = "feedcafe-1111-2222-3333-444444444444";
+      const briefPath = path.join(
+        managedRoot,
+        "agent",
+        "history",
+        "goals",
+        "ws",
+        runId,
+        "wiki",
+        "goal-brief.md",
+      );
+      const run = makeRun({
+        runId,
+        state: "done",
+        workingDir: "/tmp/ws",
+        goalBriefPath: briefPath,
+        planNumber: 1,
+        planRevision: 1,
+        activePlanRevision: 1,
+        plan: {
+          goal: "Test goal",
+          workingDir: "/tmp/ws",
+          summary: "Stage 1 plan",
+          shortSummary: "Stage 1 plan",
+          steps: [
+            {
+              id: "1",
+              description: "Create goal1.txt",
+              shortSummary: "Create goal1.txt",
+              dependsOn: [],
+              status: "done",
+            },
+          ],
+        },
+        stepResults: {
+          "1": { stepId: "1", success: true, output: "done", durationMs: 100 },
+        },
+        pendingContinuation: {
+          proposalId: "abcd1234-5555-6666-7777-888899990000",
+          fromPlanNumber: 1,
+          fromRevision: 1,
+          goalAchieved: false,
+          briefSummary: "Create goal2.txt in test-workspace with the exact text: goal 2 completed!",
+          proposedPrompt:
+            "Create Plan 2 under the same Goal ID to do Stage 2 only: create goal2.txt.",
+          runAt: "now",
+          status: overrides.status ?? "pending",
+          createdAt: "2026-05-31T12:00:00.000Z",
+          ...(overrides.editMessage ? { lastContinuationEditMessage: overrides.editMessage } : {}),
+        },
+      });
+      return { run, briefPath };
+    }
+
+    function revisedStage2Plan() {
+      return {
+        plan: {
+          goal: "Test goal",
+          workingDir: "/tmp/ws",
+          summary: "Stage 2 plan",
+          steps: [
+            {
+              id: "s2",
+              description: "Create goal2.txt",
+              shortSummary: "Create goal2.txt",
+              dependsOn: [],
+              status: "done",
+              taskSummary: "should be cleared",
+            },
+          ],
+        },
+      };
+    }
+
+    it("snapshots the prior brief and rewrites the canonical brief with Next Plan Intent + Next Observation Point + Sources including the persisted Request Edit message", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const editMessage = "Make Stage 2 create goal2.txt with the exact text.";
+        const { run, briefPath } = continuationRun(managedRoot, {
+          editMessage,
+          status: "edited",
+        });
+        fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+        fs.writeFileSync(briefPath, PRIOR_BRIEF);
+        saveRunFixture(run);
+        mockRunCliPlanForContinuation.mockResolvedValue(revisedStage2Plan());
+
+        const { handleGoalContinuationApprove } = await import("./goal-commands.js");
+        const result = await handleGoalContinuationApprove(run.runId, "abcd1234");
+        expect(typeof result).not.toBe("string");
+
+        // Prior brief snapshotted to an immutable numbered sibling.
+        const snapshotPath = path.join(path.dirname(briefPath), "goal-brief-002.md");
+        expect(fs.existsSync(snapshotPath)).toBe(true);
+        expect(fs.readFileSync(snapshotPath, "utf8")).toBe(PRIOR_BRIEF);
+
+        // Canonical brief rewritten with the "Next" headings and Sources.
+        const updated = fs.readFileSync(briefPath, "utf8");
+        expect(updated).toContain("## Next Plan Intent");
+        expect(updated).toContain("## Next Observation Point");
+        expect(updated).toContain("## Sources");
+        expect(updated).not.toContain("## First Plan Intent");
+        expect(updated).not.toContain("## Observation Point");
+        // Recomputed next-plan fields and the approved next-plan prompt.
+        expect(updated).toContain("Create goal2.txt in test-workspace");
+        expect(updated).toContain("At that point, write the next Plan Report");
+        expect(updated).toContain(
+          "After the approved next plan is done, run or propose manual tests",
+        );
+        expect(updated).not.toContain("Check goal1.txt content equals");
+        expect(updated).toContain(
+          "Create Plan 2 under the same Goal ID to do Stage 2 only: create goal2.txt.",
+        );
+        // Sources cite the snapshot, the approved proposal, and the user edit.
+        expect(updated).toContain(snapshotPath);
+        expect(updated).toContain("abcd1234-5555-6666-7777-888899990000");
+        expect(updated).toContain(editMessage);
+      });
+    });
+
+    it("creates Plan 2 under the same Goal ID and does not auto-execute", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const { run, briefPath } = continuationRun(managedRoot);
+        fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+        fs.writeFileSync(briefPath, PRIOR_BRIEF);
+        saveRunFixture(run);
+        mockRunCliPlanForContinuation.mockResolvedValue(revisedStage2Plan());
+
+        const { handleGoalContinuationApprove } = await import("./goal-commands.js");
+        const result = await handleGoalContinuationApprove(run.runId, "abcd1234");
+
+        // Continuation Approve plans the next plan via runCliPlanForContinuation
+        // using the approved proposed prompt, under the same run.
+        expect(mockRunCliPlanForContinuation).toHaveBeenCalledWith(
+          expect.objectContaining({
+            runId: run.runId,
+            proposedPrompt:
+              "Create Plan 2 under the same Goal ID to do Stage 2 only: create goal2.txt.",
+          }),
+        );
+        expect(typeof result).not.toBe("string");
+        const typed = result as { runId: string };
+        expect(typed.runId).toBe(run.runId);
+
+        const stored = loadRun(run.runId, testGoalsDir)!;
+        expect(stored.runId).toBe(run.runId);
+        expect(stored.planNumber).toBe(2);
+        expect(stored.state).toBe("awaiting_approval");
+        // Steps reset to pending (not auto-executed) and prior summaries cleared.
+        expect(stored.plan?.steps).toHaveLength(1);
+        expect(stored.plan?.steps[0]).toMatchObject({ id: "s2", status: "pending" });
+        expect(stored.plan?.steps[0]?.taskSummary).toBeUndefined();
+        expect(stored.stepResults).toEqual({});
+        // Resume command must never be invoked by Approve.
+        expect(mockGoalResumeCommand).not.toHaveBeenCalled();
+        // Proposal archived as approved; goalBriefPath pinned to the canonical brief.
+        expect(stored.pendingContinuation).toBeUndefined();
+        expect(stored.continuationHistory?.[0]).toMatchObject({ status: "approved" });
+        expect(stored.goalBriefPath).toBe(briefPath);
+      });
+    });
+
+    it("rewrites the canonical brief even when no prior brief exists, without snapshotting", async () => {
+      await withTempManagedRoot(async (managedRoot) => {
+        const { run, briefPath } = continuationRun(managedRoot);
+        saveRunFixture(run);
+        mockRunCliPlanForContinuation.mockResolvedValue(revisedStage2Plan());
+
+        const { handleGoalContinuationApprove } = await import("./goal-commands.js");
+        const result = await handleGoalContinuationApprove(run.runId, "abcd1234");
+        expect(typeof result).not.toBe("string");
+
+        expect(fs.existsSync(path.join(path.dirname(briefPath), "goal-brief-002.md"))).toBe(false);
+        const updated = fs.readFileSync(briefPath, "utf8");
+        expect(updated).toContain("## Next Plan Intent");
+        expect(updated).toContain("## Sources");
+        expect(updated).toContain("none (no prior brief)");
+      });
     });
   });
 });

@@ -5,10 +5,9 @@
 // (CLI worker path). Keep the prompt body single-sourced here.
 
 import type { CliWorkerId } from "../../config/types.goal.js";
-import {
-  buildPlanQualityRubric,
-  PLAN_QUALITY_ANTI_PATTERN_SUMMARIES,
-} from "../shared/plan-quality-rubric.js";
+import { buildDevGatewayPlannerGuidance } from "../shared/dev-gateway-guidance.js";
+import { buildPlanQualityRubric } from "../shared/plan-quality-rubric.js";
+import { PLAN_QUALITY_PRINCIPLES } from "../shared/plan-quality-principles.js";
 
 type PromptWorkerId = Extract<CliWorkerId, "codex" | "claude_code">;
 
@@ -19,7 +18,7 @@ export type PlanSystemPromptOptions = {
   /**
    * When the goal is planned inside the SmithersBot dev checkout, append
    * guidance that runtime-affecting changes must be verified against the dev
-   * gateway (rebuild + restart smithersbot-dev-gateway.service + smoke test),
+   * gateway (rebuild + mediated dev-gateway status/restart/logs + smoke test),
    * not merely build/lint. Guidance only — this never flips runtime instance
    * config (see src/config/gateway-instance.ts) and is omitted for non-dev
    * workspaces and ordinary project goals.
@@ -45,19 +44,13 @@ export type PlanSystemPromptOptions = {
 export const WORKSPACE_SCOPE_PLANNER_GUIDANCE = [
   "GOAL WORKING DIRECTORY SCOPE (strict):",
   "- The executable/editable workingDir MUST resolve inside the CURRENT gateway instance's own managed agent/workspaces tree:",
-  "  - stable/default instance: /home/matt/smithersbot-home/agent/workspaces/<workspace>",
-  "  - dev instance: /home/matt/smithersbot-dev-home/agent/workspaces/<workspace>",
-  "- Observed-instance surfaces — for the stable/default gateway these are /home/matt/smithersbot-dev-home/agent/workspaces and /home/matt/smithersbot-dev-home/agent/history — are READ-ONLY/context-only and MUST NOT be chosen as workingDir.",
+  "  - stable/default instance: <managed-root>/agent/workspaces/<workspace>",
+  "  - dev instance: <dev-managed-root>/agent/workspaces/<workspace>",
+  "- Observed-instance surfaces — for the stable/default gateway these are <dev-managed-root>/agent/workspaces and <dev-managed-root>/agent/history — are READ-ONLY/context-only and MUST NOT be chosen as workingDir.",
   "- Even when a step references an observed surface for context or inspection, keep workingDir inside the current instance's own managed workspaces root. Never set workingDir to another instance's managed root, an observed-instance root, a private/state root, or an arbitrary out-of-root path.",
 ].join("\n");
 
-export const DEV_GATEWAY_PLANNER_GUIDANCE = [
-  "DEV GATEWAY VERIFICATION (SmithersBot dev checkout):",
-  "- This goal is planned in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
-  "- For changes that affect SmithersBot runtime behavior — gateway, setup/install, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior — verification MUST go beyond build/lint: include a step that rebuilds, restarts smithersbot-dev-gateway.service, and smoke-tests the changed behavior against the dev gateway before completion.",
-  "- Workers may restart and inspect ONLY smithersbot-dev-gateway.service; never restart, reinstall, or modify the stable smithersbot-gateway.service or ~/.smithersbot.",
-  "- For docs-only or tests-only changes, a dev-gateway restart is not required unless it is needed to verify the requested behavior.",
-].join("\n");
+export const DEV_GATEWAY_PLANNER_GUIDANCE = buildDevGatewayPlannerGuidance();
 
 export const NETWORK_TASK_SHAPE_PLANNER_GUIDANCE = [
   "NETWORK-ENABLED TASK SHAPE:",
@@ -113,6 +106,96 @@ function buildBackendSelectionRules(workers: PromptWorkerId[]): string {
   ].join("\n");
 }
 
+function buildPlanOutputContract(params: { backendUnion: string; exampleBackend: string }): string {
+  const { backendUnion, exampleBackend } = params;
+  return `Step schema:
+- id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
+- description: clear, actionable description of what the agent should do, including what "done" looks like
+- shortSummary: concise task title (<=60 chars) for UI display
+- dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
+- successCriteria (required): specific, verifiable done-when condition
+- constraints (required): array of explicit do-not-do constraints (can be [] if none)
+- durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
+- backend (required): ${backendUnion} — execution backend
+- requiresNetwork (optional): network is OFF by default. Set true ONLY for steps that genuinely reach the network: web fetch/search, package installs that may download dependencies, or scripts that intentionally call out to the network. Do NOT set it for normal local build/test/lint when dependencies are already installed, and prefer mediated health/dev-gateway operations over broad network for gateway/dev health checks. Omit or false for normal repo-local work.
+- requiresDevGatewayControl (optional): mediated host control is OFF by default. Set true ONLY for SmithersBot dev-gateway live verification tasks that run after external stable/operator restart orchestration and need the worker-invocable dev-gateway status/logs product path with mediated evidence. This is distinct from requiresNetwork, must not be used as a network marker, and must not imply sandbox-disable/no-sandbox behavior.
+- risk (optional): "low" | "medium" | "high" — Flag steps as "high" risk if they touch critical paths, have uncertain requirements, or could break existing behavior. The executor allocates extra retries to high-risk steps. Default: "low".
+
+Top-level summary fields:
+- summary: full plan description
+- shortSummary: <=80 chars, human-readable goal headline focused on the outcome (not implementation details)
+- Unless the goal is primarily about testing, avoid mentioning tests in shortSummary.
+- buildGate: post-execution verification gate for this plan
+- buildGate.commands: array of commands to run as objective verification (empty array for non-code projects)
+- buildGate.runBetweenSteps: true to run gate after each completed step, false to run only at the end
+
+Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
+{
+  "workingDir": "/absolute/path/or/~/path",
+  "summary": "Brief description of the plan",
+  "shortSummary": "Readable goal headline, <=80 chars",
+  "buildGate": {
+    "commands": ["pnpm build"],
+    "runBetweenSteps": true
+  },
+  "steps": [
+    {
+      "id": "unique-step-id",
+      "description": "What this step does and how to verify it is done",
+      "shortSummary": "Readable task title, <=60 chars",
+      "dependsOn": ["step-ids-that-must-complete-first"],
+      "successCriteria": "Verifiable done-when condition",
+      "constraints": ["Explicit do-not-do constraint"],
+      "durationMinutes": 12,
+      "backend": "${exampleBackend}",
+      "requiresNetwork": false,
+      "requiresDevGatewayControl": false
+    }
+  ]
+}`;
+}
+
+export function buildPlanRevisionSystemPrompt(
+  workers?: CliWorkerId[],
+  opts?: PlanSystemPromptOptions,
+): string {
+  const promptWorkers = normalizePromptWorkers(workers);
+  if (promptWorkers.length === 0) {
+    throw new Error("No worker backend available. Install Codex or Claude Code and rerun.");
+  }
+
+  const backendUnion = formatBackendUnion(promptWorkers);
+  const exampleBackend = primaryPromptBackend(promptWorkers);
+  const base = [
+    "You are a technical planning agent revising an existing SmithersBot execution plan.",
+    "",
+    "REVISION SCOPE:",
+    "- Generate a revised plan incorporating the requested changes.",
+    "- Preserve the current plan's correct structure and unchanged steps where possible.",
+    "- Apply the supplied revision instructions and prior-corrections checklist exactly.",
+    "- Do not re-scout or reopen resolved decisions; revise the JSON plan from the given context.",
+    "- Keep every code-changing step self-verifying: implementation, focused tests, and the exact focused test command belong in the same step.",
+    "- Keep successCriteria concrete and do not use tsc/build/lint as the only verification for logic-changing work.",
+    "- Keep backend, requiresNetwork, and requiresDevGatewayControl values within the rules below.",
+    "",
+    buildBackendSelectionRules(promptWorkers),
+    "",
+    "OUTPUT CONTRACT:",
+    buildPlanOutputContract({ backendUnion, exampleBackend }),
+    "",
+    "workingDir is the directory where the goal's work should happen.",
+    "- Use the current workspace path if the goal modifies an existing repo.",
+    "- Use a new path (for example ~/project-name) if the goal creates a new project or writes files outside the current workspace.",
+    "- Use ~ for home directory prefix.",
+    "",
+    WORKSPACE_SCOPE_PLANNER_GUIDANCE,
+    "",
+    'If you cannot create a plan because you need more information, respond with:\n{ "blocked": true, "question": "The specific question you need answered" }',
+  ].join("\n");
+
+  return opts?.devGatewayVerification ? `${base}\n\n${DEV_GATEWAY_PLANNER_GUIDANCE}` : base;
+}
+
 export function buildPlanSystemPrompt(
   workers?: CliWorkerId[],
   opts?: PlanSystemPromptOptions,
@@ -139,11 +222,12 @@ DOWNSTREAM AGENT CAPABILITIES:
 - The agent can chain unlimited tool calls per turn — read dozens of files, edit many, run builds and tests all within a single step
 - The agent receives the full project conventions (CLAUDE.md) and can follow existing patterns autonomously
 - You do NOT need to micro-manage the agent — describe WHAT to do, not HOW to use each tool
+- Describing what to do still requires a decided approach: inline scout findings and evidence paths instead of asking the worker to rediscover resolved design or investigation decisions
 
 ${buildPlanQualityRubric(promptWorkers)}
 
-CONCISE ANTI-PATTERN REMINDERS:
-${PLAN_QUALITY_ANTI_PATTERN_SUMMARIES}
+${PLAN_QUALITY_PRINCIPLES}
+- For Plans whose purpose is fixing a hard or intermittent bug, scope an early Task that establishes a reproduction/verification signal before fixes.
 
 MANAGED WORKSPACE AND SECRET RULES:
 - Apply the managed workspace, secret-handling, sandbox, convention-file, granularity, and verification requirements from the shared rubric.
@@ -152,63 +236,22 @@ MANAGED WORKSPACE AND SECRET RULES:
 ${buildBackendSelectionRules(promptWorkers)}
 
 STRUCTURED PLANNING REQUIREMENTS (strict):
+- Terms (Task, successCriteria, Key Decision, Observation Point, Decision(s) Needed): use them as defined in GLOSSARY.md; do not import software-engineering jargon the glossary does not define.
+- Map each step back to its scout node/evidence: keep step ids aligned with scout node ids and reference the scout Source Link when a step's rationale lives in the ScoutReport/plan draft.
 - Every step MUST include successCriteria: a specific, verifiable done-when condition.
 - Every step MUST include constraints: explicit approaches that are off-limits.
 - Step descriptions should include expected deliverables, not just generic task descriptions.
-- Build-gate commands are the objective stop-token for completion. Pick commands that prove the work is actually healthy.
-- For read-only/report-only/inspection goals, set buildGate.commands to [] unless the user explicitly asks to build, test, verify, change code, or run checks.
+- Build-gate commands are the objective stop-token for completion. Apply the shared rubric's canonical and sandbox-safe verification gate policy before choosing commands.
 - Treat goals like "tell me whether the git tree is clean" and "inspect/report/summarize/status only, do not edit files" as read-only/report-only goals with buildGate.commands: [].
 - For code-changing Node.js projects with a build script in package.json, set buildGate.commands to ["pnpm build"].
-- For explicit build/test/verification/check goals, set buildGate.commands to the requested or appropriate verification command(s).
+- For explicit build/test/verification/check goals, use the requested command only when it is canonical for this repo and runnable in the managed-worker environment; otherwise choose the smallest CI-aligned scoped gate and record broader host-only verification as deferred host/CI/manual verification.- For read-only/report-only/inspection goals, set buildGate.commands to [] unless the user explicitly asks to build, test, verify, change code, or run checks.
 - For non-code projects, set buildGate.commands to [].
 
 ${NETWORK_TASK_SHAPE_PLANNER_GUIDANCE}
 
-Step schema:
-- id: short unique identifier (e.g. "implement-auth", "fix-payment-flow", "add-dashboard")
-- description: clear, actionable description of what the agent should do, including what "done" looks like
-- shortSummary: concise task title (<=60 chars) for UI display
-- dependsOn: array of step ids that must complete before this step can start (use [] for no dependencies)
-- successCriteria (required): specific, verifiable done-when condition
-- constraints (required): array of explicit do-not-do constraints (can be [] if none)
-- durationMinutes: estimated agent runtime in minutes (integer, 5–30 typical)
-- backend (required): ${backendUnion} — execution backend
-- requiresNetwork (optional): network is OFF by default. Set true ONLY for steps that genuinely reach the network: web fetch/search, package installs that may download dependencies, or scripts that intentionally call out to the network. Do NOT set it for normal local build/test/lint when dependencies are already installed, and prefer mediated health/dev-gateway operations over broad network for gateway/dev health checks. Omit or false for normal repo-local work.
-- risk (optional): "low" | "medium" | "high" — Flag steps as "high" risk if they touch critical paths, have uncertain requirements, or could break existing behavior. The executor allocates extra retries to high-risk steps. Default: "low".
-
-Top-level summary fields:
-- summary: full plan description
-- shortSummary: <=80 chars, human-readable goal headline focused on the outcome (not implementation details)
-- Unless the goal is primarily about testing, avoid mentioning tests in shortSummary.
-- buildGate: post-execution verification gate for this plan
-- buildGate.commands: array of commands to run as objective verification (empty array for non-code projects)
-- buildGate.runBetweenSteps: true to run gate after each completed step, false to run only at the end
+${buildPlanOutputContract({ backendUnion, exampleBackend })}
 
 Produce a plan satisfying the shared plan-quality rubric above.
-
-Respond ONLY with raw JSON (no markdown fences and no prose before/after). Your output must start with "{" and end with "}" and match this schema:
-{
-  "workingDir": "/absolute/path/or/~/path",
-  "summary": "Brief description of the plan",
-  "shortSummary": "Readable goal headline, <=80 chars",
-  "buildGate": {
-    "commands": ["pnpm build"],
-    "runBetweenSteps": true
-  },
-  "steps": [
-    {
-      "id": "unique-step-id",
-      "description": "What this step does and how to verify it is done",
-      "shortSummary": "Readable task title, <=60 chars",
-      "dependsOn": ["step-ids-that-must-complete-first"],
-      "successCriteria": "Verifiable done-when condition",
-      "constraints": ["Explicit do-not-do constraint"],
-      "durationMinutes": 12,
-      "backend": "${exampleBackend}",
-      "requiresNetwork": false
-    }
-  ]
-}
 
 workingDir is the directory where the goal's work should happen.
 - Use the current workspace path if the goal modifies an existing repo.

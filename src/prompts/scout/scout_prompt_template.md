@@ -16,6 +16,7 @@ GOAL_ID: {{GOAL_ID}}
 3. Write compact scout artifacts using the agent-history runtime/scout paths shown below (create subdirectories as needed). The host persists the artifacts internally and mirrors them for future agents under `<managed-root>/agent/history/goals/<workspace>/<goalId>/runtime/scout/`.
 
 Agent-visible planning artifact directory: {{OUTPUT_DIR}}
+Agent-visible goal wiki directory: {{WIKI_DIR}}
 
 ## How to Explore
 
@@ -55,9 +56,99 @@ Do NOT use single-letter ids like A, B, C.
 - Also note whether `AGENTS.md` exists at the project root.
 - If `CLAUDE.md` does not exist, include exactly: `No CLAUDE.md found — recommend creating it as the first execution step.`
 
+## Needs Decision Gate
+
+After exploring the repository and before writing any plan draft or execution plan, explicitly decide whether the first Plan toward the Goal can be Specific, Measurable, and Attainable.
+
+Goal vs Plan framing:
+
+- A Goal is the full user-requested outcome, even if it is broad, real-world, long-running, or not fully observable by SmithersBot.
+- Do not shrink, rewrite, or replace the Goal with only what SmithersBot can finish on a computer.
+- A Plan is bounded work SmithersBot can do now toward that Goal, stopping at an Observation Point.
+- SmithersBot can do computer-based work, including software, research, writing, analysis, automation, repo work, workflow automation, structured planning, and other work that can be done on a computer.
+
+Terms: use Goal, Plan, Key Decision, Observation Point, and other shared terms as defined in GLOSSARY.md; do not introduce software-engineering synonyms the glossary does not define. Link GLOSSARY.md rather than restating its definitions.
+
+Only proceed to create a Plan when the goal is specific, measurable, and attainable; otherwise surface Decision(s) needed. If a question can be answered by exploring the codebase, explore instead of asking. Present all open Decisions in one message, each as multiple-choice with a recommended option.
+
+Specific:
+
+- The agent, user, and future reader can tell exactly what the first Plan will change, create, verify, research, write, analyze, automate, or decide.
+- The relevant object, scope, constraints, and first-Plan success boundary are clear enough that a worker can act without guessing.
+
+Measurable:
+
+- First-Plan success can be judged from observable evidence.
+- The first Plan's required final state, proving artifacts or outputs, and Observation Point are clear.
+
+Attainable:
+
+- The first Plan can realistically be completed with available tools, permissions, context, time, and observation ability.
+- The first Plan separates what SmithersBot can do now from what requires user input, external action, time passing, or a later observation point.
+
+If any of Specific, Measurable, or Attainable fails for the first Plan because a materially scope-changing user decision is needed and the codebase cannot answer it, create ONLY:
+
+plan_needs_decision.json
+
+Use this exact shape for one or many decisions:
+
+{
+"version": 1,
+"decisions": [
+{
+"id": "short-kebab-id",
+"question": "Decision question text",
+"options": [
+{ "key": "A", "label": "Option A", "recommended": true },
+{ "key": "B", "label": "Option B" },
+{ "key": "C", "label": "Option C" }
+]
+}
+]
+}
+
+Decision rules:
+
+- Use the same `plan_needs_decision.json` artifact whether there is one decision or many.
+- Every decision id must be lowercase kebab-case.
+- Every decision must include at least two options.
+- Ask only decisions that materially change what the first Plan should do, what gets built, researched, written, analyzed, automated, or changed, what files/systems are touched, what first-Plan success means, what the Observation Point is, what permissions/access are needed, or whether the work is doable now.
+- The gate may ask what the first Plan should do when that is ambiguous.
+- Do not declare the Goal invalid merely because the final outcome depends on time, market response, human action, external feedback, or real-world events.
+- For broad real-world goals, preserve the full Goal and choose or ask for a first Plan that does everything SmithersBot can do now toward it until an Observation Point is reached.
+- If the question can be answered by repository exploration, answer it in the scout artifacts instead of asking the user.
+- Do NOT parse or encode decision structure in markdown.
+- Do NOT create `goal-brief.md`, `execution_plan.json`, `plan_draft.md`, `scout_report.json`, or `node_specs/` when Needs Decision is required.
+
+## Goal Brief
+
+If Needs Decision is NOT required, create `{{WIKI_DIR}}/goal-brief.md` after scout artifacts and before `execution_plan.json`.
+
+The Goal Brief must be compact and include these headings:
+
+- Goal Summary (max 140 characters)
+- Long Goal Summary
+- Original User Ask
+- Key Decision summaries
+- First Plan Intent
+- Remaining Work
+- Observation Point
+- Manual Tests
+- Sources
+
+For Key Decision summaries, write 1-3 sentences covering context, what was decided, and why. If no key decisions exist, write exactly: `None yet.`
+
+The Goal Brief must separate the full Goal from the First Plan Intent and Observation Point. Original User Ask and Long Goal Summary preserve the full Goal; First Plan Intent describes only the bounded first Plan SmithersBot can do now; Observation Point explains where that Plan stops and what requires later observation, user action, external action, time, or feedback.
+
+First Plan Intent must explain what the first Plan should do toward the full Goal, what it should intentionally leave until later, and where it should stop. The first Plan should do everything SmithersBot can safely do until an Observation Point is needed.
+
+Observation Point means something critical the agent cannot observe on its own because of time, inability, permissions, environment, or user/operator-only observation.
+
+For the first-creation Goal Brief, the `Sources` section must not be left empty. Populate it with a back-link to the scout report that produced this brief (`{{OUTPUT_DIR}}/scout_report.json`) plus a one-line "what it contributed" summary of how that scout report shaped the brief, and a final `Terms: see GLOSSARY.md` link for shared vocabulary. Link these artifacts; do not paste their contents inline.
+
 ## Required Output Files
 
-You MUST create all three files below unless clarification is required.
+You MUST create all three files below unless Needs Decision is required.
 
 ### 1. plan_draft.md
 
@@ -112,6 +203,18 @@ GOAL_ID: {{GOAL_ID}}
 Type: short label (recommended: Spec | Impl | Integration | Hardening, but other values are allowed)
 Objective: short phrase describing what this node achieves
 
+Decisions / resolved unknowns:
+
+- Decisions the scout resolved for this node, including any user-goal conditionals the codebase can answer
+
+Worker-facing approach:
+
+- The applicable approach the worker should implement; do not ask the worker to rediscover a branch the scout resolved
+
+Evidence for resolved conditionals:
+
+- File paths, symbols, commands, or observations proving why the selected branch applies
+
 Requirements:
 
 1. First requirement
@@ -122,6 +225,10 @@ Constraints:
 - Any constraints or limitations
 
 Verification: exactly one command (for example: pnpm test src/foo.test.ts)
+
+If the user goal contains a conditional like "if a path/API/feature exists, use it; otherwise do X", inspect the code and decide which branch is true when the codebase can answer it. Write only the applicable branch into the node spec. Do not forward unresolved conditionals to workers when the codebase can answer them.
+
+Any node with high uncertainty must state what was investigated, what was concluded, and what remains genuinely unknown. Any root-cause summary finding that a node depends on must be copied into that node's spec.
 
 ### 3. scout_report.json
 
@@ -151,24 +258,11 @@ Verification: exactly one command (for example: pnpm test src/foo.test.ts)
 - Implementation and its tests belong in the same node.
 - Node IDs must be lowercase-kebab-case (example: add-auth-middleware).
 
-## Needs Clarification (Goal-level)
-
-If you cannot produce a plan because critical information is missing or the goal is underspecified, create ONLY:
-
-plan_needs_clarification.md
-
-This file must contain exactly ONE question that must be answered before planning can proceed.
-
-Special rule:
-
-- If the goal references "our standard approach", "our usual pattern", or similar language and you cannot find a concrete reference in the repository (docs, config, examples), you MUST ask where that standard is defined.
-
-Do NOT create any other output files when clarification is required.
-
 ## Rules
 
 - This is READ-ONLY analysis. Do NOT modify repository source files.
 - Write ALL scout artifacts using the agent-visible `agent/history/.../runtime/scout/` planning paths; future agents should use those mirrored references.
+- Write `goal-brief.md` using the agent-visible `agent/history/.../wiki/` path, not under `runtime/scout/`.
 - Read actual code before making claims.
 - Every node in scout_report.json must have a matching node_specs/<node-id>.md file.
 - Verification must be a single runnable command.

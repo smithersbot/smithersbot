@@ -111,7 +111,7 @@ function sanitizeGithubPushOutcome(
 }
 
 export function mirrorGoalRunToAgentHistory(run: SerializedRun): void {
-  const workspace = workspaceNameFromWorkingDir(run.workingDir);
+  const workspace = run.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(run.workingDir);
   const historyDir = resolveAgentGoalHistoryDir(workspace, run.runId);
   const summaryPath = path.join(historyDir, SUMMARY_FILENAME);
   const steps = (run.plan?.steps ?? []).map((step) => ({

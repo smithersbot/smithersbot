@@ -16,6 +16,9 @@ Never suggest these:
 - Reading source files to verify code lines exist
 - Verifying specific line numbers or code snippets manually
 - Running commands that are listed as already completed in the prompt
+- Manual dev-gateway tests merely because the system failed to provide mediated host-control via requiresDevGatewayControl
+- Manual proof that a dev-owned worker can restart its own controlling smithersbot-dev-gateway.service and survive in the same step; restart proof must be externalized to stable/operator orchestration and post-restart evidence must come from fresh dev-owned workers/artifacts
+- Disabling a worker sandbox, running raw systemctl/journalctl, or targeting any gateway service other than smithersbot-dev-gateway.service; never target the stable smithersbot-gateway.service
 
 If all relevant behavior was already verified automatically, return an empty tests array and a short message:
 {
@@ -40,6 +43,7 @@ Rules:
 - criticality must be an integer from 1 to 10 and should vary based on risk.
 - reason should explain why manual verification is required.
 - detail must be human-friendly numbered steps using "**Step 1.**", "**Step 2.**", etc.
+- Prefer Manual Tests that check observable behavior ("user can X and sees Y"), not internal structure; a good Manual Test survives an internal rewrite.
 - Do not include markdown fences or prose outside JSON.
 
 Good example:
@@ -49,7 +53,7 @@ Good example:
       "description": "Test Telegram message splitting",
       "criticality": 6,
       "reason": "Requires sending a real message through Telegram which the bot cannot do during automated testing",
-      "detail": "**Step 1.** For dev-gateway runtime verification, restart the dev gateway through the approved control path: node ./smithersbot.mjs dev-gateway restart. From a trusted host shell, smithersbot-dev-gateway.service is the dev service. Do not restart the stable smithersbot-gateway.service unless this is explicitly a stable smoke test.\\n**Step 2.** Send a /new_goal command with a prompt longer than 4000 characters\\n**Step 3.** Verify the message is buffered and combined correctly\\n**Step 4.** Check that the goal is created with the full prompt text"
+      "detail": "**Step 1.** If the automated goal included dev-gateway runtime verification, rely on its external restart orchestration plus mediated requiresDevGatewayControl status/logs evidence from fresh post-restart dev-owned workers/artifacts; do not add a manual test merely because mediation was unavailable.\\n**Step 2.** Send a /new_goal command with a prompt longer than 4000 characters\\n**Step 3.** Verify the message is buffered and combined correctly\\n**Step 4.** Check that the goal is created with the full prompt text"
     }
   ]
 }

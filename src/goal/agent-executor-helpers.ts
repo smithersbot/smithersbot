@@ -1,6 +1,6 @@
 import type { CliWorkerId } from "../config/types.goal.js";
 import { loadAttemptBundles, resolveWorkerDir } from "./attempt-bundle.js";
-import { isBackendAvailable } from "./backend-availability.js";
+import { isBackendAvailable, isDevGatewayHostMediationAvailable } from "./backend-availability.js";
 import { claudeCodeSandboxNetworkCapability } from "./backend-sandbox.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import { isUsageLimitClassReason } from "./error-patterns.js";
@@ -30,11 +30,31 @@ export function isBackendNetworkCapable(
   return false;
 }
 
+/**
+ * Whether a backend is eligible to use the mediated dev-gateway control path.
+ * The worker still stays sandboxed; eligibility means the backend is available
+ * and can write/read the managed scratch channel while the host gateway owns the
+ * systemd bus. Pi is excluded from worker launch capability modeling.
+ */
+export function isBackendDevGatewayControlCapable(
+  backend: GoalBackendId,
+  availability: BackendAvailability[],
+  opts: { mediationAvailable?: boolean } = {},
+): boolean {
+  if (!isBackendAvailable(backend, availability).available) return false;
+  if (backend !== "codex" && backend !== "claude_code") return false;
+  return opts.mediationAvailable ?? isDevGatewayHostMediationAvailable();
+}
+
 export type ResolveBackendNetworkOpts = {
   /** Predicate: can this backend provide network for a requiresNetwork step? */
   networkCapable: (backend: GoalBackendId) => boolean;
   /** Ordered candidate backends to reroute to when the chosen one cannot network. */
   networkCandidates: GoalBackendId[];
+  /** Predicate: can this backend use host-mediated dev-gateway control? */
+  devGatewayControlCapable?: (backend: GoalBackendId) => boolean;
+  /** Ordered candidate backends to reroute to for dev-gateway-control steps. */
+  devGatewayControlCandidates?: GoalBackendId[];
 };
 
 export function resolveBackendForStep(
@@ -44,14 +64,23 @@ export function resolveBackendForStep(
   networkOpts?: ResolveBackendNetworkOpts,
 ): GoalBackendId {
   const chosen = override ?? step.executedBackend ?? step.backend ?? fallback;
-  // A network-required step must never be assigned to a backend that cannot
-  // enable network. Reroute to the first network-capable candidate; if none is
-  // capable, return the chosen backend unchanged so the caller can surface a
-  // capability_blocked block rather than silently running without network.
-  if (step.requiresNetwork !== true || !networkOpts) return chosen;
-  if (networkOpts.networkCapable(chosen)) return chosen;
-  const capable = networkOpts.networkCandidates.find(
-    (candidate) => candidate !== chosen && networkOpts.networkCapable(candidate),
+  if (!networkOpts) return chosen;
+  const needsNetwork = step.requiresNetwork === true;
+  const needsDevGatewayControl = step.requiresDevGatewayControl === true;
+  if (!needsNetwork && !needsDevGatewayControl) return chosen;
+
+  const satisfies = (candidate: GoalBackendId): boolean =>
+    (!needsNetwork || networkOpts.networkCapable(candidate)) &&
+    (!needsDevGatewayControl || networkOpts.devGatewayControlCapable?.(candidate) === true);
+
+  if (satisfies(chosen)) return chosen;
+  const candidates = [
+    ...networkOpts.networkCandidates,
+    ...(networkOpts.devGatewayControlCandidates ?? []),
+  ];
+  const capable = candidates.find(
+    (candidate, index) =>
+      candidate !== chosen && candidates.indexOf(candidate) === index && satisfies(candidate),
   );
   return capable ?? chosen;
 }
@@ -179,6 +208,8 @@ export function pickFallbackBackend(
   networkOpts?: {
     requiresNetwork?: boolean;
     networkCapable: (backend: GoalBackendId) => boolean;
+    requiresDevGatewayControl?: boolean;
+    devGatewayControlCapable?: (backend: GoalBackendId) => boolean;
   },
 ): PickFallbackBackendResult {
   if (!isUsageLimitClassReason(result.blockedReason)) {
@@ -214,6 +245,17 @@ export function pickFallbackBackend(
       backend: null,
       reason: "fallback_unavailable",
       detail: `${fallbackBackend} cannot enable network for a requiresNetwork step`,
+    };
+  }
+
+  if (
+    networkOpts?.requiresDevGatewayControl === true &&
+    networkOpts.devGatewayControlCapable?.(fallbackBackend) !== true
+  ) {
+    return {
+      backend: null,
+      reason: "fallback_unavailable",
+      detail: `${fallbackBackend} cannot use host-mediated dev-gateway control for a requiresDevGatewayControl step`,
     };
   }
 

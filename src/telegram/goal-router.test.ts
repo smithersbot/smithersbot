@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { routeTelegramText, TELEGRAM_GOAL_ROUTER_MESSAGES } from "./goal-router.js";
+import {
+  clearAllPendingContinuationEditInteractionsForTest,
+  recordPendingContinuationEditInteraction,
+} from "./continuation-edit-interactions.js";
 import type { SerializedRun } from "../goal/types.js";
 
 const now = new Date().toISOString();
@@ -24,10 +28,16 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     telegramEditPromptMessages: partial.telegramEditPromptMessages,
     telegramDoneMessage: partial.telegramDoneMessage,
     telegramFeedbackPromptMessages: partial.telegramFeedbackPromptMessages,
+    pendingContinuation: partial.pendingContinuation,
   };
 }
 
 describe("routeTelegramText", () => {
+  afterEach(() => {
+    clearAllPendingContinuationEditInteractionsForTest();
+    vi.useRealTimers();
+  });
+
   // Default routing: free text becomes CHAT (only explicit /commands create goals)
   it("routes plain text to CHAT (no implicit goal creation)", () => {
     const route = routeTelegramText({
@@ -108,6 +118,233 @@ describe("routeTelegramText", () => {
     });
     expect(route.kind).toBe("GOAL_EDIT");
     expect(route.runId).toBe("r1");
+  });
+
+  it("routes non-reply text to GOAL_CONTINUATION_EDIT while Request Edit is active", () => {
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      originalMessageId: 70,
+      promptMessageId: 71,
+    });
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "pending",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 71 },
+        },
+      }),
+    ];
+
+    const route = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "Please include README cleanup.",
+      runs,
+    });
+
+    expect(route).toMatchObject({ kind: "GOAL_CONTINUATION_EDIT", runId: "r1" });
+  });
+
+  it("keeps explicit slash commands out of active continuation-edit ownership", () => {
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      promptMessageId: 71,
+    });
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "pending",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 71 },
+        },
+      }),
+    ];
+
+    const route = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "/goal_status r1",
+      runs,
+    });
+
+    expect(route.kind).not.toBe("GOAL_CONTINUATION_EDIT");
+  });
+
+  it("routes ForceReply prompt replies to GOAL_CONTINUATION_EDIT", () => {
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "pending",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 71 },
+        },
+      }),
+    ];
+
+    const route = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "Revise the continuation prompt.",
+      replyToMessageId: 71,
+      runs,
+    });
+
+    expect(route).toMatchObject({ kind: "GOAL_CONTINUATION_EDIT", runId: "r1" });
+  });
+
+  it("routes original continuation-card replies to GOAL_CONTINUATION_EDIT while Request Edit is active", () => {
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      originalMessageId: 70,
+      promptMessageId: 71,
+    });
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "pending",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 71 },
+        },
+      }),
+    ];
+
+    const route = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "Revise from the original card.",
+      replyToMessageId: 70,
+      runs,
+    });
+
+    expect(route).toMatchObject({ kind: "GOAL_CONTINUATION_EDIT", runId: "r1" });
+  });
+
+  it("returns a goal notice instead of CHAT for stale continuation-edit state", () => {
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      originalMessageId: 70,
+      promptMessageId: 71,
+    });
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "approved",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 71 },
+        },
+      }),
+    ];
+
+    const route = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "Late edit after approval.",
+      runs,
+    });
+
+    expect(route.kind).toBe("GOAL_NOTICE");
+    expect(route.runId).toBe("r1");
+  });
+
+  it("refreshes repeated continuation Request Edit taps without corrupting state", () => {
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      originalMessageId: 70,
+      promptMessageId: 71,
+    });
+    recordPendingContinuationEditInteraction({
+      chatId: 1,
+      senderId: "99",
+      runId: "r1",
+      originalMessageId: 72,
+      promptMessageId: 73,
+    });
+    const runs = [
+      makeRun({
+        runId: "r1",
+        state: "done",
+        pendingContinuation: {
+          proposalId: "proposal-1",
+          fromPlanNumber: 1,
+          goalAchieved: false,
+          briefSummary: "Continue.",
+          proposedPrompt: "Next prompt.",
+          runAt: "now",
+          status: "pending",
+          createdAt: now,
+          notify: { chatId: 1, messageId: 73 },
+        },
+      }),
+    ];
+
+    const staleOriginalRoute = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "Old card reply.",
+      replyToMessageId: 70,
+      runs,
+    });
+    const latestOriginalRoute = routeTelegramText({
+      chatId: 1,
+      senderId: "99",
+      messageText: "New card reply.",
+      replyToMessageId: 72,
+      runs,
+    });
+
+    expect(staleOriginalRoute.kind).not.toBe("GOAL_CONTINUATION_EDIT");
+    expect(latestOriginalRoute).toMatchObject({ kind: "GOAL_CONTINUATION_EDIT", runId: "r1" });
   });
 
   it("routes reply to feedback-prompt message to GOAL_FEEDBACK", () => {

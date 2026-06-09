@@ -38,7 +38,7 @@ function session(steps: PlanStep[], overrides: Partial<GoalSession> = {}): GoalS
 }
 
 describe("applyResumeNote", () => {
-  it("reschedules blocked, paused, and failed persisted blocked steps and leaves done/executing unchanged", () => {
+  it("reschedules blocked, paused, and failed persisted blocked steps without changing run state", () => {
     const blocked = step({
       id: "blocked-a",
       status: "blocked",
@@ -82,7 +82,7 @@ describe("applyResumeNote", () => {
     expect(result).toMatchObject({
       rescheduledStepIds: ["blocked-a", "paused-b", "failed-c"],
       noteAdded: true,
-      goalState: "executing",
+      goalState: "blocked",
     });
     expect(goal.resumeNotes).toEqual([
       {
@@ -106,10 +106,140 @@ describe("applyResumeNote", () => {
     expect(executing.status).toBe("in_progress");
     expect(executing.blockedReason).toBe("error");
     expect(pending.status).toBe("pending");
+    expect(goal.state).toBe("blocked");
     expect(goal.blocked).toBeNull();
+    expect(goal.answers["task:blocked-a:input"]).toBe("The service is fixed now.");
+    expect(goal.answers["task:paused-b:input"]).toBeUndefined();
+    expect(goal.answers["task:failed-c:input"]).toBeUndefined();
     expect(result.noteBody).toContain("Message at 2026-05-30T12:00:00.000Z to unblock step(s):");
     expect(result.noteBody).toContain("blocked-a\npaused-b\nfailed-c");
     expect(result.noteBody).toContain("User details:\nThe service is fixed now.");
+  });
+
+  it("records user details as a per-step answer when clearing a user_input block", () => {
+    const needsInput = step({
+      id: "needs-input",
+      status: "blocked",
+      blockedReason: "user_input",
+      blockedQuestion: "Which database should we use?",
+    });
+    const goal = session([needsInput], {
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Which database should we use?",
+        requiredInputKey: "task:needs-input:input",
+        stepId: "needs-input",
+      },
+    });
+
+    const result = applyResumeNote(goal, {
+      source: "goal_answer",
+      userText: "Use Postgres.",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      rescheduledStepIds: ["needs-input"],
+      noteAdded: true,
+      goalState: "blocked",
+    });
+    expect(goal.answers["task:needs-input:input"]).toBe("Use Postgres.");
+    expect(goal.blocked).toBeNull();
+    expect(needsInput.status).toBe("pending");
+    expect(needsInput.blockedReason).toBeUndefined();
+    expect(goal.resumeNotes).toEqual([
+      {
+        timestamp: "2026-05-30T12:00:00.000Z",
+        source: "goal_answer",
+        affectedStepIds: ["needs-input"],
+        userText: "Use Postgres.",
+      },
+    ]);
+    expect(goal.state).not.toBe("executing");
+  });
+
+  it("records user details as a per-step answer when clearing a legacy block with no reason", () => {
+    const legacyNeedsInput = step({
+      id: "legacy-needs-input",
+      status: "blocked",
+      blockedQuestion: "Need detail.",
+    });
+    const goal = session([legacyNeedsInput], {
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need detail.",
+        requiredInputKey: "task:legacy-needs-input:input",
+        stepId: "legacy-needs-input",
+      },
+    });
+
+    applyResumeNote(goal, {
+      source: "add_details",
+      userText: "Legacy answer.",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(goal.answers["task:legacy-needs-input:input"]).toBe("Legacy answer.");
+    expect(goal.state).not.toBe("executing");
+  });
+
+  it("does not record a per-step answer when clearing a non-user-input block", () => {
+    const blocked = step({
+      id: "retry-after-error",
+      status: "blocked",
+      blockedReason: "usage_limit",
+      blockedQuestion: "Usage exhausted.",
+    });
+    const goal = session([blocked], {
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Usage exhausted.",
+        requiredInputKey: "task:retry-after-error:input",
+        stepId: "retry-after-error",
+      },
+    });
+
+    const result = applyResumeNote(goal, {
+      source: "add_details",
+      userText: "Retry now.",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      rescheduledStepIds: ["retry-after-error"],
+      noteAdded: true,
+      goalState: "blocked",
+    });
+    expect(goal.answers["task:retry-after-error:input"]).toBeUndefined();
+    expect(goal.resumeNotes).toEqual([
+      {
+        timestamp: "2026-05-30T12:00:00.000Z",
+        source: "add_details",
+        affectedStepIds: ["retry-after-error"],
+        userText: "Retry now.",
+      },
+    ]);
+    expect(goal.blocked).toBeNull();
+    expect(blocked.status).toBe("pending");
+    expect(goal.state).not.toBe("executing");
+  });
+
+  it("does not record a per-step answer when user details are blank", () => {
+    const needsInput = step({
+      id: "blank-answer",
+      status: "blocked",
+      blockedReason: "user_input",
+      blockedQuestion: "Need detail.",
+    });
+    const goal = session([needsInput]);
+
+    applyResumeNote(goal, {
+      source: "goal_answer",
+      userText: "   ",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(goal.answers["task:blank-answer:input"]).toBeUndefined();
   });
 
   it("renders resume-without-text copy separately from detail notes", () => {
@@ -125,6 +255,132 @@ describe("applyResumeNote", () => {
         "task-b\n" +
         "User pressed Resume. Treat this as permission/context to retry the listed steps.",
     );
+  });
+
+  it("records a run-level resume_execution marker with no step-level blocked steps", () => {
+    const goal = session(
+      [
+        step({ id: "step-a", status: "pending" }),
+        step({ id: "step-b", status: "pending", dependsOn: ["step-a"] }),
+      ],
+      {
+        state: "blocked",
+        blocked: {
+          blockedAt: "execution",
+          prompt:
+            "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+          requiredInputKey: "resume_execution",
+        },
+        resumeNotes: [],
+      },
+    );
+
+    const result = applyResumeNote(goal, {
+      source: "add_details",
+      userText: "Carry on.",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(result.rescheduledStepIds).toEqual([]);
+    expect(result.noteAdded).toBe(true);
+    expect(result.goalState).toBe("blocked");
+    expect(goal.state).toBe("blocked");
+    expect(goal.blocked).toBeNull();
+    expect(goal.answers["task:step-a:input"]).toBeUndefined();
+    expect(goal.answers["task:step-b:input"]).toBeUndefined();
+    expect(goal.resumeNotes).toEqual([
+      {
+        timestamp: "2026-05-30T12:00:00.000Z",
+        source: "add_details",
+        affectedStepIds: [],
+        userText: "Carry on.",
+      },
+    ]);
+    // Pending steps are left runnable for the scheduler; nothing is force-blocked.
+    expect(goal.plan?.steps.map((s) => s.status)).toEqual(["pending", "pending"]);
+    expect(result.noteBody).toContain("to resume the interrupted run");
+    expect(result.noteBody).toContain("User details:\nCarry on.");
+  });
+
+  it("preserves a follow-up reply after the first note cleared blocked steps", () => {
+    const goal = session(
+      [
+        step({ id: "step-a", status: "pending" }),
+        step({ id: "step-b", status: "pending", dependsOn: ["step-a"] }),
+      ],
+      {
+        state: "blocked",
+        blocked: null,
+        resumeNotes: [
+          {
+            timestamp: "2026-05-30T12:00:00.000Z",
+            source: "goal_answer",
+            affectedStepIds: ["step-a"],
+            userText: "First answer.",
+          },
+        ],
+      },
+    );
+
+    const result = applyResumeNote(goal, {
+      source: "add_details",
+      userText: "Second answer with extra detail.",
+      now: "2026-05-30T12:01:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      rescheduledStepIds: [],
+      noteAdded: true,
+      goalState: "blocked",
+    });
+    expect(goal.state).toBe("blocked");
+    expect(goal.resumeNotes).toHaveLength(2);
+    expect(goal.resumeNotes?.[1]).toMatchObject({
+      timestamp: "2026-05-30T12:01:00.000Z",
+      source: "add_details",
+      affectedStepIds: [],
+      userText: "Second answer with extra detail.",
+    });
+    expect(result.noteBody).toContain("User details:\nSecond answer with extra detail.");
+  });
+
+  it("renders a run-level resume note without text for the Resume button", () => {
+    const note = {
+      timestamp: "2026-05-30T12:00:00.000Z",
+      source: "resume" as const,
+      affectedStepIds: [],
+    };
+
+    expect(renderResumeNoteBody(note)).toBe(
+      "Message at 2026-05-30T12:00:00.000Z to resume the interrupted run. " +
+        "User pressed Resume. Treat this as permission/context to continue execution.",
+    );
+  });
+
+  it("is a no-op for a run-level block that is not resume_execution with no blocked steps", () => {
+    const goal = session([step({ id: "pending-a", status: "pending" })], {
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Which database?",
+        requiredInputKey: "step:1:input",
+      },
+      resumeNotes: [],
+    });
+
+    const result = applyResumeNote(goal, {
+      source: "goal_resume",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(result).toEqual({
+      rescheduledStepIds: [],
+      noteAdded: false,
+      goalState: "blocked",
+    });
+    expect(goal.state).toBe("blocked");
+    expect(goal.blocked).not.toBeNull();
+    expect(goal.resumeNotes).toEqual([]);
   });
 
   it("is a no-op when no blocked steps are eligible", () => {

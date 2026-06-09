@@ -11,6 +11,7 @@ import { registerConfigCli } from "../config-cli.js";
 import { registerDevGatewayCommand } from "./register.dev-gateway.js";
 import { DEV_GATEWAY_COMMAND_NAME, dispatchDevGatewayCli } from "../../goal/dev-gateway-cli.js";
 import { registerGoalCommand } from "./register.goal.js";
+import { registerHarnessCommand } from "./register.harness.js";
 import { registerMemoryCli, runMemoryStatus } from "../memory-cli.js";
 import { registerAgentCommands } from "./register.agent.js";
 import { registerConfigureCommand } from "./register.configure.js";
@@ -171,6 +172,10 @@ export const commandRegistry: CommandRegistration[] = [
   {
     id: "goal",
     register: ({ program }) => registerGoalCommand(program),
+  },
+  {
+    id: "harness",
+    register: ({ program }) => registerHarnessCommand(program),
   },
   {
     id: "dev-gateway",

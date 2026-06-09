@@ -81,12 +81,12 @@ if (isMain) {
   installUnhandledRejectionHandler();
 
   process.on("uncaughtException", (error) => {
-    console.error("[moltbot] Uncaught exception:", formatUncaughtError(error));
+    console.error("[smithersbot] Uncaught exception:", formatUncaughtError(error));
     process.exit(1);
   });
 
   void program.parseAsync(process.argv).catch((err) => {
-    console.error("[moltbot] CLI failed:", formatUncaughtError(err));
+    console.error("[smithersbot] CLI failed:", formatUncaughtError(err));
     process.exit(1);
   });
 }

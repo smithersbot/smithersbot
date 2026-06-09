@@ -71,11 +71,11 @@ describe("logger helpers", () => {
     resetLogger();
     const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "smithersbot-logs-"));
     const today = localDateString(new Date());
-    const todayPath = path.join(logDir, `moltbot-${today}.log`);
+    const todayPath = path.join(logDir, `smithersbot-${today}.log`);
     setLoggerOverride({ file: todayPath }); // force a rolling path regardless of user config
 
     // create an old file to be pruned
-    const oldPath = path.join(logDir, "moltbot-2000-01-01.log");
+    const oldPath = path.join(logDir, "smithersbot-2000-01-01.log");
     fs.mkdirSync(logDir, { recursive: true });
     fs.writeFileSync(oldPath, "old");
     fs.utimesSync(oldPath, new Date(0), new Date(0));

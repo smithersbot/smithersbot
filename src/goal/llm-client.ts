@@ -1,4 +1,5 @@
 import { completeSimple, getModel, type Api, type Model } from "@mariozechner/pi-ai";
+import { writeCriticalAgentLaunchEvent, type AgentHistoryScope } from "./agent-history-events.js";
 import type { GoalLlmClient, GoalLlmResponse } from "./types.js";
 
 const DEFAULT_MODEL_ID = "claude-sonnet-4-20250514";
@@ -61,4 +62,35 @@ export function createGoalLlmClient(params: {
       };
     },
   };
+}
+
+export async function completeGoalLlmWithHistory(params: {
+  client: GoalLlmClient;
+  scope: AgentHistoryScope;
+  phase: string;
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens?: number;
+  model?: string;
+  runId?: string;
+}): Promise<GoalLlmResponse> {
+  writeCriticalAgentLaunchEvent({
+    scope: params.scope,
+    phase: params.phase,
+    backend: "api",
+    prompt: `${params.systemPrompt}\n\n${params.userMessage}`,
+    command: "GoalLlmClient.complete",
+    event: {
+      ...(params.runId ? { runId: params.runId, goalId: params.runId } : {}),
+      status: "launching",
+      ...(params.model ? { model: params.model } : {}),
+      maxTokens: params.maxTokens,
+    },
+  });
+
+  return params.client.complete({
+    systemPrompt: params.systemPrompt,
+    userMessage: params.userMessage,
+    maxTokens: params.maxTokens,
+  });
 }

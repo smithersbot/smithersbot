@@ -1,10 +1,22 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts } from "../prompts/planner/system-prompt.js";
-import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
+import {
+  buildPlanRevisionSystemPrompt as buildPlanRevisionSystemPromptFromPrompts,
+  buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts,
+} from "../prompts/planner/system-prompt.js";
+import { shouldInjectDevGatewayGuidance } from "./dev-gateway-workspace.js";
 import { GoalLlmError, classifyGoalError } from "./errors.js";
-import type { ScoutResult } from "./scout.js";
+import { buildAgentVisibleScoutDir } from "./agent-visible-paths.js";
+import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { completeGoalLlmWithHistory } from "./llm-client.js";
+import {
+  SCOUT_NODE_SPECS_DIR,
+  SCOUT_PLAN_DRAFT_FILE,
+  SCOUT_REPORT_FILE,
+  type ScoutReport,
+  type ScoutResult,
+} from "./scout.js";
 import type { GoalBackendId } from "./backend-types.js";
 import { PlanInputSchema } from "./goal-schemas.js";
 import type { GoalLlmClient, Plan, PlanStep } from "./types.js";
@@ -12,7 +24,7 @@ import { resolveRunDir } from "./run-store.js";
 import { normalizeLabel } from "./mermaid-render.js";
 import { collapseWhitespace, parseShortSummary } from "./plan-text.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
-import type { CliWorkerId } from "../config/types.goal.js";
+import type { CliWorkerId, GoalConfig } from "../config/types.goal.js";
 
 /**
  * Re-export of the canonical planner system-prompt builder from
@@ -20,6 +32,7 @@ import type { CliWorkerId } from "../config/types.goal.js";
  * available on the planner module so existing imports keep resolving.
  */
 export const buildPlanSystemPrompt = buildPlanSystemPromptFromPrompts;
+export const buildPlanRevisionSystemPrompt = buildPlanRevisionSystemPromptFromPrompts;
 
 export const PLAN_SYSTEM_PROMPT = buildPlanSystemPrompt();
 
@@ -51,11 +64,45 @@ export function persistRawPlanResponse(runId: string, rawText: string): string |
   }
 }
 
+/**
+ * Compact, one-line-per-node scout summary (id/type/objective/verification/
+ * effort-risk-uncertainty). Shared with `cli-planner.buildCachedScoutSummary`
+ * so the planner feed and the cached-scout (replan) feed format nodes identically.
+ */
+export function formatCompactScoutNodes(report: ScoutReport): string[] {
+  return report.nodes.map((node) =>
+    [
+      `- ${node.id} (${node.type})`,
+      `  objective: ${node.objective}`,
+      `  verification: ${node.verification}`,
+      `  effort/risk/uncertainty: ${node.effort}/${node.risk}/${node.uncertainty}`,
+    ].join("\n"),
+  );
+}
+
+/** Compact `from -> to: why` edge lines (or `- none`). Shared with the cached-scout feed. */
+export function formatCompactScoutEdges(report: ScoutReport): string[] {
+  return report.edges.length > 0
+    ? report.edges.map((edge) => `- ${edge.from} -> ${edge.to}: ${edge.why}`)
+    : ["- none"];
+}
+
+/** Bound a long artifact excerpt so the planner draft never dominates the feed. */
+function truncatePlanDraftForPrompt(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const headChars = Math.floor(maxChars * 0.65);
+  const tailChars = Math.max(0, maxChars - headChars);
+  return `${text.slice(0, headChars)}\n\n[...truncated plan draft excerpt...]\n\n${text.slice(
+    -tailChars,
+  )}`;
+}
+
 /** Build the user message for the planner, optionally enriched with scout data. */
 export function buildPlannerUserMessage(
   goal: string,
   cwd: string,
   scoutData?: ScoutResult,
+  runId?: string,
 ): string {
   if (!scoutData || scoutData.status !== "success") {
     return [`Goal: ${goal}`, `Current workspace path: ${cwd}`].join("\n");
@@ -63,17 +110,34 @@ export function buildPlannerUserMessage(
 
   const lines: string[] = [`Goal: ${goal}`, `Current workspace path: ${cwd}`];
   lines.push("");
-  lines.push("--- Scout Report (pre-analysis by Claude Code) ---");
-  lines.push(JSON.stringify(scoutData.report, null, 2));
+  lines.push("--- Scout Report (compact node/edge summary) ---");
+  lines.push(`Scout goal id: ${scoutData.report.goal_id}`);
   lines.push("");
-  lines.push("--- Plan Draft ---");
-  lines.push(scoutData.planDraft);
+  lines.push("Scout nodes:");
+  lines.push(...formatCompactScoutNodes(scoutData.report));
+  lines.push("");
+  lines.push("Scout edges:");
+  lines.push(...formatCompactScoutEdges(scoutData.report));
+
+  if (runId) {
+    const mirror = buildAgentVisibleScoutDir(runId, workspaceNameFromWorkingDir(cwd));
+    lines.push("");
+    lines.push("Sources (open for full detail):");
+    lines.push(`- Source Link: full ScoutReport: ${path.join(mirror, SCOUT_REPORT_FILE)}`);
+    lines.push(`- Source Link: full plan draft: ${path.join(mirror, SCOUT_PLAN_DRAFT_FILE)}`);
+    lines.push(`- Source Link: node specs: ${path.join(mirror, SCOUT_NODE_SPECS_DIR)}/`);
+  }
+
+  lines.push("");
+  lines.push("--- Plan Draft (excerpt) ---");
+  lines.push(truncatePlanDraftForPrompt(scoutData.planDraft, 6_000));
   lines.push("---");
   lines.push("");
   lines.push(
-    "Use the scout analysis above as your primary reference. " +
-      "Normalize node IDs, descriptions, dependencies, and durations " +
-      "into the JSON plan format. Preserve the dependency graph structure from the scout report.",
+    "Use the compact scout summary above as your primary reference; open the Source " +
+      "Links for full node specs / plan draft when you need more detail. Normalize node " +
+      "IDs, descriptions, dependencies, and durations into the JSON plan format and " +
+      "preserve the dependency graph structure from the scout report.",
   );
   return lines.join("\n");
 }
@@ -84,16 +148,34 @@ export async function generatePlan(
   cwd: string,
   scoutData?: ScoutResult,
   enabledWorkers?: CliWorkerId[],
+  runId?: string,
+  goalConfig?: GoalConfig,
 ): Promise<PlanResult> {
   let response;
+  const systemPrompt = buildPlanSystemPrompt(enabledWorkers, {
+    devGatewayVerification: shouldInjectDevGatewayGuidance(cwd, goalConfig),
+  });
+  const userMessage = buildPlannerUserMessage(goal, cwd, scoutData, runId);
   try {
-    response = await client.complete({
-      systemPrompt: buildPlanSystemPrompt(enabledWorkers, {
-        devGatewayVerification: isSmithersbotDevWorkspace(cwd),
-      }),
-      userMessage: buildPlannerUserMessage(goal, cwd, scoutData),
-      maxTokens: 8192,
-    });
+    response = runId
+      ? await completeGoalLlmWithHistory({
+          client,
+          scope: {
+            kind: "goal",
+            workspaceName: workspaceNameFromWorkingDir(cwd),
+            goalId: runId,
+          },
+          phase: "planner-api",
+          systemPrompt,
+          userMessage,
+          maxTokens: 8192,
+          runId,
+        })
+      : await client.complete({
+          systemPrompt,
+          userMessage,
+          maxTokens: 8192,
+        });
   } catch (err) {
     throw wrapLlmCallError(err);
   }
@@ -199,7 +281,7 @@ export function extractJson(text: string): Record<string, unknown> {
 }
 
 const VALID_BACKEND_IDS: GoalBackendId[] = ["pi", "codex", "claude_code"];
-const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
+const PLAN_SHORT_SUMMARY_MAX_CHARS = 140;
 const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
 
 /** Parse and validate backend from raw LLM output. */
@@ -370,6 +452,7 @@ function validatePlan(raw: Record<string, unknown>, goal: string): Plan {
       durationMinutes,
       backend,
       ...(step.requiresNetwork === true ? { requiresNetwork: true } : {}),
+      ...(step.requiresDevGatewayControl === true ? { requiresDevGatewayControl: true } : {}),
     });
   }
 
@@ -399,6 +482,7 @@ export async function generatePlanRevision(
   currentPlan: Plan,
   editInstructions: string,
   enabledWorkers?: CliWorkerId[],
+  goalConfig?: GoalConfig,
 ): Promise<PlanResult> {
   const currentPlanJson = JSON.stringify(
     {
@@ -424,8 +508,8 @@ export async function generatePlanRevision(
   let response;
   try {
     response = await client.complete({
-      systemPrompt: buildPlanSystemPrompt(enabledWorkers, {
-        devGatewayVerification: isSmithersbotDevWorkspace(cwd),
+      systemPrompt: buildPlanRevisionSystemPrompt(enabledWorkers, {
+        devGatewayVerification: shouldInjectDevGatewayGuidance(cwd, goalConfig),
       }),
       userMessage: `Goal: ${goal}\nCurrent workspace path: ${cwd}\n\nCurrent plan:\n${currentPlanJson}\n\nRevision instructions: ${editInstructions}\n\nGenerate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.`,
       maxTokens: 8192,
@@ -475,13 +559,66 @@ function detectCycles(steps: PlanStep[]): void {
  * Format an approved plan as readable advisory context for the agent's system prompt.
  * The agent uses this to understand what tasks it will be given, in what order.
  */
-export function formatPlanAsContext(plan: Plan): string {
+export type FormatPlanContextOptions = {
+  currentStepId?: string;
+  planLinkPath?: string;
+  nodeSpecsDir?: string;
+  stepThreshold?: number;
+};
+
+const DEFAULT_LINKED_PLAN_STEP_THRESHOLD = 8;
+
+function formatPlanTaskLine(step: PlanStep): string {
+  const deps = step.dependsOn.length > 0 ? ` (depends on: ${step.dependsOn.join(", ")})` : "";
+  return `- Task ${step.id}: ${step.description}${deps}`;
+}
+
+function formatPlanStepSummary(step: PlanStep): string {
+  const deps = step.dependsOn.length > 0 ? ` (depends on: ${step.dependsOn.join(", ")})` : "";
+  const summary =
+    step.shortSummary?.trim() || step.description.split(/\r?\n/, 1)[0]?.trim() || step.id;
+  return `- ${step.id}: ${summary}${deps}`;
+}
+
+export function formatPlanAsContext(plan: Plan, opts?: FormatPlanContextOptions): string {
   const lines: string[] = [];
   lines.push(`Summary: ${plan.summary}`);
   lines.push("");
+
+  if (opts) {
+    const threshold = opts.stepThreshold ?? DEFAULT_LINKED_PLAN_STEP_THRESHOLD;
+    const currentStep = plan.steps.find((step) => step.id === opts.currentStepId);
+    const shouldLinkLargePlan =
+      plan.steps.length > threshold && Boolean(opts.planLinkPath) && Boolean(currentStep);
+    if (shouldLinkLargePlan) {
+      lines.push(
+        `Large plan: ${plan.steps.length} tasks. The current Task stays inline; other Tasks are summarized here and linked for full detail.`,
+      );
+      lines.push(`Source Link: Full plan: ${opts.planLinkPath}`);
+      if (opts.nodeSpecsDir) {
+        lines.push(`Source Link: Node specs: ${opts.nodeSpecsDir}/`);
+      }
+      lines.push("");
+
+      if (currentStep) {
+        lines.push("Current Task (inline):");
+        lines.push(formatPlanTaskLine(currentStep));
+        lines.push("");
+      }
+
+      const otherSteps = plan.steps.filter((step) => step.id !== opts.currentStepId);
+      if (otherSteps.length > 0) {
+        lines.push("Other Tasks (summary only):");
+        for (const step of otherSteps) {
+          lines.push(formatPlanStepSummary(step));
+        }
+      }
+      return lines.join("\n");
+    }
+  }
+
   for (const step of plan.steps) {
-    const deps = step.dependsOn.length > 0 ? ` (depends on: ${step.dependsOn.join(", ")})` : "";
-    lines.push(`- Task ${step.id}: ${step.description}${deps}`);
+    lines.push(formatPlanTaskLine(step));
   }
   return lines.join("\n");
 }

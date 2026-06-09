@@ -9,6 +9,7 @@ import {
   resolveObservedInspectionTarget,
   resolveObservedSealedRoots,
   resolvePrivateRoot,
+  resolveScratchDir,
   type ObservedInspectionTarget,
 } from "../config/managed-paths.js";
 import type { GatewayInstanceName } from "../config/gateway-instance.js";
@@ -363,8 +364,11 @@ function tomlQuotedKey(value: string): string {
 
 export function buildCodexSandboxConfig(params: {
   workingDir: string;
+  runId?: string;
+  taskId?: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
 }): CodexSandboxConfig {
   const executionRoot = resolveManagedExecutionRoot({
     workingDir: params.workingDir,
@@ -375,17 +379,27 @@ export function buildCodexSandboxConfig(params: {
     return {
       mode: "read-only",
       executionRoot,
-      configOverrides: [`net.allowed=${params.requiresNetwork === true ? "true" : "false"}`],
+      configOverrides: [
+        `net.allowed=${params.requiresNetwork === true ? "true" : "false"}`,
+        "features.image_generation=false",
+      ],
     };
   }
 
   const gitWritablePath = path.join(params.workingDir, ".git");
+  const devGatewayWritablePaths = devGatewayControlWritablePaths(params);
   return {
     mode: "workspace-write",
     executionRoot,
     configOverrides: [
       `net.allowed=${params.requiresNetwork === true ? "true" : "false"}`,
-      `sandbox_workspace_write.writable_roots=["${escapeTomlString(gitWritablePath)}"]`,
+      "features.image_generation=false",
+      `sandbox_workspace_write.writable_roots=[${uniqueValues([
+        gitWritablePath,
+        ...devGatewayWritablePaths,
+      ])
+        .map((writablePath) => `"${escapeTomlString(writablePath)}"`)
+        .join(",")}]`,
     ],
   };
 }
@@ -461,6 +475,18 @@ function buildCodexDeniedReadPaths(
   ]);
 }
 
+function devGatewayControlWritablePaths(params: {
+  runId?: string;
+  taskId?: string;
+  requiresDevGatewayControl?: boolean;
+}): string[] {
+  if (params.requiresDevGatewayControl !== true) return [];
+  if (!params.runId || !params.taskId) {
+    throw new Error("requiresDevGatewayControl sandbox grants require runId and taskId.");
+  }
+  return [resolveScratchDir(params.runId, params.taskId)];
+}
+
 function buildCodexPermissionProfileToml(params: {
   executionRoot: string;
   allowedReadPaths: string[];
@@ -498,6 +524,9 @@ function buildCodexPermissionProfileToml(params: {
     "",
     "[permissions.smithersbot.network]",
     `enabled = ${params.requiresNetwork === true ? "true" : "false"}`,
+    "",
+    "[features]",
+    "image_generation = false",
     "",
   ].join("\n");
 }
@@ -546,8 +575,10 @@ function discoverCodexNativeBinary(codexPath: string): string | undefined {
 export function buildCodexNativeSandboxConfig(params: {
   workingDir: string;
   runId: string;
+  taskId?: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
@@ -570,6 +601,7 @@ export function buildCodexNativeSandboxConfig(params: {
   const authReferencePath = path.join(codexHome, "auth.json");
   const repoChatAgentRoot = resolveRepoChatAgentRoot(params);
   const configuredReadOnlyRoots = resolveConfiguredReadOnlyRoots(params.readOnlyRoots);
+  const devGatewayWritablePaths = devGatewayControlWritablePaths(params);
   const allowedReadPaths =
     params.purpose === "repo-chat"
       ? uniqueValues([
@@ -584,11 +616,12 @@ export function buildCodexNativeSandboxConfig(params: {
         ]);
   const writablePaths =
     params.purpose === "repo-chat"
-      ? uniqueValues(params.extraWritablePaths ?? [])
+      ? uniqueValues([...(params.extraWritablePaths ?? []), ...devGatewayWritablePaths])
       : uniqueValues([
           params.workingDir,
           path.join(params.workingDir, ".git"),
           ...(params.extraWritablePaths ?? []),
+          ...devGatewayWritablePaths,
         ]);
   // Codex grants a broad `/`=read base, so an observed instance's private root
   // and state dir must be explicitly denied to seal dev private state.
@@ -630,8 +663,10 @@ export function buildCodexNativeSandboxConfig(params: {
 export function writeCodexNativeSandboxConfig(params: {
   workingDir: string;
   runId: string;
+  taskId?: string;
   purpose: CodexSandboxPurpose;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   sandboxRoot?: string;
@@ -1118,12 +1153,14 @@ export function claudeCodeSandboxNetworkCapability(_env: NodeJS.ProcessEnv = pro
 export function buildClaudeCodeSandboxSettingsConfig(params: {
   workingDir: string;
   runId: string;
+  taskId?: string;
   purpose: ClaudeSandboxPurpose;
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
@@ -1142,6 +1179,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
     settingsRoot,
     `smithersbot-claude-${safeRunIdSegment(params.runId)}`,
   );
+  const devGatewayWritablePaths = devGatewayControlWritablePaths(params);
   const allowRead =
     params.purpose === "repo-chat"
       ? uniqueValues([agentRoot, params.workingDir, ...configuredReadOnlyRoots.allowedReadRoots])
@@ -1152,8 +1190,12 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
         ]);
   const allowWrite =
     params.purpose === "repo-chat"
-      ? uniqueValues(params.extraWritablePaths ?? [])
-      : uniqueValues([params.workingDir, ...(params.extraWritablePaths ?? [])]);
+      ? uniqueValues([...(params.extraWritablePaths ?? []), ...devGatewayWritablePaths])
+      : uniqueValues([
+          params.workingDir,
+          ...(params.extraWritablePaths ?? []),
+          ...devGatewayWritablePaths,
+        ]);
 
   // requiresNetwork=true must never be silently ignored: either write a real
   // network grant (when the build supports it) or throw a clear capability error
@@ -1198,12 +1240,14 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
 export function writeClaudeCodeSandboxSettings(params: {
   workingDir: string;
   runId: string;
+  taskId?: string;
   purpose: ClaudeSandboxPurpose;
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   denyReadDeps?: ClaudeDenyReadDeps;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
   if (
@@ -1223,11 +1267,13 @@ export function writeClaudeCodeSandboxSettings(params: {
 export function buildClaudeCodeSandboxLaunchConfig(params: {
   workingDir: string;
   runId: string;
+  taskId?: string;
   purpose: ClaudeSandboxPurpose;
   readOnlyRoots?: string[];
   extraWritablePaths?: string[];
   settingsRoot?: string;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
 }): ClaudeCodeLaunchSandboxConfig {
   const config = writeClaudeCodeSandboxSettings({
     ...params,

@@ -132,6 +132,8 @@ const STATE_INDICATORS: Record<KnownGoalState, { emoji: string; text: string }> 
   planning: { emoji: "\uD83E\uDDED", text: "Planning" },
   awaiting_approval: { emoji: "\u2705", text: "Awaiting Approval" },
   executing: { emoji: "\u23F3", text: "Executing" },
+  reporting: { emoji: "\uD83D\uDCC4", text: "Reporting" },
+  reporting_failed: { emoji: "\u26A0\uFE0F", text: "Reporting Failed" },
   blocked: { emoji: "\u26D4", text: "Blocked" },
   done: { emoji: "\u2705", text: "Done" },
   cancelled: { emoji: "\u23F9", text: "Cancelled" },

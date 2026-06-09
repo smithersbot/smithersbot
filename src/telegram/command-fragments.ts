@@ -23,7 +23,18 @@ export type CommandFragmentCommandName =
   | "goal_feedback"
   | "goal_answer"
   | "goal_edit"
+  | "continuation_edit"
   | "goal_resume";
+
+export const COMMAND_FRAGMENT_COMMAND_NAMES = [
+  "new_goal",
+  "repo_chat",
+  "goal_feedback",
+  "goal_answer",
+  "goal_edit",
+  "continuation_edit",
+  "goal_resume",
+] as const satisfies readonly CommandFragmentCommandName[];
 
 export type CommandFragmentKeyParams = {
   accountId: string;

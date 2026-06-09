@@ -5,15 +5,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan } from "./types.js";
 import {
   buildAutocheckPrompt,
+  checkPlanDevGatewaySelfRestartProof,
   checkPlanWorkingDir,
   formatReviewerResetTime,
   runPlanAutocheck,
   summarizeReviewerFailureReason,
 } from "./plan-autocheck.js";
-import { REVIEW_INSTRUCTION } from "../prompts/plan-autocheck/review-instruction.js";
+import {
+  DEV_GATEWAY_REVIEW_GUIDANCE,
+  REVIEW_INSTRUCTION,
+} from "../prompts/plan-autocheck/review-instruction.js";
+import { PLAN_QUALITY_PRINCIPLES } from "../prompts/shared/plan-quality-principles.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import * as runtimeMirror from "./runtime-mirror.js";
+
+const DEV_CAPS_ENV = "SMITHERSBOT_DEV_CAPS";
+
+function withDevCapsEnv<T>(value: string | undefined, fn: () => T): T {
+  const previous = process.env[DEV_CAPS_ENV];
+  if (value === undefined) delete process.env[DEV_CAPS_ENV];
+  else process.env[DEV_CAPS_ENV] = value;
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env[DEV_CAPS_ENV];
+    else process.env[DEV_CAPS_ENV] = previous;
+  }
+}
 
 const mockRunCliProcess = vi.hoisted(() => vi.fn());
 vi.mock("./cli-process.js", () => ({
@@ -1639,7 +1658,7 @@ describe("runPlanAutocheck", () => {
     expect(prompt).not.toContain("Do not repeat this context note");
   });
 
-  it("injects dev-gateway verification guidance only for the smithersbot-dev checkout", () => {
+  it("omits dev-gateway verification guidance for the smithersbot-dev checkout by default", () => {
     const devDir = path.join(os.tmpdir(), "smithersbot-home", "workspaces", "smithersbot-dev");
     const devPrompt = buildAutocheckPrompt({
       goalText: "Change gateway restart behavior",
@@ -1650,12 +1669,14 @@ describe("runPlanAutocheck", () => {
       contextNotes: [],
     });
 
-    expect(devPrompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
-    expect(devPrompt).toContain("smithersbot-dev-gateway.service");
-    expect(devPrompt).toContain("REJECT the plan if it verifies only with build/lint");
-    // Docs/tests-only and ordinary project goals stay exempt.
-    expect(devPrompt).toContain("Do NOT require dev-gateway verification for docs-only");
-
+    expect(devPrompt).not.toContain(DEV_GATEWAY_REVIEW_GUIDANCE);
+    expect(devPrompt).not.toContain("DEV GATEWAY VERIFICATION");
+    expect(devPrompt).toContain("GOAL-ECHO / RE-DELEGATED INVESTIGATION");
+    expect(devPrompt).toContain("FORK-SHAPED SUCCESS CRITERIA");
+    expect(devPrompt).toContain("scout_report, plan_draft, or node_specs");
+    expect(devPrompt).toContain(
+      "If the scout resolved an unknown or conditional, reject steps that leave the value open",
+    );
     // Use a literal absolute path OUTSIDE the dev checkout. Under vitest,
     // os.tmpdir() itself resolves under the real smithersbot-dev workspace, so a
     // tmpdir-based path would (correctly) be detected as the dev checkout.
@@ -1670,7 +1691,203 @@ describe("runPlanAutocheck", () => {
     expect(nonDevPrompt).not.toContain("DEV GATEWAY VERIFICATION");
   });
 
-  it("injects dev-gateway verification guidance on resume prompts too", () => {
+  it("omits dev-gateway verification guidance when goal config turns dev capabilities off", () => {
+    const devDir = path.join(os.tmpdir(), "smithersbot-home", "workspaces", "smithersbot-dev");
+    const prompt = buildAutocheckPrompt({
+      goalText: "Change gateway restart behavior",
+      plan: makePlan("Dev gateway change", "1", "claude_code"),
+      workingDir: devDir,
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+      config: { devCapabilities: "off" },
+    });
+
+    expect(prompt).not.toContain(DEV_GATEWAY_REVIEW_GUIDANCE);
+    expect(prompt).not.toContain("DEV GATEWAY VERIFICATION");
+  });
+
+  it("omits dev-gateway verification guidance when the env kill switch is off", () => {
+    const devDir = path.join(os.tmpdir(), "smithersbot-home", "workspaces", "smithersbot-dev");
+    withDevCapsEnv("off", () => {
+      const prompt = buildAutocheckPrompt({
+        goalText: "Change gateway restart behavior",
+        plan: makePlan("Dev gateway change", "1", "claude_code"),
+        workingDir: devDir,
+        resume: true,
+        priorFeedback: [],
+        contextNotes: [],
+      });
+
+      expect(prompt).not.toContain(DEV_GATEWAY_REVIEW_GUIDANCE);
+      expect(prompt).not.toContain("DEV GATEWAY VERIFICATION");
+    });
+  });
+
+  it("includes requiresDevGatewayControl in the plan snapshot distinctly from requiresNetwork", () => {
+    const plan = makePlan("Dev gateway mediated verification", "dev", "codex");
+    plan.steps[0]!.requiresDevGatewayControl = true;
+    plan.steps[0]!.requiresNetwork = false;
+
+    const prompt = buildAutocheckPrompt({
+      goalText: "Verify dev gateway live behavior",
+      plan,
+      workingDir: "/tmp/some-other-project",
+      resume: false,
+      priorFeedback: [],
+      contextNotes: [],
+    });
+
+    expect(prompt).toContain('"requiresDevGatewayControl": true');
+    expect(prompt).toContain('"requiresNetwork": false');
+  });
+
+  it("rejects dev-owned same-gateway restart proof as external-orchestration-needed", () => {
+    const plan = makePlan("Dev gateway self restart proof", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "Use mediated dev-gateway restart for smithersbot-dev-gateway.service, then after the restart prove the changed behavior against the dev gateway in the same step.",
+      successCriteria:
+        "The worker restarts the dev gateway and captures post-restart status/logs evidence from the same step.",
+    });
+
+    const decision = checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir);
+
+    expect(decision.approved).toBe(false);
+    if (!decision.approved) {
+      expect(decision.editInstructions).toMatch(/externalize/i);
+      expect(decision.editInstructions).toContain("stable/operator orchestration");
+      expect(decision.editInstructions).toContain("fresh dev-owned worker/artifact");
+      expect(decision.editInstructions).toContain("requiresNetwork");
+      expect(decision.editInstructions).toContain("raw systemctl/journalctl");
+    }
+  });
+
+  it("keeps dev-gateway same-step self-restart proof rejection always-on when dev capabilities are off", () => {
+    const plan = makePlan("Dev gateway self restart proof", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "Run moltbot dev-gateway restart, wait for the dev gateway to come up healthy, then smoke-test the changed behavior.",
+      successCriteria:
+        "The same worker proves it survives the restart and captures status/logs after restart.",
+    });
+
+    withDevCapsEnv("off", () => {
+      expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toMatchObject({
+        approved: false,
+      });
+    });
+  });
+
+  it("allows safe negated dev-gateway restart wording", () => {
+    const plan = makePlan("Dev gateway no restart proof", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "MUST NOT restart smithersbot-dev-gateway.service. Use mediated status/logs only to inspect the current dev gateway.",
+      successCriteria:
+        "The worker does not restart the dev gateway and records any post-restart evidence only if it already exists.",
+    });
+
+    expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toEqual({
+      approved: true,
+    });
+  });
+
+  it("allows already-restarted fresh-worker evidence without restart action", () => {
+    const plan = makePlan("Dev gateway fresh evidence", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "Consume the already-restarted gateway through mediated status/logs and gather post-restart evidence from a fresh worker artifact.",
+      successCriteria:
+        "Fresh post-restart evidence is captured without running any dev-gateway restart in this step.",
+    });
+
+    expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toEqual({
+      approved: true,
+    });
+  });
+
+  it("allows external restart gate followed by separate fresh dev-owned verification", () => {
+    const plan = makePlan("External restart then fresh verification", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    plan.steps = [
+      {
+        id: "external-restart-gate",
+        shortSummary: "External operator restart gate",
+        description:
+          "External operator/stable restart gate: restart was completed by an external gate outside the dev-owned worker.",
+        dependsOn: [],
+        status: "pending",
+        durationMinutes: 5,
+        backend: "codex",
+      },
+      {
+        id: "fresh-post-restart-verification",
+        shortSummary: "Fresh dev-owned verification",
+        description:
+          "Consume the already-restarted gateway and capture post-restart evidence from a fresh worker using mediated status/logs.",
+        successCriteria:
+          "The fresh dev-owned worker verifies post-restart behavior after the external gate; it does not restart the dev gateway.",
+        dependsOn: ["external-restart-gate"],
+        status: "pending",
+        durationMinutes: 10,
+        backend: "codex",
+        requiresDevGatewayControl: true,
+        requiresNetwork: false,
+      },
+    ];
+
+    expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toEqual({
+      approved: true,
+    });
+  });
+
+  it("rejects real unsafe self-restart plans with same-step proof", () => {
+    const plan = makePlan("Real dev gateway self restart", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "Run moltbot dev-gateway restart, wait for the dev gateway to come up healthy, then smoke-test the changed behavior.",
+      successCriteria:
+        "The same worker proves it survives the restart and captures status/logs after restart.",
+    });
+
+    expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toMatchObject({
+      approved: false,
+    });
+  });
+
+  it("allows dev-owned mediated status/logs verification without restart proof", () => {
+    const plan = makePlan("Dev gateway status proof", "dev", "codex");
+    plan.workingDir = "/home/test/smithersbot-dev-home/agent/workspaces/smithersbot-dev";
+    Object.assign(plan.steps[0]!, {
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+      description:
+        "Use mediated dev-gateway status and logs to confirm the fresh post-restart runtime carries the expected prompt guidance.",
+      successCriteria: "Status/logs evidence is captured from the fresh dev-owned worker artifact.",
+    });
+
+    expect(checkPlanDevGatewaySelfRestartProof(plan, plan.workingDir)).toEqual({
+      approved: true,
+    });
+  });
+
+  it("omits dev-gateway verification guidance on resume prompts too", () => {
     const devDir = path.join(os.tmpdir(), "workspaces", "smithersbot-dev");
     const prompt = buildAutocheckPrompt({
       goalText: "Change worker prompt injection",
@@ -1681,7 +1898,8 @@ describe("runPlanAutocheck", () => {
       contextNotes: [],
     });
     expect(prompt.startsWith(REVIEW_INSTRUCTION)).toBe(true);
-    expect(prompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
+    expect(prompt).not.toContain(DEV_GATEWAY_REVIEW_GUIDANCE);
+    expect(prompt).not.toContain("DEV GATEWAY VERIFICATION");
     expect(prompt).toContain("You are continuing plan review in an existing reviewer session.");
   });
 
@@ -2186,6 +2404,21 @@ describe("Stage 2Q — plan-autocheck reviewer instruction", () => {
     expect(REVIEW_INSTRUCTION).toContain(
       "Do not make this rubric so rigid that it rejects normal, well-scoped plans",
     );
+  });
+
+  it("uses the shared principles and checker-only guide links", () => {
+    expect(REVIEW_INSTRUCTION).toContain(PLAN_QUALITY_PRINCIPLES);
+    expect(REVIEW_INSTRUCTION).toContain("complete, independently-verifiable slice of the outcome");
+    expect(REVIEW_INSTRUCTION).toContain("observable behavior end-to-end");
+    expect(REVIEW_INSTRUCTION).toContain("don't add indirection that earns nothing");
+    expect(REVIEW_INSTRUCTION).toContain("Consider an alternative approach before committing");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "Review whether Tasks are thin, end-to-end, and independently verifiable",
+    );
+    expect(REVIEW_INSTRUCTION).toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(REVIEW_INSTRUCTION).toContain("docs/goal-engine-guides/diagnosis-guide.md");
+    expect(REVIEW_INSTRUCTION).not.toContain("ranked hypotheses");
+    expect(REVIEW_INSTRUCTION).not.toContain("mock only at true");
   });
 });
 

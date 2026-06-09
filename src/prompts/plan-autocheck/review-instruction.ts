@@ -4,6 +4,8 @@
 // reviewer (Claude Code or Codex) on what to verify and how to respond.
 
 import { PLAN_QUALITY_RUBRIC } from "../shared/plan-quality-rubric.js";
+import { PLAN_QUALITY_PRINCIPLES } from "../shared/plan-quality-principles.js";
+import { buildDevGatewayReviewGuidance } from "../shared/dev-gateway-guidance.js";
 
 export const NETWORK_TASK_SHAPE_REVIEW_GUIDANCE = [
   "Network-enabled task review:",
@@ -17,15 +19,26 @@ export const REVIEW_INSTRUCTION = [
   "You are an expert plan reviewer validating an execution plan against the actual codebase.",
   "The worker has tool access within SmithersBot's configured capability and sandbox boundaries.",
   "Use the goal, plan JSON, scout facts/artifact references, and shared rubric below.",
+  "Terms (Task, successCriteria, Key Decision, Observation Point, Decision(s) Needed, verification): use them as defined in GLOSSARY.md; do not import software-engineering jargon the glossary does not define. Link GLOSSARY.md rather than restating its definitions.",
   "",
   "## 2. SHARED PLAN-QUALITY RUBRIC",
   PLAN_QUALITY_RUBRIC,
+  "",
+  "## PLAN-QUALITY REVIEW LENS",
+  PLAN_QUALITY_PRINCIPLES,
+  "- Review whether Tasks are thin, end-to-end, and independently verifiable; whether any Task adds indirection that earns nothing; and whether verification is behavior-based.",
+  "- When reviewing whether a Plan's verification is adequate, see docs/goal-engine-guides/testing-guidance.md",
+  "- For Plans fixing hard/intermittent bugs, see docs/goal-engine-guides/diagnosis-guide.md",
   "",
   "## NETWORK-ENABLED TASK REVIEW",
   NETWORK_TASK_SHAPE_REVIEW_GUIDANCE,
   "",
   "## 3. REVIEW METHOD",
   "Inspect relevant source files in the current working directory when needed to validate paths, APIs, dependencies, conventions, and test commands.",
+  "Reject plans whose buildGate or final verification Task uses a broad command such as bare `pnpm vitest run` when the repo's CI matrix does not use that command or when the managed-worker environment cannot run the host-only suites it includes. This is not a minor verification detail.",
+  "When scout_report, plan_draft, or node_specs artifacts exist, cross-check worker-facing steps against them. If the scout resolved an unknown or conditional, reject steps that leave the value open instead of inlining the resolved branch, approach, and evidence path.",
+  "Reject worker-facing steps that reopen decisions or keep conditional success branches when the scout or codebase already resolved them. Verification, restart, cleanup, or report leniency must not excuse punts or branched criteria.",
+  "Leniency for verification/report steps does not apply to impossible, non-canonical, host-only, or sandbox-incompatible verification gates.",
   "Reject only when the plan is fundamentally incorrect, unexecutable, under-tested, or violates the shared rubric.",
   "Do not make this rubric so rigid that it rejects normal, well-scoped plans.",
   "",
@@ -33,6 +46,7 @@ export const REVIEW_INSTRUCTION = [
   "Do NOT reject for minor issues in verification, cleanup, or restart steps that the",
   "executing agent can reasonably adapt to at runtime (for example environment path",
   "assumptions or fixture creation details), since the executing agent can inspect and adapt within configured boundaries.",
+  "This leniency applies only to minor execution details; it does not apply when a step reopens a resolved scout decision, delegates design/investigation back to the worker, uses fork-shaped success criteria after the condition is resolved, or overclaims restart/live verification evidence.",
   "If core implementation steps are correct, well-specified, AND self-verifying (implementation + focused tests + focused test command in success criteria), approve the plan even if ancillary steps have minor environmental assumptions.",
   "A system-level code review runs automatically after execution, so plans do not need a final review/polish step.",
   "",
@@ -45,10 +59,4 @@ export const REVIEW_INSTRUCTION = [
  * the SmithersBot dev checkout. Kept out of the shared rubric so it never
  * affects ordinary user goals or non-dev workspaces.
  */
-export const DEV_GATEWAY_REVIEW_GUIDANCE = [
-  "## DEV GATEWAY VERIFICATION (SmithersBot dev checkout)",
-  "This plan runs in the SmithersBot dev checkout, which manages a separate dev gateway (smithersbot-dev-gateway.service).",
-  "For plan changes that affect SmithersBot runtime behavior — gateway, setup/install, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior — REJECT the plan if it verifies only with build/lint and does NOT verify against smithersbot-dev-gateway.service (rebuild + restart the dev gateway + smoke-test the changed behavior). In editInstructions, require a dev-gateway verification step.",
-  "Do NOT require dev-gateway verification for docs-only or tests-only changes, or for ordinary non-SmithersBot project goals — approve those on their normal merits.",
-  "Workers must restart and inspect ONLY smithersbot-dev-gateway.service and never the stable smithersbot-gateway.service or ~/.smithersbot.",
-].join("\n");
+export const DEV_GATEWAY_REVIEW_GUIDANCE = buildDevGatewayReviewGuidance();
