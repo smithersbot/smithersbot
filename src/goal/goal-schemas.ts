@@ -48,6 +48,7 @@ const PlanStepInputSchema = z.object({
   durationMinutes: z.number().optional(),
   backend: z.string().min(1),
   requiresNetwork: z.boolean().optional(),
+  requiresDevGatewayControl: z.boolean().optional(),
 });
 
 export const PlanInputSchema = z.object({

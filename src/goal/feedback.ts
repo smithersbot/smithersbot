@@ -1,7 +1,7 @@
 import type { Plan, PlanStep } from "./types.js";
 import { parseShortSummary } from "./plan-text.js";
 
-const PLAN_SHORT_SUMMARY_MAX_CHARS = 80;
+const PLAN_SHORT_SUMMARY_MAX_CHARS = 140;
 const STEP_SHORT_SUMMARY_MAX_CHARS = 60;
 
 function cloneStep(step: PlanStep): PlanStep {

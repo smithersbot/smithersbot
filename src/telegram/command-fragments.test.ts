@@ -4,6 +4,7 @@ import type { TelegramMessage } from "./bot/types.js";
 import {
   buildCommandFragmentKey,
   clampCommandFragmentGapMs,
+  COMMAND_FRAGMENT_COMMAND_NAMES,
   COMMAND_FRAGMENT_MAX_CONFIGURED_GAP_MS,
   COMMAND_FRAGMENT_MAX_GAP_MS,
   COMMAND_FRAGMENT_MIN_GAP_MS,
@@ -273,6 +274,13 @@ describe("command-fragments", () => {
       expect(buildCommandFragmentKey({ ...base, chatId: 43 })).not.toBe(key);
       expect(buildCommandFragmentKey({ ...base, resolvedThreadId: 11 })).not.toBe(key);
     });
+
+    it("keeps continuation Request Edit in both command and long-freeform route allowlists", async () => {
+      const { LONG_FREEFORM_ROUTE_COMMAND_NAMES } = await import("./bot-handlers.js");
+
+      expect(COMMAND_FRAGMENT_COMMAND_NAMES).toContain("continuation_edit");
+      expect(LONG_FREEFORM_ROUTE_COMMAND_NAMES).toContain("continuation_edit");
+    });
   });
 
   describe("CommandFragmentBuffer", () => {
@@ -471,6 +479,43 @@ describe("command-fragments", () => {
 
       expect(flushCallback).toHaveBeenCalledTimes(1);
       expect(flushCallback).toHaveBeenCalledWith("change step 1 and step 2");
+    });
+
+    it("buffers, appends, and flushes continuation_edit fragments (split Request Edit)", async () => {
+      vi.useFakeTimers();
+      const buffer = new CommandFragmentBuffer();
+      const flushCallback = vi.fn(async () => undefined);
+      const key = buildCommandFragmentKey({
+        accountId: "default",
+        chatId: 42,
+        resolvedThreadId: undefined,
+        senderId: "7",
+        commandName: "continuation_edit",
+        runId: "run-edit",
+        replyToMessageId: 510,
+      });
+
+      buffer.bufferCommand(key, {
+        commandName: "continuation_edit",
+        text: "revise next plan ",
+        firstMessageId: 100,
+        receivedAtMs: 10,
+        dispatch: {
+          chatId: 42,
+          senderId: "7",
+          sourceMessageId: 100,
+          accountId: "default",
+        },
+        flushCallback,
+      });
+
+      expect(buffer.getPendingCommandName(key)).toBe("continuation_edit");
+      expect(buffer.tryAppend(key, 101, "with the remaining details", 20)).toBe(true);
+
+      await buffer.flush(key);
+
+      expect(flushCallback).toHaveBeenCalledTimes(1);
+      expect(flushCallback).toHaveBeenCalledWith("revise next plan with the remaining details");
     });
 
     it("global-appends a goal_edit tail via tryAppendMatching when reply_to is lost", () => {

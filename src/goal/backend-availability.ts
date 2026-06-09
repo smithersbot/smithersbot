@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import { resolveScratchRoot } from "../config/managed-paths.js";
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import { appendCodexSandboxArgs, buildCodexSandboxConfig } from "./backend-sandbox.js";
 
@@ -165,4 +168,20 @@ export function isBackendAvailable(
   const entry = availability.find((item) => item.id === backend);
   if (!entry) return { available: false, reason: "Unknown backend" };
   return entry.available ? { available: true } : { available: false, reason: entry.reason };
+}
+
+/**
+ * Preflight check for the file-drop dev-gateway mediator. This deliberately
+ * checks only the gateway-controlled scratch root, not private config or session
+ * paths; the actual responder liveness is proven by the mediated request.
+ */
+export function isDevGatewayHostMediationAvailable(
+  env: NodeJS.ProcessEnv = process.env,
+  homedir: () => string = os.homedir,
+): boolean {
+  try {
+    return fs.existsSync(resolveScratchRoot(env, homedir));
+  } catch {
+    return false;
+  }
 }

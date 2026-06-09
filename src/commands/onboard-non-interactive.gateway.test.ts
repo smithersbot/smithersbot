@@ -1,11 +1,8 @@
 import fs from "node:fs/promises";
-import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-
-import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 
 const gatewayClientCalls: Array<{
   url?: string;
@@ -41,30 +38,6 @@ vi.mock("../gateway/client.js", () => ({
     stop() {}
   },
 }));
-
-async function getFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      if (!addr || typeof addr === "string") {
-        srv.close();
-        reject(new Error("failed to acquire free port"));
-        return;
-      }
-      const port = addr.port;
-      srv.close((err) => {
-        if (err) reject(err);
-        else resolve(port);
-      });
-    });
-  });
-}
-
-async function getFreeGatewayPort(): Promise<number> {
-  return await getDeterministicFreePortBlock({ offsets: [0, 1, 2, 4] });
-}
 
 const runtime = {
   log: () => {},
@@ -175,7 +148,7 @@ describe("onboard (non-interactive): gateway and remote auth", () => {
 
   it("writes gateway.remote url/token and callGateway uses them", async () => {
     const stateDir = await initStateDir("state-remote-");
-    const port = await getFreePort();
+    const port = 38_291;
     const token = "tok_remote_123";
     const { runNonInteractiveOnboarding } = await import("./onboard-non-interactive.js");
     await runNonInteractiveOnboarding(
@@ -219,7 +192,7 @@ describe("onboard (non-interactive): gateway and remote auth", () => {
     process.env.CLAWDBOT_STATE_DIR = stateDir;
     process.env.CLAWDBOT_CONFIG_PATH = path.join(stateDir, "moltbot.json");
 
-    const port = await getFreeGatewayPort();
+    const port = 38_301;
     const workspace = path.join(stateDir, "clawd");
 
     // Other test files mock ../config/config.js. This onboarding flow needs the real

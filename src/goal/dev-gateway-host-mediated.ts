@@ -28,6 +28,7 @@ import {
   resolveDevGatewayWorkerContext,
   type DevGatewayWorkerContext,
 } from "./dev-gateway-workspace.js";
+import type { GoalConfig } from "../config/types.goal.js";
 
 /** The Node binary token a host-mediated dev-gateway invocation must use, verbatim. */
 export const DEV_GATEWAY_HOST_MEDIATED_NODE_BIN = "node";
@@ -81,6 +82,8 @@ export type HostMediatedDevGatewayDecision =
 export type HostMediatedDevGatewayOptions = {
   /** Pre-resolved dev context. When omitted it is resolved from the other fields. */
   context?: DevGatewayWorkerContext;
+  /** Goal config used by the dev-capability kill switch when resolving context. */
+  cfg?: GoalConfig;
   /** Working dir/checkout used to resolve the dev context when `context` is absent. */
   workingDir?: string;
   /** Inject dev-gateway service presence (avoids touching the filesystem in tests). */
@@ -168,6 +171,7 @@ export function resolveHostMediatedDevGatewayCommand(
     options.context ??
     resolveDevGatewayWorkerContext({
       workingDir: options.workingDir ?? "",
+      cfg: options.cfg,
       servicePresent: options.servicePresent,
       homedir: options.homedir,
       fileExists: options.fileExists,

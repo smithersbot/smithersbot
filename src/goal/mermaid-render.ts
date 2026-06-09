@@ -187,6 +187,10 @@ function resolveNodeSummary(step: Plan["steps"][number]): string {
   return truncateLabel(normalizeLabel(step.description), MAX_NODE_LABEL_CHARS);
 }
 
+function buildMermaidNodeIdMap(steps: readonly Plan["steps"][number][]): Map<string, string> {
+  return new Map(steps.map((step, index) => [step.id, `n${index}`]));
+}
+
 /**
  * Strip LLM-generated noise from step descriptions to produce short labels.
  *
@@ -262,6 +266,8 @@ export function renderMermaid(
     orderNum.set(order[i], i + 1);
   }
   const stepById = new Map(plan.steps.map((step) => [step.id, step]));
+  const nodeIdByStepId = buildMermaidNodeIdMap(plan.steps);
+  const mermaidNodeId = (stepId: string): string => nodeIdByStepId.get(stepId) ?? stepId;
 
   // Node declarations
   for (const stepId of order) {
@@ -274,7 +280,7 @@ export function renderMermaid(
     const shortDesc = resolveNodeSummary(step);
     const dur = nodeDurationLabel(step, status, cpm, stepResults);
     const label = escapeLabel(`${prefix}${num}. ${shortDesc}`) + dur;
-    lines.push(`  ${step.id}["${label}"]`);
+    lines.push(`  ${mermaidNodeId(step.id)}["${label}"]`);
   }
 
   // Edge declarations (dependency → step) with critical-path index tracking.
@@ -283,7 +289,7 @@ export function renderMermaid(
   let edgeIndex = 0;
   const criticalEdgeIndices: number[] = [];
   for (const { dep, step: stepId } of reduceDependencyEdges(plan.steps)) {
-    lines.push(`  ${dep} --> ${stepId}`);
+    lines.push(`  ${mermaidNodeId(dep)} --> ${mermaidNodeId(stepId)}`);
     if (cpm?.steps[dep]?.isCritical && cpm?.steps[stepId]?.isCritical) {
       criticalEdgeIndices.push(edgeIndex);
     }
@@ -291,7 +297,7 @@ export function renderMermaid(
   }
   if (edgeIndex === 0) {
     for (let i = 0; i < order.length - 1; i++) {
-      lines.push(`  ${order[i]} ~~~ ${order[i + 1]}`);
+      lines.push(`  ${mermaidNodeId(order[i])} ~~~ ${mermaidNodeId(order[i + 1])}`);
     }
   }
 
@@ -302,7 +308,7 @@ export function renderMermaid(
   // Per-node status class assignment (always applied; defaults to pending)
   for (const step of plan.steps) {
     const status = displayStatuses?.get(step.id) ?? "pending";
-    lines.push(`  class ${step.id} ${STATUS_CLASS[status]};`);
+    lines.push(`  class ${mermaidNodeId(step.id)} ${STATUS_CLASS[status]};`);
   }
 
   // Critical-path linkStyle overrides (same stroke color, thicker width)

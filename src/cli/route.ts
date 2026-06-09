@@ -5,7 +5,7 @@ import { emitCliBanner } from "./banner.js";
 import { VERSION } from "../version.js";
 import { getCommandPath, hasHelpOrVersion } from "./argv.js";
 import { ensureConfigReady } from "./program/config-guard.js";
-import { findRoutedCommand } from "./program/command-registry.js";
+import { DEV_GATEWAY_COMMAND_NAME, dispatchDevGatewayCli } from "../goal/dev-gateway-cli.js";
 
 async function prepareRoutedCommand(params: {
   argv: string[];
@@ -30,6 +30,16 @@ export async function tryRouteCli(argv: string[]): Promise<boolean> {
 
   const path = getCommandPath(argv, 2);
   if (!path[0]) return false;
+
+  // The host-mediated dev-gateway route must stay config-free. Loading the full
+  // command registry pulls in normal command modules with logging side effects,
+  // which can touch the hard-denied stable config before skipConfig is honored.
+  if (path[0] === DEV_GATEWAY_COMMAND_NAME) {
+    emitCliBanner(VERSION, { argv });
+    return dispatchDevGatewayCli(argv);
+  }
+
+  const { findRoutedCommand } = await import("./program/command-registry.js");
   const route = findRoutedCommand(path);
   if (!route) return false;
   await prepareRoutedCommand({

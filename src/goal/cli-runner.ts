@@ -47,6 +47,9 @@ export class CliTaskRunner implements TaskRunner {
       goal: context.goal,
       workingDir: context.workingDir,
       runId: context.runId,
+      ...(context.historyWorkspaceSlug
+        ? { historyWorkspaceSlug: context.historyWorkspaceSlug }
+        : {}),
       hardDenies: context.denyPolicy,
       timeoutMs: context.timeoutMs,
       abortSignal: context.abortSignal,
@@ -74,7 +77,10 @@ export class CliTaskRunner implements TaskRunner {
       };
     }
 
-    return mapWorkerOutput(output, cliResult.turnsUsed);
+    return {
+      ...mapWorkerOutput(output, cliResult.turnsUsed),
+      ...(cliResult.sessionId ? { executionSessionId: cliResult.sessionId } : {}),
+    };
   }
 }
 

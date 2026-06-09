@@ -73,6 +73,30 @@ describe("run-store", () => {
     expect(content.goal).toBe("Build something");
   });
 
+  it("round-trips continuation delivery state", () => {
+    saveRun(
+      {
+        ...sampleRun,
+        continuationDelivery: {
+          proposalId: "proposal-123",
+          chatId: 42,
+          messageId: 700,
+          threadId: 9,
+          deliveredAt: "2026-01-30T10:02:00.000Z",
+        },
+      },
+      tmpDir,
+    );
+
+    expect(loadRun(sampleRun.runId, tmpDir)?.continuationDelivery).toEqual({
+      proposalId: "proposal-123",
+      chatId: 42,
+      messageId: 700,
+      threadId: 9,
+      deliveredAt: "2026-01-30T10:02:00.000Z",
+    });
+  });
+
   it("mirrors terminal runs to sanitized agent history without raw worker transcripts", () => {
     const originalToken = process.env.SMITHERSBOT_GATEWAY_TOKEN;
     process.env.SMITHERSBOT_GATEWAY_TOKEN = "FAKE_HISTORY_SECRET_123";
@@ -149,12 +173,108 @@ describe("run-store", () => {
     expect(indexLines[0]).toContain("history-mirror-run");
   });
 
+  it("keeps run id lookup scoped to the caller goals dir even when another instance has sanitized history", () => {
+    const callerGoalsDir = path.join(tmpDir, "stable-state", "goals");
+    const devGoalsDir = path.join(tmpDir, "dev-state", "goals");
+    const devRunId = "dev-owned-run";
+    const stableRunId = "stable-owned-run";
+    const devHistoryDir = path.join(
+      process.env.SMITHERSBOT_GOALS_ROOT!,
+      "agent",
+      "history",
+      "goals",
+      "smithersbot-dev",
+      devRunId,
+    );
+
+    saveRun(
+      {
+        ...sampleRun,
+        runId: stableRunId,
+        goal: "Stable-owned run",
+        workingDir: path.join(
+          process.env.SMITHERSBOT_GOALS_ROOT!,
+          "agent",
+          "workspaces",
+          "smithersbot",
+        ),
+      },
+      callerGoalsDir,
+    );
+    saveRun(
+      {
+        ...sampleRun,
+        runId: devRunId,
+        goal: "Dev-owned run",
+        workingDir: path.join(
+          process.env.SMITHERSBOT_GOALS_ROOT!,
+          "agent",
+          "workspaces",
+          "smithersbot-dev",
+        ),
+      },
+      devGoalsDir,
+    );
+    fs.mkdirSync(devHistoryDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(devHistoryDir, "summary.json"),
+      JSON.stringify({
+        kind: "goal-run-summary",
+        runId: devRunId,
+        workspace: "smithersbot-dev",
+        state: "done",
+      }),
+      "utf8",
+    );
+
+    expect(loadRun(devRunId, callerGoalsDir)).toBeUndefined();
+    expect(resolveRunId(devRunId, callerGoalsDir)).toBeUndefined();
+    expect(listRuns(callerGoalsDir).map((run) => run.runId)).toEqual([stableRunId]);
+    expect(loadRun(devRunId, devGoalsDir)?.runId).toBe(devRunId);
+    expect(fs.existsSync(path.join(devHistoryDir, "summary.json"))).toBe(true);
+  });
+
   it("loadRun returns the run data", () => {
     saveRun(sampleRun, tmpDir);
     const loaded = loadRun("test-run-123", tmpDir);
     expect(loaded).toBeDefined();
     expect(loaded!.runId).toBe("test-run-123");
     expect(loaded!.state).toBe("done");
+  });
+
+  it("loads old run JSON with planNumber defaulted to 1 and no pending continuation", () => {
+    const runId = "legacy-no-continuation-fields";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Legacy completed run",
+        state: "done",
+        plan: {
+          goal: "Legacy completed run",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [{ id: "1", description: "Step", dependsOn: [], status: "done" }],
+        },
+        stepResults: {
+          "1": { stepId: "1", success: true, output: "ok", durationMs: 1 },
+        },
+        blocked: null,
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    expect(loaded?.planNumber).toBe(1);
+    expect(loaded?.pendingContinuation).toBeUndefined();
   });
 
   it("loadRun returns undefined for missing run", () => {
@@ -453,6 +573,63 @@ describe("run-store", () => {
     expect(loaded!.stepResults.s1?.durationMs).toBe(42_000);
   });
 
+  it("round-trips planNumber and continuation fields through save/load", () => {
+    const goalBriefPath = path.join(
+      tmpDir,
+      "agent",
+      "history",
+      "goals",
+      "ws",
+      "run",
+      "wiki",
+      "goal-brief.md",
+    );
+    const pendingContinuation = {
+      proposalId: "proposal-12345678",
+      fromPlanNumber: 2,
+      fromRevision: 5,
+      goalAchieved: false,
+      briefSummary: "Continue with deployment checks.",
+      proposedPrompt: "Create the next plan for deployment verification.",
+      decisions: [
+        {
+          question: "Which environment should be verified?",
+          options: ["staging", "production"],
+          recommendedOption: "staging",
+          rationale: "Staging is safest for this pass.",
+          promptImpact: "Focus the next plan on staging-only checks.",
+        },
+      ],
+      runAt: "now" as const,
+      status: "pending" as const,
+      createdAt: "2026-01-30T10:02:00.000Z",
+      notify: { chatId: 123, messageId: 456, threadId: 789 },
+    };
+    const archivedContinuation = {
+      ...pendingContinuation,
+      proposalId: "proposal-archived",
+      status: "approved" as const,
+    };
+
+    saveRun(
+      {
+        ...sampleRun,
+        runId: "continuation-round-trip",
+        planNumber: 2,
+        goalBriefPath,
+        pendingContinuation,
+        continuationHistory: [archivedContinuation],
+      },
+      tmpDir,
+    );
+
+    const loaded = loadRun("continuation-round-trip", tmpDir);
+    expect(loaded?.planNumber).toBe(2);
+    expect(loaded?.goalBriefPath).toBe(goalBriefPath);
+    expect(loaded?.pendingContinuation).toEqual(pendingContinuation);
+    expect(loaded?.continuationHistory).toEqual([archivedContinuation]);
+  });
+
   it("migrates in_progress to pending when no active run lock exists", () => {
     const runId = "crash-recovery-no-lock";
     const runDir = path.join(tmpDir, runId);
@@ -684,6 +861,98 @@ describe("run-store", () => {
     const loaded = loadRun(runId, tmpDir);
     expect(loaded?.state).toBe("blocked");
     expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
+  });
+
+  it("reconciles a stale run-level resume_execution marker with all steps done to done", () => {
+    const runId = "stale-resume-execution-all-done";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Already finished but left blocked",
+        state: "blocked",
+        plan: {
+          goal: "Already finished but left blocked",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [
+            { id: "1", description: "Step one", dependsOn: [], status: "done" },
+            { id: "2", description: "Step two", dependsOn: ["1"], status: "done" },
+          ],
+        },
+        stepResults: {},
+        blocked: {
+          blockedAt: "execution",
+          prompt:
+            "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+          requiredInputKey: "resume_execution",
+        },
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(runDir, "run.json"), "utf8"),
+    ) as SerializedRun;
+
+    // No resumable step remains, so the dangling run-level marker must clear
+    // instead of leaving the goal falsely PAUSED.
+    expect(loaded?.state).toBe("done");
+    expect(loaded?.blocked).toBeNull();
+    expect(persisted.state).toBe("done");
+    expect(persisted.blocked).toBeNull();
+  });
+
+  it("keeps a run-level resume_execution marker blocked while a resumable step remains", () => {
+    const runId = "resume-execution-pending-remains";
+    const runDir = path.join(tmpDir, runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(runDir, "run.json"),
+      JSON.stringify({
+        runId,
+        goal: "Interrupted with pending work",
+        state: "blocked",
+        plan: {
+          goal: "Interrupted with pending work",
+          workingDir: "/tmp",
+          summary: "Plan",
+          steps: [
+            { id: "1", description: "Step one", dependsOn: [], status: "done" },
+            { id: "2", description: "Step two", dependsOn: ["1"], status: "pending" },
+          ],
+        },
+        stepResults: {},
+        blocked: {
+          blockedAt: "execution",
+          prompt:
+            "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+          requiredInputKey: "resume_execution",
+        },
+        answers: {},
+        workingDir: "/tmp",
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const loaded = loadRun(runId, tmpDir);
+    // A pending step is still resumable, so the marker is legitimate — leave it.
+    expect(loaded?.state).toBe("blocked");
+    expect(loaded?.blocked?.requiredInputKey).toBe("resume_execution");
+    expect(loaded?.plan?.steps[1]?.status).toBe("pending");
   });
 });
 
@@ -924,6 +1193,7 @@ describe("session serialization", () => {
     expect(serialized.stepResults).toEqual({
       "1": { stepId: "1", success: true, output: "Created dir", durationMs: 3 },
     });
+    expect(serialized.planNumber).toBe(1);
 
     const restored = serializedToSession(serialized);
     expect(restored.stepResults).toBeInstanceOf(Map);
@@ -1264,7 +1534,34 @@ describe("session serialization", () => {
       createdAt: "2026-01-30T00:00:00.000Z",
       updatedAt: "2026-01-30T00:00:00.000Z",
       planRevision: 2,
+      planNumber: 3,
       activePlanRevision: 2,
+      historyWorkspaceSlug: "test-workspace",
+      goalBriefPath: "/tmp/managed/agent/history/goals/ws/meta-id/wiki/goal-brief.md",
+      pendingContinuation: {
+        proposalId: "proposal-meta",
+        fromPlanNumber: 3,
+        fromRevision: 2,
+        goalAchieved: false,
+        briefSummary: "Continue with follow-up work.",
+        proposedPrompt: "Draft the next plan for follow-up work.",
+        runAt: "now",
+        status: "pending",
+        createdAt: "2026-01-30T00:00:00.000Z",
+      },
+      continuationHistory: [
+        {
+          proposalId: "proposal-meta-previous",
+          fromPlanNumber: 2,
+          fromRevision: 1,
+          goalAchieved: true,
+          briefSummary: "Earlier plan completed.",
+          proposedPrompt: "No next plan needed.",
+          runAt: "now",
+          status: "superseded",
+          createdAt: "2026-01-29T00:00:00.000Z",
+        },
+      ],
       planHistory: [
         { revision: 1, plan: { goal: "Meta", workingDir: "/tmp", steps: [], summary: "meta" } },
       ],
@@ -1272,6 +1569,23 @@ describe("session serialization", () => {
       telegramQuestionMessages: [{ chatId: 1, messageId: 3, requiredInputKey: "task:1:input" }],
       telegramDoneMessage: { chatId: 1, messageId: 4 },
       telegramFeedbackPromptMessages: [{ chatId: 1, messageId: 5 }],
+      imageFailure: {
+        reason: "repair-unavailable",
+        error: "missing plannerBackendUsed",
+        at: "2026-01-30T00:00:00.000Z",
+        events: [
+          {
+            reason: "render-syntax-failure",
+            error: "parse error",
+            at: "2026-01-30T00:00:00.000Z",
+          },
+          {
+            reason: "repair-unavailable",
+            error: "missing plannerBackendUsed",
+            at: "2026-01-30T00:00:00.000Z",
+          },
+        ],
+      },
       agentSessionFile: "/tmp/session.jsonl",
       agentSessionId: "agent-1",
       agentMaxTurnsPerTask: 7,
@@ -1315,12 +1629,24 @@ describe("session serialization", () => {
     });
 
     expect(serialized.planRevision).toBe(2);
+    expect(serialized.planNumber).toBe(3);
     expect(serialized.activePlanRevision).toBe(2);
+    expect(serialized.historyWorkspaceSlug).toBe("test-workspace");
+    expect(serialized.goalBriefPath).toBe(
+      "/tmp/managed/agent/history/goals/ws/meta-id/wiki/goal-brief.md",
+    );
+    expect(serialized.pendingContinuation?.proposalId).toBe("proposal-meta");
+    expect(serialized.continuationHistory?.[0]?.proposalId).toBe("proposal-meta-previous");
     expect(serialized.planHistory).toHaveLength(1);
     expect(serialized.telegramPlanMessage?.messageId).toBe(2);
     expect(serialized.telegramQuestionMessages?.[0]?.messageId).toBe(3);
     expect(serialized.telegramDoneMessage?.messageId).toBe(4);
     expect(serialized.telegramFeedbackPromptMessages?.[0]?.messageId).toBe(5);
+    expect(serialized.imageFailure?.reason).toBe("repair-unavailable");
+    expect(serialized.imageFailure?.events?.map((event) => event.reason)).toEqual([
+      "render-syntax-failure",
+      "repair-unavailable",
+    ]);
     expect(serialized.agentSessionFile).toBe("/tmp/session.jsonl");
     expect(serialized.agentSessionId).toBe("agent-1");
     expect(serialized.agentMaxTurnsPerTask).toBe(7);
@@ -1331,5 +1657,30 @@ describe("session serialization", () => {
     expect(serialized.buildGateFixCounts).toEqual({ "step-1": 1 });
     expect(serialized.buildGateFixSignatures).toEqual({ "step-1": "pnpm build" });
     expect(serialized.buildGateResults?.["step-1"]?.passed).toBe(true);
+  });
+
+  it("round-trips historyWorkspaceSlug through session serialization", () => {
+    const session: GoalSession = {
+      goal: "History anchor",
+      state: "awaiting_approval",
+      plan: null,
+      stepResults: new Map(),
+      blocked: null,
+      answers: {},
+      historyWorkspaceSlug: "final-workspace",
+    };
+
+    const serialized = sessionToSerialized({
+      session,
+      runId: "history-anchor-round-trip",
+      workingDir: "/tmp/workspace",
+      model: undefined,
+      dryRun: false,
+      createdAt: "2026-01-30T00:00:00.000Z",
+    });
+    const restored = serializedToSession(serialized);
+
+    expect(serialized.historyWorkspaceSlug).toBe("final-workspace");
+    expect(restored.historyWorkspaceSlug).toBe("final-workspace");
   });
 });

@@ -330,6 +330,10 @@ export function sanitizeUserFacingText(text: string): string {
     );
   }
 
+  if (isAuthErrorMessage(trimmed)) {
+    return "AI authentication is unavailable. Check the configured model credentials and try again.";
+  }
+
   if (isRawApiErrorPayload(trimmed) || isLikelyHttpErrorText(trimmed)) {
     return formatRawAssistantErrorForUi(trimmed);
   }

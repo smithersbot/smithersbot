@@ -47,7 +47,12 @@ export function saveRun(run: SerializedRun, goalsDir: string = resolveGoalsDir()
   const runDir = resolveRunDir(run.runId, goalsDir);
   const filePath = path.join(runDir, RUN_FILENAME);
   atomicWriteJson(filePath, run);
-  if (run.state === "done" || run.state === "blocked" || run.state === "cancelled") {
+  if (
+    run.state === "done" ||
+    run.state === "blocked" ||
+    run.state === "reporting_failed" ||
+    run.state === "cancelled"
+  ) {
     mirrorGoalRunToAgentHistory(run);
   }
 }
@@ -83,6 +88,9 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
   }
   if (!Array.isArray(data.resumeNotes)) {
     data.resumeNotes = [];
+  }
+  if (data.planNumber == null) {
+    data.planNumber = 1;
   }
   // Default plan revision fields for runs that have a plan
   if (data.planRevision == null && data.plan) {
@@ -156,6 +164,38 @@ function migrateRun(data: Record<string, unknown>, goalsDir: string): Record<str
           requiredInputKey: "resume_execution",
         } satisfies BlockedDetail;
       }
+    }
+  }
+
+  if (data.state === "reporting" && !keepInProgress) {
+    const steps = (plan?.steps ?? []) as Array<Record<string, unknown>>;
+    const allStepsDone = steps.length > 0 && steps.every((step) => step.status === "done");
+    data.state = allStepsDone ? "done" : "reporting_failed";
+    data.blocked = null;
+    if (!allStepsDone) {
+      data.postExecutionReportingFailureReason ??=
+        "Post-execution reporting was interrupted. Resume post execution to retry reporting without rerunning the completed plan.";
+    } else {
+      delete data.postExecutionReportingFailureReason;
+    }
+  }
+
+  // Reconcile a stale run-level resume_execution blocked marker. An interrupted
+  // run is synthesized to `blocked` + `resume_execution`; if every step has since
+  // completed, the run is actually done. Leaving it blocked produces a split-brain
+  // where /goal_status renders PAUSED but nothing is resumable. Clear the dangling
+  // marker and finish the run instead.
+  if (
+    data.state === "blocked" &&
+    data.blocked &&
+    typeof data.blocked === "object" &&
+    (data.blocked as Record<string, unknown>).requiredInputKey === "resume_execution"
+  ) {
+    const steps = (plan?.steps ?? []) as Array<Record<string, unknown>>;
+    const allStepsDone = steps.length > 0 && steps.every((step) => step.status === "done");
+    if (allStepsDone) {
+      data.state = "done";
+      data.blocked = null;
     }
   }
 
@@ -312,7 +352,13 @@ export function resolveRunId(
 type CarryForwardMode = "falsy" | "nullish";
 type CarryForwardFieldKey =
   | "planRevision"
+  | "planNumber"
   | "activePlanRevision"
+  | "historyWorkspaceSlug"
+  | "goalBriefPath"
+  | "pendingContinuation"
+  | "continuationDelivery"
+  | "continuationHistory"
   | "planHistory"
   | "telegramPlanMessage"
   | "telegramQuestionMessages"
@@ -331,17 +377,25 @@ type CarryForwardFieldKey =
   | "autocheckMaxRounds"
   | "autocheckBackend"
   | "autocheckSessionId"
+  | "executionSessionId"
+  | "executionSessionBackend"
   | "autocheckSkipReason"
   | "autocheckSkipMetadataPath"
   | "completionSummary"
+  | "postExecutionReport"
+  | "postExecutionReportArtifacts"
+  | "postExecutionManualTestDisplay"
+  | "postExecutionContinuation"
   | "deliveryFailed"
   | "deliveryError"
+  | "imageFailure"
   | "taskCheckpoints"
   | "buildGateConfig"
   | "stepRalphCounts"
   | "buildGateFixCounts"
   | "buildGateFixSignatures"
-  | "buildGateResults";
+  | "buildGateResults"
+  | "workerSummaries";
 
 type CarryForwardField<K extends CarryForwardFieldKey = CarryForwardFieldKey> = {
   key: K;
@@ -351,7 +405,13 @@ type CarryForwardField<K extends CarryForwardFieldKey = CarryForwardFieldKey> = 
 
 const carryForwardFields: readonly CarryForwardField[] = [
   { key: "planRevision", mode: "nullish" },
+  { key: "planNumber", mode: "nullish" },
   { key: "activePlanRevision", mode: "nullish" },
+  { key: "historyWorkspaceSlug", mode: "falsy" },
+  { key: "goalBriefPath", mode: "falsy" },
+  { key: "pendingContinuation", mode: "falsy" },
+  { key: "continuationDelivery", mode: "falsy" },
+  { key: "continuationHistory", mode: "falsy" },
   { key: "planHistory", mode: "falsy" },
   { key: "telegramPlanMessage", mode: "falsy" },
   { key: "telegramQuestionMessages", mode: "falsy" },
@@ -376,17 +436,25 @@ const carryForwardFields: readonly CarryForwardField[] = [
   { key: "autocheckMaxRounds", mode: "nullish" },
   { key: "autocheckBackend", mode: "falsy" },
   { key: "autocheckSessionId", mode: "falsy" },
+  { key: "executionSessionId", mode: "falsy" },
+  { key: "executionSessionBackend", mode: "falsy" },
   { key: "autocheckSkipReason", mode: "falsy" },
   { key: "autocheckSkipMetadataPath", mode: "falsy" },
   { key: "completionSummary", mode: "falsy" },
+  { key: "postExecutionReport", mode: "falsy" },
+  { key: "postExecutionReportArtifacts", mode: "falsy" },
+  { key: "postExecutionManualTestDisplay", mode: "falsy" },
+  { key: "postExecutionContinuation", mode: "falsy" },
   { key: "deliveryFailed", mode: "falsy" },
   { key: "deliveryError", mode: "falsy" },
+  { key: "imageFailure", mode: "falsy" },
   { key: "taskCheckpoints", mode: "falsy" },
   { key: "buildGateConfig", mode: "falsy" },
   { key: "stepRalphCounts", mode: "falsy" },
   { key: "buildGateFixCounts", mode: "falsy" },
   { key: "buildGateFixSignatures", mode: "falsy" },
   { key: "buildGateResults", mode: "falsy" },
+  { key: "workerSummaries", mode: "falsy" },
 ];
 
 function shouldCarryForwardValue(
@@ -423,6 +491,7 @@ export function sessionToSerialized(params: {
   dryRun: boolean;
   createdAt: string;
   updatedAt?: string;
+  goalBriefPath?: SerializedRun["goalBriefPath"];
   agentSessionFile?: string;
   agentSessionId?: string;
   agentMaxTurnsPerTask?: number;
@@ -455,13 +524,19 @@ export function sessionToSerialized(params: {
     stepResults: Object.fromEntries(session.stepResults),
     blocked: session.blocked,
     answers: session.answers,
+    ...(session.planningDecisionAnswers
+      ? { planningDecisionAnswers: session.planningDecisionAnswers }
+      : {}),
     resumeNotes: session.resumeNotes ?? params.previousRun?.resumeNotes ?? [],
     lastError: session.lastError,
     workingDir,
+    ...(session.historyWorkspaceSlug ? { historyWorkspaceSlug: session.historyWorkspaceSlug } : {}),
+    ...(params.goalBriefPath ? { goalBriefPath: params.goalBriefPath } : {}),
     model,
     dryRun,
     createdAt,
     updatedAt: params.updatedAt ?? new Date().toISOString(),
+    planNumber: params.previousRun?.planNumber ?? 1,
     ...(params.agentSessionFile ? { agentSessionFile: params.agentSessionFile } : {}),
     ...(params.agentSessionId ? { agentSessionId: params.agentSessionId } : {}),
     ...(params.agentMaxTurnsPerTask ? { agentMaxTurnsPerTask: params.agentMaxTurnsPerTask } : {}),
@@ -479,6 +554,10 @@ export function sessionToSerialized(params: {
     ...(params.autocheckMaxRounds != null ? { autocheckMaxRounds: params.autocheckMaxRounds } : {}),
     ...(params.autocheckBackend ? { autocheckBackend: params.autocheckBackend } : {}),
     ...(params.autocheckSessionId ? { autocheckSessionId: params.autocheckSessionId } : {}),
+    ...(session.executionSessionId ? { executionSessionId: session.executionSessionId } : {}),
+    ...(session.executionSessionBackend
+      ? { executionSessionBackend: session.executionSessionBackend }
+      : {}),
     ...(params.autocheckSkipReason ? { autocheckSkipReason: params.autocheckSkipReason } : {}),
     ...(params.autocheckSkipMetadataPath
       ? { autocheckSkipMetadataPath: params.autocheckSkipMetadataPath }
@@ -486,8 +565,24 @@ export function sessionToSerialized(params: {
     ...(manualTests != null ? { manualTests } : {}),
     ...(manualTestsError ? { manualTestsError } : {}),
     ...(session.completionSummary ? { completionSummary: session.completionSummary } : {}),
+    ...(session.postExecutionReport ? { postExecutionReport: session.postExecutionReport } : {}),
+    ...(session.postExecutionReportArtifacts
+      ? { postExecutionReportArtifacts: session.postExecutionReportArtifacts }
+      : {}),
+    ...(session.postExecutionManualTestDisplay
+      ? { postExecutionManualTestDisplay: session.postExecutionManualTestDisplay }
+      : {}),
+    ...(session.postExecutionContinuation
+      ? { postExecutionContinuation: session.postExecutionContinuation }
+      : {}),
+    ...(session.postExecutionReportingFailureReason
+      ? { postExecutionReportingFailureReason: session.postExecutionReportingFailureReason }
+      : {}),
+    ...(session.pendingContinuation ? { pendingContinuation: session.pendingContinuation } : {}),
+    ...(session.continuationHistory ? { continuationHistory: session.continuationHistory } : {}),
     ...(session.deliveryFailed ? { deliveryFailed: true } : {}),
     ...(session.deliveryError ? { deliveryError: session.deliveryError } : {}),
+    ...(session.imageFailure ? { imageFailure: session.imageFailure } : {}),
     ...(params.telegramDoneMessage != null
       ? { telegramDoneMessage: params.telegramDoneMessage }
       : {}),
@@ -502,6 +597,7 @@ export function sessionToSerialized(params: {
       ? { buildGateFixSignatures: session.buildGateFixSignatures }
       : {}),
     ...(session.buildGateResults ? { buildGateResults: session.buildGateResults } : {}),
+    ...(session.workerSummaries ? { workerSummaries: session.workerSummaries } : {}),
     ...(session.githubPushOutcome ? { githubPushOutcome: session.githubPushOutcome } : {}),
   };
   const previous = params.previousRun;
@@ -555,6 +651,7 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     stepResults,
     blocked: run.blocked ?? null,
     answers: run.answers ?? {},
+    planningDecisionAnswers: run.planningDecisionAnswers,
     resumeNotes: run.resumeNotes ?? [],
     lastError: run.lastError,
     taskCheckpoints: run.taskCheckpoints ?? {},
@@ -563,11 +660,23 @@ export function serializedToSession(run: SerializedRun): GoalSession {
     buildGateFixCounts: run.buildGateFixCounts ?? {},
     buildGateFixSignatures: run.buildGateFixSignatures ?? {},
     buildGateResults: run.buildGateResults ?? {},
+    workerSummaries: run.workerSummaries ?? [],
+    historyWorkspaceSlug: run.historyWorkspaceSlug,
     githubPushOutcome: run.githubPushOutcome,
     completionSummary: run.completionSummary,
     manualTests: run.manualTests,
     manualTestsError: run.manualTestsError,
+    postExecutionReport: run.postExecutionReport,
+    postExecutionReportArtifacts: run.postExecutionReportArtifacts,
+    postExecutionManualTestDisplay: run.postExecutionManualTestDisplay,
+    postExecutionContinuation: run.postExecutionContinuation,
+    postExecutionReportingFailureReason: run.postExecutionReportingFailureReason,
+    pendingContinuation: run.pendingContinuation,
+    continuationHistory: run.continuationHistory,
     deliveryFailed: run.deliveryFailed,
     deliveryError: run.deliveryError,
+    imageFailure: run.imageFailure,
+    executionSessionId: run.executionSessionId,
+    executionSessionBackend: run.executionSessionBackend,
   };
 }

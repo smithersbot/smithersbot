@@ -17,12 +17,14 @@ import { danger } from "../globals.js";
 import { runRepoChatWorker } from "../repo-chat/repo-chat-worker.js";
 import {
   findRepoChatSessionByMessageId,
+  loadRepoChatSession,
   saveRepoChatSession,
 } from "../repo-chat/repo-chat-store.js";
 import type { RepoChatBackend, RepoChatSession } from "../repo-chat/types.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { redactSecretValues } from "../security/secret-paths.js";
+import { sanitizeUserFacingText } from "../agents/pi-embedded-helpers.js";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import {
   buildCommandFragmentKey,
@@ -31,6 +33,7 @@ import {
 } from "./command-fragments.js";
 import { markdownToTelegramChunks } from "./format.js";
 import { withChatAction } from "./goal-commands.js";
+import { buildInlineKeyboard } from "./send.js";
 import { resolveTelegramCommandAuth } from "./telegram-auth.js";
 
 // Telegram command menu entries for repo chat controls.
@@ -48,6 +51,7 @@ const REPO_CHAT_DISABLED_MESSAGE =
   "Repo chat is disabled. Enable it with /chat_backend codex or /chat_backend claude_code.";
 const MAX_SESSION_MESSAGE_REFS = 200;
 const MAX_REPLY_CHUNKS = 8;
+const REPO_CHAT_MORE_CALLBACK_PREFIX = "rcm";
 const CODEX_REPO_CHAT_SANDBOX_PREFIX = "repo-chat-session-";
 
 type TelegramRepoChatCommandContext = Context & { match?: string };
@@ -156,6 +160,7 @@ function buildNextRepoChatSession(params: {
   cliSessionId?: string;
   codexSandboxRunId?: string;
   messageRefs: RepoChatSession["messageRefs"];
+  overflowReplies?: NonNullable<RepoChatSession["overflowReplies"]>;
 }): RepoChatSession {
   const now = new Date().toISOString();
   const existing = params.existingSession;
@@ -168,6 +173,10 @@ function buildNextRepoChatSession(params: {
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     messageRefs: appendMessageRefs(existing?.messageRefs ?? [], params.messageRefs),
+    overflowReplies: [
+      ...(existing?.overflowReplies ?? []),
+      ...(params.overflowReplies ?? []),
+    ].slice(-MAX_SESSION_MESSAGE_REFS),
   };
 }
 
@@ -175,32 +184,59 @@ async function sendRepoChatReply(params: {
   bot: Bot;
   runtime: RuntimeEnv;
   chatId: number;
+  sessionId?: string;
   text: string;
   threadId?: number;
   replyToMessageId: number;
-}): Promise<number[]> {
+}): Promise<{
+  messageIds: number[];
+  overflowReplies?: NonNullable<RepoChatSession["overflowReplies"]>;
+}> {
   const redactedText = redactSecretValues(params.text);
   const markdown = redactedText.trim() ? redactedText : "No output.";
   const chunks = markdownToTelegramChunks(markdown, 4000);
-  const replyChunks =
-    chunks.length > MAX_REPLY_CHUNKS
+  const replyChunks = params.sessionId != null ? chunks.slice(0, MAX_REPLY_CHUNKS) : chunks;
+  const overflowChunks = params.sessionId != null ? chunks.slice(MAX_REPLY_CHUNKS) : [];
+  const overflowId =
+    params.sessionId != null && overflowChunks.length > 0
+      ? crypto.randomBytes(4).toString("hex")
+      : undefined;
+  const overflowReplies =
+    overflowId != null
       ? [
-          ...chunks.slice(0, MAX_REPLY_CHUNKS - 1),
-          { html: "[Response truncated]", text: "[Response truncated]" },
+          {
+            id: overflowId,
+            chunks: overflowChunks,
+            createdAt: new Date().toISOString(),
+          },
         ]
-      : chunks;
+      : undefined;
   const messageIds: number[] = [];
-  for (const chunk of replyChunks) {
+  for (const [index, chunk] of replyChunks.entries()) {
     const threadParams = params.threadId != null ? { message_thread_id: params.threadId } : {};
+    const isLastInitialChunk = index === replyChunks.length - 1;
+    const replyMarkup =
+      overflowId != null && isLastInitialChunk
+        ? buildInlineKeyboard([
+            [
+              {
+                text: "Show More",
+                callback_data: `${REPO_CHAT_MORE_CALLBACK_PREFIX}:${params.sessionId ?? ""}:${overflowId}:0`,
+              },
+            ],
+          ])
+        : undefined;
     const sendParams = {
       parse_mode: "HTML" as const,
       link_preview_options: { is_disabled: true },
       reply_to_message_id: params.replyToMessageId,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       ...threadParams,
     };
     const fallbackParams = {
       link_preview_options: { is_disabled: true },
       reply_to_message_id: params.replyToMessageId,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       ...threadParams,
     };
     const sent = await withTelegramApiErrorLogging({
@@ -215,7 +251,107 @@ async function sendRepoChatReply(params: {
       messageIds.push(sent.message_id);
     }
   }
-  return messageIds;
+  return { messageIds, overflowReplies };
+}
+
+function parseRepoChatMoreCallback(data: string):
+  | {
+      sessionId: string;
+      overflowId: string;
+      offset: number;
+    }
+  | undefined {
+  const [prefix, sessionId, overflowId, offsetRaw] = data.split(":");
+  if (prefix !== REPO_CHAT_MORE_CALLBACK_PREFIX) return undefined;
+  if (!sessionId || !overflowId || !offsetRaw) return undefined;
+  const offset = Number.parseInt(offsetRaw, 10);
+  if (!Number.isInteger(offset) || offset < 0) return undefined;
+  return { sessionId, overflowId, offset };
+}
+
+export function isRepoChatShowMoreCallback(data: string): boolean {
+  return parseRepoChatMoreCallback(data) != null;
+}
+
+export async function handleRepoChatShowMoreCallback(params: {
+  bot: Bot;
+  runtime: RuntimeEnv;
+  chatId: number;
+  data: string;
+  threadId?: number;
+  replyToMessageId: number;
+}): Promise<boolean> {
+  const parsed = parseRepoChatMoreCallback(params.data);
+  if (!parsed) return false;
+
+  const session = loadRepoChatSession(parsed.sessionId);
+  const overflow = session?.overflowReplies?.find((entry) => entry.id === parsed.overflowId);
+  if (!session || !overflow) {
+    await params.bot.api.sendMessage(params.chatId, "That repo-chat page is no longer available.", {
+      reply_to_message_id: params.replyToMessageId,
+      ...(params.threadId != null ? { message_thread_id: params.threadId } : {}),
+    });
+    return true;
+  }
+
+  const pageChunks = overflow.chunks.slice(parsed.offset, parsed.offset + MAX_REPLY_CHUNKS);
+  if (pageChunks.length === 0) {
+    await params.bot.api.sendMessage(params.chatId, "There is no more repo-chat output to show.", {
+      reply_to_message_id: params.replyToMessageId,
+      ...(params.threadId != null ? { message_thread_id: params.threadId } : {}),
+    });
+    return true;
+  }
+
+  const nextOffset = parsed.offset + pageChunks.length;
+  const hasMore = nextOffset < overflow.chunks.length;
+  const messageIds: number[] = [];
+  for (const [index, chunk] of pageChunks.entries()) {
+    const isLastPageChunk = index === pageChunks.length - 1;
+    const replyMarkup =
+      hasMore && isLastPageChunk
+        ? buildInlineKeyboard([
+            [
+              {
+                text: "Show More",
+                callback_data: `${REPO_CHAT_MORE_CALLBACK_PREFIX}:${session.id}:${overflow.id}:${nextOffset}`,
+              },
+            ],
+          ])
+        : undefined;
+    const baseParams = {
+      link_preview_options: { is_disabled: true },
+      reply_to_message_id: params.replyToMessageId,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      ...(params.threadId != null ? { message_thread_id: params.threadId } : {}),
+    };
+    const sent = await withTelegramApiErrorLogging({
+      operation: "sendMessage",
+      runtime: params.runtime,
+      fn: () =>
+        params.bot.api
+          .sendMessage(params.chatId, chunk.html, {
+            ...baseParams,
+            parse_mode: "HTML" as const,
+          })
+          .catch(() => params.bot.api.sendMessage(params.chatId, chunk.text, baseParams)),
+    }).catch(() => undefined);
+    if (sent?.message_id != null) {
+      messageIds.push(sent.message_id);
+    }
+  }
+
+  if (messageIds.length > 0) {
+    saveRepoChatSession({
+      ...session,
+      updatedAt: new Date().toISOString(),
+      messageRefs: appendMessageRefs(
+        session.messageRefs,
+        messageIds.map((messageId) => ({ chatId: params.chatId, messageId })),
+      ),
+    });
+  }
+  return true;
 }
 
 function runRepoChatInBackground(params: {
@@ -256,17 +392,18 @@ function runRepoChatInBackground(params: {
             claudeCodeAuth: params.claudeCodeAuth,
           }),
       });
-      const sentMessageIds = await sendRepoChatReply({
+      const sentReply = await sendRepoChatReply({
         bot: params.bot,
         runtime: params.runtime,
         chatId: params.chatId,
+        sessionId,
         text: workerResult.text,
         threadId: params.threadId,
         replyToMessageId: params.sourceMessageId,
       });
       const sessionMessageRefs: RepoChatSession["messageRefs"] = [
         { chatId: params.chatId, messageId: params.sourceMessageId },
-        ...sentMessageIds.map((messageId) => ({
+        ...sentReply.messageIds.map((messageId) => ({
           chatId: params.chatId,
           messageId,
         })),
@@ -279,16 +416,18 @@ function runRepoChatInBackground(params: {
         cliSessionId: workerResult.cliSessionId,
         codexSandboxRunId,
         messageRefs: sessionMessageRefs,
+        overflowReplies: sentReply.overflowReplies,
       });
       saveRepoChatSession(nextSession);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       params.runtime.error?.(danger(`telegram repo chat worker failed: ${message}`));
+      const userMessage = sanitizeUserFacingText(message);
       await sendRepoChatReply({
         bot: params.bot,
         runtime: params.runtime,
         chatId: params.chatId,
-        text: `Repo chat failed: ${message}`,
+        text: `Repo chat failed: ${userMessage}`,
         threadId: params.threadId,
         replyToMessageId: params.sourceMessageId,
       }).catch(() => undefined);

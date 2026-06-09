@@ -1,4 +1,5 @@
 import type { SerializedRun } from "../goal/types.js";
+import { findPendingContinuationEditInteraction } from "./continuation-edit-interactions.js";
 
 // Routing contract: Telegram chats feel conversational, but all side effects must flow
 // through goal runs. CHAT is read-only. Only GOAL_* routes are allowed to plan/execute.
@@ -9,6 +10,7 @@ import type { SerializedRun } from "../goal/types.js";
 // (bot.ts:454) where the text router lives.
 export type RouteKind =
   | "GOAL_EDIT"
+  | "GOAL_CONTINUATION_EDIT"
   | "GOAL_ANSWER"
   | "GOAL_FEEDBACK"
   | "GOAL_NOTICE"
@@ -26,6 +28,7 @@ export type RouteResult = {
 type RouteInput = {
   chatId: number;
   threadId?: number;
+  senderId?: string;
   messageText: string;
   replyToMessageId?: number;
   runs: SerializedRun[];
@@ -83,6 +86,10 @@ function buildCompletedTrackedReplyNotice(state: string): string {
   return `No blocked, paused, or failed steps need input/resume right now. The goal is currently ${state}.`;
 }
 
+function buildStaleContinuationEditNotice(): string {
+  return "That continuation edit prompt was replaced. Reply to the latest continuation edit prompt.";
+}
+
 function normalizeText(text: string): string {
   return text.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -130,6 +137,23 @@ function matchesChatThread(
   return typeof msg.threadId !== "number";
 }
 
+function matchesContinuationNotify(
+  notify:
+    | {
+        chatId?: number;
+        messageId?: number;
+        threadId?: number;
+      }
+    | undefined,
+  chatId: number,
+  threadId: number | undefined,
+  messageId?: number,
+): boolean {
+  if (notify?.chatId == null) return false;
+  if (messageId != null && notify.messageId !== messageId) return false;
+  return matchesChatThread({ chatId: notify.chatId, threadId: notify.threadId }, chatId, threadId);
+}
+
 function filterRunsForChatThread(params: {
   runs: SerializedRun[];
   chatId: number;
@@ -148,6 +172,7 @@ function filterRunsForChatThread(params: {
     if (run.telegramFeedbackPromptMessages?.some((fp) => matchesChatThread(fp, chatId, threadId))) {
       return true;
     }
+    if (matchesContinuationNotify(run.pendingContinuation?.notify, chatId, threadId)) return true;
     return false;
   });
 }
@@ -223,6 +248,9 @@ function findRunByAnyTrackedMessageId(
     ) {
       return true;
     }
+    if (matchesContinuationNotify(run.pendingContinuation?.notify, chatId, threadId, messageId)) {
+      return true;
+    }
     if (
       run.telegramQuestionMessages?.some(
         (qm) => qm.messageId === messageId && matchesChatThread(qm, chatId, threadId),
@@ -248,14 +276,15 @@ function findRunByAnyTrackedMessageId(
  *   4. Reply to edit-prompt message (ForceReply from "Request changes" button) → GOAL_EDIT
  *   5. Reply to done message (done buttons message) → GOAL_FEEDBACK
  *   6. Reply to feedback prompt message (ForceReply from "Incorporate Feedback") → GOAL_FEEDBACK
- *   7. Reply to tracked blocked/paused/failed goal/task message → GOAL_ANSWER
+ *   7. Reply to continuation prompt edit message → GOAL_CONTINUATION_EDIT
+ *   8. Reply to tracked blocked/paused/failed goal/task message → GOAL_ANSWER
  *   9. Reply to older plan revision → DISAMBIGUATE
  *   10. Reply to any other tracked goal/task message → GOAL_NOTICE (never repo-chat)
  *   11. Help intent → CHAT_HELP
  *   12. Default → CHAT (with replyText hint if blocked runs exist)
  */
 export function routeTelegramText(input: RouteInput): RouteResult {
-  const { chatId, threadId, messageText, replyToMessageId } = input;
+  const { chatId, threadId, senderId, messageText, replyToMessageId } = input;
   const scopedRuns = filterRunsForChatThread({
     runs: input.runs,
     chatId,
@@ -265,6 +294,8 @@ export function routeTelegramText(input: RouteInput): RouteResult {
   if (!messageText.trim()) {
     return { kind: "CHAT_HELP" };
   }
+
+  const isSlashCommand = messageText.trimStart().startsWith("/");
 
   // CHAT: greet/ack smalltalk should fall through to generic chat.
   if (replyToMessageId == null && isGreetingIntent(messageText)) {
@@ -334,6 +365,52 @@ export function routeTelegramText(input: RouteInput): RouteResult {
       return { kind: "GOAL_FEEDBACK", runId: feedbackPromptMatch.runId };
     }
 
+    const continuationPromptMatch = scopedRuns.find((run) =>
+      matchesContinuationNotify(
+        run.pendingContinuation?.notify,
+        chatId,
+        threadId,
+        replyToMessageId,
+      ),
+    );
+    if (continuationPromptMatch) {
+      return { kind: "GOAL_CONTINUATION_EDIT", runId: continuationPromptMatch.runId };
+    }
+
+    if (senderId && !isSlashCommand) {
+      const pendingContinuationEdit = findPendingContinuationEditInteraction({
+        chatId,
+        threadId,
+        senderId,
+        runIds: scopedRuns.map((run) => run.runId),
+      });
+      if (
+        pendingContinuationEdit &&
+        (pendingContinuationEdit.originalMessageId === replyToMessageId ||
+          pendingContinuationEdit.promptMessageId === replyToMessageId)
+      ) {
+        const run = scopedRuns.find(
+          (candidate) => candidate.runId === pendingContinuationEdit.runId,
+        );
+        const status = run?.pendingContinuation?.status;
+        if (status === "pending" || status === "edited") {
+          return { kind: "GOAL_CONTINUATION_EDIT", runId: pendingContinuationEdit.runId };
+        }
+        return {
+          kind: "GOAL_NOTICE",
+          runId: pendingContinuationEdit.runId,
+          replyText: "That continuation prompt is no longer waiting for edits.",
+        };
+      }
+      if (pendingContinuationEdit?.supersededMessageIds?.includes(replyToMessageId)) {
+        return {
+          kind: "GOAL_NOTICE",
+          runId: pendingContinuationEdit.runId,
+          replyText: buildStaleContinuationEditNotice(),
+        };
+      }
+    }
+
     // DISAMBIGUATE: reply to an older plan revision.
     const olderMatch = scopedRuns.find((run) =>
       run.telegramPlanMessage?.messageHistory?.includes(replyToMessageId),
@@ -367,6 +444,27 @@ export function routeTelegramText(input: RouteInput): RouteResult {
     return { kind: "CHAT_HELP" };
   }
 
+  if (senderId && !isSlashCommand) {
+    const pendingContinuationEdit = findPendingContinuationEditInteraction({
+      chatId,
+      threadId,
+      senderId,
+      runIds: scopedRuns.map((run) => run.runId),
+    });
+    if (pendingContinuationEdit) {
+      const run = scopedRuns.find((candidate) => candidate.runId === pendingContinuationEdit.runId);
+      const status = run?.pendingContinuation?.status;
+      if (status === "pending" || status === "edited") {
+        return { kind: "GOAL_CONTINUATION_EDIT", runId: pendingContinuationEdit.runId };
+      }
+      return {
+        kind: "GOAL_NOTICE",
+        runId: pendingContinuationEdit.runId,
+        replyText: "That continuation prompt is no longer waiting for edits.",
+      };
+    }
+  }
+
   // Blocked-run hint: suggest reply-to or /goal_answer instead of silently attaching.
   const blockedRuns = scopedRuns.filter(isBlockedRun);
   if (blockedRuns.length > 0 && !isGreetingIntent(messageText)) {
@@ -385,4 +483,5 @@ export const TELEGRAM_GOAL_ROUTER_MESSAGES = {
   OLDER_REVISION_MESSAGE,
   buildTrackedReplyNotice,
   buildCompletedTrackedReplyNotice,
+  buildStaleContinuationEditNotice,
 };

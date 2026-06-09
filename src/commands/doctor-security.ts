@@ -41,35 +41,36 @@ export async function noteSecurityWarnings(cfg: MoltbotConfig) {
   const hasSharedSecret =
     (resolvedAuth.mode === "token" && hasToken) ||
     (resolvedAuth.mode === "password" && hasPassword);
+  const hasTailscaleIdentityAuth = resolvedAuth.allowTailscale && !hasSharedSecret;
   const bindDescriptor = `"${gatewayBind}" (${resolvedBindHost})`;
 
-  if (isExposed) {
-    if (!hasSharedSecret) {
-      const authFixLines =
-        resolvedAuth.mode === "password"
-          ? [
-              `  Fix: ${formatCliCommand("smithersbot configure")} to set a password`,
-              `  Or switch to token: ${formatCliCommand("smithersbot config set gateway.auth.mode token")}`,
-            ]
-          : [
-              `  Fix: ${formatCliCommand("smithersbot doctor --fix")} to generate a token`,
-              `  Or set token directly: ${formatCliCommand(
-                "smithersbot config set gateway.auth.mode token",
-              )}`,
-            ];
-      warnings.push(
-        `- CRITICAL: Gateway bound to ${bindDescriptor} without authentication.`,
-        `  Anyone on your network (or internet if port-forwarded) can fully control your agent.`,
-        `  Fix: ${formatCliCommand("smithersbot config set gateway.bind loopback")}`,
-        ...authFixLines,
-      );
-    } else {
-      // Auth is configured, but still warn about network exposure
-      warnings.push(
-        `- WARNING: Gateway bound to ${bindDescriptor} (network-accessible).`,
-        `  Ensure your auth credentials are strong and not exposed.`,
-      );
-    }
+  if (!hasSharedSecret && !hasTailscaleIdentityAuth) {
+    const authFixLines =
+      resolvedAuth.mode === "password"
+        ? [
+            `  Fix: ${formatCliCommand("smithersbot configure")} to set a password`,
+            `  Or switch to token: ${formatCliCommand("smithersbot config set gateway.auth.mode token")}`,
+          ]
+        : [
+            `  Fix: ${formatCliCommand("smithersbot doctor --fix")} to generate a token`,
+            `  Or set token directly: ${formatCliCommand(
+              "smithersbot config set gateway.auth.mode token",
+            )}`,
+          ];
+    warnings.push(
+      `- CRITICAL: Gateway bound to ${bindDescriptor} without authentication.`,
+      isExposed
+        ? `  Anyone on your network (or internet if port-forwarded) can fully control your agent.`
+        : `  Token authentication is recommended by default even for loopback gateway access.`,
+      `  Fix: ${formatCliCommand("smithersbot config set gateway.bind loopback")}`,
+      ...authFixLines,
+    );
+  } else if (isExposed) {
+    // Auth is configured, but still warn about network exposure
+    warnings.push(
+      `- WARNING: Gateway bound to ${bindDescriptor} (network-accessible).`,
+      `  Ensure your auth credentials are strong and not exposed.`,
+    );
   }
 
   const warnDmPolicy = async (params: {

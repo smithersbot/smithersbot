@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildAgentSurfaceAudit,
+  buildAgentPromptHistorySurfaceAudit,
   captureLiveSandboxProofStatus,
   isAuditedBackend,
   SANDBOX_CLASSIFICATIONS,
@@ -38,6 +39,44 @@ const EXPECTED_IN_SCOPE = [
 const EXPECTED_EXCLUDED = ["goal-sending", "nightwatch", "pi-runner"];
 
 describe("agent surface sandbox/security classification builder", () => {
+  it("tracks stored prompt history for every backend agent surface with no remaining targeted gaps", () => {
+    const audit = buildAgentPromptHistorySurfaceAudit();
+    const surfaces = audit.map((entry) => entry.surface).sort();
+    expect(surfaces).toEqual(
+      [
+        "approve-continuation",
+        "checker-autocheck",
+        "continuation-assessment",
+        "continuation-from-achieved",
+        "continuation-request-edit",
+        "lessons",
+        "manual-test",
+        "plan-revision",
+        "planner-api",
+        "planner-cli",
+        "reporter",
+        "scout",
+        "worker",
+        "worker-summary",
+      ].sort(),
+    );
+
+    for (const surface of [
+      "reporter",
+      "manual-test",
+      "continuation-assessment",
+      "continuation-from-achieved",
+      "continuation-request-edit",
+      "planner-api",
+    ]) {
+      const entry = audit.find((candidate) => candidate.surface === surface);
+      expect(entry, `${surface} must be enumerated`).toBeTruthy();
+      expect(entry!.storedPrompt, `${surface} must store its prompt`).toBe(true);
+      expect(entry!.historyWriter.length).toBeGreaterThan(0);
+      expect(entry!.phase.length).toBeGreaterThan(0);
+    }
+  });
+
   it("classifies every known agent surface for both Codex and Claude Code", () => {
     const audit = buildAgentSurfaceAudit();
     const inScope = audit.filter((entry) => entry.inScope).map((entry) => entry.surface);

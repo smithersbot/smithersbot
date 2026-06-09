@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   _resetClaudeBinaryCache,
+  SCOUT_NEEDS_DECISION_FILE,
   classifyScoutError,
+  parseScoutNeedsDecisionArtifact,
   renderScoutTemplate,
   resolveScoutDir,
   validateScoutOutput,
@@ -95,6 +97,31 @@ function writeValidScoutOutput(
   }
 }
 
+function sectionBetween(text: string, startMarker: string, endMarker: string): string {
+  const start = text.indexOf(startMarker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = text.indexOf(endMarker, start + startMarker.length);
+  expect(end).toBeGreaterThan(start);
+  return text.slice(start, end);
+}
+
+function expectComputerBasedCapabilityFraming(text: string): void {
+  expect(text).toContain("full user-requested outcome");
+  expect(text).toContain("broad, real-world, long-running");
+  expect(text).toContain("not fully observable by SmithersBot");
+  expect(text).toContain("Do not shrink");
+  expect(text).toContain("only what SmithersBot can finish on a computer");
+  expect(text).toContain(
+    "computer-based work, including software, research, writing, analysis, automation, repo work, workflow automation, structured planning",
+  );
+}
+
+function expectNoSoftwareOnlyLimitingFraming(text: string): void {
+  expect(text).not.toMatch(
+    /autonomous coding agent|coding-agent|coding agent|software-only|software only|software tasks|coding tasks/i,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // renderScoutTemplate
 // ---------------------------------------------------------------------------
@@ -135,6 +162,60 @@ describe("renderScoutTemplate", () => {
     });
     expect(result).toBe("dup and dup");
   });
+
+  it("carries full-Goal, first-Plan, and computer-based capability framing", () => {
+    const template = fs.readFileSync(
+      new URL("../prompts/scout/scout_prompt_template.md", import.meta.url),
+      "utf8",
+    );
+    const rendered = renderScoutTemplate({
+      template,
+      goalId: "business-goal",
+      goalText:
+        "my goal is to start a business that makes $10m per year in revenue that I own the majority of",
+      outputDir: "/tmp/scout",
+      wikiDir: "/tmp/wiki",
+    });
+
+    const gateSection = sectionBetween(rendered, "## Needs Decision Gate", "## Goal Brief");
+    const goalBriefSection = sectionBetween(rendered, "## Goal Brief", "## Required Output Files");
+
+    expectComputerBasedCapabilityFraming(gateSection);
+    expect(gateSection).toContain(
+      "A Plan is bounded work SmithersBot can do now toward that Goal, stopping at an Observation Point.",
+    );
+    expect(gateSection).toContain("the first Plan toward the Goal");
+    expect(gateSection).toContain("what the first Plan should do");
+    expect(gateSection).toContain(
+      "Only proceed to create a Plan when the goal is specific, measurable, and attainable; otherwise surface Decision(s) needed.",
+    );
+    expect(gateSection).toContain(
+      "If a question can be answered by exploring the codebase, explore instead of asking.",
+    );
+    expect(gateSection).toContain(
+      "Present all open Decisions in one message, each as multiple-choice with a recommended option.",
+    );
+    expect(gateSection).not.toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(gateSection).not.toContain("docs/goal-engine-guides/diagnosis-guide.md");
+    expect(gateSection).toContain(
+      "time, market response, human action, external feedback, or real-world events",
+    );
+    expect(gateSection).toContain("preserve the full Goal");
+    expectNoSoftwareOnlyLimitingFraming(gateSection);
+
+    expect(goalBriefSection).toContain("Original User Ask");
+    expect(goalBriefSection).toContain("First Plan Intent");
+    expect(goalBriefSection).toContain(
+      "separate the full Goal from the First Plan Intent and Observation Point",
+    );
+    expect(goalBriefSection).toContain("Original User Ask and Long Goal Summary preserve");
+    expect(goalBriefSection).toContain("First Plan Intent describes only the bounded first Plan");
+    expect(goalBriefSection).toContain(
+      "First Plan Intent must explain what the first Plan should do",
+    );
+    expect(goalBriefSection).toContain("toward the full Goal");
+    expectNoSoftwareOnlyLimitingFraming(goalBriefSection);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -163,16 +244,98 @@ describe("validateScoutOutput", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns needs_clarification when plan_needs_clarification.md exists", () => {
+  it("returns needs_decision for a single decision artifact", () => {
     fs.writeFileSync(
-      path.join(tmpDir, "plan_needs_clarification.md"),
-      "What framework are you using?",
+      path.join(tmpDir, SCOUT_NEEDS_DECISION_FILE),
+      JSON.stringify(
+        {
+          version: 1,
+          decisions: [
+            {
+              id: "deployment-target",
+              question: "Which deployment target should this use?",
+              options: [
+                { key: "A", label: "Staging", recommended: true },
+                { key: "B", label: "Production" },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
       "utf8",
     );
     const result = validateScoutOutput(tmpDir);
     expect(result).toEqual({
-      status: "needs_clarification",
-      question: "What framework are you using?",
+      status: "needs_decision",
+      decisions: [
+        {
+          id: "deployment-target",
+          question: "Which deployment target should this use?",
+          options: [
+            { key: "A", label: "Staging", recommended: true },
+            { key: "B", label: "Production" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("parses one or multiple decisions from the same decision artifact shape", () => {
+    const singleDecision = parseScoutNeedsDecisionArtifact(
+      JSON.stringify({
+        version: 1,
+        decisions: [
+          {
+            id: "ui-mode",
+            question: "Which UI mode should be implemented?",
+            options: [
+              { key: "A", label: "Compact" },
+              { key: "B", label: "Expanded", recommended: true },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(singleDecision.decisions).toHaveLength(1);
+
+    const multiDecision = parseScoutNeedsDecisionArtifact(
+      JSON.stringify({
+        version: 1,
+        decisions: [
+          {
+            id: "ui-mode",
+            question: "Which UI mode should be implemented?",
+            options: [
+              { key: "A", label: "Compact" },
+              { key: "B", label: "Expanded", recommended: true },
+            ],
+          },
+          {
+            id: "test-scope",
+            question: "Which tests should define success?",
+            options: [
+              { key: "A", label: "Focused tests", recommended: true },
+              { key: "B", label: "Full suite" },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(multiDecision.decisions.map((decision) => decision.id)).toEqual([
+      "ui-mode",
+      "test-scope",
+    ]);
+  });
+
+  it("returns a clear validation error when decision JSON is malformed", () => {
+    fs.writeFileSync(path.join(tmpDir, SCOUT_NEEDS_DECISION_FILE), "{ nope", "utf8");
+    const result = validateScoutOutput(tmpDir);
+    expect(result).toEqual({
+      status: "error",
+      error: `${SCOUT_NEEDS_DECISION_FILE} is not valid JSON`,
+      errorKind: "validation",
     });
   });
 

@@ -1,6 +1,13 @@
 import type { AttemptBundle } from "./attempt-bundle.js";
 import type { HardDenyList } from "./hard-deny.js";
-import type { FailedDetail, Plan, PlanStep, RalphDetail, ResumeNote } from "./types.js";
+import type {
+  FailedDetail,
+  Plan,
+  PlanStep,
+  RalphDetail,
+  ResumeNote,
+  WorkerContextSummary,
+} from "./types.js";
 
 export interface TaskRunnerContext {
   task: PlanStep;
@@ -8,8 +15,9 @@ export interface TaskRunnerContext {
   goal: string;
   workingDir: string;
   runId: string;
+  historyWorkspaceSlug?: string;
   denyPolicy: HardDenyList;
-  completedSummaries: Array<{ id: string; summary: string }>;
+  completedSummaries: WorkerContextSummary[];
   resumeAnswer?: string;
   resumeQuestion?: string;
   resumeNotes?: ResumeNote[];
@@ -26,6 +34,8 @@ export interface TaskRunnerResult {
   failedDetail?: FailedDetail;
   ralphDetail?: RalphDetail;
   turnsUsed: number;
+  /** Backend-native session/thread id from the executing CLI worker, when available. */
+  executionSessionId?: string;
   artifacts?: string[];
   blockedReason?: PlanStep["blockedReason"];
 }
