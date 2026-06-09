@@ -316,11 +316,22 @@ describe("goal command — early failure persistence", () => {
     expect(parsed.runId).toBeDefined();
   });
 
-  it("handles blocked-at-planning from unified CLI planner", async () => {
+  it("handles blocked-at-planning from unified CLI planner with structured decisions", async () => {
+    const decisions = [
+      {
+        id: "target-environment",
+        question: "Which target environment should I use?",
+        options: [
+          { key: "A", label: "Staging", recommended: true },
+          { key: "B", label: "Production" },
+        ],
+      },
+    ];
     mockRunCliPlanning.mockResolvedValue({
       status: "blocked",
       question: "Which target environment should I use?",
-      scoutStatus: "needs_clarification",
+      decisions,
+      scoutStatus: "needs_decision",
     });
 
     const { goalCommand } = await import("./goal.js");
@@ -341,14 +352,16 @@ describe("goal command — early failure persistence", () => {
       question: "Which target environment should I use?",
       requiredInputKey: "step:planning:input",
       blockedAt: "planning",
+      decisions,
     });
     const runs = listRuns(testGoalsDir);
     expect(runs).toHaveLength(1);
     const run = loadRun(runs[0]!.runId, testGoalsDir);
     expect(run).toBeDefined();
     expect(run!.state).toBe("blocked");
-    expect(run!.scoutStatus).toBe("needs_clarification");
+    expect(run!.scoutStatus).toBe("needs_decision");
     expect(run!.blocked?.blockedAt).toBe("planning");
+    expect(run!.blocked?.decisions).toEqual(decisions);
     expect(mockRunCliPlanning).toHaveBeenCalledWith(
       expect.objectContaining({
         cwd: workDir,

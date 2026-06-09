@@ -1,29 +1,11 @@
-import net from "node:net";
-
 import { describe, expect, it, vi } from "vitest";
 
 import { CHUTES_TOKEN_ENDPOINT, CHUTES_USERINFO_ENDPOINT } from "../agents/chutes-oauth.js";
 import { loginChutes } from "./chutes-oauth.js";
 
-async function getFreePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close(() => reject(new Error("No TCP address")));
-        return;
-      }
-      const port = address.port;
-      server.close((err) => (err ? reject(err) : resolve(port)));
-    });
-  });
-}
-
 describe("loginChutes", () => {
   it("captures local redirect and exchanges code for tokens", async () => {
-    const port = await getFreePort();
+    const port = 38_411;
     const redirectUri = `http://127.0.0.1:${port}/oauth-callback`;
 
     const fetchFn: typeof fetch = async (input, init) => {
@@ -56,10 +38,13 @@ describe("loginChutes", () => {
       onAuth: async ({ url }) => {
         const state = new URL(url).searchParams.get("state");
         expect(state).toBeTruthy();
-        await fetch(`${redirectUri}?code=code_local&state=${state}`);
       },
       onPrompt,
       fetchFn,
+      waitForLocalCallback: async ({ redirectUri: actualRedirectUri, expectedState }) => {
+        expect(actualRedirectUri).toBe(redirectUri);
+        return { code: "code_local", state: expectedState };
+      },
     });
 
     expect(onPrompt).not.toHaveBeenCalled();

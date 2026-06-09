@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import type { MoltbotConfig } from "../config/config.js";
 import type { ClaudeCodeAuthMode, CliWorkerId, SemgrepMode } from "../config/types.goal.js";
 import {
@@ -14,6 +15,7 @@ import {
   buildSuccessorMap,
   clampBackendForEnabledWorkers,
   computeTransientBackoffMs,
+  isBackendDevGatewayControlCapable,
   isBackendNetworkCapable,
   MAX_TRANSIENT_RETRY_ATTEMPTS,
   pickFallbackBackend,
@@ -70,7 +72,6 @@ import {
 import { isRepoPrivate } from "./git-privacy.js";
 import { orderStepsCriticalPathFirst, computeCriticalPathScores } from "./plan-order.js";
 import { extractRunLessons, getLessonsForContext } from "./lessons.js";
-import { generateManualTests, isNoBackendManualTestsError } from "./manual-tests.js";
 import { PiTaskRunner } from "./pi-runner.js";
 import {
   appendGoalWorkingEntry,
@@ -78,25 +79,48 @@ import {
   appendRetryContext,
   buildRalphHistorySummary,
 } from "./run-journal.js";
+import { buildContinuationProposal, type ContinuationAssessment } from "./continuation.js";
+import {
+  renderPostExecutionReportMarkdown,
+  resolvePostExecutionReportArtifactPaths,
+  runPostExecutionReporting,
+  type PostExecutionContinuationDecision,
+  type PostExecutionDecision,
+  type PostExecutionManualTestDisplay,
+  type PostExecutionManualTest,
+  type PostExecutionReport,
+  type PostExecutionReportingFailure,
+  type RunPostExecutionReportingResult,
+} from "./post-execution-report.js";
 import { loadRun, resolveRunDir } from "./run-store.js";
 import type {
+  ContinuationProposal,
+  ContinuationProposalDecision,
   GitCheckpointConfig,
   GithubPushOutcome,
   GoalLlmClient,
   GoalOutcome,
   GoalSession,
   ManualTestSuggestion,
+  Plan,
   PlanStep,
   BlockedDetail,
   RetryConfig,
   SerializedRun,
   TaskExecutionResult,
+  WorkerSummaryReference,
 } from "./types.js";
 import type { TaskRunner, TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import { appendAgentHistoryEventBestEffort } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import {
+  computeChildlessSummaries,
+  deleteWorkerSummaryFile,
+  removeWorkerSummaryReference,
+  writeWorkerSummary,
+} from "./worker-summary.js";
 
 const DEFAULT_MAX_TURNS_PER_TASK = 5;
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
@@ -167,6 +191,84 @@ function formatTechnicalBlockedQuestion(message: string, attempts: AttemptBundle
   return `${trimmedMessage}\n\nAttempt history:\n${attemptLines.join("\n")}`;
 }
 
+function normalizedBuildGateCommands(plan: Plan): string[] {
+  return plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
+}
+
+function upsertWorkerSummary(
+  session: GoalSession,
+  summary: WorkerSummaryReference,
+): WorkerSummaryReference[] {
+  const current = session.workerSummaries ?? [];
+  session.workerSummaries = [...current.filter((entry) => entry.id !== summary.id), summary];
+  return session.workerSummaries;
+}
+
+function discardWorkerSummary(params: {
+  session: GoalSession;
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  goalBriefPath?: string;
+  stepId: string;
+}): void {
+  const before = params.session.workerSummaries ?? [];
+  if (before.some((summary) => summary.id === params.stepId)) {
+    params.session.workerSummaries = removeWorkerSummaryReference(before, params.stepId);
+  }
+  deleteWorkerSummaryFile({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+    goalBriefPath: params.goalBriefPath,
+    stepId: params.stepId,
+  });
+}
+
+function shouldMintWorkerSummaryAfterStep(params: {
+  plan: Plan;
+  session: GoalSession;
+  task: PlanStep;
+}): boolean {
+  if (params.task.status !== "done") return false;
+  const gateCommands = normalizedBuildGateCommands(params.plan);
+  if (gateCommands.length === 0) return true;
+  if (params.plan.buildGate?.runBetweenSteps === true) {
+    return params.session.buildGateResults?.[params.task.id]?.passed === true;
+  }
+  return false;
+}
+
+function writeVerifiedWorkerSummary(params: {
+  session: GoalSession;
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  goalBriefPath?: string;
+  plan: Plan;
+  task: PlanStep;
+  usedSummaries: WorkerSummaryReference[];
+  buildGateCommands?: string[];
+  buildGateTimestamp?: string;
+  onProgress?: (text: string) => void;
+}): WorkerSummaryReference {
+  const summary = writeWorkerSummary({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+    goalBriefPath: params.goalBriefPath,
+    step: params.task,
+    plan: params.plan,
+    taskSummary: params.task.taskSummary,
+    usedSummaries: params.usedSummaries,
+    buildGateCommands: params.buildGateCommands,
+    buildGateTimestamp: params.buildGateTimestamp,
+  });
+  upsertWorkerSummary(params.session, summary);
+  params.onProgress?.(`  [wiki] Worker Summary: ${summary.path}`);
+  return summary;
+}
+
 function appendWorkerFallbackHistoryEvent(params: {
   workingDir: string;
   runId: string;
@@ -179,11 +281,12 @@ function appendWorkerFallbackHistoryEvent(params: {
   fallbackBackend?: CliWorkerId;
   fallbackReason?: string;
   onProgress?: (text: string) => void;
+  historyWorkspaceSlug?: string;
 }): void {
   const result = appendAgentHistoryEventBestEffort(
     {
       kind: "goal",
-      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      workspaceName: params.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(params.workingDir),
       goalId: params.runId,
     },
     {
@@ -235,6 +338,13 @@ export type GoalStatusChangeEvent =
   | { type: "fully_blocked"; steps: PlanStep[] }
   | { type: "plan_revised"; revision: number; summary: string; steps: PlanStep[] }
   | {
+      type: "post_execution_reporting_failed";
+      steps: PlanStep[];
+      summary: string;
+      reason: string;
+      phase: PostExecutionReportingFailure["phase"];
+    }
+  | {
       type: "all_done";
       steps: PlanStep[];
       summary: string;
@@ -272,6 +382,522 @@ export type ExecuteGoalParams = {
   /** Output channel for formatting the completion summary. */
   channel?: GoalOutputChannel;
 };
+
+export type ResumePostExecutionReportingParams = Pick<
+  ExecuteGoalParams,
+  | "session"
+  | "runId"
+  | "workingDir"
+  | "config"
+  | "enabledWorkers"
+  | "model"
+  | "claudeCodeAuth"
+  | "channel"
+  | "serializedRun"
+  | "onRunStatePersist"
+  | "onProgress"
+  | "onStatusChange"
+>;
+
+type PostExecutionLifecycleResult =
+  | {
+      status: "success";
+      summary: string;
+      manualTests: ManualTestSuggestion[];
+    }
+  | {
+      status: "failed";
+      summary: string;
+      failure: PostExecutionReportingFailure;
+    };
+
+type SuccessfulPostExecutionReportingResult = Extract<
+  RunPostExecutionReportingResult,
+  { status: "success" }
+>;
+
+function unknownErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function bestEffortReportLifecycleFailure(params: {
+  session: GoalSession;
+  steps: PlanStep[];
+  summary: string;
+  error: unknown;
+  onRunStatePersist?: () => void | Promise<void>;
+  onStatusChange?: ExecuteGoalParams["onStatusChange"];
+  onProgress?: (message: string) => void;
+}): Promise<PostExecutionLifecycleResult> {
+  const errorText = unknownErrorMessage(params.error);
+  const reason =
+    params.session.postExecutionReportingFailureReason ??
+    `Post-execution reporting failed after plan completion: ${errorText}`;
+
+  params.session.state = "reporting_failed";
+  params.session.blocked = null;
+  params.session.lastError = undefined;
+  params.session.pendingContinuation = undefined;
+  params.session.postExecutionReportingFailureReason = reason;
+
+  try {
+    await params.onRunStatePersist?.();
+  } catch (persistError) {
+    params.onProgress?.(
+      `  [warn] Failed to persist post-execution reporting failure: ${unknownErrorMessage(
+        persistError,
+      )}`,
+    );
+  }
+
+  try {
+    await params.onStatusChange?.({
+      type: "post_execution_reporting_failed",
+      steps: params.steps,
+      summary: params.summary,
+      reason,
+      phase: "generateReport",
+    });
+  } catch (statusError) {
+    params.onProgress?.(
+      `  [warn] Failed to emit post-execution reporting failure status: ${unknownErrorMessage(
+        statusError,
+      )}`,
+    );
+  }
+
+  return {
+    status: "failed",
+    summary: params.summary,
+    failure: {
+      status: "failed",
+      phase: "generateReport",
+      reason,
+      usageLimitEvents: [],
+      lastErrorText: errorText,
+    },
+  };
+}
+
+function normalizePostExecutionText(value: string | null | undefined): string | undefined {
+  const text = value?.replace(/\s+/g, " ").trim();
+  return text || undefined;
+}
+
+function mapPostExecutionManualTests(
+  tests: readonly PostExecutionManualTest[],
+): ManualTestSuggestion[] {
+  return tests.map((test) => ({
+    description: test.description,
+    criticality: test.criticality,
+    ...(test.reason ? { reason: test.reason } : {}),
+    detail: test.detail,
+  }));
+}
+
+function mapPostExecutionDecision(
+  decision: PostExecutionDecision,
+): ContinuationProposalDecision | undefined {
+  const question = normalizePostExecutionText(decision.question);
+  const options = decision.options.map((option) => option.trim()).filter(Boolean);
+  if (!question || options.length === 0) return undefined;
+
+  const recommendedOption =
+    normalizePostExecutionText(decision.recommendedOption ?? undefined) ?? options[0]!;
+  const rationale =
+    normalizePostExecutionText(decision.rationale) ?? "Recommended by the post-execution report.";
+  const promptImpact = normalizePostExecutionText(decision.promptImpact);
+  return {
+    question,
+    options,
+    recommendedOption,
+    rationale,
+    ...(promptImpact ? { promptImpact } : {}),
+  };
+}
+
+function buildDegradedPostExecutionReport(params: {
+  summary: string;
+  failure: PostExecutionReportingFailure;
+}): PostExecutionReport {
+  return {
+    planCompleted: true,
+    goalAchieved: false,
+    summary: params.summary,
+    filesChanged: [],
+    verificationCommands: [],
+    manualTests: [],
+    nextPlanRecommended: false,
+    nextPlanSummary: null,
+    nextPlanPrompt: null,
+    decisionsNeeded: [],
+    failureOrBlockedReason: `Post-execution reporting could not generate a full report during ${params.failure.phase}: ${params.failure.reason}`,
+  };
+}
+
+function writeFallbackPostExecutionArtifacts(params: {
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  report: PostExecutionReport;
+}) {
+  const artifacts = resolvePostExecutionReportArtifactPaths({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+  });
+  const markdown = renderPostExecutionReportMarkdown(params.report);
+  fs.mkdirSync(artifacts.historyDir, { recursive: true, mode: 0o755 });
+  fs.writeFileSync(artifacts.markdownPath, markdown, "utf8");
+  fs.chmodSync(artifacts.markdownPath, 0o644);
+  fs.writeFileSync(artifacts.jsonPath, `${JSON.stringify(params.report, null, 2)}\n`, "utf8");
+  fs.chmodSync(artifacts.jsonPath, 0o644);
+  return { artifacts, markdown };
+}
+
+function buildDegradedPostExecutionResult(params: {
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  summary: string;
+  failure: PostExecutionReportingFailure;
+  backend: CliWorkerId;
+}): SuccessfulPostExecutionReportingResult {
+  const report = buildDegradedPostExecutionReport({
+    summary: params.summary,
+    failure: params.failure,
+  });
+  const { artifacts, markdown } = writeFallbackPostExecutionArtifacts({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+    report,
+  });
+  const manualTestDisplay: PostExecutionManualTestDisplay = {
+    manualTests: [],
+    displayMarkdown: "",
+  };
+  const continuation: PostExecutionContinuationDecision = {
+    goalAchieved: false,
+    nextPlanRecommended: false,
+    nextPlanSummary: null,
+    nextPlanPrompt: null,
+    decisionsNeeded: [],
+    failureOrBlockedReason: report.failureOrBlockedReason,
+  };
+  return {
+    status: "success",
+    report,
+    markdown,
+    artifacts,
+    manualTestDisplay,
+    continuation,
+    backend: params.backend,
+  };
+}
+
+function buildRunSnapshotForContinuation(params: {
+  session: GoalSession;
+  runId: string;
+  workingDir: string;
+  model?: string;
+  serializedRun?: SerializedRun;
+}): SerializedRun {
+  const previous = params.serializedRun;
+  const now = new Date().toISOString();
+  return {
+    runId: params.runId,
+    goal: params.session.goal,
+    state: params.session.state,
+    plan: params.session.plan,
+    stepResults: Object.fromEntries(params.session.stepResults),
+    blocked: params.session.blocked,
+    answers: params.session.answers,
+    resumeNotes: params.session.resumeNotes ?? previous?.resumeNotes ?? [],
+    lastError: params.session.lastError,
+    workingDir: params.workingDir,
+    model: params.model ?? previous?.model,
+    dryRun: previous?.dryRun ?? false,
+    createdAt: previous?.createdAt ?? now,
+    updatedAt: now,
+    planNumber: previous?.planNumber ?? 1,
+    ...(previous?.historyWorkspaceSlug
+      ? { historyWorkspaceSlug: previous.historyWorkspaceSlug }
+      : {}),
+    ...(previous?.goalBriefPath ? { goalBriefPath: previous.goalBriefPath } : {}),
+    ...(previous?.planRevision != null ? { planRevision: previous.planRevision } : {}),
+    ...(previous?.activePlanRevision != null
+      ? { activePlanRevision: previous.activePlanRevision }
+      : {}),
+  };
+}
+
+function buildReportDerivedContinuationProposal(params: {
+  session: GoalSession;
+  runId: string;
+  workingDir: string;
+  model?: string;
+  serializedRun?: SerializedRun;
+  continuation: PostExecutionContinuationDecision;
+  fallbackSummary: string;
+}): ContinuationProposal {
+  const proposedPrompt = normalizePostExecutionText(params.continuation.nextPlanPrompt);
+  const briefSummary =
+    normalizePostExecutionText(params.continuation.nextPlanSummary) ?? params.fallbackSummary;
+  const decisions = params.continuation.decisionsNeeded
+    .map(mapPostExecutionDecision)
+    .filter((decision): decision is ContinuationProposalDecision => Boolean(decision));
+  const assessment: ContinuationAssessment =
+    params.continuation.nextPlanRecommended && proposedPrompt
+      ? {
+          outcome: "continuation-recommended-now",
+          goalAchieved: params.continuation.goalAchieved,
+          briefSummary,
+          proposedPrompt,
+          ...(decisions.length > 0 ? { decisions } : {}),
+        }
+      : {
+          outcome: "goal-achieved-no-continuation",
+          goalAchieved: true,
+          briefSummary,
+        };
+  const proposal = buildContinuationProposal({
+    run: buildRunSnapshotForContinuation(params),
+    assessment,
+  });
+  proposal.goalAchieved = params.continuation.goalAchieved;
+  return proposal;
+}
+
+function resolveReportingBackend(params: {
+  session: GoalSession;
+  serializedRun?: SerializedRun;
+  enabledWorkers: CliWorkerId[];
+}): CliWorkerId {
+  const explicit =
+    params.session.executionSessionBackend ?? params.serializedRun?.executionSessionBackend;
+  if (explicit && params.enabledWorkers.includes(explicit)) return explicit;
+  if (params.enabledWorkers.includes(DEFAULT_BACKEND)) return DEFAULT_BACKEND;
+  return params.enabledWorkers[0] ?? DEFAULT_BACKEND;
+}
+
+async function runPostExecutionLifecycle(
+  params: ResumePostExecutionReportingParams & {
+    summary: string;
+    reviewUrl?: string;
+    maxTurnsPerTask?: number;
+    failOnReportingFailure?: boolean;
+  },
+): Promise<PostExecutionLifecycleResult> {
+  const { session, runId, workingDir, onProgress, onStatusChange } = params;
+  const plan = session.plan;
+  if (!plan) {
+    const failure: PostExecutionReportingFailure = {
+      status: "failed",
+      phase: "generateReport",
+      reason: "Cannot run post-execution reporting without a plan.",
+      usageLimitEvents: [],
+      lastErrorText: "missing plan",
+    };
+    return { status: "failed", summary: params.summary, failure };
+  }
+
+  const steps = [...plan.steps];
+  const enabled = resolveEnabledWorkers(
+    params.enabledWorkers ? { enabledWorkers: params.enabledWorkers } : params.config?.goal,
+  );
+  const backend = resolveReportingBackend({
+    session,
+    serializedRun: params.serializedRun,
+    enabledWorkers: enabled,
+  });
+  const sessionId = session.executionSessionId ?? params.serializedRun?.executionSessionId;
+  const historyWorkspaceSlug =
+    params.serializedRun?.historyWorkspaceSlug ?? session.historyWorkspaceSlug;
+  const serializedRunForReporting =
+    params.serializedRun ??
+    (historyWorkspaceSlug
+      ? ({
+          runId,
+          goal: session.goal,
+          state: session.state,
+          plan,
+          stepResults: Object.fromEntries(session.stepResults),
+          blocked: session.blocked,
+          answers: session.answers,
+          workingDir,
+          historyWorkspaceSlug,
+          model: params.model,
+          dryRun: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        } as SerializedRun)
+      : undefined);
+
+  session.state = "reporting";
+  session.blocked = null;
+  session.lastError = undefined;
+  session.postExecutionReportingFailureReason = undefined;
+  await params.onRunStatePersist?.();
+
+  let reportingDegraded = false;
+  let result: RunPostExecutionReportingResult = await runPostExecutionReporting({
+    runId,
+    goal: session.goal,
+    plan,
+    workingDir,
+    backend,
+    ...(sessionId ? { sessionId } : {}),
+    ...(params.model ? { model: params.model } : {}),
+    ...(params.claudeCodeAuth ? { claudeCodeAuth: params.claudeCodeAuth } : {}),
+    enabledBackends: enabled,
+    ...(serializedRunForReporting ? { serializedRun: serializedRunForReporting } : {}),
+    workerSummaries: session.workerSummaries ?? [],
+    buildGateResults: session.buildGateResults,
+    completionSummary: params.summary,
+    onProgress,
+  });
+
+  if (result.status === "failed") {
+    const reportingFailure = result;
+    const reason = `Post-execution reporting failed during ${reportingFailure.phase}: ${reportingFailure.reason}`;
+    if (params.failOnReportingFailure) {
+      session.state = "reporting_failed";
+      session.postExecutionReportingFailureReason = reason;
+      if (reportingFailure.artifacts) {
+        session.postExecutionReportArtifacts = reportingFailure.artifacts;
+      }
+      await params.onRunStatePersist?.();
+      await onStatusChange?.({
+        type: "post_execution_reporting_failed",
+        steps,
+        summary: params.summary,
+        reason,
+        phase: reportingFailure.phase,
+      });
+      return { status: "failed", summary: params.summary, failure: reportingFailure };
+    }
+
+    try {
+      result = buildDegradedPostExecutionResult({
+        runId,
+        workingDir,
+        ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+        summary: params.summary,
+        failure: reportingFailure,
+        backend,
+      });
+      reportingDegraded = true;
+      onProgress?.(`  [warn] ${reason}. Continuing with a degraded post-execution report.`);
+    } catch (error) {
+      const fallbackReason = error instanceof Error ? error.message : String(error);
+      const fallbackFailure: PostExecutionReportingFailure = {
+        status: "failed",
+        phase: reportingFailure.phase,
+        reason: `${reason}; degraded report fallback failed: ${fallbackReason}`,
+        usageLimitEvents: reportingFailure.usageLimitEvents,
+        lastErrorText: fallbackReason,
+        ...(reportingFailure.artifacts ? { artifacts: reportingFailure.artifacts } : {}),
+      };
+      session.state = "reporting_failed";
+      session.postExecutionReportingFailureReason = fallbackFailure.reason;
+      if (fallbackFailure.artifacts) {
+        session.postExecutionReportArtifacts = fallbackFailure.artifacts;
+      }
+      await params.onRunStatePersist?.();
+      await onStatusChange?.({
+        type: "post_execution_reporting_failed",
+        steps,
+        summary: params.summary,
+        reason: fallbackFailure.reason,
+        phase: fallbackFailure.phase,
+      });
+      return { status: "failed", summary: params.summary, failure: fallbackFailure };
+    }
+  }
+
+  const manualTests = mapPostExecutionManualTests(result.manualTestDisplay.manualTests);
+  const continuation = buildReportDerivedContinuationProposal({
+    session,
+    runId,
+    workingDir,
+    model: params.model,
+    ...(serializedRunForReporting ? { serializedRun: serializedRunForReporting } : {}),
+    continuation: result.continuation,
+    fallbackSummary: result.report.summary,
+  });
+  const summary = buildGoalSummary({
+    goal: session.goal,
+    goalHeadline: plan.shortSummary,
+    runId,
+    steps,
+    maxTurnsPerTask: params.maxTurnsPerTask ?? DEFAULT_MAX_TURNS_PER_TASK,
+    ...(reportingDegraded ? {} : { manualTests }),
+    channel: params.channel,
+  });
+
+  session.state = "done";
+  session.postExecutionReport = result.report;
+  session.postExecutionReportArtifacts = result.artifacts;
+  session.postExecutionManualTestDisplay = result.manualTestDisplay;
+  session.postExecutionContinuation = result.continuation;
+  session.postExecutionReportingFailureReason = undefined;
+  session.manualTests = manualTests;
+  session.manualTestsError = undefined;
+  session.pendingContinuation = continuation;
+  session.completionSummary = summary;
+  session.executionSessionBackend = result.backend;
+  if (result.sessionId) session.executionSessionId = result.sessionId;
+  await params.onRunStatePersist?.();
+
+  await onStatusChange?.({
+    type: "all_done",
+    steps,
+    summary,
+    ...(params.reviewUrl ? { reviewUrl: params.reviewUrl } : {}),
+    manualTests,
+    manualTestsStatus: "generated",
+  });
+
+  return { status: "success", summary, manualTests };
+}
+
+export async function resumePostExecutionReporting(
+  params: ResumePostExecutionReportingParams,
+): Promise<GoalOutcome> {
+  if (!params.session.plan) {
+    const question = "Cannot resume post-execution reporting: run has no plan.";
+    params.session.state = "blocked";
+    params.session.blocked = {
+      blockedAt: "execution",
+      prompt: question,
+      requiredInputKey: "resume_post_execution",
+    };
+    await params.onRunStatePersist?.();
+    return {
+      status: "blocked",
+      question,
+      requiredInputKey: "resume_post_execution",
+      blockedAt: "execution",
+    };
+  }
+  const summary =
+    params.session.completionSummary ??
+    buildGoalSummary({
+      goal: params.session.goal,
+      goalHeadline: params.session.plan.shortSummary,
+      runId: params.runId,
+      steps: params.session.plan.steps,
+      maxTurnsPerTask: DEFAULT_MAX_TURNS_PER_TASK,
+      channel: params.channel,
+    });
+  const result = await runPostExecutionLifecycle({
+    ...params,
+    summary,
+    failOnReportingFailure: true,
+  });
+  return { status: "done", summary: result.summary };
+}
 
 function resolveTaskTimeoutMs(durationMinutes: number | undefined, fallbackMs: number): number {
   if (!durationMinutes || durationMinutes <= 0) return Math.max(fallbackMs, MIN_TASK_TIMEOUT_MS);
@@ -325,6 +951,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   session.buildGateFixCounts ??= {};
   session.buildGateFixSignatures ??= {};
   session.buildGateResults ??= {};
+  session.workerSummaries ??= params.serializedRun?.workerSummaries ?? [];
+  const historyWorkspaceSlug =
+    params.serializedRun?.historyWorkspaceSlug ?? session.historyWorkspaceSlug;
 
   const effectiveAbort = abortSignal ?? new AbortController().signal;
   const resolvedEnabledWorkers = resolveEnabledWorkers(
@@ -412,6 +1041,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   let globalBlock: { kind: PlanStep["blockedReason"]; message: string } | null = null;
   let globalBlockApplied = false;
   let finalBuildGateBlockedDetail: BlockedDetail | null = null;
+  const workerSummariesUsedByStep = new Map<string, WorkerSummaryReference[]>();
 
   const availability = detectBackendAvailability();
   const backendOverride = params.serializedRun?.backendOverride;
@@ -432,7 +1062,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
   // Dev-gateway workspace workers get a dev-aware hard-deny policy (allowing only
   // the dev unit's systemctl/journalctl commands) while stable stays protected.
   // Detection is checkout/cwd-based guidance and never alters runtime config.
-  const goalDenyPolicy = resolveDevGatewayWorkerContext({ workingDir }).active
+  const goalDenyPolicy = resolveDevGatewayWorkerContext({ workingDir, cfg: config?.goal }).active
     ? buildDevWorkspaceHardDenies(HARD_DENIES)
     : HARD_DENIES;
 
@@ -518,10 +1148,14 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
     const networkCapable = (candidate: GoalBackendId): boolean =>
       isBackendNetworkCapable(candidate, availability);
+    const devGatewayControlCapable = (candidate: GoalBackendId): boolean =>
+      isBackendDevGatewayControlCapable(candidate, availability);
     let backend = clampBackendForEnabledWorkers(
       resolveBackendForStep(task, backendOverride, defaultBackend, {
         networkCapable,
         networkCandidates: resolvedEnabledWorkers,
+        devGatewayControlCapable,
+        devGatewayControlCandidates: resolvedEnabledWorkers,
       }),
       resolvedEnabledWorkers,
     );
@@ -537,6 +1171,26 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           ? ` No network-capable backend available (also checked: ${attempted.join(", ")}).`
           : " No alternate backend was available to take it over.";
       const msg = `Step requires network but backend '${backend}' cannot enable it.${attemptedNote}`;
+      task.status = "blocked";
+      task.blockedReason = "capability_blocked";
+      task.blockedQuestion = msg;
+      onProgress?.(`  [blocked] ${msg}`);
+      recordTaskResult(session, task, taskStartMs, onTaskUpdate);
+      lastExecutedId = task.id;
+      continue;
+    }
+
+    if (task.requiresDevGatewayControl === true && !devGatewayControlCapable(backend)) {
+      const attempted = resolvedEnabledWorkers.filter((candidate) => candidate !== backend);
+      const attemptedNote =
+        attempted.length > 0
+          ? ` No dev-gateway-control-capable backend available (also checked: ${attempted.join(
+              ", ",
+            )}).`
+          : " No alternate backend was available to take it over.";
+      const msg =
+        `Step requires mediated dev-gateway control but backend '${backend}' cannot use it.` +
+        `${attemptedNote}`;
       task.status = "blocked";
       task.blockedReason = "capability_blocked";
       task.blockedQuestion = msg;
@@ -610,9 +1264,8 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
     for (let attempt = 1; attempt <= attemptCeiling; attempt++) {
       const attemptBundles = loadAttemptBundles(workerDir);
 
-      const completedSummaries = orderedSteps
-        .filter((s) => s.status === "done" && s.taskSummary)
-        .map((s) => ({ id: s.id, summary: s.taskSummary! }));
+      const completedSummaries = computeChildlessSummaries(plan, session.workerSummaries ?? []);
+      workerSummariesUsedByStep.set(task.id, completedSummaries);
 
       const context: TaskRunnerContext = {
         task,
@@ -620,6 +1273,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         goal: session.goal,
         workingDir,
         runId,
+        ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
         denyPolicy: goalDenyPolicy,
         completedSummaries,
         resumeAnswer,
@@ -639,7 +1293,21 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
 
       const result: TaskRunnerResult = await runner.execute(context);
       latestResult = result;
+      if (backend !== "pi" && result.executionSessionId) {
+        session.executionSessionId = result.executionSessionId;
+        session.executionSessionBackend = backend;
+      }
       applyTaskResult(task, result, onProgress);
+      if (result.status !== "complete") {
+        discardWorkerSummary({
+          session,
+          runId,
+          workingDir,
+          ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+          goalBriefPath: params.serializedRun?.goalBriefPath,
+          stepId: task.id,
+        });
+      }
 
       const latestBundles = loadAttemptBundles(workerDir);
       const isUsageOrRateLimit =
@@ -679,6 +1347,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             status: "pending",
             errorClass: "transient_overload",
             onProgress,
+            ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
           });
           task.turnsUsed = 0;
           task.status = "pending";
@@ -715,6 +1384,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           status: "blocked",
           errorClass: limitReason,
           onProgress,
+          ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
         });
         const fallback:
           | PickFallbackBackendResult
@@ -726,7 +1396,12 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
               resolvedEnabledWorkers,
               availability,
               backendOverride,
-              { requiresNetwork: task.requiresNetwork === true, networkCapable },
+              {
+                requiresNetwork: task.requiresNetwork === true,
+                networkCapable,
+                requiresDevGatewayControl: task.requiresDevGatewayControl === true,
+                devGatewayControlCapable,
+              },
             );
 
         if (fallback.backend && attempt < maxAttempts) {
@@ -771,6 +1446,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
             event: "usage_limit_fallback",
             status: "pending",
             fallbackReason: usageLimitEvent.limitType,
+            ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
             onProgress,
           });
           await new Promise((r) => setTimeout(r, retryDelayMs));
@@ -897,7 +1573,9 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       }
     }
 
-    const gateCommands = plan.buildGate?.commands?.map((cmd) => cmd.trim()).filter(Boolean) ?? [];
+    const gateCommands = normalizedBuildGateCommands(plan);
+    let verifiedBuildGateCommandsForStep: string[] | undefined;
+    let verifiedBuildGateTimestampForStep: string | undefined;
     if (
       task.status === "done" &&
       plan.buildGate?.runBetweenSteps === true &&
@@ -934,9 +1612,19 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const timestamp = new Date().toISOString();
       if (gateResult.passed) {
         session.buildGateResults[task.id] = { passed: true, timestamp };
+        verifiedBuildGateCommandsForStep = commandsForThisStep;
+        verifiedBuildGateTimestampForStep = timestamp;
         buildGateFixCounts.delete(task.id);
         persistBuildGateFixState();
       } else {
+        discardWorkerSummary({
+          session,
+          runId,
+          workingDir,
+          ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+          goalBriefPath: params.serializedRun?.goalBriefPath,
+          stepId: task.id,
+        });
         session.buildGateResults[task.id] = {
           passed: false,
           failedCommand: gateResult.failedCommand,
@@ -1044,6 +1732,32 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       continue;
     }
 
+    if (shouldMintWorkerSummaryAfterStep({ plan, session, task })) {
+      try {
+        writeVerifiedWorkerSummary({
+          session,
+          runId,
+          workingDir,
+          ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+          goalBriefPath: params.serializedRun?.goalBriefPath,
+          plan,
+          task,
+          usedSummaries: workerSummariesUsedByStep.get(task.id) ?? [],
+          buildGateCommands: verifiedBuildGateCommandsForStep,
+          buildGateTimestamp: verifiedBuildGateTimestampForStep,
+          onProgress,
+        });
+      } catch (err) {
+        // Worker Summary files are best-effort evidence; a write failure
+        // (e.g. an unwritable wiki dir) must never crash goal execution.
+        onProgress?.(
+          `  [wiki] Worker Summary skipped (write failed): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     if (task.status === "blocked" && task.blockedReason !== "user_input") {
       task.blockedQuestion = formatTechnicalBlockedQuestion(
         task.blockedQuestion ?? "Worker failed/interrupted; resume needed.",
@@ -1119,6 +1833,24 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       session.buildGateResults["__final__"] = { passed: true, timestamp };
       buildGateFixCounts.delete("__final__");
       persistBuildGateFixState();
+      if (plan.buildGate?.runBetweenSteps !== true) {
+        for (const completedStep of orderedSteps) {
+          if (completedStep.status !== "done") continue;
+          writeVerifiedWorkerSummary({
+            session,
+            runId,
+            workingDir,
+            ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+            goalBriefPath: params.serializedRun?.goalBriefPath,
+            plan,
+            task: completedStep,
+            usedSummaries: workerSummariesUsedByStep.get(completedStep.id) ?? [],
+            buildGateCommands: finalGateCommands,
+            buildGateTimestamp: timestamp,
+            onProgress,
+          });
+        }
+      }
     } else {
       session.buildGateResults["__final__"] = {
         passed: false,
@@ -1146,6 +1878,14 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
           requiredInputKey: "resume_execution",
         };
       } else {
+        discardWorkerSummary({
+          session,
+          runId,
+          workingDir,
+          ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+          goalBriefPath: params.serializedRun?.goalBriefPath,
+          stepId: targetStep.id,
+        });
         const targetWorkerDir = resolveWorkerDir(runId, targetStep.id);
         const previousGateSignature = buildGateFixSignatures.get("__final__");
         if (previousGateSignature && previousGateSignature !== finalGateSignature) {
@@ -1350,55 +2090,48 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       // Fail-open: lesson extraction should never block completion.
     }
 
-    let manualTests: ManualTestSuggestion[] | undefined;
-    let manualTestsError: string | undefined;
-    let manualTestsStatus: ManualTestsStatus = "generated";
-    try {
-      const manualTestsResult = await generateManualTests({
-        goal: session.goal,
-        steps: orderedSteps,
-        client: params.manualTestsClient,
-        runDir: resolveRunDir(runId),
-        runId,
-        workingDir,
-      });
-      manualTests = manualTestsResult.tests;
-      manualTestsStatus = manualTestsResult.status;
-      if (manualTestsResult.status === "skipped_no_embedded_auth") {
-        manualTestsError = manualTestsResult.error;
-        onProgress?.(
-          "  [manual-tests] Skipped: embedded-agent auth unavailable, using deterministic fallback.",
-        );
-      }
-    } catch (err) {
-      // Fail-open: completion should still emit even when manual test generation fails.
-      manualTests = undefined;
-      manualTestsError = err instanceof Error ? err.message : String(err);
-      manualTestsStatus = isNoBackendManualTestsError(err) ? "skipped_no_backend" : "failed";
-      if (manualTestsStatus === "skipped_no_backend") {
-        onProgress?.(
-          "  [manual-tests] Skipped: no available LLM backend configured. Install Codex or Claude Code.",
-        );
-      } else {
-        onProgress?.(`  [manual-tests] Generation failed: ${manualTestsError}`);
-      }
-    }
     const summary = buildGoalSummary({
       goal: session.goal,
       goalHeadline: plan.shortSummary,
       runId,
       steps: orderedSteps,
       maxTurnsPerTask,
-      manualTests,
       channel: params.channel,
     });
     session.completionSummary = summary;
-    session.manualTests = manualTests;
-    session.manualTestsError = manualTestsError;
-    await params.onRunStatePersist?.();
+    let reportLifecycle: PostExecutionLifecycleResult;
+    try {
+      reportLifecycle = await runPostExecutionLifecycle({
+        session,
+        runId,
+        workingDir,
+        config,
+        enabledWorkers,
+        model: params.model,
+        claudeCodeAuth: params.claudeCodeAuth,
+        channel: params.channel,
+        serializedRun: params.serializedRun,
+        onRunStatePersist: params.onRunStatePersist,
+        onProgress,
+        onStatusChange,
+        summary,
+        ...(reviewUrl ? { reviewUrl } : {}),
+        maxTurnsPerTask,
+      });
+    } catch (error) {
+      reportLifecycle = await bestEffortReportLifecycleFailure({
+        session,
+        steps: orderedSteps,
+        summary,
+        error,
+        onRunStatePersist: params.onRunStatePersist,
+        onProgress,
+        onStatusChange,
+      });
+    }
     try {
       mirrorGoalRuntimeToAgentHistory({
-        workspaceName: workspaceNameFromWorkingDir(workingDir),
+        workspaceName: historyWorkspaceSlug ?? workspaceNameFromWorkingDir(workingDir),
         goalId: runId,
         sourceDir: resolveRunDir(runId),
       });
@@ -1406,18 +2139,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
       const message = err instanceof Error ? err.message : String(err);
       onProgress?.(`  [warn] Runtime mirror after completion failed: ${message}`);
     }
-    if (onStatusChange) {
-      await onStatusChange({
-        type: "all_done",
-        steps: [...orderedSteps],
-        summary,
-        ...(reviewUrl ? { reviewUrl } : {}),
-        ...(manualTests !== undefined ? { manualTests } : {}),
-        ...(manualTestsError ? { manualTestsError } : {}),
-        manualTestsStatus,
-      });
-    }
-    return { status: "done", summary };
+    return { status: "done", summary: reportLifecycle.summary };
   }
 
   const aggregated =

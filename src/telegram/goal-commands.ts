@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { type Bot, type Context } from "grammy";
 import type { ReactionTypeEmoji } from "grammy/types";
@@ -11,7 +12,7 @@ import { goalCommand } from "../commands/goal.js";
 import { goalAnswerCommand } from "../commands/goal-answer.js";
 import { goalDetailCommand } from "../commands/goal-detail.js";
 import { applyGoalResumeNoteById } from "../commands/goal-resume-note.js";
-import { goalResumeCommand } from "../commands/goal-resume.js";
+import { goalResumeCommand, resumePostExecutionReportingCommand } from "../commands/goal-resume.js";
 import { goalStatusCommand } from "../commands/goal-status.js";
 import { loadConfig, type MoltbotConfig } from "../config/config.js";
 import type { ChannelGroupPolicy } from "../config/group-policy.js";
@@ -24,7 +25,7 @@ import type {
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
 import { detectBackendAvailability } from "../goal/backend-availability.js";
 import { resolveEnabledWorkers } from "../goal/backend-types.js";
-import { runCliPlanRevision } from "../goal/cli-planner.js";
+import { runCliPlanForContinuation, runCliPlanRevision } from "../goal/cli-planner.js";
 import {
   NO_BACKEND_AUTOCHECK_ERROR,
   NO_WORKER_BACKEND_ERROR,
@@ -41,6 +42,14 @@ import {
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { generateManualTests, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { PlanAutocheckError, runPlanAutocheck } from "../goal/plan-autocheck.js";
+import { isPlanningDecisionBlock } from "../goal/planning-decision-answers.js";
+import { RESUME_EXECUTION_KEY } from "../goal/resume-note.js";
+import {
+  PostExecutionReportSchema,
+  renderPostExecutionReportMarkdown,
+  resolvePostExecutionReportArtifactPaths,
+} from "../goal/post-execution-report.js";
+import { loadGoalBriefContent, snapshotAndRewriteGoalBriefOnApprove } from "../goal/goal-brief.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
 import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
@@ -57,16 +66,20 @@ import {
   resolveRunId,
   saveRun,
 } from "../goal/run-store.js";
-import type { Plan, SerializedRun, StepResult } from "../goal/types.js";
+import type { ScoutDecision } from "../goal/scout.js";
+import type { GoalLlmClient, Plan, SerializedRun, StepResult } from "../goal/types.js";
 import type { CliWorkerId, PlanAutocheckMode } from "../config/types.goal.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   buildGoalDoneInlineKeyboard,
   buildOnStatusChange,
+  buildContinuationApprovePreface,
   buildPlanningPreface,
   buildDoneSummaryWithManualTests,
   formatGoalLockedMessage,
   formatManualTestDetails,
+  GOAL_CONTINUE_GOAL_PREFIX,
+  GOAL_VIEW_REPORT_PREFIX,
   formatGoalWorkers,
   formatTaskDetailSections,
   getGoalExecutionPreface,
@@ -87,12 +100,29 @@ import {
   persistEditPromptMessage,
   persistFeedbackPromptMessage,
   persistTelegramQuestionMessage,
-  sendDagPng,
   sendBlockedNotification,
+  sendGoalDagWithFallback,
   sendGoalBackgroundResult,
   sendGoalPlanResult,
   sendGoalReply,
+  sendGoalTelegramMessage,
 } from "./goal-sending.js";
+import { formatPlanningDecisionMarkdown } from "./goal-blocked-ui.js";
+import {
+  CONTINUATION_APPROVE_PREFIX,
+  CONTINUATION_DETAILS_PREFIX,
+  CONTINUATION_EDIT_PREFIX,
+  CONTINUATION_MAKE_ANOTHER_PREFIX,
+  CONTINUATION_STOP_PREFIX,
+  renderRecommendedContinuationSurface,
+} from "./goal-continuation.js";
+import {
+  applyContinuationEditReply,
+  handleContinuationProposalAction,
+  openAddDetailsReply,
+} from "./continuation-core.js";
+import { recordPendingContinuationEditInteraction } from "./continuation-edit-interactions.js";
+import { resolveContinuationClient } from "./continuation-client.js";
 import { findRunByPlanMessageIdIndexed } from "./goal-message-index.js";
 import { shortenHomePath } from "../utils.js";
 import { redactSecretValues } from "../security/secret-paths.js";
@@ -102,6 +132,7 @@ import {
   type CommandFragmentBuffer,
   normalizeCommandFragmentParams,
 } from "./command-fragments.js";
+import { resumeGoalFromAnswer } from "./goal-resume-dispatch.js";
 
 export { sendGoalBackgroundResult, sendGoalPlanResult, sendGoalReply };
 export {
@@ -189,6 +220,44 @@ export function createCaptureRuntime(): {
   };
 }
 
+/**
+ * Resolve readable post-execution report content for the 📄 View Report button.
+ * Prefer the stored markdown artifact; fall back to rendering the structured
+ * JSON report; otherwise explain that no report exists yet.
+ */
+export function loadPostExecutionReportText(run: SerializedRun): string {
+  if (run.postExecutionReport) {
+    return renderPostExecutionReportMarkdown(run.postExecutionReport);
+  }
+  const artifacts = run.historyWorkspaceSlug
+    ? resolvePostExecutionReportArtifactPaths({
+        runId: run.runId,
+        workingDir: run.workingDir,
+        historyWorkspaceSlug: run.historyWorkspaceSlug,
+      })
+    : run.postExecutionReportArtifacts;
+  const jsonPath = artifacts?.jsonPath;
+  if (jsonPath) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as unknown;
+      const report = PostExecutionReportSchema.parse(parsed);
+      return renderPostExecutionReportMarkdown(report);
+    } catch {
+      // Fall through to markdown / unavailable message.
+    }
+  }
+  const markdownPath = artifacts?.markdownPath;
+  if (markdownPath) {
+    try {
+      const markdown = fs.readFileSync(markdownPath, "utf8").trim();
+      if (markdown) return markdown;
+    } catch {
+      // Fall through to JSON rendering / unavailable message.
+    }
+  }
+  return `No post-execution report is available yet for run ${run.runId.slice(0, 8)}.`;
+}
+
 // ---------------------------------------------------------------------------
 // Structured result type for plan handlers
 // ---------------------------------------------------------------------------
@@ -198,6 +267,7 @@ export type GoalPlanResult = {
   runId?: string;
   revision?: number;
   blocked?: boolean;
+  decisions?: ScoutDecision[];
   /**
    * Set when the run was cancelled externally (e.g. via /goal_stop) while this
    * plan flow was still running. The stop flow already sends the single
@@ -219,6 +289,16 @@ export type GoalPlanResult = {
   /** Redacted reason shown when autocheck was skipped. */
   autocheckSkipReason?: string;
 };
+
+const GOAL_BRIEF_CALLBACK_PREFIX = "gB";
+
+function loadGoalBriefMarkdown(
+  run: SerializedRun,
+): { ok: true; text: string } | { ok: false; text: string } {
+  const brief = loadGoalBriefContent(run);
+  if (brief.ok) return { ok: true, text: brief.content };
+  return { ok: false, text: brief.message };
+}
 
 const GOAL_PLAN_AUTOCHECK_USAGE = "Usage: /goal_plan_autocheck <codex|claude_code|off>";
 const GOAL_SEMGREP_USAGE = "Usage: /goal_semgrep <off|step|goal>";
@@ -347,6 +427,36 @@ function commitPlanRevision(params: {
   return newRevision;
 }
 
+function cloneFreshPendingPlan(plan: Plan): Plan {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => ({
+      ...step,
+      status: "pending",
+      turnsUsed: undefined,
+      blockedQuestion: undefined,
+      blockedReason: undefined,
+      taskSummary: undefined,
+      failedDetail: undefined,
+      ralphDetail: undefined,
+      executedBackend: undefined,
+    })),
+  };
+}
+
+function archiveContinuation(
+  run: SerializedRun,
+  status: NonNullable<SerializedRun["pendingContinuation"]>["status"],
+): void {
+  if (!run.pendingContinuation) return;
+  const archived = {
+    ...run.pendingContinuation,
+    status,
+  };
+  run.continuationHistory = [...(run.continuationHistory ?? []), archived];
+  run.pendingContinuation = undefined;
+}
+
 async function runGoalPlanAutocheck(params: {
   runId: string;
   run: SerializedRun;
@@ -379,6 +489,10 @@ async function runGoalPlanAutocheck(params: {
       : {}),
     ...(params.config?.goal?.readOnlyRoots
       ? { readOnlyRoots: params.config.goal.readOnlyRoots }
+      : {}),
+    ...(params.config?.goal ? { config: params.config.goal } : {}),
+    ...(params.run.historyWorkspaceSlug
+      ? { historyWorkspaceSlug: params.run.historyWorkspaceSlug }
       : {}),
     runDir: path.join(resolveGoalsDir(), params.runId),
     existingSessionId: params.existingSessionId,
@@ -640,8 +754,19 @@ export async function handleGoal(text: string, config?: MoltbotConfig): Promise<
     }
 
     if (outcome?.status === "blocked") {
-      parts.push(`\nAnswer: /goal_answer ${runId.slice(0, 8)} <your answer>`);
-      return { text: parts.join("\n") || "More information needed.", runId, blocked: true };
+      if (outcome.decisions && outcome.decisions.length > 0) {
+        parts.length = 0;
+        parts.push(formatPlanningDecisionMarkdown(outcome.decisions));
+        parts.push(`\n**Goal ID:** ${runId.slice(0, 8)}`);
+      } else {
+        parts.push(`\nAnswer: /goal_answer ${runId.slice(0, 8)} <your answer>`);
+      }
+      return {
+        text: parts.join("\n\n") || "More information needed.",
+        runId,
+        blocked: true,
+        ...(outcome.decisions ? { decisions: outcome.decisions } : {}),
+      };
     }
 
     // Successful plan — load run for PNG rendering in sendGoalPlanResult
@@ -779,6 +904,14 @@ export async function handleGoalApprove(
   }
 }
 
+function isRunLevelResumeExecutionOnly(run: SerializedRun): boolean {
+  return (
+    run.state === "blocked" &&
+    run.blocked?.requiredInputKey === RESUME_EXECUTION_KEY &&
+    !(run.plan?.steps.some((step) => step.status === "blocked") ?? false)
+  );
+}
+
 /** /goal_reject <runId> -- reject a pending plan (idempotent). */
 export async function handleGoalReject(rawId: string): Promise<string> {
   if (!rawId.trim()) {
@@ -882,7 +1015,7 @@ export async function sendGoalStatusResponse(params: {
       });
       if (blockedMessageId != null) return;
     } else {
-      const pngId = await sendDagPng({
+      const delivery = await sendGoalDagWithFallback({
         bot,
         chatId,
         threadId,
@@ -892,9 +1025,14 @@ export async function sendGoalStatusResponse(params: {
         steps: run.plan.steps,
         stepResults: serializedStepResultsToMap(run),
         caption: reply,
+        textMarkdown: reply,
+        minimalMarkdown: `Run ${resolvedId.slice(0, 8)} status is available with /goal_status ${resolvedId}`,
         replyToMessageId,
       });
-      if (pngId != null) return;
+      if (delivery.ok) return;
+      runtime.error?.(
+        `[goal-status] failed DAG/text delivery for ${resolvedId}: ${delivery.error}`,
+      );
     }
   }
   await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
@@ -914,7 +1052,7 @@ export async function sendGoalDetailResponse(params: {
   const resolvedId = rawId.trim() ? resolveRunId(rawId.trim()) : undefined;
   const run = resolvedId ? loadRun(resolvedId) : undefined;
   if (run?.plan) {
-    const pngId = await sendDagPng({
+    const delivery = await sendGoalDagWithFallback({
       bot,
       chatId,
       threadId,
@@ -924,9 +1062,16 @@ export async function sendGoalDetailResponse(params: {
       steps: run.plan.steps,
       stepResults: serializedStepResultsToMap(run),
       caption: reply,
+      textMarkdown: reply,
+      minimalMarkdown: `Run ${resolvedId?.slice(0, 8) ?? rawId} detail is available with /goal_detail ${
+        resolvedId ?? rawId.trim()
+      }`,
       replyToMessageId,
     });
-    if (pngId != null) return;
+    if (delivery.ok) return;
+    runtime.error?.(
+      `[goal-detail] failed DAG/text delivery for ${resolvedId ?? rawId}: ${delivery.error}`,
+    );
   }
   await sendGoalReply(bot, chatId, reply, runtime, threadId, replyToMessageId);
 }
@@ -948,6 +1093,37 @@ export async function handleGoalAnswer(
   const run = loadRun(resolvedId);
   if (!run) return `Run file missing: ${resolvedId}`;
 
+  // Planning Needs Decision: record the answer and auto-resume planning so the
+  // user never has to send a separate /goal_resume. goalAnswerCommand records
+  // the decision answer and delegates to goalResumeCommand/retryPlanning. We run
+  // it quietly and render the resumed awaiting-approval plan card (or surface a
+  // clear blocker), never the old "Recorded... Use /goal_resume" copy.
+  if (isPlanningDecisionBlock(run)) {
+    const cap = createCaptureRuntime();
+    try {
+      const outcome = await goalAnswerCommand(
+        resolvedId,
+        {
+          key: "",
+          value,
+          quiet: true,
+          config,
+          ...(onStatusChange ? { onStatusChange } : {}),
+        },
+        cap.runtime,
+      );
+      const errors = cap.getErrors();
+      if (errors) return errors;
+      return buildPlanningResumeReply(resolvedId, outcome, cap);
+    } catch (err) {
+      if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+        return cap.getErrors() || "Answer command failed.";
+      }
+      const backendHint = resolveBackendHint(resolvedId);
+      return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
+    }
+  }
+
   const cap = createCaptureRuntime();
   try {
     await goalAnswerCommand(resolvedId, { key: "", value, quiet: false, config }, cap.runtime);
@@ -961,6 +1137,47 @@ export async function handleGoalAnswer(
     const backendHint = resolveBackendHint(resolvedId);
     return formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined);
   }
+}
+
+/**
+ * After a planning Needs Decision answer has been recorded and planning has been
+ * auto-resumed (via goalAnswerCommand → goalResumeCommand, or directly via
+ * goalResumeCommand on a /goal_resume fallback), build the Telegram reply from
+ * the persisted run: the awaiting-approval plan card on success, a re-block
+ * notice if another decision is needed, or any captured blocker text on failure.
+ */
+function buildPlanningResumeReply(
+  resolvedId: string,
+  outcome: Awaited<ReturnType<typeof goalResumeCommand>>,
+  cap: ReturnType<typeof createCaptureRuntime>,
+): GoalPlanResult | string | undefined {
+  if (outcome?.status === "blocked") {
+    // Planning re-blocked on a further decision: surface the new prompt and
+    // keep the run answerable with the same /goal_answer flow.
+    return `Run blocked: ${outcome.question ?? "Another decision is needed."}`;
+  }
+  const run = loadRun(resolvedId);
+  if (run?.state === "awaiting_approval" && run.plan) {
+    const awaiting = markRunAwaitingApproval(run) ?? run;
+    return {
+      text: `Planning resumed. Plan ready for approval.\n\nRun ID: \`${resolvedId.slice(0, 8)}\``,
+      runId: resolvedId,
+      revision: awaiting.planRevision ?? 1,
+      plan: awaiting.plan ?? undefined,
+      stepResults: serializedStepResultsToMap(awaiting),
+    };
+  }
+  // retryPlanning failure leaves the run in "planning" with lastError; surface a
+  // clear blocker rather than a stuck-blocked state.
+  if (run?.lastError) {
+    const backendHint = resolveBackendHint(resolvedId);
+    return formatGoalError(
+      new Error(run.lastError),
+      resolvedId,
+      backendHint ? { backend: backendHint } : undefined,
+    );
+  }
+  return cap.getLogs() || "Planning resumed.";
 }
 
 /** /goal_feedback <runId> <feedback> -- incorporate feedback from manual tests. */
@@ -994,6 +1211,12 @@ export async function handleGoalFeedback(
   let resumeCapture: ReturnType<typeof createCaptureRuntime> | undefined;
 
   try {
+    if (run.pendingContinuation) {
+      archiveContinuation(run, "superseded");
+      run.updatedAt = new Date().toISOString();
+      saveRun(run);
+    }
+
     const authModesToTry =
       preferredAuthMode === "api_key"
         ? (["api_key", "subscription"] as const)
@@ -1010,7 +1233,9 @@ export async function handleGoalFeedback(
           cwd: run.workingDir,
           model: run.model,
           claudeCodeAuth: authMode,
+          ...(run.historyWorkspaceSlug ? { historyWorkspaceSlug: run.historyWorkspaceSlug } : {}),
           ...(config?.goal?.enabledWorkers ? { enabledWorkers: config.goal.enabledWorkers } : {}),
+          ...(config?.goal ? { goalConfig: config.goal } : {}),
         });
         break;
       } catch (err) {
@@ -1256,7 +1481,9 @@ export async function handleGoalEdit(
       cwd: run.workingDir,
       model: run.model,
       claudeCodeAuth: authMode,
+      ...(run.historyWorkspaceSlug ? { historyWorkspaceSlug: run.historyWorkspaceSlug } : {}),
       ...(config?.goal?.enabledWorkers ? { enabledWorkers: config.goal.enabledWorkers } : {}),
+      ...(config?.goal ? { goalConfig: config.goal } : {}),
     });
     const result = revisionResult.plan;
     const plannerFallbackNotice = revisionResult.plannerDegradedReason
@@ -1291,7 +1518,7 @@ export async function handleGoalEdit(
       if (plannerFallbackNotice) {
         lines.push(plannerFallbackNotice);
       }
-      lines.push(`Revision blocked: ${result.question}`);
+      lines.push(`Plan update blocked: ${result.question}`);
       return { text: lines.join("\n"), blocked: true };
     }
 
@@ -1347,6 +1574,7 @@ export async function handleGoalEdit(
     run = markRunAwaitingApproval(run) ?? run;
 
     const finalRevision = run.planRevision ?? newRevision;
+    const planNumber = run.planNumber ?? 1;
     const stepResults = serializedStepResultsToMap(run);
     const planText = formatPlanOutput(finalPlan, {
       diagram: "none",
@@ -1354,7 +1582,7 @@ export async function handleGoalEdit(
       stepResults,
     });
     const parts: string[] = [];
-    parts.push(`**Revision ${finalRevision}**\n`);
+    parts.push(`**Plan ${planNumber}**\n`);
     if (run.workingDir !== originalWorkingDir) {
       parts.push(`Workspace: \`${shortenHomePath(run.workingDir)}\`\n`);
     }
@@ -1385,6 +1613,176 @@ export async function handleGoalEdit(
       text: formatGoalError(err, resolvedId, backendHint ? { backend: backendHint } : undefined),
     };
   }
+}
+
+export async function handleGoalContinuationEdit(
+  rawId: string,
+  editedPrompt: string,
+  config?: MoltbotConfig,
+  client?: GoalLlmClient,
+): Promise<{ text: string; replyMarkup: import("grammy/types").InlineKeyboardMarkup } | string> {
+  const result = await applyContinuationEditReply({
+    runId: rawId,
+    text: editedPrompt,
+    client,
+    config,
+  });
+  const first = result.messages[0];
+  if (!first) return "";
+  if (first.replyMarkup) {
+    return {
+      text: first.text,
+      replyMarkup: first.replyMarkup as import("grammy/types").InlineKeyboardMarkup,
+    };
+  }
+  return first.text;
+}
+
+export async function handleGoalContinuationApprove(
+  rawId: string,
+  proposalIdPrefix: string,
+  config?: MoltbotConfig,
+): Promise<GoalPlanResult | string> {
+  const resolvedId = resolveRunId(rawId.trim());
+  if (!resolvedId) return `Run not found: ${rawId.trim()}`;
+  const run = loadRun(resolvedId);
+  if (!run) return `Run file missing: ${resolvedId}`;
+  const proposal = run.pendingContinuation;
+  if (
+    !proposal ||
+    !proposal.proposalId.startsWith(proposalIdPrefix) ||
+    (proposal.status !== "pending" && proposal.status !== "edited")
+  ) {
+    return "That continuation prompt is no longer current.";
+  }
+  if (!run.plan) return "Run has no current plan to continue.";
+
+  const authMode = config?.goal?.claudeCodeAuth ?? "subscription";
+
+  // Before Plan 2 planning starts: snapshot the prior canonical Goal Brief to an
+  // immutable numbered sibling and rewrite goal-brief.md as the updated latest
+  // brief (Next Plan Intent / Next Observation Point + Sources). This must happen
+  // only on Approve — never during Request Edit. Best-effort: a brief-write
+  // failure must not block creating Plan 2.
+  try {
+    const briefUpdate = snapshotAndRewriteGoalBriefOnApprove({ run, proposal });
+    run.goalBriefPath = briefUpdate.briefPath;
+  } catch (error) {
+    warn(
+      `goal-continuation: failed to update Goal Brief on approve for ${resolvedId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  const planningResult = await runCliPlanForContinuation({
+    runId: resolvedId,
+    originalGoalText: run.goal,
+    proposedPrompt: proposal.proposedPrompt,
+    currentPlanNumber: run.planNumber ?? 1,
+    cwd: run.workingDir,
+    claudeCodeAuth: authMode,
+    ...(run.goalBriefPath ? { goalBriefPath: run.goalBriefPath } : {}),
+    ...(run.historyWorkspaceSlug ? { historyWorkspaceSlug: run.historyWorkspaceSlug } : {}),
+    ...(config?.goal?.enabledWorkers ? { enabledWorkers: config.goal.enabledWorkers } : {}),
+    ...(config?.goal ? { goalConfig: config.goal } : {}),
+  });
+  if (planningResult.plannerBackendUsed) {
+    run.plannerBackendUsed = planningResult.plannerBackendUsed;
+  } else {
+    delete run.plannerBackendUsed;
+  }
+  if (planningResult.plannerDegradedReason) {
+    run.plannerDegradedReason = planningResult.plannerDegradedReason;
+  } else {
+    delete run.plannerDegradedReason;
+  }
+  if (planningResult.plannerDegradedResetHint) {
+    run.plannerDegradedResetHint = planningResult.plannerDegradedResetHint;
+  } else {
+    delete run.plannerDegradedResetHint;
+  }
+  if (planningResult.status === "blocked") {
+    run.updatedAt = new Date().toISOString();
+    saveRun(run);
+    return `Continuation replan blocked: ${planningResult.question}`;
+  }
+
+  const freshPlan = cloneFreshPendingPlan(planningResult.plan);
+  const previousPlan = run.plan;
+  const workingDirBeforeRevision = run.workingDir;
+  const newRevision = commitPlanRevision({
+    run,
+    revisedPlan: freshPlan,
+    editInstructions: proposal.proposedPrompt,
+    source: "user",
+    previousPlan,
+  });
+  if (run.workingDir !== workingDirBeforeRevision) {
+    assertGoalWorkerWorkspace({ workingDir: run.workingDir, config: config?.goal });
+    ensureWorkingDir(run.workingDir);
+  }
+  run.planNumber = (run.planNumber ?? 1) + 1;
+  run.stepResults = {};
+  run.blocked = null;
+  run.lastError = undefined;
+  run.state = "planning";
+  run.updatedAt = new Date().toISOString();
+  saveRun(run);
+
+  let finalRun = run;
+  let finalPlan = freshPlan;
+  let autocheckDisplay: PlanAutocheckDisplayInfo | undefined;
+  let autocheckSkipped = false;
+  let autocheckSkipReason: string | undefined;
+  try {
+    const autocheckResult = await runGoalPlanAutocheck({
+      runId: resolvedId,
+      run,
+      plan: freshPlan,
+      config,
+      existingSessionId: run.autocheckSessionId,
+      existingBackend: run.autocheckBackend,
+    });
+    if (autocheckResult) {
+      finalRun = autocheckResult.run;
+      finalPlan = autocheckResult.plan;
+      autocheckDisplay = autocheckResult.display;
+    }
+  } catch (autocheckErr) {
+    warn(
+      `[goal] autocheck failed for run ${resolvedId.slice(0, 8)}: ${autocheckErr instanceof Error ? autocheckErr.message : String(autocheckErr)}`,
+    );
+    autocheckSkipped = true;
+    finalRun = loadRun(resolvedId) ?? run;
+    const skip = formatAutocheckSkipReason(autocheckErr);
+    autocheckSkipReason = skip.reason;
+    finalRun.autocheckSkipReason = skip.reason;
+    if (skip.metadataPath) finalRun.autocheckSkipMetadataPath = skip.metadataPath;
+    else delete finalRun.autocheckSkipMetadataPath;
+    finalRun.updatedAt = new Date().toISOString();
+    saveRun(finalRun);
+  }
+
+  run.plan = finalPlan;
+  finalRun.plan = finalPlan;
+  archiveContinuation(run, "approved");
+  archiveContinuation(finalRun, "approved");
+  finalRun.updatedAt = new Date().toISOString();
+  saveRun(finalRun);
+  const awaitingRun = markRunAwaitingApproval(finalRun) ?? finalRun;
+  return {
+    text: `Plan ${awaitingRun.planNumber ?? run.planNumber} ready for approval.`,
+    runId: resolvedId,
+    revision: awaitingRun.planRevision ?? newRevision,
+    plan: awaitingRun.plan ?? finalPlan,
+    stepResults: serializedStepResultsToMap(awaitingRun),
+    autocheckRounds: autocheckDisplay?.rounds,
+    autocheckMaxRounds: autocheckDisplay?.maxRounds,
+    autocheckExhausted: autocheckDisplay?.exhausted,
+    autocheckSkipped: autocheckSkipped || undefined,
+    autocheckSkipReason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,26 +1939,30 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    if (lockLabel === "resume") {
-      const run = loadRun(resolvedId);
-      if (!run) {
-        await sendGoalReply(
-          bot,
-          chatId,
-          `Run file missing: ${resolvedId}`,
-          runtime,
-          threadId,
-          replyToMessageId,
-        );
-        return;
-      }
+    const existingRun = loadRun(resolvedId);
+    if (!existingRun) {
+      await sendGoalReply(
+        bot,
+        chatId,
+        `Run file missing: ${resolvedId}`,
+        runtime,
+        threadId,
+        replyToMessageId,
+      );
+      return;
+    }
+    if (
+      lockLabel === "resume" &&
+      !isRunLevelResumeExecutionOnly(existingRun) &&
+      isGoalOpLocked(resolvedId).locked
+    ) {
       runGoalInBackground({
         bot,
         chatId,
         threadId,
         runtime,
         label: backgroundLabel,
-        preface: getGoalExecutionPreface(run.state, resolveGoalOperatorHonorific(cfg)),
+        preface: getGoalExecutionPreface(existingRun.state, resolveGoalOperatorHonorific(cfg)),
         replyToMessageId,
         releaseGoalLock: () => undefined,
         runId: resolvedId,
@@ -1591,20 +1993,15 @@ export function registerTelegramGoalCommands({
       );
       return;
     }
-    const run = loadRun(resolvedId);
-    if (!run) {
-      lockResult.release();
-      await sendGoalReply(
-        bot,
-        chatId,
-        `Run file missing: ${resolvedId}`,
-        runtime,
-        threadId,
-        replyToMessageId,
-      );
-      return;
-    }
-    const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: resolvedId });
+    const run = existingRun;
+    const statusCb = buildOnStatusChange({
+      bot,
+      chatId,
+      threadId,
+      runtime,
+      runId: resolvedId,
+      continuationClient: resolveContinuationClient(cfg),
+    });
     runGoalInBackground({
       bot,
       chatId,
@@ -1615,7 +2012,35 @@ export function registerTelegramGoalCommands({
       replyToMessageId,
       releaseGoalLock: lockResult.release,
       runId: resolvedId,
-      fn: () => handleGoalApprove(rawId, statusCb, cfg),
+      fn: async () => {
+        // /goal_resume fallback for a planning Needs Decision that already has a
+        // recorded answer: route straight to retryPlanning (via goalResumeCommand)
+        // and render the resumed plan card. The resume-note path noops for planning
+        // blocks (no step-level blocked steps) and would otherwise emit the
+        // contradictory "No blocked, paused, or failed steps... currently blocked."
+        if (isPlanningDecisionBlock(run)) {
+          const cap = createCaptureRuntime();
+          const outcome = await goalResumeCommand(
+            resolvedId,
+            { quiet: true, config: cfg, onStatusChange: statusCb },
+            cap.runtime,
+          );
+          const errors = cap.getErrors();
+          if (errors) return errors;
+          return buildPlanningResumeReply(resolvedId, outcome, cap);
+        }
+        let noteMessage: string | undefined;
+        if (lockLabel === "resume" && !isRunLevelResumeExecutionOnly(run)) {
+          const result = applyGoalResumeNoteById({
+            runId: resolvedId,
+            source: params.resumeSource ?? "goal_resume",
+          });
+          if (result.status !== "applied") return result.message;
+          noteMessage = result.message;
+        }
+        const reply = await handleGoalApprove(rawId, statusCb, cfg);
+        return reply ?? noteMessage;
+      },
       onResult: async (reply) =>
         sendGoalBackgroundResult({ bot, chatId, runtime, threadId, replyToMessageId }, reply),
     });
@@ -1627,8 +2052,8 @@ export function registerTelegramGoalCommands({
   bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
 
-    // --- Plan buttons: ga/gD/gr/ge:<runIdPrefix>:<revision> ---
-    const planMatch = /^(ga|gD|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
+    // --- Plan buttons: ga/gD/gB/gr/ge:<runIdPrefix>:<revision> ---
+    const planMatch = /^(ga|gD|gB|gr|ge):([a-f0-9-]+):(\d+)$/.exec(data);
     if (planMatch) {
       await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
         runtime.error?.(
@@ -1651,9 +2076,11 @@ export function registerTelegramGoalCommands({
             ? "\u2764" // ❤ for approve
             : action === "gD"
               ? "\uD83D\uDC40" // 👀 for detail
-              : action === "gr"
-                ? "\uD83D\uDC4E" // 👎 for reject
-                : "\u270D"; // ✍ for edit
+              : action === GOAL_BRIEF_CALLBACK_PREFIX
+                ? "\uD83D\uDC40" // 👀 for goal brief
+                : action === "gr"
+                  ? "\uD83D\uDC4E" // 👎 for reject
+                  : "\u270D"; // ✍ for edit
         await bot.api
           .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
           .catch((err) => {
@@ -1666,35 +2093,38 @@ export function registerTelegramGoalCommands({
       }
 
       if (action === "ge") {
-        const threadParams = threadId != null ? { message_thread_id: threadId } : {};
         // Reply to the plan message so users see which plan to edit;
         // also use ForceReply to open the reply UI pre-filled.
-        const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
-        const sent = await bot.api
-          .sendMessage(chatId, "Reply to the plan message with your change request.", {
-            ...threadParams,
-            ...replyParams,
+        const sent = await sendGoalTelegramMessage({
+          bot,
+          chatId,
+          text: "Reply to the plan message with your change request.",
+          runtime,
+          threadId,
+          replyToMessageId: messageId,
+          operation: "edit force-reply prompt",
+          options: {
             reply_markup: {
               force_reply: true,
               input_field_placeholder: "Describe your changes...",
             },
-          })
-          .catch(async (err) => {
-            runtime.error?.(
-              `[goal-callback] failed to send edit prompt: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-            await sendGoalReply(
-              bot,
-              chatId,
-              "Could not open the edit reply prompt. Use /goal_edit RUN_ID CHANGE_REQUEST.",
-              runtime,
-              threadId,
-              messageId,
-            );
-            return undefined;
-          });
+          },
+        }).catch(async (err) => {
+          runtime.error?.(
+            `[goal-callback] failed to send edit prompt: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          await sendGoalReply(
+            bot,
+            chatId,
+            "Could not open the edit reply prompt. Use /goal_edit RUN_ID CHANGE_REQUEST.",
+            runtime,
+            threadId,
+            messageId,
+          );
+          return undefined;
+        });
         // Track the prompt message so the router can map replies back to GOAL_EDIT
         if (sent?.message_id && runIdPrefix) {
           const resolvedId = resolveRunId(runIdPrefix);
@@ -1741,10 +2171,209 @@ export function registerTelegramGoalCommands({
           threadId,
           replyToMessageId: messageId,
         });
+      } else if (action === GOAL_BRIEF_CALLBACK_PREFIX) {
+        const run = loadRun(resolvedId);
+        if (!run) {
+          await sendGoalReply(
+            bot,
+            chatId,
+            `Run file missing: ${resolvedId}`,
+            runtime,
+            threadId,
+            messageId,
+          );
+          return;
+        }
+        await sendGoalReply(
+          bot,
+          chatId,
+          loadGoalBriefMarkdown(run).text,
+          runtime,
+          threadId,
+          messageId,
+          undefined,
+          { headingStyle: "bold", compact: true },
+        );
       } else if (action === "gr") {
         const reply = await handleGoalReject(resolvedId);
         await sendGoalReply(bot, chatId, reply, runtime, threadId, messageId);
       }
+      return;
+    }
+
+    // --- Report buttons: gVR (View Report) / gRP (Resume Post Execution) /
+    //     gCG (Continue Goal from achieved): <prefix>:<runIdPrefix> ---
+    const reportMatch = /^(gVR|gRP|gCG):([a-f0-9-]+)$/.exec(data);
+    if (reportMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer report callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      const [, action, runIdPrefix] = reportMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
+
+      // Acknowledge with 👀 on the source message (best-effort).
+      if (messageId) {
+        await bot.api
+          .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji: "👀" }])
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set report reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+      }
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+
+      if (action === GOAL_VIEW_REPORT_PREFIX) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          loadPostExecutionReportText(run),
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+
+      if (action === GOAL_CONTINUE_GOAL_PREFIX) {
+        // 🧭 Continue Goal from an achieved Plan Done surface should open the
+        // recommended-next-plan decision UI rather than a dead-end message.
+        const proposal = run.pendingContinuation;
+        const result = proposal?.goalAchieved
+          ? await handleContinuationProposalAction({
+              action: "make_another_plan",
+              runId: resolvedId,
+              proposalIdPrefix: proposal.proposalId,
+              client: resolveContinuationClient(cfg),
+            })
+          : undefined;
+        const latest = result?.run ?? run;
+        const surfaceProposal = result?.run?.pendingContinuation ?? latest.pendingContinuation;
+        if (!surfaceProposal) {
+          await sendGoalReply(
+            bot,
+            chatId,
+            "No continuation is available for this goal yet. Use 📄 View Report for details.",
+            runtime,
+            threadId,
+            messageId,
+          );
+          return;
+        }
+        const surface =
+          result?.messages[0]?.replyMarkup && result.messages[0].text
+            ? {
+                text: result.messages[0].text,
+                replyMarkup: result.messages[0]
+                  .replyMarkup as import("grammy/types").InlineKeyboardMarkup,
+              }
+            : renderRecommendedContinuationSurface({
+                runId: resolvedId,
+                proposal: surfaceProposal,
+              });
+        await sendGoalReply(
+          bot,
+          chatId,
+          surface.text,
+          runtime,
+          threadId,
+          messageId,
+          surface.replyMarkup,
+        );
+        return;
+      }
+
+      // GOAL_RESUME_REPORTING_PREFIX — retry reporting ONLY (never rerun the plan).
+      const lockResult = acquireGoalOpLock(resolvedId, "resume");
+      if (!lockResult.acquired) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          formatGoalLockedMessage(resolvedId, lockResult.existingLabel, {
+            activeStep: resolveActiveStepId(run),
+            retryCommand: "/goal_status",
+          }),
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      const reportingStatusCb = buildOnStatusChange({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId: resolvedId,
+        continuationClient: resolveContinuationClient(cfg),
+      });
+      runGoalInBackground({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        label: "callback:resume-post-execution",
+        preface: "▶️ Retrying post-execution reporting. The completed plan is not rerun.",
+        replyToMessageId: messageId,
+        releaseGoalLock: lockResult.release,
+        runId: resolvedId,
+        fn: async () => {
+          const cap = createCaptureRuntime();
+          try {
+            await resumePostExecutionReportingCommand(
+              resolvedId,
+              { quiet: true, config: cfg, onStatusChange: reportingStatusCb },
+              cap.runtime,
+            );
+            const errors = cap.getErrors();
+            return errors || undefined;
+          } catch (err) {
+            if (err instanceof RuntimeExitError || err instanceof JsonExitError) {
+              return cap.getErrors() || "Resume post-execution reporting failed.";
+            }
+            return formatGoalError(err, resolvedId);
+          }
+        },
+        onResult: async (reply) =>
+          sendGoalBackgroundResult(
+            { bot, chatId, runtime, threadId, replyToMessageId: messageId },
+            reply,
+          ),
+      });
       return;
     }
 
@@ -1814,36 +2443,37 @@ export function registerTelegramGoalCommands({
         return;
       }
 
-      const threadParams = threadId != null ? { message_thread_id: threadId } : {};
       const replyToMessageId = messageId ?? run.telegramDoneMessage?.messageId;
-      const replyParams = replyToMessageId
-        ? { reply_parameters: { message_id: replyToMessageId } }
-        : {};
-      const sent = await bot.api
-        .sendMessage(chatId, "Reply with feedback from your manual tests.", {
-          ...threadParams,
-          ...replyParams,
+      const sent = await sendGoalTelegramMessage({
+        bot,
+        chatId,
+        text: "Reply with feedback from your manual tests.",
+        runtime,
+        threadId,
+        replyToMessageId,
+        operation: "feedback force-reply prompt",
+        options: {
           reply_markup: {
             force_reply: true,
             input_field_placeholder: "Describe your feedback or what needs to change...",
           },
-        })
-        .catch(async (err) => {
-          runtime.error?.(
-            `[goal-callback] failed to send feedback prompt: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          await sendGoalReply(
-            bot,
-            chatId,
-            "Could not open the feedback reply prompt. Use /goal_feedback RUN_ID FEEDBACK.",
-            runtime,
-            threadId,
-            messageId,
-          );
-          return undefined;
-        });
+        },
+      }).catch(async (err) => {
+        runtime.error?.(
+          `[goal-callback] failed to send feedback prompt: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        await sendGoalReply(
+          bot,
+          chatId,
+          "Could not open the feedback reply prompt. Use /goal_feedback RUN_ID FEEDBACK.",
+          runtime,
+          threadId,
+          messageId,
+        );
+        return undefined;
+      });
       if (sent?.message_id) {
         persistFeedbackPromptMessage({
           runId: resolvedId,
@@ -1852,6 +2482,242 @@ export function registerTelegramGoalCommands({
           threadId,
         });
       }
+      return;
+    }
+
+    const continuationMatch = /^(gca|gce|gcm|gcs|gcn):([a-f0-9-]+):([a-f0-9-]+)$/.exec(data);
+    if (continuationMatch) {
+      await bot.api.answerCallbackQuery(ctx.callbackQuery.id).catch((err) => {
+        runtime.error?.(
+          `[goal-callback] failed to answer continuation callback query: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      const [, action, runIdPrefix, proposalIdPrefix] = continuationMatch;
+      const chatId = ctx.callbackQuery.message?.chat.id;
+      if (!chatId) return;
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const threadId = (ctx.callbackQuery.message as { message_thread_id?: number } | undefined)
+        ?.message_thread_id;
+      const senderId = String(ctx.callbackQuery.from?.id ?? "unknown");
+
+      if (messageId) {
+        const emoji: ReactionTypeEmoji["emoji"] =
+          action === CONTINUATION_APPROVE_PREFIX
+            ? "\uD83D\uDC4D"
+            : action === CONTINUATION_EDIT_PREFIX
+              ? "\u270D"
+              : action === CONTINUATION_DETAILS_PREFIX
+                ? "\uD83D\uDC40"
+                : action === CONTINUATION_MAKE_ANOTHER_PREFIX
+                  ? "\uD83D\uDC4D"
+                  : "\uD83D\uDC4E";
+        await bot.api
+          .setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }])
+          .catch((err) => {
+            runtime.error?.(
+              `[goal-callback] failed to set continuation reaction: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+      }
+
+      const resolvedId = resolveRunId(runIdPrefix!);
+      if (!resolvedId) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run not found: ${runIdPrefix}`,
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      const run = loadRun(resolvedId);
+      if (!run) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          `Run file missing: ${resolvedId}`,
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      const proposal = run.pendingContinuation;
+      const hasCurrentContinuation =
+        proposal && (proposal.status === "pending" || proposal.status === "edited");
+      const isCurrentProposal =
+        hasCurrentContinuation && proposal.proposalId.startsWith(proposalIdPrefix!);
+      const isApproveAction = action === CONTINUATION_APPROVE_PREFIX;
+      if (!isCurrentProposal && (isApproveAction || !hasCurrentContinuation)) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          isApproveAction
+            ? "That continuation prompt is no longer current."
+            : "The current continuation could not be recovered.",
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      if (!proposal) return;
+      const effectiveProposalIdPrefix = isCurrentProposal ? proposalIdPrefix! : proposal.proposalId;
+
+      if (action === CONTINUATION_DETAILS_PREFIX) {
+        const result = await handleContinuationProposalAction({
+          action: "more_details",
+          runId: resolvedId,
+          proposalIdPrefix: effectiveProposalIdPrefix,
+        });
+        const first = result.messages[0];
+        await sendGoalReply(
+          bot,
+          chatId,
+          first?.text ?? "That continuation prompt is no longer current.",
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+
+      if (action === CONTINUATION_EDIT_PREFIX) {
+        const sent = await sendGoalTelegramMessage({
+          bot,
+          chatId,
+          text: "✏️ Reply with edits to the continuation prompt.",
+          runtime,
+          threadId,
+          replyToMessageId: messageId,
+          operation: "continuation edit force-reply prompt",
+          options: {
+            reply_markup: {
+              force_reply: true,
+              input_field_placeholder: "Edit the continuation prompt...",
+            },
+          },
+        }).catch(async (err) => {
+          runtime.error?.(
+            `[goal-callback] failed to send continuation edit prompt: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          await sendGoalReply(
+            bot,
+            chatId,
+            "Could not open the continuation edit prompt.",
+            runtime,
+            threadId,
+            messageId,
+          );
+          return undefined;
+        });
+        if (sent?.message_id) {
+          recordPendingContinuationEditInteraction({
+            chatId,
+            threadId,
+            senderId,
+            runId: resolvedId,
+            originalMessageId: messageId,
+            promptMessageId: sent.message_id,
+          });
+          await handleContinuationProposalAction({
+            action: "request_edit",
+            runId: resolvedId,
+            proposalIdPrefix: effectiveProposalIdPrefix,
+            notify: { chatId, messageId: sent.message_id, threadId },
+          });
+        }
+        return;
+      }
+
+      if (action === CONTINUATION_STOP_PREFIX) {
+        const result = await handleContinuationProposalAction({
+          action: "no_further_plan",
+          runId: resolvedId,
+          proposalIdPrefix: effectiveProposalIdPrefix,
+        });
+        await sendGoalReply(
+          bot,
+          chatId,
+          result.messages[0]?.text ?? "That continuation prompt is no longer current.",
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+
+      if (action === CONTINUATION_MAKE_ANOTHER_PREFIX) {
+        const result = await handleContinuationProposalAction({
+          action: "make_another_plan",
+          runId: resolvedId,
+          proposalIdPrefix: effectiveProposalIdPrefix,
+          client: resolveContinuationClient(cfg),
+        });
+        await sendGoalReply(
+          bot,
+          chatId,
+          result.messages[0]?.text ?? "That continuation prompt is no longer current.",
+          runtime,
+          threadId,
+          messageId,
+          result.messages[0]?.replyMarkup as
+            | import("grammy/types").InlineKeyboardMarkup
+            | undefined,
+        );
+        return;
+      }
+
+      const lockResult = acquireGoalOpLock(resolvedId, "continue");
+      if (!lockResult.acquired) {
+        await sendGoalReply(
+          bot,
+          chatId,
+          formatGoalLockedMessage(resolvedId, lockResult.existingLabel, {
+            activeStep: resolveActiveStepId(run),
+            retryCommand: "/goal_status",
+          }),
+          runtime,
+          threadId,
+          messageId,
+        );
+        return;
+      }
+      const approvePreface =
+        (
+          await handleContinuationProposalAction({
+            action: "approve_prompt",
+            runId: resolvedId,
+            proposalIdPrefix: proposalIdPrefix!,
+            config: cfg,
+          })
+        ).messages[0]?.text ??
+        buildContinuationApprovePreface(run, resolveGoalOperatorHonorific(cfg));
+      runGoalInBackground({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        label: "callback:continue",
+        preface: approvePreface,
+        replyToMessageId: messageId,
+        releaseGoalLock: lockResult.release,
+        runId: resolvedId,
+        fn: () => handleGoalContinuationApprove(resolvedId, proposalIdPrefix!, cfg),
+        onResult: async (result) =>
+          sendGoalBackgroundResult(
+            { bot, chatId, runtime, threadId, replyToMessageId: messageId },
+            result,
+          ),
+      });
       return;
     }
 
@@ -1911,34 +2777,38 @@ export function registerTelegramGoalCommands({
         );
         return;
       }
+      const prompt = openAddDetailsReply({ runId: resolvedId });
 
-      const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-      const replyParams = messageId ? { reply_parameters: { message_id: messageId } } : {};
-      const sent = await bot.api
-        .sendMessage(chatId, "Reply to the blocked message with unblocking details.", {
-          ...threadParams,
-          ...replyParams,
+      const sent = await sendGoalTelegramMessage({
+        bot,
+        chatId,
+        text: prompt.messages[0]?.text ?? "Reply with unblocking details.",
+        runtime,
+        threadId,
+        replyToMessageId: messageId,
+        operation: "blocked add-details force-reply prompt",
+        options: {
           reply_markup: {
             force_reply: true,
             input_field_placeholder: "Describe your answer...",
           },
-        })
-        .catch(async (err) => {
-          runtime.error?.(
-            `[goal-callback] failed to send blocked answer prompt: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          await sendGoalReply(
-            bot,
-            chatId,
-            "Could not open the answer reply prompt. Use /goal_answer RUN_ID YOUR_ANSWER.",
-            runtime,
-            threadId,
-            messageId,
-          );
-          return undefined;
-        });
+        },
+      }).catch(async (err) => {
+        runtime.error?.(
+          `[goal-callback] failed to send blocked answer prompt: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        await sendGoalReply(
+          bot,
+          chatId,
+          "Could not open the answer reply prompt. Use /goal_answer RUN_ID YOUR_ANSWER.",
+          runtime,
+          threadId,
+          messageId,
+        );
+        return undefined;
+      });
       if (sent?.message_id) {
         persistTelegramQuestionMessage({
           runId: resolvedId,
@@ -2079,7 +2949,14 @@ export function registerTelegramGoalCommands({
         );
         return;
       }
-      const statusCb = buildOnStatusChange({ bot, chatId, threadId, runtime, runId: run.runId });
+      const statusCb = buildOnStatusChange({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId: run.runId,
+        continuationClient: resolveContinuationClient(cfg),
+      });
       runGoalInBackground({
         bot,
         chatId,
@@ -2788,36 +3665,92 @@ export function registerTelegramGoalCommands({
         threadId: resolved.threadIdForSend,
         runtime,
         runId: answerRunId,
+        continuationClient: resolveContinuationClient(cfg),
       });
-      runGoalInBackground({
-        bot,
-        chatId: resolved.chatId,
-        threadId: resolved.threadIdForSend,
-        runtime,
-        label: "goal_answer",
-        preface: buildPlanningPreface(resolved.operatorHonorific),
-        replyToMessageId,
+      const run = loadRun(answerRunId);
+      if (run && isPlanningDecisionBlock(run)) {
+        runGoalInBackground({
+          bot,
+          chatId: resolved.chatId,
+          threadId: resolved.threadIdForSend,
+          runtime,
+          label: "goal_answer",
+          preface: buildPlanningPreface(resolved.operatorHonorific),
+          replyToMessageId,
+          runId: answerRunId,
+          fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
+          onResult: async (result) => {
+            if (result == null) return;
+            if (typeof result === "string") {
+              await sendGoalReply(
+                bot,
+                resolved.chatId,
+                result,
+                runtime,
+                resolved.threadIdForSend,
+                replyToMessageId,
+              );
+            } else {
+              await sendPlanResult(
+                resolved.chatId,
+                result,
+                resolved.threadIdForSend,
+                replyToMessageId,
+              );
+            }
+          },
+        });
+        return;
+      }
+
+      resumeGoalFromAnswer({
         runId: answerRunId,
-        fn: () => handleGoalAnswer(answerRunIdRaw, answerText, statusCb, cfg),
-        onResult: async (result) => {
-          if (result == null) return;
-          if (typeof result === "string") {
-            await sendGoalReply(
-              bot,
-              resolved.chatId,
-              result,
-              runtime,
-              resolved.threadIdForSend,
-              replyToMessageId,
-            );
-          } else {
-            await sendPlanResult(
-              resolved.chatId,
-              result,
-              resolved.threadIdForSend,
-              replyToMessageId,
-            );
-          }
+        answerText,
+        source: "goal_answer",
+        config: cfg,
+        sendRecordFailure: async (message) => {
+          await sendGoalReply(
+            bot,
+            resolved.chatId,
+            message,
+            runtime,
+            resolved.threadIdForSend,
+            replyToMessageId,
+          );
+        },
+        launchResume: ({ preface, releaseGoalLock }) => {
+          runGoalInBackground({
+            bot,
+            chatId: resolved.chatId,
+            threadId: resolved.threadIdForSend,
+            runtime,
+            label: "goal_answer",
+            preface,
+            replyToMessageId,
+            releaseGoalLock,
+            runId: answerRunId,
+            fn: () => handleGoalApprove(answerRunId, statusCb, cfg),
+            onResult: async (result) => {
+              if (result == null) return;
+              if (typeof result === "string") {
+                await sendGoalReply(
+                  bot,
+                  resolved.chatId,
+                  result,
+                  runtime,
+                  resolved.threadIdForSend,
+                  replyToMessageId,
+                );
+              } else {
+                await sendPlanResult(
+                  resolved.chatId,
+                  result,
+                  resolved.threadIdForSend,
+                  replyToMessageId,
+                );
+              }
+            },
+          });
         },
       });
     };
@@ -2898,6 +3831,7 @@ export function registerTelegramGoalCommands({
             threadId: resolved.threadIdForSend,
             runtime,
             runId: feedbackRunId,
+            continuationClient: resolveContinuationClient(cfg),
           });
           return handleGoalFeedback(feedbackRunIdRaw, combinedFeedbackText, cfg, statusCb);
         },

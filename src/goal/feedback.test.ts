@@ -207,6 +207,45 @@ describe("goal feedback planning helpers", () => {
     expect(merged.buildGate).toBeUndefined();
   });
 
+  it("clamps merged shortSummary to 140 characters on the feedback path", () => {
+    const originalPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Original",
+      shortSummary: "Original",
+      steps: [
+        {
+          id: "1",
+          description: "Existing done step",
+          shortSummary: "Existing done step",
+          dependsOn: [],
+          status: "done",
+        },
+      ],
+    };
+
+    const longShort = "y".repeat(200);
+    const revisedPlan: Plan = {
+      goal: "Ship signup flow",
+      workingDir: "/tmp/workspace",
+      summary: "Revised",
+      shortSummary: longShort,
+      steps: [
+        {
+          id: "2",
+          description: "New step",
+          shortSummary: "New step",
+          dependsOn: [],
+          status: "pending",
+        },
+      ],
+    };
+
+    const merged = mergeRevisedPlanWithDoneSteps({ originalPlan, revisedPlan });
+    expect(merged.shortSummary.length).toBe(140);
+    expect(merged.shortSummary.endsWith("...")).toBe(true);
+  });
+
   it("preserves all completed steps across iterative feedback rounds", () => {
     const baseDonePlan: Plan = {
       goal: "Fix release",

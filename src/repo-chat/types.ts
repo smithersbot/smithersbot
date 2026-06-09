@@ -7,6 +7,17 @@ export type RepoChatMessageRef = {
   messageId: number;
 };
 
+export type RepoChatReplyChunk = {
+  html: string;
+  text: string;
+};
+
+export type RepoChatOverflowReply = {
+  id: string;
+  chunks: RepoChatReplyChunk[];
+  createdAt: string;
+};
+
 export type RepoChatSession = {
   id: string;
   backend: RepoChatBackend;
@@ -29,6 +40,11 @@ export type RepoChatSession = {
    * the lookup source for reply-based session resume.
    */
   messageRefs: RepoChatMessageRef[];
+  /**
+   * Telegram-ready overflow chunks for long repo-chat replies. These chunks are
+   * already redacted and safe-length split by the normal markdown renderer.
+   */
+  overflowReplies?: RepoChatOverflowReply[];
 };
 
 export type RepoChatWorkerParams = {

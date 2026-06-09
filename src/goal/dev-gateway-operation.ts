@@ -68,11 +68,30 @@ export type DevGatewayOperationResult =
   | DevGatewayStatusResult
   | DevGatewayLogsResult;
 
+export class DevGatewayCommandError extends Error {
+  readonly code: string;
+  readonly diagnostics?: string;
+
+  constructor(message: string, options: { code?: string; diagnostics?: string } = {}) {
+    super(message);
+    this.name = "DevGatewayCommandError";
+    this.code = options.code ?? "dev_gateway_command_failed";
+    this.diagnostics = options.diagnostics;
+  }
+}
+
 const DEV_GATEWAY_SERVICE_UNIT = DEV_GATEWAY_OPERATION_UNIT;
 const STABLE_GATEWAY_SERVICE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 const DEV_GATEWAY_OPERATION_ENV: Record<string, string | undefined> = {
   CLAWDBOT_SYSTEMD_UNIT: DEV_GATEWAY_SERVICE_UNIT,
 };
+
+const SYSTEMD_BUS_UNAVAILABLE_PATTERNS = [
+  /failed to connect to bus/i,
+  /\bd-bus\b/i,
+  /\bdbus\b/i,
+  /systemctl --user unavailable/i,
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -110,6 +129,22 @@ function assertDevGatewayUnitOnly() {
   }
 }
 
+function isSystemdBusUnavailable(detail: string): boolean {
+  return SYSTEMD_BUS_UNAVAILABLE_PATTERNS.some((pattern) => pattern.test(detail));
+}
+
+function wrapDevGatewayOperationError(error: unknown): never {
+  if (error instanceof DevGatewayCommandError) throw error;
+  const diagnostics = error instanceof Error ? error.message : String(error);
+  if (isSystemdBusUnavailable(diagnostics)) {
+    throw new DevGatewayCommandError(
+      "Dev-gateway host control is unavailable from this process; use the mediated host control path.",
+      { code: "dev_gateway_host_control_unavailable", diagnostics },
+    );
+  }
+  throw error;
+}
+
 function createWritableCapture(): { stream: NodeJS.WritableStream; read: () => string } {
   let output = "";
   const stream = new Writable({
@@ -128,38 +163,50 @@ export async function executeDevGatewayOperation(
   assertDevGatewayUnitOnly();
 
   if (action === "restart") {
-    const stdout = createWritableCapture();
-    await restartSystemdService({
-      env: DEV_GATEWAY_OPERATION_ENV,
-      stdout: stdout.stream,
-    });
-    return {
-      action,
-      serviceUnit: DEV_GATEWAY_SERVICE_UNIT,
-      output: stdout.read(),
-    };
+    try {
+      const stdout = createWritableCapture();
+      await restartSystemdService({
+        env: DEV_GATEWAY_OPERATION_ENV,
+        stdout: stdout.stream,
+      });
+      return {
+        action,
+        serviceUnit: DEV_GATEWAY_SERVICE_UNIT,
+        output: stdout.read(),
+      };
+    } catch (error) {
+      wrapDevGatewayOperationError(error);
+    }
   }
 
   if (action === "status") {
-    const activeState = await readSystemdServiceActiveState({
+    try {
+      const activeState = await readSystemdServiceActiveState({
+        env: DEV_GATEWAY_OPERATION_ENV,
+      });
+      const runtime = await readSystemdServiceRuntime(DEV_GATEWAY_OPERATION_ENV);
+      return {
+        action,
+        serviceUnit: DEV_GATEWAY_SERVICE_UNIT,
+        activeState,
+        runtime,
+      };
+    } catch (error) {
+      wrapDevGatewayOperationError(error);
+    }
+  }
+
+  try {
+    const logs = await readSystemdServiceRecentLogs({
       env: DEV_GATEWAY_OPERATION_ENV,
+      lines: 80,
     });
-    const runtime = await readSystemdServiceRuntime(DEV_GATEWAY_OPERATION_ENV);
     return {
       action,
       serviceUnit: DEV_GATEWAY_SERVICE_UNIT,
-      activeState,
-      runtime,
+      logs,
     };
+  } catch (error) {
+    wrapDevGatewayOperationError(error);
   }
-
-  const logs = await readSystemdServiceRecentLogs({
-    env: DEV_GATEWAY_OPERATION_ENV,
-    lines: 80,
-  });
-  return {
-    action,
-    serviceUnit: DEV_GATEWAY_SERVICE_UNIT,
-    logs,
-  };
 }

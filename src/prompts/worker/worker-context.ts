@@ -27,14 +27,28 @@ const SHARED = readContractFile(SHARED_WORKER_CONTRACT_FILE);
 
 export const WORKER_DYNAMIC_CONTEXT_HEADER = "DYNAMIC TASK CONTEXT:";
 
-export const WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX = [
+export type WorkerPromptVerificationMode = "full" | "docs-only";
+
+const WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX_HEADER = [
   "You are a goal worker: an autonomous coding agent executing one task from a multi-step plan. Complete your assigned task independently, verify your work, then report the result.",
   "",
   "Use the worker guidelines, project conventions, capability bounds, and security instructions supplied with this launch as controlling instructions. Focus only on the assigned task in the dynamic context below.",
   "",
+];
+
+const WORKER_PROMPT_FULL_VERIFICATION_BLOCK = [
   "VERIFICATION:",
   "Before reporting completion, run the project's build and test commands to verify your changes work. Do not mark complete without verification.",
   "",
+];
+
+const WORKER_PROMPT_DOCS_ONLY_VERIFICATION_BLOCK = [
+  "VERIFICATION:",
+  "For documentation-only tasks, verify the changed docs with the focused command named in this task, or report the exact limitation if no docs verification command exists. Do not force unrelated build, runtime, or gateway checks unless this task explicitly requires them.",
+  "",
+];
+
+const WORKER_PROMPT_RESULT_PROTOCOL_BLOCK = [
   "RESULT PROTOCOL:",
   "When you are done, write your result to the exact worker_result.json path provided in the dynamic context below.",
   "In worker_result.json, write a concise outcome summary.",
@@ -50,7 +64,22 @@ export const WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX = [
   '  Failed (impossible/out of scope): { "status": "failed", "reason": "...", "whatTried": "...", "errorType": "...", "suggestedNext": "...", "needsRevert": false }',
   "Write the file using your file-writing tool. This is how the orchestrator knows you are done.",
   "Do NOT rely on printing JSON to stdout as your result mechanism.",
-].join("\n");
+];
+
+export function buildWorkerPromptStaticInstructionPrefix(
+  mode: WorkerPromptVerificationMode = "full",
+): string {
+  return [
+    ...WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX_HEADER,
+    ...(mode === "docs-only"
+      ? WORKER_PROMPT_DOCS_ONLY_VERIFICATION_BLOCK
+      : WORKER_PROMPT_FULL_VERIFICATION_BLOCK),
+    ...WORKER_PROMPT_RESULT_PROTOCOL_BLOCK,
+  ].join("\n");
+}
+
+export const WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX =
+  buildWorkerPromptStaticInstructionPrefix("full");
 
 /**
  * Canonical worker contract body sourced from `shared-worker-contract.md`.

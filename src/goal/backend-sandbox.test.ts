@@ -5,9 +5,8 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 const mockExecFileSync = vi.fn();
 const mockSpawnSync = vi.fn();
-const HOST_TEMP_ROOT = process.env.CODEX_HOME
-  ? path.join(process.env.CODEX_HOME, "memories")
-  : os.tmpdir();
+const HOST_TEMP_ROOT = path.join(os.tmpdir(), "backend-sandbox-host-temp");
+fs.mkdirSync(HOST_TEMP_ROOT, { recursive: true });
 const MOCK_WORKING_DIR = path.join(
   os.tmpdir(),
   "smithersbot-mock-agent",
@@ -28,6 +27,7 @@ vi.mock("node:child_process", () => ({
 
 import {
   buildClaudeSandboxProbeCommand,
+  buildCodexSandboxConfig,
   buildCodexNativeSandboxConfig,
   buildClaudeCodeSandboxSettingsConfig,
   claudeCodeSandboxNetworkCapability,
@@ -40,7 +40,12 @@ import {
   writeCodexNativeSandboxConfig,
   writeClaudeCodeSandboxSettings,
 } from "./backend-sandbox.js";
-import { isPathInsideAgentRoot } from "../config/managed-paths.js";
+import {
+  isPathInsideAgentRoot,
+  resolvePrivateRoot,
+  resolveScratchDir,
+  resolveScratchRoot,
+} from "../config/managed-paths.js";
 
 function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
   const previous: Record<string, string | undefined> = {};
@@ -126,10 +131,162 @@ function setupIsolatedSandboxRoots(): IsolatedSandboxRoots {
   return { managedRoot, workingDir, sandboxRoot };
 }
 
+function codexWorkspaceWritableRoots(config: ReturnType<typeof buildCodexSandboxConfig>): string[] {
+  const override = config.configOverrides.find((entry) =>
+    entry.startsWith("sandbox_workspace_write.writable_roots="),
+  );
+  if (!override) return [];
+  return JSON.parse(override.split("=", 2)[1] ?? "[]") as string[];
+}
+
+function expectNoUnsafeDevGatewayWritableRoots(params: {
+  writablePaths: string[];
+  managedRoot: string;
+  scratchDir: string;
+  otherScratchDir: string;
+}): void {
+  const scratchRoot = resolveScratchRoot({ SMITHERSBOT_GOALS_ROOT: params.managedRoot }, () =>
+    os.homedir(),
+  );
+  const privateRoot = resolvePrivateRoot({ SMITHERSBOT_GOALS_ROOT: params.managedRoot }, () =>
+    os.homedir(),
+  );
+  const privateChecks = [
+    privateRoot,
+    path.join(privateRoot, "env"),
+    path.join(privateRoot, "auth"),
+    path.join(privateRoot, "sessions"),
+    path.join(privateRoot, "config"),
+  ];
+
+  expect(params.writablePaths).toContain(params.scratchDir);
+  expect(params.writablePaths).not.toContain(scratchRoot);
+  expect(params.writablePaths).not.toContain(params.otherScratchDir);
+  for (const privatePath of privateChecks) {
+    expect(params.writablePaths).not.toContain(privatePath);
+  }
+}
+
 describe("Codex native permission-profile sandbox config", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
     mockSpawnSync.mockReset();
+  });
+
+  it("adds only the per-task scratch dir to Codex workspace-write roots for dev-gateway control", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot }, () => {
+        const runId = "run-dev-control";
+        const taskId = "task-dev-control";
+        const scratchDir = resolveScratchDir(runId, taskId);
+        const normal = buildCodexSandboxConfig({
+          workingDir,
+          runId,
+          taskId,
+          purpose: "goal-worker",
+        });
+        const explicitFalse = buildCodexSandboxConfig({
+          workingDir,
+          runId,
+          taskId,
+          purpose: "goal-worker",
+          requiresDevGatewayControl: false,
+        });
+        const withDevGatewayControl = buildCodexSandboxConfig({
+          workingDir,
+          runId,
+          taskId,
+          purpose: "goal-worker",
+          requiresDevGatewayControl: true,
+        });
+
+        const normalWritableRoots = codexWorkspaceWritableRoots(normal);
+        const devWritableRoots = codexWorkspaceWritableRoots(withDevGatewayControl);
+        expect(codexWorkspaceWritableRoots(explicitFalse)).toEqual(normalWritableRoots);
+        expect(devWritableRoots.filter((entry) => !normalWritableRoots.includes(entry))).toEqual([
+          scratchDir,
+        ]);
+        expectNoUnsafeDevGatewayWritableRoots({
+          writablePaths: devWritableRoots,
+          managedRoot,
+          scratchDir,
+          otherScratchDir: resolveScratchDir("other-run", taskId),
+        });
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("disables Codex image generation in fallback config overrides", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot }, () => {
+        const goalWorkerConfig = buildCodexSandboxConfig({
+          workingDir,
+          purpose: "goal-worker",
+        });
+        const repoChatConfig = buildCodexSandboxConfig({
+          workingDir,
+          purpose: "repo-chat",
+        });
+
+        expect(goalWorkerConfig.configOverrides).toContain("features.image_generation=false");
+        expect(repoChatConfig.configOverrides).toContain("features.image_generation=false");
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("adds only the per-task scratch dir to Codex native writable paths for dev-gateway control", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot }, () => {
+        const runId = "native-dev-control";
+        const taskId = "task-dev-control";
+        const scratchDir = resolveScratchDir(runId, taskId);
+        const baseParams = {
+          workingDir,
+          runId,
+          taskId,
+          purpose: "goal-worker" as const,
+          sandboxRoot: HOST_TEMP_ROOT,
+          codexPath: "/usr/local/bin/codex",
+        };
+        const normal = buildCodexNativeSandboxConfig(baseParams);
+        const explicitFalse = buildCodexNativeSandboxConfig({
+          ...baseParams,
+          requiresDevGatewayControl: false,
+        });
+        const withDevGatewayControl = buildCodexNativeSandboxConfig({
+          ...baseParams,
+          requiresDevGatewayControl: true,
+        });
+
+        expect(explicitFalse.writablePaths).toEqual(normal.writablePaths);
+        expect(
+          withDevGatewayControl.writablePaths.filter(
+            (entry) => !normal.writablePaths.includes(entry),
+          ),
+        ).toEqual([scratchDir]);
+        expectNoUnsafeDevGatewayWritableRoots({
+          writablePaths: withDevGatewayControl.writablePaths,
+          managedRoot,
+          scratchDir,
+          otherScratchDir: resolveScratchDir(runId, "other-task"),
+        });
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
   });
 
   it("generates per-run config under /var/tmp by default, outside the repo", () => {
@@ -219,6 +376,8 @@ describe("Codex native permission-profile sandbox config", () => {
       );
       expect(config.configToml).toContain("[permissions.smithersbot.network]");
       expect(config.configToml).toContain("enabled = false");
+      expect(config.configToml).toContain("[features]");
+      expect(config.configToml).toContain("image_generation = false");
 
       for (const deniedPath of [
         "/",
@@ -234,6 +393,19 @@ describe("Codex native permission-profile sandbox config", () => {
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
       fs.rmSync(managedRoot, { recursive: true, force: true });
     }
+  });
+
+  it("disables Codex image generation in native repo-chat config TOML", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: "/repo",
+      runId: "repo-chat-image-generation",
+      purpose: "repo-chat",
+      sandboxRoot: HOST_TEMP_ROOT,
+      codexPath: "/usr/local/bin/codex",
+    });
+
+    expect(config.configToml).toContain("[features]");
+    expect(config.configToml).toContain("image_generation = false");
   });
 
   it("writes config and makes codex-linux-sandbox visible through a per-run helper directory", () => {
@@ -719,12 +891,78 @@ describe("Codex native sandbox auth continuity", () => {
     expect(config.args).not.toContain("--sandbox");
     expect(config.args).not.toContain("workspace-write");
   });
+
+  it("does not open Codex network for a dev-gateway-control-only step", () => {
+    const config = buildCodexNativeSandboxConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "dev-gateway-control",
+      taskId: "task-dev-gateway-control",
+      purpose: "goal-worker",
+      sandboxRoot: HOST_TEMP_ROOT,
+      codexPath: "/usr/local/bin/codex",
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+    });
+
+    expect(config.configToml).toContain("[permissions.smithersbot.network]");
+    expect(config.configToml).toContain("enabled = false");
+  });
 });
 
 describe("Claude Code native sandbox settings", () => {
   beforeEach(() => {
     mockExecFileSync.mockReset();
     mockSpawnSync.mockReset();
+  });
+
+  it("adds only the per-task scratch dir to Claude allowWrite for dev-gateway control", () => {
+    const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-root-"));
+    try {
+      const workingDir = path.join(managedRoot, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+      withEnv({ SMITHERSBOT_GOALS_ROOT: managedRoot }, () => {
+        const runId = "claude-dev-control";
+        const taskId = "task-dev-control";
+        const scratchDir = resolveScratchDir(runId, taskId);
+        const baseParams = {
+          workingDir,
+          runId,
+          taskId,
+          purpose: "goal-worker" as const,
+          denyReadDeps: {
+            pathExists: () => true,
+            realPath: (candidate: string) => candidate,
+            readDir: () => [],
+            isRegularFile: () => false,
+            isDirectory: () => false,
+          },
+        };
+        const normal = buildClaudeCodeSandboxSettingsConfig(baseParams);
+        const explicitFalse = buildClaudeCodeSandboxSettingsConfig({
+          ...baseParams,
+          requiresDevGatewayControl: false,
+        });
+        const withDevGatewayControl = buildClaudeCodeSandboxSettingsConfig({
+          ...baseParams,
+          requiresDevGatewayControl: true,
+        });
+
+        const normalAllowWrite = normal.settings.sandbox.filesystem.allowWrite;
+        const devAllowWrite = withDevGatewayControl.settings.sandbox.filesystem.allowWrite;
+        expect(explicitFalse.settings.sandbox.filesystem.allowWrite).toEqual(normalAllowWrite);
+        expect(devAllowWrite.filter((entry) => !normalAllowWrite.includes(entry))).toEqual([
+          scratchDir,
+        ]);
+        expectNoUnsafeDevGatewayWritableRoots({
+          writablePaths: devAllowWrite,
+          managedRoot,
+          scratchDir,
+          otherScratchDir: resolveScratchDir("other-run", "other-task"),
+        });
+      });
+    } finally {
+      fs.rmSync(managedRoot, { recursive: true, force: true });
+    }
   });
 
   it("generates per-run settings under the OS temp dir by default, outside the repo", () => {
@@ -796,6 +1034,18 @@ describe("Claude Code native sandbox settings", () => {
       workingDir: MOCK_WORKING_DIR,
       runId: "net-false",
       purpose: "goal-worker",
+      requiresNetwork: false,
+    });
+    expect(config.settings.sandbox.network).toBeUndefined();
+  });
+
+  it("does not open Claude network for a dev-gateway-control-only step", () => {
+    const config = buildClaudeCodeSandboxSettingsConfig({
+      workingDir: MOCK_WORKING_DIR,
+      runId: "dev-gateway-control",
+      taskId: "task-dev-gateway-control",
+      purpose: "goal-worker",
+      requiresDevGatewayControl: true,
       requiresNetwork: false,
     });
     expect(config.settings.sandbox.network).toBeUndefined();

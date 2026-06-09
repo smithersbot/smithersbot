@@ -10,12 +10,15 @@ import { formatAge } from "../infra/channel-summary.js";
 import type { GoalStatusChangeEvent, ManualTestsStatus } from "../goal/agent-executor.js";
 import { aggregateBlockedDetails } from "../goal/blocked.js";
 import { formatCompactGoalCompletionSummary } from "../goal/compact-output.js";
+import { generateAndStoreContinuationProposal } from "../goal/continuation.js";
 import { describeGoalOpLabel } from "../goal/goal-lock.js";
 import { clearLessons, loadLessons } from "../goal/lessons.js";
 import { clampCriticality, isNoBackendManualTestsError } from "../goal/manual-tests.js";
 import { listRuns, loadRun } from "../goal/run-store.js";
 import type {
   BlockedDetail,
+  ContinuationProposal,
+  GoalLlmClient,
   ManualTestSuggestion,
   Plan,
   SerializedRun,
@@ -27,11 +30,14 @@ import {
   persistManualTests,
   persistCompletionDeliveryFailure,
   persistTelegramDoneMessage,
+  persistTelegramPlanMessage,
   persistTelegramQuestionMessage,
-  sendDagPng,
+  formatGoalDagTextFallback,
+  sendGoalDagWithFallback,
   sendGoalReply,
   sendBlockedNotification,
 } from "./goal-sending.js";
+import { reconcileContinuationSurface } from "./continuation-reconciler.js";
 import { buildInlineKeyboard } from "./send.js";
 
 type WorkingDirInstructionHint = {
@@ -164,19 +170,66 @@ export function appendManualTestsStatusNotice(
   return `${summary.trimEnd()}\n${notice}`;
 }
 
+// Bold markers below use Markdown (**...**); the Telegram send path converts them
+// to HTML <b>...</b> (see src/telegram/format.ts). They must never reach the user
+// as literal <b> text.
+const GOAL_ACHIEVED_FOLD = [
+  "✅ **Goal appears achieved**",
+  "No next plan is recommended right now.",
+].join("\n");
+
+/**
+ * Rewrite the compact completion headline (`<emoji> Done: <title>`) into the
+ * Plan Done headline (`✅ **Plan Done:** <title>`). Leaves the rest of the
+ * summary untouched, so progress / retries / manual-test lines are preserved.
+ */
+export function applyPlanDoneHeadline(summary: string): string {
+  const lines = summary.split("\n");
+  if (lines.length > 0) {
+    if ((lines[0] ?? "").startsWith("**Goal Summary:**")) {
+      return lines.join("\n");
+    }
+    const match = /^(?:\S+\s+)?Done:\s*(.*)$/.exec(lines[0] ?? "");
+    if (match) {
+      const rest = (match[1] ?? "").trim();
+      lines.splice(
+        0,
+        1,
+        rest ? `**Goal Summary:** ${rest}` : "**Goal Summary:**",
+        rest ? `✅ **Plan Done:** ${rest}` : "✅ **Plan Done:**",
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Fold the "Goal appears achieved" block into the Plan Done surface. */
+export function foldGoalAchievedSummary(summary: string): string {
+  const block = `\n${GOAL_ACHIEVED_FOLD}`;
+  const footerMatch = /\n\*\*Goal ID:\*\*/.exec(summary);
+  if (footerMatch) {
+    return `${summary.slice(0, footerMatch.index)}${block}${summary.slice(footerMatch.index)}`;
+  }
+  return `${summary}${block}`;
+}
+
 export function formatGoalDoneCaption(params: {
   summary: string;
   manualTestsStatus: ManualTestsStatus;
   manualTestsError?: string;
   reviewUrl?: string;
+  /** When true, fold the goal-achieved block into the Plan Done surface. */
+  goalAchieved?: boolean;
 }): string {
   const baseCaption = appendManualTestsStatusNotice(
     params.summary,
     params.manualTestsStatus,
     params.manualTestsError,
   );
+  let caption = applyPlanDoneHeadline(baseCaption);
+  if (params.goalAchieved) caption = foldGoalAchievedSummary(caption);
   const reviewUrl = params.reviewUrl?.trim();
-  return reviewUrl ? `${baseCaption}\n\n📎 Review on GitHub: ${reviewUrl}` : baseCaption;
+  return reviewUrl ? `${caption}\n📎 Review on GitHub: ${reviewUrl}` : caption;
 }
 
 export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
@@ -197,10 +250,26 @@ export function buildDoneSummaryWithManualTests(run: SerializedRun): string {
     manualTests: run.manualTests,
   }).text;
   const status = resolveManualTestsStatus(undefined, run.manualTestsError);
-  return appendGoalIdFooter(
+  const withFooter = appendGoalIdFooter(
     appendManualTestsStatusNotice(summary, status, run.manualTestsError),
     run.runId,
   );
+  const planDone = applyPlanDoneHeadline(withFooter);
+  return run.postExecutionReport?.goalAchieved ? foldGoalAchievedSummary(planDone) : planDone;
+}
+
+const REPORTING_FAILED_TITLE = "⚠️ **Post Execution Reporting Failed**";
+
+/** Copy for the post-execution reporting failure surface. */
+export function buildReportingFailedCaption(reason?: string): string {
+  const trimmed = reason?.replace(/\s+/g, " ").trim();
+  const lines = [REPORTING_FAILED_TITLE];
+  if (trimmed) lines.push("", trimmed);
+  lines.push(
+    "",
+    "Use Resume Post Execution to retry reporting only — the completed plan is not rerun.",
+  );
+  return lines.join("\n");
 }
 
 // Word boundaries + trailing lookaheads avoid camelCase false matches (e.g. workingDir, workingDirectory).
@@ -292,8 +361,8 @@ export function resolveWorkingDirInstructionPath(
     }
   }
 
-  // Fuzzy fallback for conversational directory names, e.g. "earnlayermarketing"
-  // matching sibling folder "earnlayer-marketing".
+  // Fuzzy fallback for conversational directory names, e.g. "acmemarketing"
+  // matching sibling folder "acme-marketing".
   if (
     !value.startsWith("~") &&
     !path.isAbsolute(value) &&
@@ -440,6 +509,15 @@ export function buildPlanningPreface(operatorHonorific?: string): string {
   return honorific ? `Right away, ${honorific}.` : "Right away.";
 }
 
+export function buildContinuationApprovePreface(
+  run: Pick<SerializedRun, "planNumber">,
+  operatorHonorific?: string,
+): string {
+  return `${buildPlanningPreface(operatorHonorific)} Drafting Plan ${
+    (run.planNumber ?? 1) + 1
+  } now.`;
+}
+
 export function buildStartPreface(operatorHonorific?: string): string {
   return `${buildPlanningPreface(operatorHonorific)} Starting the goal now.`;
 }
@@ -482,10 +560,64 @@ export function resolveBlockedRequiredInputKey(run: SerializedRun): string | und
   return firstBlockedStep ? `task:${firstBlockedStep.id}:input` : undefined;
 }
 
-export function buildGoalDoneInlineKeyboard(runIdPrefix: string) {
+/** Callback prefix for the 📄 View Report button on a Plan Done surface. */
+export const GOAL_VIEW_REPORT_PREFIX = "gVR";
+/** Callback prefix for the ▶️ Resume Post Execution button (reporting-only). */
+export const GOAL_RESUME_REPORTING_PREFIX = "gRP";
+/** Callback prefix for the 🧭 Continue Goal button on an achieved Plan Done surface. */
+export const GOAL_CONTINUE_GOAL_PREFIX = "gCG";
+
+export function buildGoalDoneInlineKeyboard(
+  runIdPrefix: string,
+  options?: { goalAchieved?: boolean },
+) {
+  const viewReport = {
+    text: "📄 View Report",
+    callback_data: `${GOAL_VIEW_REPORT_PREFIX}:${runIdPrefix}`,
+  };
+  const bottomRow = options?.goalAchieved
+    ? [
+        viewReport,
+        {
+          text: "🧭 Continue Goal",
+          callback_data: `${GOAL_CONTINUE_GOAL_PREFIX}:${runIdPrefix}`,
+        },
+      ]
+    : [viewReport];
   return buildInlineKeyboard([
-    [{ text: "🔍 Test Detail", callback_data: `gTD:${runIdPrefix}` }],
-    [{ text: "🔄 Incorporate Feedback", callback_data: `gIF:${runIdPrefix}` }],
+    [
+      { text: "🔍 Test Detail", callback_data: `gTD:${runIdPrefix}` },
+      { text: "🔄 Incorporate Feedback", callback_data: `gIF:${runIdPrefix}` },
+    ],
+    bottomRow,
+  ]);
+}
+
+function currentPendingContinuation(run: SerializedRun): ContinuationProposal | undefined {
+  const proposal = run.pendingContinuation;
+  if (!proposal || (proposal.status !== "pending" && proposal.status !== "edited"))
+    return undefined;
+  if (!proposal.goalAchieved && !proposal.proposedPrompt.trim()) return undefined;
+  if (proposal.fromPlanNumber !== (run.planNumber ?? 1)) return undefined;
+  const currentRevision = run.planRevision ?? run.activePlanRevision;
+  if (
+    currentRevision != null &&
+    proposal.fromRevision != null &&
+    proposal.fromRevision !== currentRevision
+  ) {
+    return undefined;
+  }
+  return proposal;
+}
+
+export function buildReportingFailedInlineKeyboard(runIdPrefix: string) {
+  return buildInlineKeyboard([
+    [
+      {
+        text: "▶️ Resume Post Execution",
+        callback_data: `${GOAL_RESUME_REPORTING_PREFIX}:${runIdPrefix}`,
+      },
+    ],
   ]);
 }
 
@@ -597,8 +729,9 @@ export function buildOnStatusChange(params: {
   threadId?: number;
   runtime: RuntimeEnv;
   runId: string;
+  continuationClient?: GoalLlmClient;
 }): (event: GoalStatusChangeEvent) => Promise<void> {
-  const { bot, chatId, threadId, runtime, runId } = params;
+  const { bot, chatId, threadId, runtime, runId, continuationClient } = params;
   const prefix = runId.slice(0, 8);
   const threadParams = threadId != null ? { message_thread_id: threadId } : {};
   return async (event: GoalStatusChangeEvent) => {
@@ -637,7 +770,7 @@ export function buildOnStatusChange(params: {
         stepId: event.stepId,
       } as const;
       try {
-        await sendBlockedNotification({
+        const messageId = await sendBlockedNotification({
           bot,
           chatId,
           threadId,
@@ -648,6 +781,9 @@ export function buildOnStatusChange(params: {
           stepResults,
           blockedDetail,
         });
+        if (messageId == null) {
+          await sendDeliveryFallback(blockedDetail.requiredInputKey);
+        }
       } catch {
         await sendDeliveryFallback(blockedDetail.requiredInputKey);
       }
@@ -689,7 +825,7 @@ export function buildOnStatusChange(params: {
       }
 
       try {
-        await sendBlockedNotification({
+        const messageId = await sendBlockedNotification({
           bot,
           chatId,
           threadId,
@@ -700,81 +836,112 @@ export function buildOnStatusChange(params: {
           stepResults,
           blockedDetail,
         });
+        if (messageId == null) {
+          await sendDeliveryFallback(blockedDetail.requiredInputKey);
+        }
       } catch {
         await sendDeliveryFallback(blockedDetail.requiredInputKey);
       }
     } else if (event.type === "plan_revised") {
-      try {
-        // A missing PNG here is acceptable because this is an informational update.
-        await sendDagPng({
-          bot,
-          chatId,
-          threadId,
-          runtime,
-          runId,
+      const caption = event.summary;
+      const delivery = await sendGoalDagWithFallback({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId,
+        plan,
+        steps: event.steps,
+        stepResults,
+        caption,
+        textMarkdown: formatGoalDagTextFallback({
           plan,
-          steps: event.steps,
+          caption,
           stepResults,
-          caption: event.summary,
+        }),
+        minimalMarkdown: `Plan revised for goal ${prefix}. Auto-executing new fix steps.`,
+      });
+      if (delivery.ok) {
+        persistTelegramPlanMessage({
+          runId,
+          chatId,
+          messageId: delivery.messageId,
+          threadId,
         });
-      } catch {
+      } else {
+        runtime.error?.(`[goal] revised plan delivery failed for ${prefix}: ${delivery.error}`);
+        try {
+          persistCompletionDeliveryFailure(runId, delivery.error);
+        } catch (persistErr) {
+          runtime.error?.(
+            `[goal] revised plan delivery failure persistence failed for ${prefix}: ${
+              persistErr instanceof Error ? persistErr.message : String(persistErr)
+            }`,
+          );
+        }
         await sendDeliveryFallback();
       }
-    } else if (event.type === "all_done") {
+    } else if (event.type === "post_execution_reporting_failed") {
       try {
-        persistManualTests(runId, event.manualTests, event.manualTestsError);
-        const status = resolveManualTestsStatus(event.manualTestsStatus, event.manualTestsError);
-        const caption = formatGoalDoneCaption({
-          summary: event.summary,
-          manualTestsStatus: status,
-          manualTestsError: event.manualTestsError,
-          reviewUrl: event.reviewUrl,
-        });
-        const sentId = await sendDagPng({
+        await sendGoalReply(
           bot,
           chatId,
-          threadId,
+          buildReportingFailedCaption(event.reason),
           runtime,
-          runId,
-          plan,
-          steps: event.steps,
-          stepResults,
-          caption,
-          replyMarkup: buildGoalDoneInlineKeyboard(prefix),
-        });
-        if (sentId != null) {
-          persistTelegramDoneMessage({
-            runId,
-            chatId,
-            messageId: sentId,
-            threadId,
-          });
-        } else {
-          const textSentId = await sendGoalReply(
-            bot,
-            chatId,
-            caption,
-            runtime,
-            threadId,
-            undefined,
-            buildGoalDoneInlineKeyboard(prefix),
-          );
-          if (textSentId != null) {
-            persistTelegramDoneMessage({
-              runId,
-              chatId,
-              messageId: textSentId,
-              threadId,
-            });
-          }
-        }
+          threadId,
+          undefined,
+          buildReportingFailedInlineKeyboard(prefix),
+        );
       } catch (err) {
         const reason =
           (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim() ||
-          "unknown delivery failure";
-        runtime.error?.(`[goal] completion delivery failed for ${prefix}: ${reason}`);
+          "unknown reporting-failed delivery failure";
+        runtime.error?.(
+          `[goal] post-execution reporting-failed delivery failed for ${prefix}: ${reason}`,
+        );
+        await sendDeliveryFallback();
+      }
+    } else if (event.type === "all_done") {
+      persistManualTests(runId, event.manualTests, event.manualTestsError);
+      const status = resolveManualTestsStatus(event.manualTestsStatus, event.manualTestsError);
+      const goalAchieved = run.postExecutionReport?.goalAchieved === true;
+      const caption = formatGoalDoneCaption({
+        summary: event.summary,
+        manualTestsStatus: status,
+        manualTestsError: event.manualTestsError,
+        reviewUrl: event.reviewUrl,
+        goalAchieved,
+      });
+      const doneKeyboard = buildGoalDoneInlineKeyboard(prefix, { goalAchieved });
+      const delivery = await sendGoalDagWithFallback({
+        bot,
+        chatId,
+        threadId,
+        runtime,
+        runId,
+        plan,
+        steps: event.steps,
+        stepResults,
+        caption,
+        textMarkdown: formatGoalDagTextFallback({
+          plan,
+          caption,
+          stepResults,
+        }),
+        minimalMarkdown: caption,
+        replyMarkup: doneKeyboard,
+      });
+      if (delivery.ok) {
+        persistTelegramDoneMessage({
+          runId,
+          chatId,
+          messageId: delivery.messageId,
+          threadId,
+        });
+      } else {
+        runtime.error?.(`[goal] completion delivery failed for ${prefix}: ${delivery.error}`);
         try {
-          persistCompletionDeliveryFailure(runId, reason);
+          persistCompletionDeliveryFailure(runId, delivery.error);
         } catch (persistErr) {
           runtime.error?.(
             `[goal] completion delivery failure persistence failed for ${prefix}: ${
@@ -783,6 +950,42 @@ export function buildOnStatusChange(params: {
           );
         }
         await sendDeliveryFallback();
+      }
+
+      try {
+        const latestRun = loadRun(runId) ?? run;
+        const continuationProposal =
+          currentPendingContinuation(latestRun) ??
+          (await generateAndStoreContinuationProposal({
+            runId,
+            client: continuationClient,
+            onError: (error) => {
+              const reason =
+                (error instanceof Error ? error.message : String(error))
+                  .replace(/\s+/g, " ")
+                  .trim() || "unknown continuation generation failure";
+              runtime.error?.(`[goal] continuation generation failed for ${prefix}: ${reason}`);
+            },
+          }));
+        if (continuationProposal && !continuationProposal.goalAchieved) {
+          const result = await reconcileContinuationSurface({
+            runId,
+            bot,
+            runtime,
+            chat: { chatId, threadId },
+            assumeRunLockHeld: true,
+          });
+          if (result.status === "failed") {
+            runtime.error?.(
+              `[goal] continuation prompt delivery failed for ${prefix}: ${result.error}`,
+            );
+          }
+        }
+      } catch (err) {
+        const reason =
+          (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim() ||
+          "unknown continuation delivery failure";
+        runtime.error?.(`[goal] continuation prompt delivery failed for ${prefix}: ${reason}`);
       }
     }
   };

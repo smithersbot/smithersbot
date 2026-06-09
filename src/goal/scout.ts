@@ -31,11 +31,28 @@ export type ScoutReport = {
   edges: ScoutEdge[];
 };
 
+export type ScoutDecisionOption = {
+  key: string;
+  label: string;
+  recommended?: boolean;
+};
+
+export type ScoutDecision = {
+  id: string;
+  question: string;
+  options: ScoutDecisionOption[];
+};
+
+export type ScoutNeedsDecisionArtifact = {
+  version: 1;
+  decisions: ScoutDecision[];
+};
+
 export type ScoutErrorKind = "timeout" | "rate_limit" | "validation" | "other";
 
 export type ScoutResult =
   | { status: "success"; report: ScoutReport; planDraft: string }
-  | { status: "needs_clarification"; question: string }
+  | { status: "needs_decision"; decisions: ScoutDecision[] }
   | { status: "skipped"; reason: string }
   | { status: "error"; error: string; errorKind: ScoutErrorKind };
 
@@ -49,8 +66,8 @@ export const SCOUT_DIR_NAME = "scout";
 export const SCOUT_REPORT_FILE = "scout_report.json";
 /** Canonical scout artifact file name with markdown draft + sentinels. */
 export const SCOUT_PLAN_DRAFT_FILE = "plan_draft.md";
-/** Canonical scout artifact file name for clarification requests. */
-export const SCOUT_NEEDS_CLARIFICATION_FILE = "plan_needs_clarification.md";
+/** Canonical scout artifact file name for user decisions needed before planning. */
+export const SCOUT_NEEDS_DECISION_FILE = "plan_needs_decision.json";
 /** Canonical scout artifact subdirectory with one markdown file per node id. */
 export const SCOUT_NODE_SPECS_DIR = "node_specs";
 
@@ -132,6 +149,7 @@ export function renderScoutTemplate(params: {
   goalId: string;
   goalText: string;
   outputDir: string;
+  wikiDir?: string;
   nodeCountMin?: number;
   nodeCountMax?: number;
 }): string {
@@ -142,6 +160,7 @@ export function renderScoutTemplate(params: {
     .replaceAll("{{GOAL_ID}}", goalId)
     .replaceAll("{{GOAL_TEXT}}", goalText)
     .replaceAll("{{OUTPUT_DIR}}", outputDir)
+    .replaceAll("{{WIKI_DIR}}", params.wikiDir ?? "{{WIKI_DIR}}")
     .replaceAll("{{NODE_COUNT_MIN}}", String(min))
     .replaceAll("{{NODE_COUNT_MAX}}", String(max));
 }
@@ -150,16 +169,105 @@ export function renderScoutTemplate(params: {
 // Validation
 // ---------------------------------------------------------------------------
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateNonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${label} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function validateDecisionArtifactObject(value: unknown): ScoutNeedsDecisionArtifact {
+  if (!isRecord(value)) {
+    throw new Error(`${SCOUT_NEEDS_DECISION_FILE} must contain a JSON object`);
+  }
+  if (value.version !== 1) {
+    throw new Error(`${SCOUT_NEEDS_DECISION_FILE} version must be 1`);
+  }
+  if (!Array.isArray(value.decisions) || value.decisions.length === 0) {
+    throw new Error(`${SCOUT_NEEDS_DECISION_FILE} decisions must be a non-empty array`);
+  }
+
+  const decisions = value.decisions.map((decisionValue, decisionIndex): ScoutDecision => {
+    const decisionLabel = `${SCOUT_NEEDS_DECISION_FILE} decisions[${decisionIndex}]`;
+    if (!isRecord(decisionValue)) {
+      throw new Error(`${decisionLabel} must be an object`);
+    }
+    const id = validateNonEmptyString(decisionValue.id, `${decisionLabel}.id`);
+    if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(id)) {
+      throw new Error(`${decisionLabel}.id must be kebab-case`);
+    }
+    const question = validateNonEmptyString(decisionValue.question, `${decisionLabel}.question`);
+    if (!Array.isArray(decisionValue.options) || decisionValue.options.length < 2) {
+      throw new Error(`${decisionLabel}.options must contain at least two options`);
+    }
+
+    const optionKeys = new Set<string>();
+    let recommendedCount = 0;
+    const options = decisionValue.options.map((optionValue, optionIndex): ScoutDecisionOption => {
+      const optionLabel = `${decisionLabel}.options[${optionIndex}]`;
+      if (!isRecord(optionValue)) {
+        throw new Error(`${optionLabel} must be an object`);
+      }
+      const key = validateNonEmptyString(optionValue.key, `${optionLabel}.key`);
+      if (optionKeys.has(key)) {
+        throw new Error(`${optionLabel}.key must be unique within its decision`);
+      }
+      optionKeys.add(key);
+      const label = validateNonEmptyString(optionValue.label, `${optionLabel}.label`);
+      const recommendedValue = optionValue.recommended;
+      if (recommendedValue !== undefined && typeof recommendedValue !== "boolean") {
+        throw new Error(`${optionLabel}.recommended must be a boolean when present`);
+      }
+      if (recommendedValue === true) recommendedCount += 1;
+      return {
+        key,
+        label,
+        ...(recommendedValue === undefined ? {} : { recommended: recommendedValue }),
+      };
+    });
+    if (recommendedCount > 1) {
+      throw new Error(`${decisionLabel}.options may include at most one recommended option`);
+    }
+
+    return { id, question, options };
+  });
+
+  return { version: 1, decisions };
+}
+
+export function parseScoutNeedsDecisionArtifact(raw: string): ScoutNeedsDecisionArtifact {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${SCOUT_NEEDS_DECISION_FILE} is not valid JSON`);
+  }
+  return validateDecisionArtifactObject(parsed);
+}
+
 /** Validate scout output artifacts. Pure validation — no side effects beyond reading files. */
 export function validateScoutOutput(scoutDir: string): ScoutResult {
-  // Clarification check first: if planning needs more info it writes this file.
-  const clarificationPath = path.join(scoutDir, SCOUT_NEEDS_CLARIFICATION_FILE);
-  if (fs.existsSync(clarificationPath)) {
-    const question = fs.readFileSync(clarificationPath, "utf8").trim();
-    return {
-      status: "needs_clarification",
-      question: question || "Scout needs clarification (no details provided).",
-    };
+  // Needs Decision check first: this structured artifact blocks planning before
+  // any draft or execution plan is required.
+  const needsDecisionPath = path.join(scoutDir, SCOUT_NEEDS_DECISION_FILE);
+  if (fs.existsSync(needsDecisionPath)) {
+    try {
+      const artifact = parseScoutNeedsDecisionArtifact(fs.readFileSync(needsDecisionPath, "utf8"));
+      return {
+        status: "needs_decision",
+        decisions: artifact.decisions,
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+        errorKind: "validation",
+      };
+    }
   }
 
   // --- plan_draft.md ---

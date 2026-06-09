@@ -16,6 +16,7 @@ vi.mock("node:child_process", () => ({
 import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import {
   DEV_GATEWAY_OPERATION_ACTIONS,
+  DevGatewayCommandError,
   executeDevGatewayOperation,
 } from "./dev-gateway-operation.js";
 
@@ -203,5 +204,34 @@ describe("executeDevGatewayOperation", () => {
 
     expect(childProcessMock.execFileAsync).not.toHaveBeenCalled();
     expect(callsReferencing(STABLE_UNIT)).toHaveLength(0);
+  });
+
+  it("wraps systemd bus failures without leaking raw D-Bus stderr in the public message", async () => {
+    childProcessMock.execFileAsync.mockImplementation(async () => {
+      const error = new Error(
+        "systemctl --user unavailable: Failed to connect to bus: No data available",
+      ) as Error & { stderr?: string; code?: number };
+      error.stderr = "Failed to connect to bus: No data available";
+      error.code = 1;
+      throw error;
+    });
+
+    let thrown: unknown;
+    try {
+      await executeDevGatewayOperation({ action: "status" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DevGatewayCommandError);
+    expect(thrown).toMatchObject({
+      name: "DevGatewayCommandError",
+      code: "dev_gateway_host_control_unavailable",
+    });
+    const error = thrown as DevGatewayCommandError;
+    expect(error.message).not.toMatch(
+      /Failed to connect to bus|D-Bus|systemctl --user unavailable|No data available/,
+    );
+    expect(error.diagnostics).toMatch(/Failed to connect to bus/);
   });
 });

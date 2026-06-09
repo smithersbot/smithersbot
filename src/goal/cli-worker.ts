@@ -11,8 +11,15 @@ import path from "node:path";
 import type { GoalBackendId, GoalWorkerOutput, BackendTaskResult } from "./backend-types.js";
 import type { HardDeny } from "./capability-types.js";
 import { GoalWorkerOutputSchema } from "./goal-schemas.js";
-import type { PlanStep, Plan, ResumeNote } from "./types.js";
+import type { PlanStep, Plan, ResumeNote, WorkerContextSummary } from "./types.js";
 import { formatPlanAsContext } from "./planner.js";
+import {
+  buildAgentVisibleScoutDir,
+  buildAgentVisibleWikiDir,
+  EXECUTION_PLAN_FILE,
+  GOAL_BRIEF_FILE,
+} from "./cli-planner.js";
+import { SCOUT_NODE_SPECS_DIR } from "./scout.js";
 import {
   collectGitDiffSummary,
   resolveWorkerDir,
@@ -32,7 +39,7 @@ import {
 import {
   WORKER_CONTEXT,
   WORKER_DYNAMIC_CONTEXT_HEADER,
-  WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX,
+  buildWorkerPromptStaticInstructionPrefix,
 } from "./worker-context.js";
 import { buildDevWorkspaceHardDenies, renderGroupedHardDenies } from "./hard-deny.js";
 import { resolveDevGatewayWorkerContext } from "./dev-gateway-workspace.js";
@@ -44,6 +51,7 @@ import {
 import { getCodexAskForApprovalPlacement } from "./backend-availability.js";
 import { redactSecretValues } from "../security/secret-paths.js";
 import { UNTRUSTED_CONTENT_RULE } from "../prompts/shared/untrusted-content-rule.js";
+import { DEV_GATEWAY_PROMPT_GUIDANCE_ENABLED } from "../prompts/shared/dev-gateway-guidance.js";
 import { assertGoalWorkerWorkspace } from "./workspace-policy.js";
 import {
   appendCodexNativeSandboxExecArgs,
@@ -63,6 +71,9 @@ import {
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 import { formatWorkerResumeNotes } from "./resume-note-context.js";
+import { resolveScratchDir } from "../config/managed-paths.js";
+import { resolveDevGatewayMediationPaths } from "./dev-gateway-mediation.js";
+import { parseJsonLines } from "./cli-output-parsing.js";
 
 // --- Constants ---
 
@@ -73,6 +84,7 @@ const RESULT_POLL_INTERVAL_MS = 4_000;
 const RESULT_GRACE_PERIOD_MS = 10_000;
 export const REPAIR_TIMEOUT_MS = 60_000;
 const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n";
+const WORKER_LINKED_PLAN_STEP_THRESHOLD = 8;
 
 // Dynamic dev-gateway worker guidance. Injected only when the goal works in the
 // smithersbot-dev checkout AND the dev gateway service is present. This is
@@ -85,14 +97,34 @@ const PROMPT_SECTION_DIVIDER = "\n\n----------------------------------------\n\n
 export const DEV_GATEWAY_WORKER_INSTRUCTION = [
   "SMITHERSBOT DEV GATEWAY WORKSPACE:",
   `You are working in the SmithersBot dev workspace (the smithersbot-dev checkout), and a separate dev gateway (${DEV_GATEWAY_OPERATION_UNIT}) is installed.`,
+  "- Dev-gateway status/restart/logs are mediated host-control operations covered by requiresDevGatewayControl, not requiresNetwork or broad network access.",
   "- Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway service smithersbot-gateway.service, and never modify the stable config dir ~/.smithersbot.",
   "- Do NOT run raw `systemctl --user ...` or `journalctl --user ...` for the dev gateway: the worker sandbox cannot reach the user systemd bus, so those commands fail. They are also blocked for every unit except the dev gateway.",
+  "- Do NOT disable the sandbox, request no-sandbox/danger-full-access, or use backend-specific sandbox escape settings for dev-gateway control.",
+  `- The first restart that loads newly built SmithersBot code into the running dev gateway is a one-time HOST/OPERATOR action: \`systemctl --user restart ${DEV_GATEWAY_OPERATION_UNIT}\`. Workers must not run that command.`,
   `- Manage the dev gateway ONLY through the safe, worker-invocable command \`${DEV_GATEWAY_COMMAND_INVOCATION}\` (for example \`moltbot dev-gateway restart\`). It is fixed to ${DEV_GATEWAY_OPERATION_UNIT} and supports EXACTLY these three actions (no service name is ever accepted from you):`,
   ...describeDevGatewayMediatedActions().map((line) => `  - ${line}`),
   "- The command can never target smithersbot-gateway.service or any other unit, and exposes no stop/enable/disable/reinstall.",
-  "- After changing SmithersBot code or behavior that could affect the running gateway, setup, Telegram, goal execution, worker prompts, config, service install, sandbox, or status behavior, use the mediated restart action and then the status/logs actions to smoke-test the changed behavior against the dev gateway before reporting completion.",
+  "- Do not use a dev-owned worker to synchronously restart smithersbot-dev-gateway.service and then prove post-restart behavior in the same step. Restart proof must be externalized to stable/operator orchestration; post-restart evidence must come from a fresh dev-owned worker/artifact.",
+  "- Dev-owned workers may prove continuation/OODA UX, blocked/resume UX, mediated dev-gateway status/logs, clean blocker behavior, and post-restart behavior after an external restart.",
+  "- After the external restart has loaded the new build, use mediated status/logs actions to smoke-test SmithersBot runtime changes against the dev gateway before reporting completion.",
+  "- Do not claim live dev-gateway verification unless external restart orchestration or mediated status/logs evidence is present, as appropriate to the behavior under test.",
+  "- If dev-gateway host mediation is unavailable, block clearly with that reason instead of suggesting a manual workaround, raw systemctl, or sandbox disablement.",
   "- For docs-only or tests-only changes, do not force a gateway restart unless it is needed to verify the requested behavior.",
 ].join("\n");
+
+function isDocsOnlyWorkerStep(step: PlanStep): boolean {
+  const text = [step.id, step.description, step.shortSummary, step.successCriteria]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const mentionsDocs = /\b(docs?|documentation|readme|markdown|report)\b/.test(text);
+  const mentionsCodeOrRuntime =
+    /\b(implement|fix|code|source|runtime|gateway|telegram|config|schema|test|vitest|build|lint|tsc|handler|api|cli|prompt)\b/.test(
+      text,
+    );
+  return mentionsDocs && !mentionsCodeOrRuntime;
+}
 
 // --- Public API ---
 
@@ -103,11 +135,12 @@ export type CliWorkerParams = {
   goal: string;
   workingDir: string;
   runId: string;
+  historyWorkspaceSlug?: string;
   hardDenies: HardDeny[];
   timeoutMs: number;
   abortSignal?: AbortSignal;
   model?: string;
-  completedSummaries?: Array<{ id: string; summary: string }>;
+  completedSummaries?: WorkerContextSummary[];
   lessons?: Array<{ pattern: string; lesson: string }>;
   onProgress?: (text: string) => void;
   /** User's answer when resuming a previously-blocked step. */
@@ -207,6 +240,30 @@ function sanitizeWorkerArgvForHistory(args: readonly string[]): string[] {
   return sanitized;
 }
 
+export function pickCliSessionId(parsed: Record<string, unknown>): string | undefined {
+  const fields = [
+    "session_id",
+    "sessionId",
+    "conversation_id",
+    "conversationId",
+    "thread_id",
+    "threadId",
+  ];
+  for (const field of fields) {
+    const value = parsed[field];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+export function pickCliSessionIdFromOutput(stdout: string): string | undefined {
+  for (const parsed of parseJsonLines(stdout)) {
+    const sessionId = pickCliSessionId(parsed);
+    if (sessionId) return sessionId;
+  }
+  return undefined;
+}
+
 function appendWorkerHistoryBestEffort(params: {
   workingDir: string;
   runId: string;
@@ -221,11 +278,12 @@ function appendWorkerHistoryBestEffort(params: {
   artifactPaths?: readonly string[];
   extra?: Record<string, unknown>;
   onProgress?: (text: string) => void;
+  historyWorkspaceSlug?: string;
 }): void {
   const result = appendAgentHistoryEventBestEffort(
     {
       kind: "goal",
-      workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+      workspaceName: params.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(params.workingDir),
       goalId: params.runId,
     },
     {
@@ -256,10 +314,11 @@ function mirrorWorkerRuntimeBestEffort(params: {
   attemptNumber: number;
   backend: GoalBackendId;
   onProgress?: (text: string) => void;
+  historyWorkspaceSlug?: string;
 }): void {
   const scope = {
     kind: "goal" as const,
-    workspaceName: workspaceNameFromWorkingDir(params.workingDir),
+    workspaceName: params.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(params.workingDir),
     goalId: params.runId,
   };
   try {
@@ -415,6 +474,7 @@ export async function executeTaskWithCliWorker(
     goal,
     workingDir,
     runId,
+    historyWorkspaceSlug,
     hardDenies,
     timeoutMs,
     abortSignal,
@@ -436,6 +496,14 @@ export async function executeTaskWithCliWorker(
 
   const workerDir = resolveWorkerDir(runId, step.id);
   fs.mkdirSync(workerDir, { recursive: true });
+  const requiresDevGatewayControl = step.requiresDevGatewayControl === true;
+  const devGatewayScratchDir = requiresDevGatewayControl
+    ? resolveScratchDir(runId, step.id)
+    : undefined;
+  if (requiresDevGatewayControl) {
+    const mediationPaths = resolveDevGatewayMediationPaths({ runId, taskId: step.id });
+    fs.mkdirSync(mediationPaths.channelDir, { recursive: true });
+  }
   const canonicalResultPath = path.join(workerDir, WORKER_RESULT_FILENAME);
   const workspaceResultPath = resolveWorkspaceResultPath({
     workingDir,
@@ -452,10 +520,13 @@ export async function executeTaskWithCliWorker(
     backend === "codex"
       ? writeCodexNativeSandboxConfig({
           workingDir,
-          runId: `${runId}-${step.id}-attempt-${attemptNumber}`,
+          runId: requiresDevGatewayControl ? runId : `${runId}-${step.id}-attempt-${attemptNumber}`,
+          taskId: step.id,
           purpose: "goal-worker",
           requiresNetwork: step.requiresNetwork === true,
+          requiresDevGatewayControl,
           readOnlyRoots: goalConfig?.readOnlyRoots,
+          extraWritablePaths: devGatewayScratchDir ? [devGatewayScratchDir] : undefined,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -465,6 +536,9 @@ export async function executeTaskWithCliWorker(
     backend === "codex"
       ? mergeCodexNativeSandboxEnv(buildGoalWorkerEnv(backend, claudeCodeAuth), codexNativeSandbox!)
       : buildGoalWorkerEnv(backend, claudeCodeAuth);
+  workerEnv.SMITHERSBOT_GOAL_WORKER = "1";
+  workerEnv.SMITHERSBOT_GOAL_RUN_ID = runId;
+  workerEnv.SMITHERSBOT_GOAL_TASK_ID = step.id;
   if (backend === "claude_code") writeAuthModeArtifact(workerDir, claudeCodeAuth);
 
   if (backend === "claude_code" && goalConfig?.requireNativeSandbox === true) {
@@ -483,7 +557,7 @@ export async function executeTaskWithCliWorker(
   // Detect the dev-gateway workspace from the checkout/cwd (guidance only — this
   // never changes the running gateway's runtime config). When active, the worker
   // gets the dev-only restart guidance and a dev-aware hard-deny list.
-  const devGateway = resolveDevGatewayWorkerContext({ workingDir });
+  const devGateway = resolveDevGatewayWorkerContext({ workingDir, cfg: goalConfig });
   const effectiveHardDenies = devGateway.active
     ? buildDevWorkspaceHardDenies(hardDenies)
     : hardDenies;
@@ -492,6 +566,9 @@ export async function executeTaskWithCliWorker(
     step,
     plan,
     goal,
+    runId,
+    workingDir,
+    historyWorkspaceSlug,
     completedSummaries,
     lessons,
     resumeAnswer,
@@ -522,7 +599,10 @@ export async function executeTaskWithCliWorker(
     denyFilePath,
     model,
     runId,
+    taskId: step.id,
     requiresNetwork: step.requiresNetwork === true,
+    requiresDevGatewayControl,
+    extraWritablePaths: devGatewayScratchDir ? [devGatewayScratchDir] : undefined,
     projectConventions,
     promptPayload,
     codexNativeSandbox,
@@ -532,7 +612,7 @@ export async function executeTaskWithCliWorker(
   const command = backend === "codex" ? "codex" : "claude";
   const historyScope = {
     kind: "goal" as const,
-    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    workspaceName: historyWorkspaceSlug ?? workspaceNameFromWorkingDir(workingDir),
     goalId: runId,
   };
   const launchHistory = writeCriticalAgentLaunchEvent({
@@ -652,6 +732,7 @@ export async function executeTaskWithCliWorker(
       outputSummary: error instanceof Error ? error.message : String(error),
       artifactPaths: [stdoutPath, stderrPath, launchHistory.promptArtifactPath],
       onProgress,
+      ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
     });
     mirrorWorkerRuntimeBestEffort({
       workingDir,
@@ -660,10 +741,12 @@ export async function executeTaskWithCliWorker(
       attemptNumber,
       backend,
       onProgress,
+      ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
     });
     throw error;
   }
   const { stdout, stderr, timedOut, exitCode, signal, durationMs } = processResult;
+  const sessionId = pickCliSessionIdFromOutput(stdout);
   redactTextArtifactIfExists(stdoutPath);
   redactTextArtifactIfExists(stderrPath);
   const tokenUsage = parseBackendUsage(`${stdout}\n${stderr}`);
@@ -859,9 +942,11 @@ export async function executeTaskWithCliWorker(
       signal,
       timedOut,
       durationMs,
+      sessionId,
       resultFile,
     },
     onProgress,
+    ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
   });
   mirrorWorkerRuntimeBestEffort({
     workingDir,
@@ -870,11 +955,13 @@ export async function executeTaskWithCliWorker(
     attemptNumber,
     backend,
     onProgress,
+    ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
   });
 
   return {
     output,
     turnsUsed: 1,
+    sessionId,
     rawStdout: stdout,
     rawStderr: stderr,
   };
@@ -886,8 +973,11 @@ export function buildCliWorkerPrompt(params: {
   step: PlanStep;
   plan: Plan;
   goal: string;
+  runId?: string;
+  workingDir?: string;
+  historyWorkspaceSlug?: string;
   hardDenies?: HardDeny[];
-  completedSummaries?: Array<{ id: string; summary: string }>;
+  completedSummaries?: WorkerContextSummary[];
   lessons?: Array<{ pattern: string; lesson: string }>;
   resumeAnswer?: string;
   resumeQuestion?: string;
@@ -905,6 +995,9 @@ export function buildCliWorkerPrompt(params: {
     step,
     plan,
     goal,
+    runId,
+    workingDir,
+    historyWorkspaceSlug,
     completedSummaries,
     lessons,
     resumeAnswer,
@@ -916,7 +1009,9 @@ export function buildCliWorkerPrompt(params: {
   } = params;
   const lines: string[] = [];
 
-  lines.push(WORKER_PROMPT_STATIC_INSTRUCTION_PREFIX);
+  lines.push(
+    buildWorkerPromptStaticInstructionPrefix(isDocsOnlyWorkerStep(step) ? "docs-only" : "full"),
+  );
   lines.push("");
   lines.push(WORKER_DYNAMIC_CONTEXT_HEADER);
   lines.push("");
@@ -926,13 +1021,49 @@ export function buildCliWorkerPrompt(params: {
     lines.push(UNTRUSTED_CONTENT_RULE);
     lines.push("");
   }
-  if (devGatewayWorkspace) {
+  if (DEV_GATEWAY_PROMPT_GUIDANCE_ENABLED && devGatewayWorkspace) {
     lines.push(DEV_GATEWAY_WORKER_INSTRUCTION);
     lines.push("");
   }
+  const workerHistoryLinks =
+    runId && workingDir
+      ? buildWorkerHistoryLinks({
+          runId,
+          workingDir,
+          historyWorkspaceSlug,
+          stepId: step.id,
+        })
+      : undefined;
+  const workerHistoryWorkspaceSlug =
+    historyWorkspaceSlug ?? (workingDir ? workspaceNameFromWorkingDir(workingDir) : undefined);
+  const planContextOptions =
+    runId && workerHistoryWorkspaceSlug
+      ? {
+          currentStepId: step.id,
+          planLinkPath: path.join(
+            buildAgentVisibleScoutDir(runId, workerHistoryWorkspaceSlug),
+            EXECUTION_PLAN_FILE,
+          ),
+          nodeSpecsDir: path.join(
+            buildAgentVisibleScoutDir(runId, workerHistoryWorkspaceSlug),
+            SCOUT_NODE_SPECS_DIR,
+          ),
+          stepThreshold: WORKER_LINKED_PLAN_STEP_THRESHOLD,
+        }
+      : undefined;
   lines.push("PLAN CONTEXT:");
-  lines.push(formatPlanAsContext(plan));
+  lines.push(formatPlanAsContext(plan, planContextOptions));
   lines.push("");
+
+  if (workerHistoryLinks) {
+    lines.push(workerHistoryLinks);
+    lines.push("");
+  }
+
+  if (plan.summary) {
+    lines.push(`LONG GOAL SUMMARY: ${plan.summary}`);
+    lines.push("");
+  }
 
   if (lessons && lessons.length > 0) {
     lines.push("LESSONS FROM PRIOR RUNS (knowledge from previous work in this project):");
@@ -943,10 +1074,7 @@ export function buildCliWorkerPrompt(params: {
   }
 
   if (completedSummaries && completedSummaries.length > 0) {
-    lines.push("COMPLETED TASKS:");
-    for (const { id, summary } of completedSummaries) {
-      lines.push(`- ${id}: ${summary}`);
-    }
+    lines.push(formatCompletedSummaryContext(completedSummaries));
     lines.push("");
   }
 
@@ -1007,6 +1135,52 @@ export function buildCliWorkerPrompt(params: {
   return lines.join("\n");
 }
 
+function buildWorkerHistoryLinks(params: {
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  stepId: string;
+}): string {
+  const historyWorkspaceSlug =
+    params.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(params.workingDir);
+  const scoutDir = buildAgentVisibleScoutDir(params.runId, historyWorkspaceSlug);
+  const wikiDir = buildAgentVisibleWikiDir(params.runId, historyWorkspaceSlug);
+  return [
+    "REFERENCES (follow for more history):",
+    `- Source Link: Goal Brief: ${path.join(wikiDir, GOAL_BRIEF_FILE)}`,
+    `- Source Link: Task node spec: ${path.join(
+      scoutDir,
+      SCOUT_NODE_SPECS_DIR,
+      `${params.stepId}.md`,
+    )}`,
+    "- History chain: Task -> node spec -> ScoutReport -> Goal Brief.",
+  ].join("\n");
+}
+
+function formatCompletedSummaryContext(completedSummaries: WorkerContextSummary[]): string {
+  const hasLinkedWorkerSummaries = completedSummaries.some((entry) => entry.path);
+  if (!hasLinkedWorkerSummaries) {
+    return [
+      "COMPLETED TASKS:",
+      ...completedSummaries.map(({ id, summary }) => `- ${id}: ${summary}`),
+    ].join("\n");
+  }
+
+  const lines = [
+    "PRIOR WORKER SUMMARIES (childless leaf summaries; follow links for details):",
+    "These are the latest completed Worker Summary files whose results have not been superseded by a later completed dependent Task.",
+  ];
+  for (const entry of completedSummaries) {
+    lines.push(`- ${entry.id}: ${entry.summary}`);
+    if (entry.path) lines.push(`  Source Link: ${entry.path}`);
+    if (entry.claimsToVerify && entry.claimsToVerify.length > 0) {
+      lines.push("  Claims to verify before relying on this summary:");
+      for (const claim of entry.claimsToVerify) lines.push(`  - ${claim}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function buildPromptSection(title: string, content: string): string {
   return `${title}\n\n${content.trim()}`;
 }
@@ -1060,8 +1234,12 @@ export function buildCliPromptPayload(params: {
 // --- Allowed tools list generation (for Claude Code --allowedTools) ---
 
 /** Convert default tools into Claude Code --allowedTools patterns. */
-export function buildAllowedToolsList(): string[] {
-  return ["Read", "Edit", "Write", "Glob", "Grep", "Bash(*)"];
+export function buildAllowedToolsList(requiresNetwork = false): string[] {
+  const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(*)"];
+  if (requiresNetwork) {
+    tools.push("WebSearch", "WebFetch");
+  }
+  return tools;
 }
 
 // --- Capability bounds file writing ---
@@ -1096,7 +1274,10 @@ export function buildCliArgs(params: {
   denyFilePath: string;
   model?: string;
   runId?: string;
+  taskId?: string;
   requiresNetwork?: boolean;
+  requiresDevGatewayControl?: boolean;
+  extraWritablePaths?: string[];
   projectConventions?: string;
   promptPayload?: {
     promptArg: string;
@@ -1113,7 +1294,10 @@ export function buildCliArgs(params: {
     denyFilePath,
     model,
     runId = "cli-worker",
+    taskId,
     requiresNetwork = false,
+    requiresDevGatewayControl = false,
+    extraWritablePaths,
     projectConventions,
     promptPayload,
     codexNativeSandbox,
@@ -1135,14 +1319,18 @@ export function buildCliArgs(params: {
       buildCodexNativeSandboxConfig({
         workingDir,
         runId,
+        taskId,
         purpose: "goal-worker",
         requiresNetwork,
+        requiresDevGatewayControl,
         readOnlyRoots,
+        extraWritablePaths,
         sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         codexPath: "codex",
       });
     const args = [
       ...(codexAskForApproval === "before_exec" ? ["--ask-for-approval", "never"] : []),
+      ...(requiresNetwork ? ["--search"] : []),
       "exec",
       "--json",
       ...(codexAskForApproval === "after_exec" ? ["--ask-for-approval", "never"] : []),
@@ -1156,13 +1344,16 @@ export function buildCliArgs(params: {
   }
 
   // Claude Code
-  const allowedTools = buildAllowedToolsList();
+  const allowedTools = buildAllowedToolsList(requiresNetwork);
   const sandboxConfig = buildClaudeCodeSandboxLaunchConfig({
     workingDir,
     runId,
+    taskId,
     purpose: "goal-worker",
     readOnlyRoots,
     requiresNetwork,
+    requiresDevGatewayControl,
+    extraWritablePaths,
   });
   const args = [
     "-p",

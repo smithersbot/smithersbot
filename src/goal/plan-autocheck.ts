@@ -12,7 +12,10 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
-import { isSmithersbotDevWorkspace } from "./dev-gateway-workspace.js";
+import {
+  isSmithersbotDevWorkspace,
+  shouldInjectDevGatewayGuidance,
+} from "./dev-gateway-workspace.js";
 import {
   detectBackendAvailability,
   getCodexAskForApprovalPlacement,
@@ -71,7 +74,9 @@ export type PlanAutocheckParams = {
   workingDir: string;
   claudeCodeAuth?: ClaudeCodeAuthMode;
   enabledWorkers?: CliWorkerId[];
+  config?: GoalConfig;
   readOnlyRoots?: string[];
+  historyWorkspaceSlug?: string;
   runDir: string;
   existingSessionId?: string;
   existingBackend?: string;
@@ -135,6 +140,80 @@ function rejectPlanWorkingDir(workingDir: string, detail: string): AutocheckDeci
       "instance's own agent/workspaces tree; observed/foreign-instance surfaces are read-only context and must " +
       "not be used as the executable workingDir.",
   };
+}
+
+const DEV_GATEWAY_RESTART_ACTION_PATTERNS = [
+  /\bmoltbot\s+dev-gateway\s+restart\b/gi,
+  /\b(?:run|use|perform|trigger|execute|invoke|call|issue)\s+(?:the\s+|a\s+)?(?:mediated\s+)?(?:moltbot\s+)?dev-gateway\s+restart\b/gi,
+  /\b(?:run|use|perform|trigger|execute|invoke|call|issue)\s+(?:the\s+|a\s+)?(?:mediated\s+)?restart\s+(?:of|for|against)\s+(?:the\s+)?(?:smithersbot-dev-gateway\.service|dev gateway|dev-gateway)\b/gi,
+  /\brestart(?:s|ed|ing)?\s+(?:the\s+)?(?:smithersbot-dev-gateway\.service|dev gateway|dev-gateway)\b/gi,
+];
+const SAME_STEP_POST_RESTART_PROOF_RE =
+  /\b(?:same[-\s]?step|synchronously|surviv(?:e|es|ed|ing)|after\s+(?:the\s+)?(?:mediated\s+)?restart|post[-\s]?restart|comes?\s+up\s+healthy|status\/logs\s+after\s+restart|restart\s+then\s+(?:status|logs|smoke|verify|prove)|smoke[-\s]?tests?\b[\s\S]{0,120}\b(?:after|post[-\s]?restart|changed behavior|dev gateway)|prove(?:s|d|ing)?\b[\s\S]{0,120}\b(?:after|post[-\s]?restart|restart))\b/i;
+const NEGATED_RESTART_INTENT_RE =
+  /\b(?:must\s+not|do\s+not|does\s+not|don't|never|mustn't|cannot|can't|should\s+not|without)\b[\s\S]{0,80}\b(?:moltbot\s+dev-gateway\s+restart|dev-gateway\s+restart|restart(?:s|ed|ing)?)\b/i;
+const EXTERNALIZED_RESTART_INTENT_RE =
+  /\b(?:(?:external|operator|stable|host)(?:[-\s]+(?:operator|gate|orchestration))?[\s\S]{0,80}\brestart(?:s|ed|ing)?\b|\brestart(?:s|ed|ing)?\b[\s\S]{0,80}\b(?:external|operator|stable|host|gate|orchestration)\b|\brestart(?:s|ed|ing)?\b[\s\S]{0,80}\b(?:completed|performed|handled|done)\s+by\s+(?:an?\s+)?(?:external|operator|stable|host|gate)\b|\bexternalize\b[\s\S]{0,80}\brestart(?:s|ed|ing)?\b)/i;
+const CONSUME_ONLY_RESTART_EVIDENCE_RE =
+  /\b(?:consume|verify|inspect|gather|capture|read|use)\b[\s\S]{0,80}\b(?:already[-\s]?restarted|fresh\s+post[-\s]?restart|post[-\s]?restart\s+evidence\s+from\s+a\s+fresh\s+worker|fresh\s+dev-owned\s+worker\/artifact)\b/i;
+
+function hasDevGatewayRestartActionIntent(text: string): boolean {
+  for (const pattern of DEV_GATEWAY_RESTART_ACTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const matchIndex = match.index ?? 0;
+      const before = text.slice(Math.max(0, matchIndex - 120), matchIndex);
+      const after = text.slice(matchIndex + match[0].length, matchIndex + match[0].length + 120);
+      const localText = `${before}${match[0]}${after}`;
+      if (NEGATED_RESTART_INTENT_RE.test(localText)) continue;
+      if (EXTERNALIZED_RESTART_INTENT_RE.test(localText)) continue;
+      if (CONSUME_ONLY_RESTART_EVIDENCE_RE.test(localText)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+function stepReviewText(step: Plan["steps"][number]): string {
+  return [
+    step.id,
+    step.shortSummary,
+    step.description,
+    step.successCriteria,
+    ...(step.constraints ?? []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+}
+
+function rejectDevGatewaySelfRestartProof(stepId: string): AutocheckDecision {
+  return {
+    approved: false,
+    editInstructions:
+      `Reject: step "${stepId}" asks a dev-owned requiresDevGatewayControl worker to restart ` +
+      "smithersbot-dev-gateway.service and prove post-restart behavior in the same step. " +
+      "A worker must not be expected to synchronously survive or complete the restart of its own " +
+      "controlling gateway. Externalize dev-gateway restart proof to stable/operator orchestration, " +
+      "then gather post-restart evidence from a fresh dev-owned worker/artifact. Keep " +
+      "requiresDevGatewayControl for mediated dev-gateway status/logs or other allowed host-control " +
+      "checks, keep it distinct from requiresNetwork, and never use raw systemctl/journalctl or a " +
+      "sandbox-disabled command for this proof.",
+  };
+}
+
+export function checkPlanDevGatewaySelfRestartProof(
+  plan: Plan,
+  workingDir: string,
+): AutocheckDecision {
+  if (!isSmithersbotDevWorkspace(workingDir)) return { approved: true };
+  for (const step of plan.steps) {
+    if (step.requiresDevGatewayControl !== true) continue;
+    const text = stepReviewText(step);
+    if (hasDevGatewayRestartActionIntent(text) && SAME_STEP_POST_RESTART_PROOF_RE.test(text)) {
+      return rejectDevGatewaySelfRestartProof(step.id);
+    }
+  }
+  return { approved: true };
 }
 
 /**
@@ -721,6 +800,7 @@ function buildPlanSnapshot(plan: Plan): string {
         dependsOn: step.dependsOn,
         durationMinutes: step.durationMinutes,
         requiresNetwork: step.requiresNetwork,
+        requiresDevGatewayControl: step.requiresDevGatewayControl,
       })),
     },
     null,
@@ -748,13 +828,14 @@ export function buildAutocheckPrompt(params: {
   priorFeedback: string[];
   contextNotes: string[];
   userEditInstructions?: string[];
+  config?: GoalConfig;
 }): string {
   const snapshot = buildPlanSnapshot(params.plan);
   const userEditInstructionsSection = buildUserEditInstructionsSection(params.userEditInstructions);
   // Guidance only — detect the dev checkout from the working dir to require
   // dev-gateway verification for runtime-affecting changes. Never flips runtime
   // instance config (see src/config/gateway-instance.ts).
-  const devGatewaySection = isSmithersbotDevWorkspace(params.workingDir)
+  const devGatewaySection = shouldInjectDevGatewayGuidance(params.workingDir, params.config)
     ? [DEV_GATEWAY_REVIEW_GUIDANCE, ""]
     : [];
 
@@ -1347,6 +1428,9 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
     const workingDirDecision = params.workspacePolicy
       ? checkPlanWorkingDir(currentPlan.workingDir, params.workspacePolicy)
       : ({ approved: true } as AutocheckDecision);
+    const devGatewaySelfRestartDecision = workingDirDecision.approved
+      ? checkPlanDevGatewaySelfRestartProof(currentPlan, currentPlan.workingDir)
+      : ({ approved: true } as AutocheckDecision);
     if (!workingDirDecision.approved) {
       writeTextArtifact(
         path.join(roundDir, "workingdir_rejection.txt"),
@@ -1370,6 +1454,29 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         sessionId,
         decision: workingDirDecision,
       };
+    } else if (!devGatewaySelfRestartDecision.approved) {
+      writeTextArtifact(
+        path.join(roundDir, "dev_gateway_self_restart_rejection.txt"),
+        `${devGatewaySelfRestartDecision.editInstructions}\n`,
+      );
+      appendAutocheckHistoryBestEffort({
+        workingDir: params.workingDir,
+        runId,
+        backend,
+        event: "result",
+        status: "rejected",
+        round: roundNumber,
+        attemptLabel: "dev-gateway-self-restart-guard",
+        outputSummary: devGatewaySelfRestartDecision.editInstructions,
+      });
+      result = {
+        stdout: devGatewaySelfRestartDecision.editInstructions,
+        stderr: "",
+        durationMs: 0,
+        responseText: devGatewaySelfRestartDecision.editInstructions,
+        sessionId,
+        decision: devGatewaySelfRestartDecision,
+      };
     } else {
       const canResume = Boolean(sessionId && sessionBackend === backend);
       if (canResume && sessionId) {
@@ -1383,6 +1490,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           priorFeedback: feedbackHistory,
           contextNotes,
           userEditInstructions: params.userEditInstructions,
+          ...(params.config ? { config: params.config } : {}),
         });
 
         try {
@@ -1418,6 +1526,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
             priorFeedback: feedbackHistory,
             contextNotes,
             userEditInstructions: params.userEditInstructions,
+            ...(params.config ? { config: params.config } : {}),
           });
           try {
             result = await runFreshReviewerAttempt({
@@ -1462,6 +1571,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
           priorFeedback: feedbackHistory,
           contextNotes,
           userEditInstructions: params.userEditInstructions,
+          ...(params.config ? { config: params.config } : {}),
         });
         try {
           result = await runFreshReviewerAttempt({
@@ -1581,7 +1691,11 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         cwd: params.workingDir,
         model: params.model,
         claudeCodeAuth: params.claudeCodeAuth,
+        ...(params.config ? { goalConfig: params.config } : {}),
         ...(params.enabledWorkers ? { enabledWorkers: params.enabledWorkers } : {}),
+        ...(params.historyWorkspaceSlug
+          ? { historyWorkspaceSlug: params.historyWorkspaceSlug }
+          : {}),
       });
     } catch (err) {
       const revisionError = `Autocheck revision failed: ${describeError(err)}`;
