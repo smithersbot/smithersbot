@@ -24,7 +24,9 @@ import {
   repairResultFile,
   validateWorkerOutput,
   writeDenyFile,
+  DEV_GATEWAY_WORKER_INSTRUCTION,
 } from "./cli-worker.js";
+import { formatPlanAsContext } from "./planner.js";
 import { HARD_DENIES } from "./hard-deny.js";
 import {
   DEV_GATEWAY_COMMAND_INVOCATION,
@@ -39,6 +41,7 @@ import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import * as runtimeMirror from "./runtime-mirror.js";
+import { resolveScratchDir } from "../config/managed-paths.js";
 
 vi.mock("./attempt-bundle.js", async () => {
   const actual = await vi.importActual<typeof import("./attempt-bundle.js")>("./attempt-bundle.js");
@@ -54,9 +57,13 @@ vi.mock("./cli-process.js", () => ({
   runCliProcess: vi.fn(),
 }));
 
-vi.mock("./planner.js", () => ({
-  formatPlanAsContext: vi.fn(() => "- Task step-1: Do something"),
-}));
+vi.mock("./planner.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./planner.js")>();
+  return {
+    ...actual,
+    formatPlanAsContext: vi.fn(actual.formatPlanAsContext),
+  };
+});
 
 vi.mock("./backend-availability.js", () => ({
   getCodexAskForApprovalPlacement: vi.fn(() => "before_exec"),
@@ -121,11 +128,13 @@ vi.mock("./workspace-policy.js", async (importOriginal) => {
 });
 
 const STABLE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
+const DEV_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit;
 
 const runCliProcessMock = vi.mocked(runCliProcess);
 const resolveWorkerDirMock = vi.mocked(resolveWorkerDir);
 const writeAttemptBundleMock = vi.mocked(writeAttemptBundle);
 const collectGitDiffSummaryMock = vi.mocked(collectGitDiffSummary);
+const formatPlanAsContextMock = vi.mocked(formatPlanAsContext);
 
 const EARLY_RESULT_PROGRESS_MESSAGE =
   "  [cli-worker] result file detected — waiting grace period for process exit";
@@ -211,6 +220,72 @@ function readWorkerHistoryEvents(
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function executeWorkerAndReadDevCapabilityArtifacts(
+  params: {
+    goalConfig?: Parameters<typeof executeTaskWithCliWorker>[0]["goalConfig"];
+  } = {},
+): Promise<{ prompt: string; denyFile: string }> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-devcaps-"));
+  const home = path.join(root, "home");
+  const workingDir = path.join(root, "agent", "workspaces", "smithersbot-dev");
+  const runId = "run-worker-devcaps";
+  const stepId = `step-worker-devcaps-${runCliProcessMock.mock.calls.length}`;
+  const step = makeStep({ id: stepId });
+  const plan: Plan = { ...makePlan(), workingDir, steps: [step] };
+  const workerDir = path.join(root, "worker", stepId);
+  const workspaceResultPath = path.join(
+    workingDir,
+    ".moltbot-goal-worker-results",
+    runId,
+    stepId,
+    "attempt-1",
+    "worker_result.json",
+  );
+  const unitFile = path.join(home, ".config", "systemd", "user", DEV_UNIT);
+  fs.mkdirSync(path.dirname(unitFile), { recursive: true });
+  fs.writeFileSync(unitFile, "[Unit]\nDescription=dev gateway\n", "utf8");
+  fs.mkdirSync(workingDir, { recursive: true });
+  resolveWorkerDirMock.mockReturnValue(workerDir);
+  writeAttemptBundleMock.mockImplementation(() => {});
+  runCliProcessMock.mockImplementationOnce(async () => {
+    fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+    fs.writeFileSync(
+      workspaceResultPath,
+      JSON.stringify({ status: "complete", summary: "Dev capability artifacts captured" }),
+      "utf8",
+    );
+    return {
+      stdout: "",
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 20,
+    };
+  });
+
+  const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+  try {
+    await executeTaskWithCliWorker({
+      backend: "codex",
+      step,
+      plan,
+      goal: "Verify worker dev capabilities",
+      workingDir,
+      runId,
+      hardDenies: HARD_DENIES,
+      timeoutMs: 30_000,
+      goalConfig: params.goalConfig,
+    });
+    return {
+      prompt: fs.readFileSync(path.join(workerDir, "worker-prompt-1.txt"), "utf8"),
+      denyFile: fs.readFileSync(path.join(workerDir, "capability-bounds.txt"), "utf8"),
+    };
+  } finally {
+    homedirSpy.mockRestore();
+  }
 }
 
 describe("cli-worker", () => {
@@ -365,6 +440,18 @@ describe("cli-worker", () => {
       expect(tools).toContain("Glob");
       expect(tools).toContain("Grep");
       expect(tools).toContain("Bash(*)");
+    });
+
+    it("adds Claude web tools only when network is explicitly required", () => {
+      const networkTools = buildAllowedToolsList(true);
+      const defaultTools = buildAllowedToolsList();
+      const explicitNonNetworkTools = buildAllowedToolsList(false);
+
+      expect(networkTools).toEqual(expect.arrayContaining(["WebSearch", "WebFetch"]));
+      expect(defaultTools).not.toContain("WebSearch");
+      expect(defaultTools).not.toContain("WebFetch");
+      expect(explicitNonNetworkTools).not.toContain("WebSearch");
+      expect(explicitNonNetworkTools).not.toContain("WebFetch");
     });
   });
 
@@ -823,8 +910,28 @@ describe("cli-worker", () => {
       });
 
       expect(codexNativeSandbox.configToml).toContain("enabled = true");
+      expect(args).toContain("--search");
       expect(args).not.toContain("net.allowed=false");
       expect(args).not.toContain("--sandbox");
+    });
+
+    it("omits Codex web search for non-network workers", () => {
+      const withFalse = buildCliArgs({
+        backend: "codex",
+        prompt: "test",
+        workingDir: "/tmp/sample-workspace",
+        denyFilePath: "/tmp/deny",
+        requiresNetwork: false,
+      });
+      const withDefault = buildCliArgs({
+        backend: "codex",
+        prompt: "test",
+        workingDir: "/tmp/sample-workspace",
+        denyFilePath: "/tmp/deny",
+      });
+
+      expect(withFalse).not.toContain("--search");
+      expect(withDefault).not.toContain("--search");
     });
 
     it("wires Claude Code worker network into sandbox settings for a requiresNetwork step without any env var", () => {
@@ -848,6 +955,8 @@ describe("cli-worker", () => {
         expect(Array.isArray(parsed.sandbox.network.allowedDomains)).toBe(true);
         expect(parsed.sandbox.network.allowedDomains).toContain("*.com");
         expect(parsed.sandbox.network.allowedDomains).not.toContain("*");
+        const allowedTools = args[args.indexOf("--allowedTools") + 1]?.split(",") ?? [];
+        expect(allowedTools).toEqual(expect.arrayContaining(["WebSearch", "WebFetch"]));
       } finally {
         if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
         else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
@@ -872,9 +981,33 @@ describe("cli-worker", () => {
         const settingsPath = args[settingsIdx + 1]!;
         const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
         expect(parsed.sandbox?.network).toBeUndefined();
+        const allowedTools = args[args.indexOf("--allowedTools") + 1]?.split(",") ?? [];
+        expect(allowedTools).not.toContain("WebSearch");
+        expect(allowedTools).not.toContain("WebFetch");
       } finally {
         if (previous === undefined) delete process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK;
         else process.env.SMITHERSBOT_CLAUDE_SANDBOX_NETWORK = previous;
+        fs.rmSync(workingDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not leave a network-enabled Claude worker with sandbox egress but no web tools", () => {
+      const workingDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-web-permission-"));
+      try {
+        const args = buildCliArgs({
+          backend: "claude_code",
+          prompt: "research with WebSearch and WebFetch",
+          workingDir,
+          denyFilePath: path.join(workingDir, "deny"),
+          requiresNetwork: true,
+        });
+        const settingsPath = args[args.indexOf("--settings") + 1]!;
+        const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+        const allowedTools = args[args.indexOf("--allowedTools") + 1]?.split(",") ?? [];
+
+        expect(parsed.sandbox.network.allowedDomains.length).toBeGreaterThan(0);
+        expect(allowedTools).toEqual(expect.arrayContaining(["WebSearch", "WebFetch"]));
+      } finally {
         fs.rmSync(workingDir, { recursive: true, force: true });
       }
     });
@@ -1078,6 +1211,64 @@ describe("cli-worker", () => {
   });
 
   describe("executeTaskWithCliWorker", () => {
+    it.each(["codex", "claude_code"] as const)(
+      "marks %s goal workers for dev-gateway mediation without sandbox-disable flags",
+      async (backend) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-mediation-env-"));
+        const runId = `run-${backend}`;
+        const stepId = `step-${backend}`;
+        const step = makeStep({ id: stepId });
+        const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+        const workerDir = path.join(dir, "worker", stepId);
+        const workspaceResultPath = path.join(
+          dir,
+          ".moltbot-goal-worker-results",
+          runId,
+          stepId,
+          "attempt-1",
+          "worker_result.json",
+        );
+
+        resolveWorkerDirMock.mockReturnValue(workerDir);
+        writeAttemptBundleMock.mockImplementation(() => {});
+        runCliProcessMock.mockImplementationOnce(async () => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(
+            workspaceResultPath,
+            JSON.stringify({ status: "complete", summary: "Mediation env set" }),
+            "utf8",
+          );
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 20,
+          };
+        });
+
+        await executeTaskWithCliWorker({
+          backend,
+          step,
+          plan,
+          goal: "Verify dev-gateway mediation env",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        expect(call?.env?.SMITHERSBOT_GOAL_WORKER).toBe("1");
+        expect(call?.env?.SMITHERSBOT_GOAL_RUN_ID).toBe(runId);
+        expect(call?.env?.SMITHERSBOT_GOAL_TASK_ID).toBe(stepId);
+        expect(call?.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(JSON.stringify(call?.args ?? [])).not.toContain("dangerouslyDisableSandbox");
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    );
+
     it("passes step.requiresNetwork through to codex worker args", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-exec-network-"));
       const runId = "run-network";
@@ -1128,9 +1319,165 @@ describe("cli-worker", () => {
       const env = runCliProcessMock.mock.calls[0]?.[0]?.env ?? {};
       const configPath = path.join(String(env.CODEX_HOME), "config.toml");
       expect(fs.readFileSync(configPath, "utf8")).toContain("enabled = true");
+      expect(args).toContain("--search");
       expect(args).not.toContain("net.allowed=false");
       expect(args).not.toContain("--sandbox");
     });
+
+    it.each(["codex", "claude_code"] as const)(
+      "grants only the per-task scratch dir and pre-creates the mediation channel for %s workers",
+      async (backend) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-dev-gateway-grant-"));
+        const runId = `run-dev-gateway-${backend}`;
+        const stepId = `step-dev-gateway-${backend}`;
+        const step = makeStep({ id: stepId, requiresDevGatewayControl: true });
+        const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+        const workerDir = path.join(dir, "worker", stepId);
+        const workspaceResultPath = path.join(
+          dir,
+          ".moltbot-goal-worker-results",
+          runId,
+          stepId,
+          "attempt-1",
+          "worker_result.json",
+        );
+        const scratchDir = resolveScratchDir(runId, stepId);
+        const channelDir = path.join(scratchDir, "dev-gateway-control");
+
+        expect(fs.existsSync(scratchDir)).toBe(false);
+
+        resolveWorkerDirMock.mockReturnValue(workerDir);
+        writeAttemptBundleMock.mockImplementation(() => {});
+        runCliProcessMock.mockImplementationOnce(async () => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(
+            workspaceResultPath,
+            JSON.stringify({ status: "complete", summary: "Dev gateway grant passed through" }),
+            "utf8",
+          );
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 20,
+          };
+        });
+
+        await executeTaskWithCliWorker({
+          backend,
+          step,
+          plan,
+          goal: "Verify dev-gateway scratch grant",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        expect(fs.statSync(channelDir).isDirectory()).toBe(true);
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        expect(call).toBeDefined();
+        if (backend === "codex") {
+          const env = (call?.env ?? {}) as Record<string, string>;
+          const configToml = fs.readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+          expect(configToml).toContain(`${JSON.stringify(scratchDir)} = "write"`);
+          expect(configToml).not.toContain(
+            `${JSON.stringify(path.dirname(path.dirname(scratchDir)))} = "write"`,
+          );
+          expect(configToml).not.toContain(
+            `${JSON.stringify(resolveScratchDir(runId, "other-task"))} = "write"`,
+          );
+          expect(configToml).not.toContain(
+            `${JSON.stringify(resolveScratchDir("other-run", stepId))} = "write"`,
+          );
+        } else {
+          const args = call?.args ?? [];
+          const settingsPath = args[args.indexOf("--settings") + 1]!;
+          const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+            sandbox: { filesystem: { allowWrite: string[] } };
+          };
+          expect(parsed.sandbox.filesystem.allowWrite).toContain(scratchDir);
+          expect(parsed.sandbox.filesystem.allowWrite).not.toContain(
+            path.dirname(path.dirname(scratchDir)),
+          );
+          expect(parsed.sandbox.filesystem.allowWrite).not.toContain(
+            resolveScratchDir(runId, "other-task"),
+          );
+          expect(parsed.sandbox.filesystem.allowWrite).not.toContain(
+            resolveScratchDir("other-run", stepId),
+          );
+        }
+      },
+    );
+
+    it.each(["codex", "claude_code"] as const)(
+      "does not grant or pre-create scratch transport paths for normal %s workers",
+      async (backend) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-no-dev-gateway-grant-"));
+        const runId = `run-no-dev-gateway-${backend}`;
+        const stepId = `step-no-dev-gateway-${backend}`;
+        const step = makeStep({ id: stepId });
+        const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+        const workerDir = path.join(dir, "worker", stepId);
+        const workspaceResultPath = path.join(
+          dir,
+          ".moltbot-goal-worker-results",
+          runId,
+          stepId,
+          "attempt-1",
+          "worker_result.json",
+        );
+        const scratchDir = resolveScratchDir(runId, stepId);
+
+        resolveWorkerDirMock.mockReturnValue(workerDir);
+        writeAttemptBundleMock.mockImplementation(() => {});
+        runCliProcessMock.mockImplementationOnce(async () => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(
+            workspaceResultPath,
+            JSON.stringify({ status: "complete", summary: "No dev gateway grant" }),
+            "utf8",
+          );
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 20,
+          };
+        });
+
+        await executeTaskWithCliWorker({
+          backend,
+          step,
+          plan,
+          goal: "Verify normal worker scratch grant",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        expect(fs.existsSync(scratchDir)).toBe(false);
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        if (backend === "codex") {
+          const env = (call?.env ?? {}) as Record<string, string>;
+          const configToml = fs.readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8");
+          expect(configToml).not.toContain(`${JSON.stringify(scratchDir)} = "write"`);
+        } else {
+          const args = call?.args ?? [];
+          const settingsPath = args[args.indexOf("--settings") + 1]!;
+          const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+            sandbox: { filesystem: { allowWrite: string[] } };
+          };
+          expect(parsed.sandbox.filesystem.allowWrite).not.toContain(scratchDir);
+        }
+      },
+    );
 
     it("keeps codex execution in the stable workspace while allowing configured dev agent roots read-only", async () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-observed-exec-home-"));
@@ -1593,6 +1940,59 @@ describe("cli-worker", () => {
       expect(artifact).toContain("## WORKER GUIDELINES");
       expect(artifact).toContain(WORKER_CONTEXT);
       expect(artifact).toContain("YOUR TASK: Implement auth module");
+    });
+
+    it("suppresses worker dev-gateway instruction and keeps dev-aware hard denies under default auto", async () => {
+      const previousEnv = process.env.SMITHERSBOT_DEV_CAPS;
+      try {
+        delete process.env.SMITHERSBOT_DEV_CAPS;
+        const artifacts = await executeWorkerAndReadDevCapabilityArtifacts();
+
+        expect(artifacts.prompt).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+        expect(artifacts.prompt).not.toContain(DEV_GATEWAY_COMMAND_INVOCATION);
+        expect(artifacts.denyFile).toContain("systemctl restart non-dev gateway");
+        expect(artifacts.denyFile).toContain("systemctl manage stable gateway");
+        expect(artifacts.denyFile).not.toContain("- systemctl --user restart\n");
+      } finally {
+        if (previousEnv === undefined) delete process.env.SMITHERSBOT_DEV_CAPS;
+        else process.env.SMITHERSBOT_DEV_CAPS = previousEnv;
+      }
+    });
+
+    it("turns worker dev-gateway instruction off and restores base hard denies from config", async () => {
+      const previousEnv = process.env.SMITHERSBOT_DEV_CAPS;
+      try {
+        delete process.env.SMITHERSBOT_DEV_CAPS;
+        const artifacts = await executeWorkerAndReadDevCapabilityArtifacts({
+          goalConfig: { devCapabilities: "off" },
+        });
+
+        expect(artifacts.prompt).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+        expect(artifacts.prompt).not.toContain(DEV_GATEWAY_COMMAND_INVOCATION);
+        expect(artifacts.denyFile).toContain("- systemctl --user restart\n");
+        expect(artifacts.denyFile).not.toContain("systemctl restart non-dev gateway");
+        expect(artifacts.denyFile).not.toContain("systemctl manage stable gateway");
+      } finally {
+        if (previousEnv === undefined) delete process.env.SMITHERSBOT_DEV_CAPS;
+        else process.env.SMITHERSBOT_DEV_CAPS = previousEnv;
+      }
+    });
+
+    it("lets SMITHERSBOT_DEV_CAPS=off override worker config auto", async () => {
+      const previousEnv = process.env.SMITHERSBOT_DEV_CAPS;
+      try {
+        process.env.SMITHERSBOT_DEV_CAPS = "off";
+        const artifacts = await executeWorkerAndReadDevCapabilityArtifacts({
+          goalConfig: { devCapabilities: "auto" },
+        });
+
+        expect(artifacts.prompt).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+        expect(artifacts.denyFile).toContain("- systemctl --user restart\n");
+        expect(artifacts.denyFile).not.toContain("systemctl restart non-dev gateway");
+      } finally {
+        if (previousEnv === undefined) delete process.env.SMITHERSBOT_DEV_CAPS;
+        else process.env.SMITHERSBOT_DEV_CAPS = previousEnv;
+      }
     });
 
     it("writes the assembled claude code prompt artifact for each attempt", async () => {
@@ -2104,7 +2504,130 @@ describe("cli-worker", () => {
       expect(prompt).not.toContain(HARD_DENIES[0]!.pattern);
     });
 
-    it("injects the dev-gateway worker instruction only when devGatewayWorkspace is set", () => {
+    it("includes the Long Goal Summary (plan.summary) in the worker context", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep(),
+        plan: makePlan(),
+        goal: "Build auth",
+        resultPath: "/tmp/worker_result.json",
+      });
+      expect(prompt).toContain("LONG GOAL SUMMARY: Build auth system");
+    });
+
+    it("includes Source Links to the Goal Brief and current task node spec", () => {
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep({ id: "wire-history-links" }),
+        plan: makePlan(),
+        goal: "Build auth",
+        runId: "run-worker-links",
+        workingDir,
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain("REFERENCES (follow for more history):");
+      expect(prompt).toContain(
+        `Source Link: Goal Brief: ${path.join(
+          testManagedRoot!,
+          "agent",
+          "history",
+          "goals",
+          "smithersbot-dev",
+          "run-worker-links",
+          "wiki",
+          "goal-brief.md",
+        )}`,
+      );
+      expect(prompt).toContain(
+        `Source Link: Task node spec: ${path.join(
+          testManagedRoot!,
+          "agent",
+          "history",
+          "goals",
+          "smithersbot-dev",
+          "run-worker-links",
+          "runtime",
+          "scout",
+          "node_specs",
+          "wire-history-links.md",
+        )}`,
+      );
+      expect(prompt).toContain("History chain: Task -> node spec -> ScoutReport -> Goal Brief.");
+    });
+
+    it("passes large-plan Source Link options and surfaces summarized non-current steps", () => {
+      const workingDir = path.join(testManagedRoot!, "agent", "workspaces", "smithersbot-dev");
+      const steps: PlanStep[] = Array.from({ length: 9 }, (_, index) => {
+        const number = index + 1;
+        return makeStep({
+          id: `step-${number}`,
+          description: `Full implementation description for step ${number} SHOULD ${
+            number === 5 ? "STAY" : "NOT"
+          } INLINE`,
+          shortSummary: `Short step ${number}`,
+          dependsOn: number === 1 ? [] : [`step-${number - 1}`],
+        });
+      });
+      const largePlan: Plan = {
+        goal: "Build auth",
+        workingDir,
+        steps,
+        summary: "Build auth system",
+        shortSummary: "Build auth",
+      };
+
+      const prompt = buildCliWorkerPrompt({
+        step: steps[4]!,
+        plan: largePlan,
+        goal: "Build auth",
+        runId: "run-large-plan",
+        workingDir,
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      const expectedPlanPath = path.join(
+        testManagedRoot!,
+        "agent",
+        "history",
+        "goals",
+        "smithersbot-dev",
+        "run-large-plan",
+        "runtime",
+        "scout",
+        "execution_plan.json",
+      );
+      const expectedNodeSpecsDir = path.join(
+        testManagedRoot!,
+        "agent",
+        "history",
+        "goals",
+        "smithersbot-dev",
+        "run-large-plan",
+        "runtime",
+        "scout",
+        "node_specs",
+      );
+
+      expect(formatPlanAsContextMock).toHaveBeenCalledWith(
+        largePlan,
+        expect.objectContaining({
+          currentStepId: "step-5",
+          planLinkPath: expectedPlanPath,
+          nodeSpecsDir: expectedNodeSpecsDir,
+        }),
+      );
+      expect(prompt).toContain(`Source Link: Full plan: ${expectedPlanPath}`);
+      expect(prompt).toContain(`Source Link: Node specs: ${expectedNodeSpecsDir}/`);
+      expect(prompt).toContain(
+        "- Task step-5: Full implementation description for step 5 SHOULD STAY INLINE",
+      );
+      expect(prompt).toContain("- step-1: Short step 1");
+      expect(prompt).not.toContain(
+        "- Task step-1: Full implementation description for step 1 SHOULD NOT INLINE",
+      );
+    });
+
+    it("suppresses the dev-gateway worker instruction even when devGatewayWorkspace is set", () => {
       const withDev = buildCliWorkerPrompt({
         step: makeStep(),
         plan: makePlan(),
@@ -2113,23 +2636,13 @@ describe("cli-worker", () => {
         resultPath: "/tmp/worker_result.json",
         devGatewayWorkspace: true,
       });
-      expect(withDev).toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
-      // Workers are directed to the real worker-invocable command, by exact name,
-      // not raw systemctl/journalctl.
-      expect(withDev).toContain("worker-invocable command");
-      expect(withDev).toContain(DEV_GATEWAY_COMMAND_INVOCATION);
-      expect(withDev).toContain("moltbot dev-gateway restart");
-      expect(withDev).toContain("Do NOT run raw `systemctl --user ...` or `journalctl --user ...`");
-      expect(withDev).not.toContain("systemctl --user restart smithersbot-dev-gateway.service");
-      expect(withDev).toContain(
+      expect(withDev).not.toContain(DEV_GATEWAY_WORKER_INSTRUCTION);
+      expect(withDev).not.toContain("SMITHERSBOT DEV GATEWAY WORKSPACE:");
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain("worker-invocable command");
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain(DEV_GATEWAY_COMMAND_INVOCATION);
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain("requiresDevGatewayControl");
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain(
         "Never restart, reinstall, stop, enable, disable, or otherwise modify the stable gateway",
-      );
-      // Guidance appears in the dynamic body, after the goal line.
-      expect(withDev.indexOf("GOAL: Build auth")).toBeLessThan(
-        withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:"),
-      );
-      expect(withDev.indexOf("SMITHERSBOT DEV GATEWAY WORKSPACE:")).toBeLessThan(
-        withDev.indexOf("PLAN CONTEXT:"),
       );
     });
 
@@ -2146,17 +2659,18 @@ describe("cli-worker", () => {
       // Advertised tool availability is derived from the enforced policy.
       expect(DEV_GATEWAY_OPERATION_ACTIONS).toEqual(["restart", "status", "logs"]);
       for (const line of describeDevGatewayMediatedActions()) {
-        expect(withDev).toContain(`  - ${line}`);
         expect(line).toContain(DEV_GATEWAY_OPERATION_UNIT);
       }
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain(
+        `  - ${describeDevGatewayMediatedActions()[0]}`,
+      );
       // The dev unit is the only manageable unit; the stable unit is only ever
       // referenced as protected (never as something the worker may operate on).
-      expect(withDev).toContain(DEV_GATEWAY_OPERATION_UNIT);
       expect(withDev).not.toContain(`restart ${STABLE_UNIT}`);
       expect(withDev).not.toContain(`status / is-active for ${STABLE_UNIT}`);
       expect(withDev).not.toContain(`recent journal lines for ${STABLE_UNIT}`);
       // No stop/enable/disable/reinstall is advertised for any unit.
-      expect(withDev).toContain("exposes no stop/enable/disable/reinstall");
+      expect(DEV_GATEWAY_WORKER_INSTRUCTION).toContain("exposes no stop/enable/disable/reinstall");
     });
 
     it("omits the dev-gateway worker instruction by default", () => {
@@ -2279,6 +2793,35 @@ describe("cli-worker", () => {
       expect(prompt).toContain(
         "- [signal-api]: Include trust-new-identities on initial contact setup.",
       );
+    });
+
+    it("injects childless Worker Summary links instead of an unbounded completed-task dump", () => {
+      const prompt = buildCliWorkerPrompt({
+        step: makeStep({ id: "next-task" }),
+        plan: makePlan(),
+        goal: "Build auth",
+        hardDenies: HARD_DENIES.slice(0, 1),
+        completedSummaries: [
+          {
+            id: "leaf-task",
+            summary: "Added the durable summary writer.",
+            path: "/history/goals/run/wiki/worker-summary-leaf-task.md",
+            status: "pass",
+            createdAt: "2026-06-06T00:00:00.000Z",
+            claimsToVerify: ["Verify the summary against the actual diff before relying on it."],
+          },
+        ],
+        resultPath: "/tmp/worker_result.json",
+      });
+
+      expect(prompt).toContain(
+        "PRIOR WORKER SUMMARIES (childless leaf summaries; follow links for details):",
+      );
+      expect(prompt).toContain("- leaf-task: Added the durable summary writer.");
+      expect(prompt).toContain("Source Link: /history/goals/run/wiki/worker-summary-leaf-task.md");
+      expect(prompt).toContain("Claims to verify before relying on this summary:");
+      expect(prompt).toContain("Verify the summary against the actual diff");
+      expect(prompt).not.toContain("COMPLETED TASKS:");
     });
 
     it("omits lessons section when no lessons are provided", () => {

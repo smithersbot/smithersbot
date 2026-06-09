@@ -75,9 +75,13 @@ describe("goal-schemas", () => {
         dependsOn: ["bootstrap"],
         durationMinutes: 12.4,
         backend: "codex",
+        requiresDevGatewayControl: true,
       });
 
       expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.steps[0]?.requiresDevGatewayControl).toBe(true);
+      }
     });
 
     it("rejects invalid planner step input", () => {

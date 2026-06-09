@@ -25,10 +25,12 @@ import {
 } from "./bot-access.js";
 import { MEDIA_GROUP_TIMEOUT_MS, type MediaGroupEntry } from "./bot-updates.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
-import { applyGoalResumeNoteById } from "../commands/goal-resume-note.js";
+import { isPlanningDecisionBlock } from "../goal/planning-decision-answers.js";
 import {
   formatGoalLockedMessage,
   buildOnStatusChange,
+  handleGoalApprove,
+  handleGoalAnswer,
   handleGoalEdit,
   handleGoalFeedback,
   handleGoalList,
@@ -39,11 +41,24 @@ import {
   sendGoalStatusResponse,
 } from "./goal-commands.js";
 import type { GoalPlanResult } from "./goal-commands.js";
+import { applyContinuationEditReply } from "./continuation-core.js";
+import {
+  clearPendingContinuationEditInteraction,
+  findPendingContinuationEditInteraction,
+  getPendingContinuationEditInteraction,
+} from "./continuation-edit-interactions.js";
+import { resolveContinuationClient } from "./continuation-client.js";
+import { resumeGoalFromAnswer } from "./goal-resume-dispatch.js";
+import { buildPlanningPreface, resolveGoalOperatorHonorific } from "./goal-formatting.js";
 import { routeTelegramText } from "./goal-router.js";
 import { migrateTelegramGroupConfig } from "./group-migration.js";
 import { resolveTelegramInlineButtonsScope } from "./inline-buttons.js";
 import { readTelegramAllowFromStore, upsertTelegramPairingRequest } from "./pairing-store.js";
-import { dispatchTelegramRepoChatForInboundText } from "./repo-chat-commands.js";
+import {
+  dispatchTelegramRepoChatForInboundText,
+  handleRepoChatShowMoreCallback,
+  isRepoChatShowMoreCallback,
+} from "./repo-chat-commands.js";
 import { findRepoChatSessionByMessageId } from "../repo-chat/repo-chat-store.js";
 import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
 import { buildInlineKeyboard } from "./send.js";
@@ -53,6 +68,7 @@ import {
   clampCommandFragmentGapMs,
   COMMAND_FRAGMENT_MAX_GAP_MS,
   type CommandAnchor,
+  type CommandFragmentCommandName,
   normalizeCommandFragmentParams,
 } from "./command-fragments.js";
 
@@ -68,6 +84,16 @@ const GOAL_HELP_MESSAGE = [
   "",
   'Ask about goals: "list goals", "status", /goal_list, /goal_status <id>',
 ].join("\n");
+
+export const LONG_FREEFORM_ROUTE_COMMAND_NAMES = [
+  "repo_chat",
+  "goal_answer",
+  "goal_feedback",
+  "goal_edit",
+  "continuation_edit",
+] as const satisfies readonly CommandFragmentCommandName[];
+
+type LongFreeformRouteCommandName = (typeof LONG_FREEFORM_ROUTE_COMMAND_NAMES)[number];
 
 // ---------------------------------------------------------------------------
 // Deterministic local intent handlers (no LLM)
@@ -148,6 +174,7 @@ async function tryLocalIntentHandlers(
 export async function handleTelegramGoalRouting(params: {
   chatId: number;
   threadId?: number;
+  senderId?: string;
   messageText: string;
   replyToMessageId?: number;
   runs: SerializedRun[];
@@ -157,6 +184,7 @@ export async function handleTelegramGoalRouting(params: {
   sendReply: (text: string) => Promise<void>;
   sendPlanResult: (result: GoalPlanResult) => Promise<void>;
   runHandlers: {
+    continuationEdit?: (runId: string, text: string) => void | Promise<void>;
     edit: (runId: string, text: string) => void;
     answer: (runId: string, text: string, source?: "add_details" | "direct_reply") => void;
     feedback?: (runId: string, text: string) => void;
@@ -167,6 +195,7 @@ export async function handleTelegramGoalRouting(params: {
   const route = routeTelegramText({
     chatId: params.chatId,
     threadId: params.threadId,
+    senderId: params.senderId,
     messageText: params.messageText,
     replyToMessageId: params.replyToMessageId,
     runs: params.runs,
@@ -220,6 +249,11 @@ export async function handleTelegramGoalRouting(params: {
 
   if (route.kind === "GOAL_EDIT" && route.runId) {
     params.runHandlers.edit(route.runId, params.messageText);
+    return true;
+  }
+
+  if (route.kind === "GOAL_CONTINUATION_EDIT" && route.runId) {
+    await params.runHandlers.continuationEdit?.(route.runId, params.messageText);
     return true;
   }
 
@@ -600,6 +634,7 @@ export const registerTelegramHandlers = ({
         ) {
           return true;
         }
+        if (matchesChatThread(run.pendingContinuation?.notify, chatId, threadId)) return true;
         return false;
       });
   }
@@ -683,18 +718,26 @@ export const registerTelegramHandlers = ({
     const replyToMessageId = (params.msg as { reply_to_message?: { message_id?: number } })
       .reply_to_message?.message_id;
     const repoChatEnabled = isRepoChatBackendEnabled(telegramCfg.repoChatBackend);
+    const normalizedMessageParams = normalizeCommandFragmentParams(params.msg, accountId);
+    const senderId = normalizedMessageParams.senderId;
+    const activeContinuationEdit = params.text.trimStart().startsWith("/")
+      ? undefined
+      : findPendingContinuationEditInteraction({
+          chatId,
+          threadId: params.threadId,
+          senderId,
+        });
 
     const bufferLongFreeformRoute = async (bufferParams: {
-      commandName: "repo_chat" | "goal_answer" | "goal_feedback" | "goal_edit";
+      commandName: LongFreeformRouteCommandName;
       runId?: string;
       replyToMessageId?: number;
       text: string;
       flushCallback: (combinedText: string) => void | Promise<void>;
     }): Promise<boolean> => {
       if (!commandFragmentBuffer) return false;
-      const normalized = normalizeCommandFragmentParams(params.msg, accountId);
       const key = buildCommandFragmentKey({
-        ...normalized,
+        ...normalizedMessageParams,
         commandName: bufferParams.commandName,
         runId: bufferParams.runId,
         replyToMessageId: bufferParams.replyToMessageId,
@@ -721,7 +764,7 @@ export const registerTelegramHandlers = ({
         dispatch: {
           chatId,
           threadIdForSend: params.threadId,
-          senderId: normalized.senderId,
+          senderId,
           replyToMessageId: bufferParams.replyToMessageId,
           sourceMessageId,
           accountId,
@@ -731,7 +774,7 @@ export const registerTelegramHandlers = ({
       return true;
     };
 
-    if (replyToMessageId != null && repoChatEnabled) {
+    if (!activeContinuationEdit && replyToMessageId != null && repoChatEnabled) {
       const repoChatSession = findRepoChatSessionByMessageId({
         chatId,
         messageId: replyToMessageId,
@@ -779,7 +822,7 @@ export const registerTelegramHandlers = ({
         accountId,
         chatId,
         threadId: params.threadId,
-        senderId: String(params.msg.from?.id ?? "unknown"),
+        senderId,
       })
     ) {
       const buffered = await bufferLongFreeformRoute({
@@ -818,7 +861,7 @@ export const registerTelegramHandlers = ({
         ? resolveLiveCommandAnchor({
             chatId,
             threadId: params.threadId,
-            senderId: String(params.msg.from?.id ?? "unknown"),
+            senderId,
           })
         : undefined;
     if (liveCommandAnchor) {
@@ -849,6 +892,7 @@ export const registerTelegramHandlers = ({
     const handledByGoalRouting = await handleTelegramGoalRouting({
       chatId,
       threadId: params.threadId,
+      senderId,
       messageText: params.text,
       replyToMessageId,
       runs,
@@ -869,6 +913,80 @@ export const registerTelegramHandlers = ({
         });
       },
       runHandlers: {
+        continuationEdit: (runId, text) => {
+          const pendingContinuationEdit = getPendingContinuationEditInteraction({
+            chatId,
+            threadId: params.threadId,
+            senderId,
+            runId,
+          });
+          const continuationEditReplyToMessageId =
+            pendingContinuationEdit?.promptMessageId ??
+            pendingContinuationEdit?.originalMessageId ??
+            replyToMessageId;
+
+          const dispatchContinuationEdit = (editText: string) => {
+            clearPendingContinuationEditInteraction({
+              chatId,
+              threadId: params.threadId,
+              senderId,
+              runId,
+            });
+            void bot.api
+              .setMessageReaction(chatId, sourceMessageId, [{ type: "emoji", emoji: "\u270D" }])
+              .catch((err) => {
+                runtime.error?.(
+                  `[goal-router] failed to set continuation edit reaction: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+              });
+            runGoalInBackground({
+              bot,
+              chatId,
+              threadId: params.threadId,
+              runtime,
+              label: "goal-router:continuation-edit",
+              preface: buildPlanningPreface(resolveGoalOperatorHonorific(cfg)),
+              replyToMessageId: sourceMessageId,
+              runId,
+              fn: async () =>
+                applyContinuationEditReply({
+                  runId,
+                  text: editText,
+                  client: resolveContinuationClient(cfg),
+                }),
+              onResult: async (result) => {
+                const first = result?.messages?.[0];
+                if (!first) return;
+                await sendGoalReply(
+                  bot,
+                  chatId,
+                  first.text,
+                  runtime,
+                  params.threadId,
+                  sourceMessageId,
+                  first.replyMarkup as import("grammy/types").InlineKeyboardMarkup | undefined,
+                );
+              },
+            });
+          };
+
+          if (continuationEditReplyToMessageId != null) {
+            void bufferLongFreeformRoute({
+              commandName: "continuation_edit",
+              runId,
+              replyToMessageId: continuationEditReplyToMessageId,
+              text,
+              flushCallback: (combinedText) => dispatchContinuationEdit(combinedText),
+            }).then((buffered) => {
+              if (!buffered) dispatchContinuationEdit(text);
+            });
+            return;
+          }
+
+          dispatchContinuationEdit(text);
+        },
         edit: (runId, text) => {
           // Buffer split "Request changes" / GOAL_EDIT fragments BEFORE taking the edit
           // lock, mirroring goal_answer. Acquiring the lock per-fragment would make the
@@ -938,19 +1056,107 @@ export const registerTelegramHandlers = ({
         },
         answer: (runId, text, source = "direct_reply") => {
           const dispatchAnswer = (answerText: string) => {
-            const result = applyGoalResumeNoteById({
+            const run = loadRun(runId);
+            if (run && isPlanningDecisionBlock(run)) {
+              runGoalInBackground({
+                bot,
+                chatId,
+                threadId: params.threadId,
+                runtime,
+                label: "goal-router:answer",
+                preface: buildPlanningPreface(),
+                replyToMessageId: sourceMessageId,
+                runId,
+                fn: async () => {
+                  const statusCb = buildOnStatusChange({
+                    bot,
+                    chatId,
+                    threadId: params.threadId,
+                    runtime,
+                    runId,
+                    continuationClient: resolveContinuationClient(cfg),
+                  });
+                  return handleGoalAnswer(runId, answerText, statusCb, cfg);
+                },
+                onResult: async (reply) => {
+                  if (reply == null) return;
+                  if (typeof reply === "string") {
+                    await sendGoalReply(
+                      bot,
+                      chatId,
+                      reply,
+                      runtime,
+                      params.threadId,
+                      sourceMessageId,
+                    );
+                    return;
+                  }
+                  await sendGoalPlanResult({
+                    bot,
+                    chatId,
+                    runtime,
+                    result: reply,
+                    threadId: params.threadId,
+                    replyToMessageId: sourceMessageId,
+                  });
+                },
+              });
+              return;
+            }
+            resumeGoalFromAnswer({
               runId,
+              answerText,
               source,
-              userText: answerText,
+              config: cfg,
+              sendRecordFailure: (message) =>
+                sendGoalReply(bot, chatId, message, runtime, params.threadId, sourceMessageId),
+              launchResume: ({ preface, releaseGoalLock }) => {
+                runGoalInBackground({
+                  bot,
+                  chatId,
+                  threadId: params.threadId,
+                  runtime,
+                  label: "goal-router:answer",
+                  preface,
+                  replyToMessageId: sourceMessageId,
+                  releaseGoalLock,
+                  runId,
+                  fn: async () => {
+                    const statusCb = buildOnStatusChange({
+                      bot,
+                      chatId,
+                      threadId: params.threadId,
+                      runtime,
+                      runId,
+                      continuationClient: resolveContinuationClient(cfg),
+                    });
+                    return handleGoalApprove(runId, statusCb, cfg);
+                  },
+                  onResult: async (reply) => {
+                    if (reply == null) return;
+                    if (typeof reply === "string") {
+                      await sendGoalReply(
+                        bot,
+                        chatId,
+                        reply,
+                        runtime,
+                        params.threadId,
+                        sourceMessageId,
+                      );
+                      return;
+                    }
+                    await sendGoalPlanResult({
+                      bot,
+                      chatId,
+                      runtime,
+                      result: reply,
+                      threadId: params.threadId,
+                      replyToMessageId: sourceMessageId,
+                    });
+                  },
+                });
+              },
             });
-            void sendGoalReply(
-              bot,
-              chatId,
-              result.message,
-              runtime,
-              params.threadId,
-              sourceMessageId,
-            );
           };
 
           if (replyToMessageId != null) {
@@ -997,6 +1203,7 @@ export const registerTelegramHandlers = ({
                   threadId: params.threadId,
                   runtime,
                   runId,
+                  continuationClient: resolveContinuationClient(cfg),
                 });
                 return handleGoalFeedback(runId, feedbackText, cfg, statusCb);
               },
@@ -1323,6 +1530,18 @@ export const registerTelegramHandlers = ({
       });
       if (handledCommandAnchorCallback) return;
 
+      if (isRepoChatShowMoreCallback(data)) {
+        await handleRepoChatShowMoreCallback({
+          bot,
+          runtime,
+          chatId,
+          data,
+          threadId: resolvedThreadId,
+          replyToMessageId: callbackMessage.message_id,
+        });
+        return;
+      }
+
       const paginationMatch = data.match(/^commands_page_(\d+|noop)(?::(.+))?$/);
       if (paginationMatch) {
         const pageValue = paginationMatch[1];
@@ -1570,6 +1789,7 @@ export const registerTelegramHandlers = ({
               "goal_feedback",
               "goal_answer",
               "goal_edit",
+              "continuation_edit",
               "goal_resume",
             ],
           },

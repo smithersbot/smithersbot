@@ -33,13 +33,16 @@ function makeDeps(overrides: Partial<DevGatewayCliDeps> = {}): {
   contextCalls: Array<{ workingDir: string }>;
 } {
   const logs: string[] = [];
-  const contextCalls: Array<{ workingDir: string }> = [];
+  const contextCalls: Array<{ workingDir: string; cfg?: { devCapabilities?: "auto" | "off" } }> =
+    [];
   const deps: Partial<DevGatewayCliDeps> = {
     resolveContext: (params) => {
       contextCalls.push(params);
       return devContext();
     },
     cwd: () => "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+    loadGoalConfig: () => undefined,
+    env: {} as NodeJS.ProcessEnv,
     log: (message) => logs.push(message),
     ...overrides,
   };
@@ -110,6 +113,82 @@ describe("runDevGatewayCliAction", () => {
     expect(systemdMock.readSystemdServiceRecentLogs).toHaveBeenCalledTimes(1);
   });
 
+  it("routes sandboxed goal workers through file-drop mediation instead of in-process systemd", async () => {
+    const requestMediated = vi.fn(async () => ({
+      action: "status" as const,
+      ok: true,
+      serviceUnit: DEV_UNIT,
+      devPort: 18790,
+      message: `Mediated status completed for ${DEV_UNIT}: active.`,
+      stdout: '{"activeState":{"state":"active"}}',
+      evidence: {
+        mediated: true as const,
+        responder: "smithersbot-dev-gateway" as const,
+        serviceUnit: DEV_UNIT,
+        action: "status" as const,
+        completedAt: "2026-06-01T00:00:00.000Z",
+      },
+    }));
+    const { deps, logs } = makeDeps({
+      env: {
+        SMITHERSBOT_GOAL_WORKER: "1",
+        SMITHERSBOT_GOAL_RUN_ID: "run-1",
+        SMITHERSBOT_GOAL_TASK_ID: "task-1",
+      } as NodeJS.ProcessEnv,
+      requestMediated,
+    });
+
+    const result = await runDevGatewayCliAction("status", {}, deps);
+
+    expect(result).toMatchObject({ action: "status", ok: true, serviceUnit: DEV_UNIT });
+    expect(requestMediated).toHaveBeenCalledWith({
+      action: "status",
+      runId: "run-1",
+      taskId: "task-1",
+    });
+    expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
+    expect(systemdMock.restartSystemdService).not.toHaveBeenCalled();
+    expect(logs.join("\n")).toContain("Mediated status completed");
+  });
+
+  it("returns a clean structured blocker when sandboxed mediation is unavailable", async () => {
+    const requestMediated = vi.fn(async () => ({
+      action: "restart" as const,
+      ok: false,
+      serviceUnit: DEV_UNIT,
+      devPort: 18790,
+      message:
+        "Dev-gateway host mediation is unavailable: timed out waiting for the gateway responder.",
+      stderr: "[host-control unavailable]",
+      errorCode: "capability_blocked",
+    }));
+    const { deps, logs } = makeDeps({
+      env: {
+        SMITHERSBOT_GOAL_WORKER: "1",
+        SMITHERSBOT_GOAL_RUN_ID: "run-1",
+        SMITHERSBOT_GOAL_TASK_ID: "task-1",
+      } as NodeJS.ProcessEnv,
+      requestMediated,
+    });
+
+    await expect(runDevGatewayCliAction("restart", { json: true }, deps)).rejects.toMatchObject({
+      name: "DevGatewayCommandError",
+      message:
+        "Dev-gateway host mediation is unavailable: timed out waiting for the gateway responder.",
+    });
+
+    const output = logs.join("\n");
+    expect(JSON.parse(output)).toMatchObject({
+      ok: false,
+      errorCode: "capability_blocked",
+      serviceUnit: DEV_UNIT,
+    });
+    expect(output).not.toMatch(
+      /Failed to connect to bus|D-Bus|systemctl --user|No data available/i,
+    );
+    expect(systemdMock.restartSystemdService).not.toHaveBeenCalled();
+  });
+
   it("emits the result as JSON when requested", async () => {
     const { deps, logs } = makeDeps();
     await runDevGatewayCliAction("status", { json: true }, deps);
@@ -165,6 +244,28 @@ describe("runDevGatewayCliAction", () => {
     ).rejects.toBeInstanceOf(DevGatewayCommandError);
 
     expect(systemdMock.restartSystemdService).not.toHaveBeenCalled();
+    expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
+  });
+
+  it("passes goal devCapabilities config into the dev-context gate", async () => {
+    const { deps, contextCalls } = makeDeps({
+      loadGoalConfig: () => ({ devCapabilities: "off" }),
+      resolveContext: (params) => {
+        contextCalls.push(params);
+        return devContext({ servicePresent: false, active: false });
+      },
+    });
+
+    await expect(runDevGatewayCliAction("status", {}, deps)).rejects.toBeInstanceOf(
+      DevGatewayCommandError,
+    );
+
+    expect(contextCalls).toEqual([
+      {
+        workingDir: "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+        cfg: { devCapabilities: "off" },
+      },
+    ]);
     expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
   });
 });

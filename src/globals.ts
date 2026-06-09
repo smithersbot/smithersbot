@@ -3,6 +3,7 @@ import { theme } from "./terminal/theme.js";
 
 let globalVerbose = false;
 let globalYes = false;
+let globalJsonOutputMode = false;
 
 export function setVerbose(v: boolean) {
   globalVerbose = v;
@@ -38,6 +39,14 @@ export function setYes(v: boolean) {
 
 export function isYes() {
   return globalYes;
+}
+
+export function setJsonOutputMode(v: boolean) {
+  globalJsonOutputMode = v;
+}
+
+export function isJsonOutputMode() {
+  return globalJsonOutputMode;
 }
 
 export const success = theme.success;

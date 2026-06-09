@@ -134,6 +134,63 @@ const doneSingleStepPlan: Plan = makePlan({
   ],
 });
 
+const unsafeIdPlan: Plan = makePlan({
+  goal: "Unsafe ids",
+  workingDir: "/tmp/workspace",
+  summary: "Unsafe Mermaid ids",
+  steps: [
+    {
+      id: "build-api",
+      description: "Build API",
+      dependsOn: [],
+      status: "pending",
+      durationMinutes: 1,
+    },
+    {
+      id: "data.load",
+      description: "Load data",
+      dependsOn: ["build-api"],
+      status: "pending",
+      durationMinutes: 1,
+    },
+    {
+      id: "ask:input",
+      description: "Ask for input",
+      dependsOn: ["data.load"],
+      status: "pending",
+      durationMinutes: 1,
+    },
+    {
+      id: "docs/readme",
+      description: "Write docs",
+      dependsOn: ["ask:input"],
+      status: "pending",
+      durationMinutes: 1,
+    },
+    {
+      id: "1-start",
+      description: "Numeric leading",
+      dependsOn: ["docs/readme"],
+      status: "pending",
+      durationMinutes: 1,
+    },
+  ],
+});
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function expectNoRawStepIdNodeTokens(mermaid: string, ids: readonly string[]): void {
+  for (const id of ids) {
+    const escaped = escapeRegExp(id);
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\[`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\s+-->`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`-->\\s+${escaped}\\s*$`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*class\\s+${escaped}\\s+`, "m"));
+  }
+}
+
 /** Runtime legend tokens that must NOT appear in static plan output. */
 const RUNTIME_LEGEND_TOKENS = ["[x]", "[>]", "[!]", "[-]"];
 
@@ -244,6 +301,18 @@ describe("formatPlanOutput", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "md" });
       expect(out).toContain("~1 min");
       expect(out).toContain("linkStyle");
+    });
+
+    it("mermaid diagram uses safe node ids for unsafe raw step ids", () => {
+      const out = formatPlanOutput(unsafeIdPlan, { diagram: "mermaid", format: "md" });
+      const mermaid = out.split("```mermaid\n")[1]?.split("\n```")[0] ?? "";
+      expect(mermaid).toContain("flowchart TD");
+      expect(mermaid).toContain('n0["1. Build API<br/>~1 min"]');
+      expect(mermaid).toContain("n0 --> n1");
+      expectNoRawStepIdNodeTokens(
+        mermaid,
+        unsafeIdPlan.steps.map((step) => step.id),
+      );
     });
 
     it("uses actual elapsed duration labels for done steps when stepResults are provided", () => {
@@ -450,6 +519,18 @@ describe("formatPlanOutput", () => {
       const out = formatPlanOutput(samplePlan, { diagram: "mermaid", format: "json" });
       const parsed = JSON.parse(out);
       expect(parsed.diagrams.mermaid).toContain("~1 min");
+    });
+
+    it("JSON mermaid diagram uses safe node ids for unsafe raw step ids", () => {
+      const out = formatPlanOutput(unsafeIdPlan, { diagram: "mermaid", format: "json" });
+      const parsed = JSON.parse(out);
+      const mermaid = parsed.diagrams.mermaid as string;
+      expect(mermaid).toContain("flowchart TD");
+      expect(mermaid).toContain("n3 --> n4");
+      expectNoRawStepIdNodeTokens(
+        mermaid,
+        unsafeIdPlan.steps.map((step) => step.id),
+      );
     });
 
     it("JSON mermaid uses actual elapsed duration labels for done steps when stepResults are provided", () => {

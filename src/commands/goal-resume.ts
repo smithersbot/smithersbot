@@ -4,7 +4,11 @@ import fs from "node:fs";
 
 import { JsonExitError } from "../cli/cli-utils.js";
 import { createCliProgress } from "../cli/progress.js";
-import { executeGoalWithAgent, type GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import {
+  executeGoalWithAgent,
+  resumePostExecutionReporting,
+  type GoalStatusChangeEvent,
+} from "../goal/agent-executor.js";
 import {
   clampBackendForEnabledWorkers,
   pickFallbackBackend,
@@ -27,6 +31,8 @@ import { runCliPlanning, type CliPlanningResult } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir } from "../goal/git-checkpoint.js";
+import { workspaceNameFromWorkingDir } from "../goal/agent-history.js";
+import { migrateGoalHistory, rewriteRunHistoryArtifactPaths } from "../goal/history-anchor.js";
 import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import {
   loadRun,
@@ -39,6 +45,10 @@ import {
 import { formatGoalError } from "../goal/errors.js";
 import { isGoalOpLocked } from "../goal/goal-lock.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
+import {
+  buildPlanningDecisionResumeGoalText,
+  clearPlanningDecisionAnswerState,
+} from "../goal/planning-decision-answers.js";
 import {
   resolveScoutDir,
   SCOUT_PLAN_DRAFT_FILE,
@@ -373,6 +383,12 @@ async function retryPlanning(
 
   // Reconstruct in-memory session
   const session = serializedToSession(run);
+  const planningDecisionContext = buildPlanningDecisionResumeGoalText({
+    goal: session.goal,
+    blocked: session.blocked,
+    answers: session.answers,
+    planningDecisionAnswers: session.planningDecisionAnswers,
+  });
 
   // Reset state to planning
   session.state = "planning";
@@ -407,11 +423,6 @@ async function retryPlanning(
       }
     }
 
-    const planningAnswer = session.answers["step:planning:input"];
-    const goalText = planningAnswer
-      ? `${session.goal}\n\nUser clarification: ${planningAnswer}`
-      : session.goal;
-
     // Generate plan + scout artifacts in one CLI planning pass
     let planningResult: CliPlanningResult;
     {
@@ -423,12 +434,13 @@ async function retryPlanning(
       try {
         planningResult = await runCliPlanning({
           runId: run.runId,
-          goalText,
+          goalText: planningDecisionContext.goalText,
           cwd: run.workingDir,
           claudeCodeAuth,
           ...(opts.config?.goal?.enabledWorkers
             ? { enabledWorkers: opts.config.goal.enabledWorkers }
             : {}),
+          ...(opts.config?.goal ? { goalConfig: opts.config.goal } : {}),
           includeScoutArtifacts,
           ...(includeScoutArtifacts && scoutData ? { scoutData } : {}),
         });
@@ -478,14 +490,26 @@ async function retryPlanning(
     }
 
     if (planningResult.status === "blocked") {
+      if (planningDecisionContext.consumedRequiredInputKey) {
+        clearPlanningDecisionAnswerState({
+          answers: session.answers,
+          requiredInputKey: planningDecisionContext.consumedRequiredInputKey,
+          clearPlanningDecisionAnswers: () => {
+            session.planningDecisionAnswers = undefined;
+            delete run.planningDecisionAnswers;
+          },
+        });
+      }
       session.state = "blocked";
       session.blocked = {
         blockedAt: "planning",
         prompt: planningResult.question,
         requiredInputKey: "step:planning:input",
+        ...(planningResult.decisions ? { decisions: planningResult.decisions } : {}),
       };
       run.state = "blocked";
       run.blocked = session.blocked;
+      run.answers = session.answers;
       run.updatedAt = new Date().toISOString();
       saveRun(run);
 
@@ -494,26 +518,45 @@ async function retryPlanning(
         question: planningResult.question,
         requiredInputKey: "step:planning:input",
         blockedAt: "planning",
+        ...(planningResult.decisions ? { decisions: planningResult.decisions } : {}),
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
       } else if (!quiet) {
-        runtime.log(`\nCLARIFICATION NEEDED: ${planningResult.question}`);
+        runtime.log(`\nDecision needed: ${planningResult.question}`);
       }
       return outcome;
     }
 
     const planResult = planningResult.plan;
+    if (planningResult.goalBriefPath) {
+      run.goalBriefPath = planningResult.goalBriefPath;
+    }
 
     // Success! Update session with plan
     session.plan = planResult;
     session.state = "awaiting_approval";
-    if (planningAnswer) delete session.answers["step:planning:input"];
+    if (planningDecisionContext.consumedRequiredInputKey) {
+      clearPlanningDecisionAnswerState({
+        answers: session.answers,
+        requiredInputKey: planningDecisionContext.consumedRequiredInputKey,
+        clearPlanningDecisionAnswers: () => {
+          session.planningDecisionAnswers = undefined;
+          delete run.planningDecisionAnswers;
+        },
+      });
+    }
     run.plan = planResult;
     // Guard the planner-selected working dir before persisting/adopting it.
     assertGoalWorkerWorkspace({ workingDir: planResult.workingDir, config: opts.config?.goal });
+    const finalHistoryWorkspaceSlug = workspaceNameFromWorkingDir(planResult.workingDir);
+    run.historyWorkspaceSlug = finalHistoryWorkspaceSlug;
+    session.historyWorkspaceSlug = finalHistoryWorkspaceSlug;
+    migrateGoalHistory({ runId: run.runId, toSlug: finalHistoryWorkspaceSlug });
+    rewriteRunHistoryArtifactPaths(run);
     run.workingDir = planResult.workingDir;
     run.state = "awaiting_approval";
+    run.answers = session.answers;
     run.lastError = undefined;
     run.updatedAt = new Date().toISOString();
     saveRun(run);
@@ -552,10 +595,22 @@ async function retryPlanning(
   } catch (err) {
     // Planning failed again - persist error
     const errorMsg = err instanceof Error ? err.message : String(err);
+    if (planningDecisionContext.consumedRequiredInputKey) {
+      clearPlanningDecisionAnswerState({
+        answers: session.answers,
+        requiredInputKey: planningDecisionContext.consumedRequiredInputKey,
+        clearPlanningDecisionAnswers: () => {
+          session.planningDecisionAnswers = undefined;
+          delete run.planningDecisionAnswers;
+        },
+      });
+    }
     session.lastError = errorMsg;
     session.state = "planning";
+    session.blocked = null;
     run.lastError = errorMsg;
     run.state = "planning";
+    run.answers = session.answers;
     run.updatedAt = new Date().toISOString();
     saveRun(run);
 
@@ -577,6 +632,98 @@ async function retryPlanning(
     runtime.error(formatted);
     return undefined;
   }
+}
+
+/**
+ * Retry ONLY the native post-execution reporting / manual-tests / continuation
+ * pipeline for a completed (or reporting-failed) run. This is what the Telegram
+ * "▶️ Resume Post Execution" button invokes. It MUST NOT re-execute the already
+ * completed plan steps — only the three same-session reporting phases run again.
+ */
+export async function resumePostExecutionReportingCommand(
+  runId: string,
+  opts: GoalResumeOptions,
+  runtime: RuntimeEnv,
+): Promise<GoalOutcome | undefined> {
+  const isJson = resolveIsJson(opts);
+  const quiet = Boolean(opts.quiet);
+  const claudeCodeAuth = opts.config?.goal?.claudeCodeAuth ?? "subscription";
+
+  const resolvedId = resolveRunId(runId);
+  if (!resolvedId) {
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: `Run not found: ${runId}` }));
+      throw new JsonExitError(1);
+    }
+    runtime.error(`Run not found: ${runId}`);
+    return undefined;
+  }
+
+  const run = loadRun(resolvedId);
+  if (!run) {
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: `Run file missing: ${resolvedId}` }));
+      throw new JsonExitError(1);
+    }
+    runtime.error(`Run file missing: ${resolvedId}`);
+    return undefined;
+  }
+
+  if (!run.plan) {
+    const msg = "Cannot resume post-execution reporting: run has no plan.";
+    if (isJson) {
+      runtime.log(JSON.stringify({ error: msg }));
+      throw new JsonExitError(1);
+    }
+    runtime.error(msg);
+    return undefined;
+  }
+
+  const { runId: savedRunId, workingDir, model, dryRun, createdAt } = run;
+  const session = serializedToSession(run);
+
+  function persistRun(): void {
+    const previousRun = loadRun(savedRunId);
+    saveRun(
+      sessionToSerialized({
+        session,
+        runId: savedRunId,
+        workingDir,
+        model,
+        dryRun,
+        createdAt,
+        previousRun,
+      }),
+    );
+  }
+
+  const outcome = await resumePostExecutionReporting({
+    session,
+    runId: savedRunId,
+    workingDir,
+    config: opts.config,
+    ...(opts.config?.goal?.enabledWorkers
+      ? { enabledWorkers: opts.config.goal.enabledWorkers }
+      : {}),
+    model,
+    claudeCodeAuth,
+    serializedRun: run,
+    onRunStatePersist: () => persistRun(),
+    onProgress: (text) => {
+      if (!isJson && !quiet) runtime.log(text);
+    },
+    onStatusChange: opts.onStatusChange,
+  });
+
+  persistRun();
+
+  if (isJson) {
+    runtime.log(JSON.stringify(outcome, null, 2));
+  } else if (!quiet && outcome.status === "done") {
+    runtime.log(outcome.summary);
+  }
+
+  return outcome;
 }
 
 export async function goalResumeCommand(
@@ -669,13 +816,15 @@ export async function goalResumeCommand(
     return undefined;
   }
 
-  if (run.state === "blocked") {
+  if (run.state === "blocked" && run.blocked != null) {
     const blockedAt = run.blocked?.blockedAt ?? "execution";
     const requiredKey = run.blocked?.requiredInputKey;
     const answer = requiredKey ? run.answers?.[requiredKey] : undefined;
+    const hasPlanningDecisionAnswers =
+      blockedAt === "planning" && Object.keys(run.planningDecisionAnswers ?? {}).length > 0;
 
     if (blockedAt === "planning") {
-      if (answer) {
+      if (answer || hasPlanningDecisionAnswers) {
         return await retryPlanning(run, opts, runtime);
       }
 
@@ -686,6 +835,7 @@ export async function goalResumeCommand(
             question: run.blocked?.prompt ?? null,
             requiredInputKey: requiredKey ?? null,
             blockedAt,
+            ...(run.blocked?.decisions ? { decisions: run.blocked.decisions } : {}),
           }),
         );
       } else {
@@ -700,6 +850,7 @@ export async function goalResumeCommand(
         question: run.blocked?.prompt ?? "",
         requiredInputKey: requiredKey ?? "unknown",
         blockedAt,
+        ...(run.blocked?.decisions ? { decisions: run.blocked.decisions } : {}),
       };
     }
 

@@ -4,6 +4,8 @@ You are a goal worker: an autonomous coding agent executing a single task from a
 
 This file is the **canonical** worker contract. `AGENTS.md` (read by Codex) and `CLAUDE.md` (read by Claude Code) in this directory must remain byte-for-byte identical copies — drift is caught by `src/prompts/prompts.test.ts`.
 
+Shared terms for Task, Worker, Blocked, Failed, and Ralph are defined in `GLOSSARY.md`; use that file as the vocabulary reference instead of redefining them here.
+
 ## Your Role
 
 - You execute ONE task from a larger plan. Focus exclusively on that task.
@@ -15,6 +17,7 @@ This file is the **canonical** worker contract. `AGENTS.md` (read by Codex) and 
 - When done, report completion through the result protocol you were given (result file or tool call).
 - Include a brief summary of what you did, what changed, and which verification commands you ran.
 - If you encountered difficulty, note what failed and what unblocked you.
+- When recording goal artifacts, follow `docs/goal-engine-guides/wiki-conventions.md` for the per-Goal index/log convention where it applies.
 
 Before calling mark_task_complete (or writing your final result), briefly evaluate: is this implementation clean, or did I take a hacky shortcut? If the approach feels hacky and a cleaner solution exists that wouldn't take significantly longer, implement the cleaner version first. Skip this self-check for trivial changes (single-line fixes, config changes, simple additions).
 
@@ -59,12 +62,18 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - Use strict typing where possible; avoid `any` unless unavoidable and documented.
 - Keep files focused and reasonably concise; extract helpers instead of duplicating logic.
 - Add brief comments only when behavior is non-obvious.
+- When a Task's approach is uncertain, prove the core path with the smallest runnable check before expanding.
+- Don't add indirection that earns nothing.
 
 ## Verification (mandatory before completion)
 
 **Task SUCCESS CRITERIA are the minimum bar, not the full verification contract.** They are additive guidance from the planner — you must still satisfy the global rules below for every code-changing task. Treat any "when behavior changes" loophole as closed: if you touched source, tests, prompts, configs, or build wiring, you owe the full verification slice.
 
 - Every code-changing task must include implementation, focused tests, and verification inside the **same task**. Do not split implementation and tests into separate tasks unless the task is explicitly a final cross-cutting verification sweep.
+- When verifying a Task, check observable behavior end-to-end (what a user or caller can do and see), not internal wiring.
+- If a Task's core deliverable is test design/coverage or you must decide what to mock, see docs/goal-engine-guides/testing-guidance.md.
+- For a hard or intermittent failure, establish a fast, deterministic way to reproduce and check it before theorizing.
+- For hard or intermittent bugs, follow docs/goal-engine-guides/diagnosis-guide.md.
 - If logic changes, add or update tests in the same task and Run the smallest relevant test slice (for example, `pnpm vitest run <path>`).
 - If TypeScript source or tests changed, run `pnpm exec tsc -p tsconfig.json`.
 - If build or runtime wiring changed, run `pnpm build`.
@@ -73,7 +82,9 @@ Do not ralph with the same approach — explain what went wrong and what to do d
 - If verification fails, inspect the output, fix the implementation, and rerun the affected command. Do not mark the task complete until the modified behavior has been exercised end to end.
 - If an environment limitation blocks verification, report the exact command and the blocker rather than declaring success.
 
-**Gateway restart safety:** never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service` during goal execution. Ordinary non-SmithersBot workspaces must block and ask the operator if verification requires a gateway restart. Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`, preferably through the approved product path `node ./smithersbot.mjs dev-gateway restart|status|logs`. Raw broad `systemd`/`systemctl` control remains forbidden unless the existing approved safe path explicitly permits it.
+**Gateway restart safety:** never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service` during goal execution. Ordinary non-SmithersBot workspaces must block and ask the operator if verification requires a gateway restart. In the SmithersBot dev checkout, the first restart that loads newly built code into `smithersbot-dev-gateway.service` is a one-time HOST/OPERATOR action: `systemctl --user restart smithersbot-dev-gateway.service`. Workers must not run that raw command. A dev-owned worker must not be asked to synchronously restart its own controlling `smithersbot-dev-gateway.service` and then prove post-restart behavior in the same step; restart proof must be externalized to stable/operator orchestration, and post-restart evidence must come from a fresh dev-owned worker/artifact. Dev-owned workers may prove continuation/OODA UX, blocked/resume UX, mediated dev-gateway status/logs, clean blocker behavior, and post-restart behavior after an external restart. After the external restart has loaded the new build, only SmithersBot runtime changes in the SmithersBot dev checkout may inspect only `smithersbot-dev-gateway.service` through the mediated product path `node ./smithersbot.mjs dev-gateway restart|status|logs`; the product path exposes `restart|status|logs`, but same-gateway restart proof is not an in-goal survival criterion. Dev-gateway status/restart/logs are mediated host-control operations covered by `requiresDevGatewayControl`, not `requiresNetwork` or broad network access. Do not disable the sandbox, request no-sandbox or full-access danger modes, or use backend-specific sandbox escape settings for dev-gateway control. Do not claim live dev-gateway verification unless external restart orchestration or mediated status/logs evidence is present, as appropriate to the behavior under test. Raw broad `systemd`/`systemctl` control remains forbidden.
+
+**Dev-gateway harness proof:** after an external restart has loaded new code, use the trusted local RPC harness for supported Telegram-equivalent smoke flows instead of LLM chat or local in-process commands. `smithersbot harness command --instance dev /new_goal "<smoke goal>"` creates a dev-owned /new_goal run through the target gateway command path; `smithersbot harness command --instance dev /goal_status <runId>`, `smithersbot harness command --instance dev /goal_answer <runId> "<answer>"`, and `smithersbot harness command --instance dev /goal_resume <runId>` drive supported command follow-ups. Use `smithersbot harness callback --instance dev <action> <runId> [text...]` and `smithersbot harness reply --instance dev <kind> <runId> "<text>"` for supported continuation, Request Edit, Add Details, and resume flows. Ownership proof must distinguish dev-owned vs stable-owned and include the harness output fields: instance name, target gateway port, state root, and run.json path under the selected target state root for goal runs. Do not use `agent --message "/new_goal ..."` as dev-owned live proof because it sends chat text to the agent/LLM path. Do not use `goal "..."` as dev-owned live proof because it runs locally/in-process in the caller. Do not claim Telegram is required when `smithersbot harness` supports the needed flow; fall back to manual Telegram only when the harness lacks the exact operator surface and state what is missing.
 
 ## Working with the Codebase
 

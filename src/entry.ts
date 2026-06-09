@@ -49,7 +49,7 @@ function ensureExperimentalWarningSuppressed(): boolean {
 
   child.once("error", (error) => {
     console.error(
-      "[moltbot] Failed to respawn CLI:",
+      "[smithersbot] Failed to respawn CLI:",
       error instanceof Error ? (error.stack ?? error.message) : error,
     );
     process.exit(1);
@@ -124,7 +124,7 @@ if (!ensureExperimentalWarningSuppressed()) {
   const parsed = parseCliProfileArgs(process.argv);
   if (!parsed.ok) {
     // Keep it simple; Commander will handle rich help/errors after we strip flags.
-    console.error(`[moltbot] ${parsed.error}`);
+    console.error(`[smithersbot] ${parsed.error}`);
     process.exit(2);
   }
 
@@ -138,7 +138,7 @@ if (!ensureExperimentalWarningSuppressed()) {
     .then(({ runCli }) => runCli(process.argv))
     .catch((error) => {
       console.error(
-        "[moltbot] Failed to start CLI:",
+        "[smithersbot] Failed to start CLI:",
         error instanceof Error ? (error.stack ?? error.message) : error,
       );
       process.exitCode = 1;

@@ -4,13 +4,20 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { resolveScoutTemplatePath, SCOUT_PROMPT_TEMPLATE_FILE } from "./scout/loader.js";
-import { buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts } from "./planner/system-prompt.js";
+import {
+  DEV_GATEWAY_PLANNER_GUIDANCE,
+  buildPlanRevisionSystemPrompt,
+  buildPlanSystemPrompt as buildPlanSystemPromptFromPrompts,
+} from "./planner/system-prompt.js";
 import {
   DEV_GATEWAY_REVIEW_GUIDANCE,
   REVIEW_INSTRUCTION,
 } from "./plan-autocheck/review-instruction.js";
+import { PLAN_QUALITY_PRINCIPLES } from "./shared/plan-quality-principles.js";
 import { PLAN_QUALITY_RUBRIC } from "./shared/plan-quality-rubric.js";
+import { DEV_GATEWAY_SHARED_POLICY } from "./shared/dev-gateway-guidance.js";
 import { MANUAL_TESTS_SYSTEM_PROMPT } from "./manual-tests/system-prompt.js";
+import { CONTINUATION_SYSTEM_PROMPT } from "./continuation/system-prompt.js";
 import {
   WORKER_CONTEXT,
   WORKER_CLAUDE_CONTEXT,
@@ -105,6 +112,35 @@ describe("src/prompts/ — scout template", () => {
     expect(template).toContain("Agent-visible planning artifact directory:");
     expect(template).not.toContain(".clawdbot-dev/goals");
   });
+
+  it("requires resolved decisions and applicable branches in node specs", () => {
+    const template = fs.readFileSync(resolveScoutTemplatePath(), "utf8");
+    expect(template).toContain("Decisions / resolved unknowns:");
+    expect(template).toContain("Worker-facing approach:");
+    expect(template).toContain("Evidence for resolved conditionals:");
+    expect(template).toContain(
+      'If the user goal contains a conditional like "if a path/API/feature exists, use it; otherwise do X"',
+    );
+    expect(template).toContain("Write only the applicable branch into the node spec.");
+    expect(template).toContain(
+      "Do not forward unresolved conditionals to workers when the codebase can answer them.",
+    );
+    expect(template).toContain(
+      "Any root-cause summary finding that a node depends on must be copied into that node's spec.",
+    );
+  });
+
+  it("points the scout at GLOSSARY.md and requires first-creation Goal Brief Sources", () => {
+    const template = fs.readFileSync(resolveScoutTemplatePath(), "utf8");
+    // GLOSSARY pointer near the Goal/Plan/Observation-Point framing (linked, not inlined).
+    expect(template).toContain("GLOSSARY.md");
+    expect(template).toContain("do not introduce software-engineering synonyms");
+    // First-creation Goal Brief must populate Sources with a back-link to the scout report.
+    expect(template).toContain("the `Sources` section must not be left empty");
+    expect(template).toContain("{{OUTPUT_DIR}}/scout_report.json");
+    expect(template).toContain('"what it contributed"');
+    expect(template).toContain("Terms: see GLOSSARY.md");
+  });
 });
 
 describe("src/prompts/ — planner system prompt", () => {
@@ -128,8 +164,36 @@ describe("src/prompts/ — planner system prompt", () => {
     expect(prompt).not.toContain("full access to the filesystem");
   });
 
+  it("includes shared plan-quality principles without checker guide links", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(prompt).toContain(PLAN_QUALITY_PRINCIPLES);
+    expect(prompt).toContain("complete, independently-verifiable slice of the outcome");
+    expect(prompt).toContain("observable behavior end-to-end");
+    expect(prompt).toContain("don't add indirection that earns nothing");
+    expect(prompt).toContain("Consider an alternative approach before committing");
+    expect(prompt).toContain(
+      "For Plans whose purpose is fixing a hard or intermittent bug, scope an early Task that establishes a reproduction/verification signal before fixes.",
+    );
+    expect(prompt).not.toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(prompt).not.toContain("docs/goal-engine-guides/diagnosis-guide.md");
+    expect(prompt).not.toContain("ranked hypotheses");
+    expect(prompt).not.toContain("mock only at true");
+  });
+
   it("rejects an empty worker list", () => {
     expect(() => buildPlanSystemPromptFromPrompts([])).toThrow();
+  });
+
+  it("builds a stage-scoped revision prompt smaller than the full planning prompt", () => {
+    const fullPrompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    const revisionPrompt = buildPlanRevisionSystemPrompt(["claude_code", "codex"]);
+
+    expect(revisionPrompt).toContain("REVISION SCOPE");
+    expect(revisionPrompt).toContain("OUTPUT CONTRACT");
+    expect(revisionPrompt).toContain("Generate a revised plan");
+    expect(revisionPrompt).not.toContain("DOWNSTREAM AGENT CAPABILITIES");
+    expect(revisionPrompt).not.toContain("MANAGED WORKSPACE AND SECRET RULES");
+    expect(revisionPrompt.length).toBeLessThan(fullPrompt.length * 0.75);
   });
 });
 
@@ -158,6 +222,46 @@ describe("src/prompts/ — plan-autocheck review instruction", () => {
     }
     expect(REVIEW_INSTRUCTION).toContain(PLAN_QUALITY_RUBRIC);
   });
+
+  it("points the Checker at GLOSSARY.md for shared review terms", () => {
+    expect(REVIEW_INSTRUCTION).toContain("GLOSSARY.md");
+    expect(REVIEW_INSTRUCTION).toContain("Link GLOSSARY.md rather than restating its definitions");
+  });
+
+  it("includes shared plan-quality principles and checker guide links", () => {
+    expect(REVIEW_INSTRUCTION).toContain(PLAN_QUALITY_PRINCIPLES);
+    expect(REVIEW_INSTRUCTION).toContain("complete, independently-verifiable slice of the outcome");
+    expect(REVIEW_INSTRUCTION).toContain("observable behavior end-to-end");
+    expect(REVIEW_INSTRUCTION).toContain("don't add indirection that earns nothing");
+    expect(REVIEW_INSTRUCTION).toContain("Consider an alternative approach before committing");
+    expect(REVIEW_INSTRUCTION).toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(REVIEW_INSTRUCTION).toContain("docs/goal-engine-guides/diagnosis-guide.md");
+    expect(REVIEW_INSTRUCTION).not.toContain("ranked hypotheses");
+    expect(REVIEW_INSTRUCTION).not.toContain("mock only at true");
+  });
+});
+
+describe("src/prompts/ — continuation system prompt", () => {
+  it("points the Continuation assessor at GLOSSARY.md for shared terms", () => {
+    expect(CONTINUATION_SYSTEM_PROMPT).toContain("GLOSSARY.md");
+    expect(CONTINUATION_SYSTEM_PROMPT).toContain(
+      "link GLOSSARY.md rather than restating its definitions",
+    );
+  });
+
+  it("carries decision-readiness gate logic without test or diagnosis guide links", () => {
+    expect(CONTINUATION_SYSTEM_PROMPT).toContain(
+      "Only proceed to create a Plan when the goal is specific, measurable, and attainable; otherwise surface Decision(s) needed.",
+    );
+    expect(CONTINUATION_SYSTEM_PROMPT).toContain(
+      "If a question can be answered by exploring the codebase, explore instead of asking.",
+    );
+    expect(CONTINUATION_SYSTEM_PROMPT).toContain(
+      "Present all open Decisions in one message, each as multiple-choice with a recommended option.",
+    );
+    expect(CONTINUATION_SYSTEM_PROMPT).not.toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(CONTINUATION_SYSTEM_PROMPT).not.toContain("docs/goal-engine-guides/diagnosis-guide.md");
+  });
 });
 
 describe("src/prompts/ — planner system prompt (Stage 2Q self-verifying)", () => {
@@ -179,13 +283,51 @@ describe("src/prompts/ — planner system prompt (Stage 2Q self-verifying)", () 
     expect(prompt).toContain("Every implementation step names exact focused test command(s)");
   });
 
-  it("keeps only compact Stage 2P anti-pattern summaries in the planner prompt", () => {
+  it("keeps plan-quality anti-pattern text single-sourced through the shared rubric", () => {
     const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
-    expect(prompt).toContain("CONCISE ANTI-PATTERN REMINDERS");
     expect(prompt).toContain("Stage 2P under-tested split");
     expect(prompt).toContain("Stage 2P repo-chat split");
+    expect(prompt).toContain("GOAL-ECHO / RE-DELEGATED INVESTIGATION");
+    expect(prompt).toContain("FORK-SHAPED SUCCESS CRITERIA");
+    expect(prompt.match(/GOAL-ECHO \/ RE-DELEGATED INVESTIGATION/g) ?? []).toHaveLength(1);
+    expect(prompt.match(/FORK-SHAPED SUCCESS CRITERIA/g) ?? []).toHaveLength(1);
     expect(prompt).not.toContain("EXAMPLE — BAD PLAN B");
     expect(prompt).not.toContain("GOOD COMBINED VARIANT");
+  });
+
+  it("keeps duplicated anti-pattern labels to one occurrence per assembled prompt", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    for (const surface of [prompt, REVIEW_INSTRUCTION]) {
+      expect(surface.match(/GOAL-ECHO \/ RE-DELEGATED INVESTIGATION/g) ?? []).toHaveLength(1);
+      expect(surface.match(/FORK-SHAPED SUCCESS CRITERIA/g) ?? []).toHaveLength(1);
+    }
+  });
+
+  it("requires scout findings to be inlined instead of re-delegated", () => {
+    const prompt = buildPlanSystemPromptFromPrompts(["claude_code", "codex"]);
+    expect(PLAN_QUALITY_RUBRIC).toContain("GOAL-ECHO / RE-DELEGATED INVESTIGATION");
+    expect(PLAN_QUALITY_RUBRIC).toContain("FORK-SHAPED SUCCESS CRITERIA");
+    expect(REVIEW_INSTRUCTION.match(/GOAL-ECHO \/ RE-DELEGATED INVESTIGATION/g) ?? []).toHaveLength(
+      1,
+    );
+    expect(REVIEW_INSTRUCTION.match(/FORK-SHAPED SUCCESS CRITERIA/g) ?? []).toHaveLength(1);
+    expect(REVIEW_INSTRUCTION).toContain("scout_report, plan_draft, or node_specs");
+    expect(REVIEW_INSTRUCTION).toContain(
+      "If the scout resolved an unknown or conditional, reject steps that leave the value open",
+    );
+    expect(REVIEW_INSTRUCTION).toContain(
+      "Verification, restart, cleanup, or report leniency must not excuse punts",
+    );
+    expect(PLAN_QUALITY_RUBRIC).toContain(
+      "`Describe what to do, not low-level tool calls` does not mean deferring design, branch-selection, or investigation decisions to the worker.",
+    );
+    expect(PLAN_QUALITY_RUBRIC).toContain("Inline scout findings into worker-facing steps.");
+    expect(PLAN_QUALITY_RUBRIC).toContain(
+      "Worker tasks contain the decided approach and evidence path",
+    );
+    expect(prompt).toContain(
+      "inline scout findings and evidence paths instead of asking the worker to rediscover resolved design or investigation decisions",
+    );
   });
 });
 
@@ -305,7 +447,12 @@ describe("src/prompts/ — worker context", () => {
       "Gateway restart safety",
       "stable/default `smithersbot-gateway.service`",
       "Ordinary non-SmithersBot workspaces must block",
-      "Only for SmithersBot runtime changes in the SmithersBot dev checkout",
+      "one-time HOST/OPERATOR action",
+      "systemctl --user restart smithersbot-dev-gateway.service",
+      "Workers must not run that raw command",
+      "restart proof must be externalized to stable/operator orchestration",
+      "fresh dev-owned worker/artifact",
+      "Dev-owned workers may prove continuation/OODA UX, blocked/resume UX, mediated dev-gateway status/logs, clean blocker behavior, and post-restart behavior after an external restart.",
       "`smithersbot-dev-gateway.service`",
       "node ./smithersbot.mjs dev-gateway restart|status|logs",
       "Raw broad `systemd`/`systemctl` control remains forbidden",
@@ -334,19 +481,188 @@ describe("src/prompts/ — worker context", () => {
     expect(WORKER_CONTEXT).toContain(
       "never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service`",
     );
+    expect(WORKER_CONTEXT).toContain("one-time HOST/OPERATOR action");
+    expect(WORKER_CONTEXT).toContain("systemctl --user restart smithersbot-dev-gateway.service");
+    expect(WORKER_CONTEXT).toContain("Workers must not run that raw command");
     expect(WORKER_CONTEXT).toContain(
-      "Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`",
+      "restart proof must be externalized to stable/operator orchestration",
     );
+    expect(WORKER_CONTEXT).toContain("fresh dev-owned worker/artifact");
     expect(WORKER_CONTEXT).toContain("Ordinary non-SmithersBot workspaces must block");
     expect(WORKER_CONTEXT).not.toContain(
       "Do NOT restart the gateway service during goal execution",
     );
+    expect(WORKER_CONTEXT).not.toContain("approved path bootstrap");
+    expect(WORKER_CONTEXT).not.toContain("sandbox-disable bootstrap");
 
     expect(basePlannerPrompt).not.toContain("DEV GATEWAY VERIFICATION");
     expect(devPlannerPrompt).toContain("DEV GATEWAY VERIFICATION (SmithersBot dev checkout)");
-    expect(devPlannerPrompt).toContain("Workers may restart and inspect ONLY");
+    expect(devPlannerPrompt).toContain("one-time HOST/OPERATOR action");
+    expect(devPlannerPrompt).toContain("systemctl --user restart smithersbot-dev-gateway.service");
+    expect(devPlannerPrompt).toContain("Do not assign the raw systemctl restart command");
+    expect(devPlannerPrompt).toContain(
+      "Restart proof must be externalized to stable/operator orchestration",
+    );
+    expect(devPlannerPrompt).toContain("fresh dev-owned worker/artifact");
+    expect(devPlannerPrompt).toContain("continuation/OODA UX, blocked/resume UX");
+    expect(devPlannerPrompt).toContain(
+      "requiresDevGatewayControl for dev-gateway live-verification",
+    );
+    expect(devPlannerPrompt).toContain("after stable/operator orchestration loads the new build");
+    expect(devPlannerPrompt).toContain(
+      "Narrow bootstrap carve-out: infrastructure goals specifically building or fixing the planner/checker/harness/testing pipeline may rely on focused automated tests and no live dev-gateway restart",
+    );
+    expect(devPlannerPrompt).toContain("includes no requiresDevGatewayControl live step");
+    expect(devPlannerPrompt).toContain(
+      "explicitly defers live dev-gateway verification to a follow-up goal after the harness/checker fix exists",
+    );
+    expect(devPlannerPrompt).toContain(
+      "runs focused tests for the changed planning/checking/harness surfaces",
+    );
+    expect(devPlannerPrompt).toContain(
+      "does not modify runtime product behavior that it then claims is live-verified",
+    );
+    expect(devPlannerPrompt).toContain(
+      "do not force a dev-gateway live-verification step merely because workingDir is smithersbot-dev",
+    );
+    expect(devPlannerPrompt).toContain("not requiresNetwork");
+    expect(devPlannerPrompt).toContain("raw systemctl/journalctl");
+    expect(devPlannerPrompt).toContain("disable the sandbox");
+    expect(devPlannerPrompt).toContain("mediated status/logs evidence");
+    expect(devPlannerPrompt).toContain(
+      "Stable/operator external restart followed by fresh post-restart dev-owned evidence",
+    );
+    expect(devPlannerPrompt).toContain(
+      'smithersbot harness command --instance dev /new_goal "<smoke goal>"',
+    );
+    expect(devPlannerPrompt).toContain(
+      "smithersbot harness command --instance dev /goal_status <runId>",
+    );
+    expect(devPlannerPrompt).toContain(
+      'smithersbot harness command --instance dev /goal_answer <runId> "<answer>"',
+    );
+    expect(devPlannerPrompt).toContain(
+      "smithersbot harness command --instance dev /goal_resume <runId>",
+    );
+    expect(devPlannerPrompt).toContain(
+      "smithersbot harness callback --instance dev <action> <runId> [text...]",
+    );
+    expect(devPlannerPrompt).toContain(
+      'smithersbot harness reply --instance dev <kind> <runId> "<text>"',
+    );
+    expect(devPlannerPrompt).toContain(
+      "instance name, target gateway port, state root, and run.json path under the selected target state root",
+    );
+    expect(devPlannerPrompt).toContain("dev-owned vs stable-owned");
+    expect(devPlannerPrompt).toContain('agent --message "/new_goal ..."');
+    expect(devPlannerPrompt).toContain('goal "..."');
+    expect(devPlannerPrompt).toContain(
+      "Do not claim Telegram is required for flows already supported by `smithersbot harness`",
+    );
+    expect(devPlannerPrompt).not.toContain("approved path bootstrap");
+    expect(devPlannerPrompt).not.toContain("sandbox-disable bootstrap");
     expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("smithersbot-dev-gateway.service");
-    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("never the stable smithersbot-gateway.service");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("stable smithersbot-gateway.service");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("one-time HOST/OPERATOR action");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "Reject plans that assign the raw systemctl restart command to a worker",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("requiresDevGatewayControl");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("requiresDevGatewayControl=true");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "after stable/operator orchestration loads the new build",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("do not accept requiresNetwork as a proxy");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("raw systemctl/journalctl");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("dangerouslyDisableSandbox");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("no-sandbox/danger-full-access");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "Restart proof must be externalized to stable/operator orchestration",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("fresh dev-owned worker/artifact");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("mediated status/logs evidence");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "Narrow bootstrap carve-out: infrastructure goals specifically building or fixing the planner/checker/harness/testing pipeline may rely on focused automated tests and no live dev-gateway restart",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "includes no requiresDevGatewayControl live step",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "explicitly defers live dev-gateway verification to a follow-up goal after the harness/checker fix exists",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "runs focused tests for the changed planning/checking/harness surfaces",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "does not modify runtime product behavior that it then claims is live-verified",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "do not force a dev-gateway live-verification step merely because workingDir is smithersbot-dev",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "do not treat focused tests for changed planning/checking/harness surfaces as only build/lint",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "Do NOT reject stable/operator external restart followed by fresh post-restart dev-owned evidence",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "reject only dev-owned self-restart proof where the same requiresDevGatewayControl step performs the restart",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      'smithersbot harness command --instance dev /new_goal "<smoke goal>"',
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "smithersbot harness command --instance dev /goal_status <runId>",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      'smithersbot harness command --instance dev /goal_answer <runId> "<answer>"',
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "smithersbot harness command --instance dev /goal_resume <runId>",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "smithersbot harness callback --instance dev <action> <runId> [text...]",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      'smithersbot harness reply --instance dev <kind> <runId> "<text>"',
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "instance name, target gateway port, state root, and run.json path under the selected target state root",
+    );
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain("dev-owned vs stable-owned");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain('`agent --message "/new_goal ..."`');
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain('`goal "..."`');
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(
+      "Do not claim Telegram is required for flows already supported by `smithersbot harness`",
+    );
+    expect(WORKER_CONTEXT).toContain(
+      'smithersbot harness command --instance dev /new_goal "<smoke goal>"',
+    );
+    expect(WORKER_CONTEXT).toContain(
+      "smithersbot harness command --instance dev /goal_status <runId>",
+    );
+    expect(WORKER_CONTEXT).toContain(
+      'smithersbot harness command --instance dev /goal_answer <runId> "<answer>"',
+    );
+    expect(WORKER_CONTEXT).toContain(
+      "smithersbot harness command --instance dev /goal_resume <runId>",
+    );
+    expect(WORKER_CONTEXT).toContain(
+      "smithersbot harness callback --instance dev <action> <runId> [text...]",
+    );
+    expect(WORKER_CONTEXT).toContain(
+      'smithersbot harness reply --instance dev <kind> <runId> "<text>"',
+    );
+    expect(WORKER_CONTEXT).toContain(
+      "instance name, target gateway port, state root, and run.json path under the selected target state root",
+    );
+    expect(WORKER_CONTEXT).toContain("dev-owned vs stable-owned");
+    expect(WORKER_CONTEXT).toContain('agent --message "/new_goal ..."');
+    expect(WORKER_CONTEXT).toContain('goal "..."');
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).not.toContain("approved path bootstrap");
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).not.toContain("sandbox-disable bootstrap");
+    expect(DEV_GATEWAY_PLANNER_GUIDANCE).toContain(DEV_GATEWAY_SHARED_POLICY.split("\n")[0]);
+    expect(DEV_GATEWAY_REVIEW_GUIDANCE).toContain(DEV_GATEWAY_SHARED_POLICY.split("\n")[0]);
     expect(REVIEW_INSTRUCTION).not.toContain("smithersbot-dev-gateway.service");
 
     for (const prompt of prompts) {
@@ -542,6 +858,48 @@ describe("src/prompts/ — Untrusted Content Rule", () => {
   });
 });
 
+describe("src/prompts/ — worker verification prefix gating", () => {
+  it("trims the heavy verification block for docs-only worker tasks", () => {
+    const docsStep = makePromptTestStep({
+      id: "update-readme",
+      description: "Update README documentation for the new Goal Engine behavior.",
+      shortSummary: "Update README",
+      successCriteria: "README documents the final behavior.",
+    });
+    const prompt = buildCliWorkerPrompt({
+      step: docsStep,
+      plan: makePromptTestPlan(docsStep),
+      goal: "Update README documentation",
+      resultPath: "/tmp/worker_result.json",
+    });
+
+    expect(prompt).toContain("For documentation-only tasks");
+    expect(prompt).not.toContain(
+      "Before reporting completion, run the project's build and test commands",
+    );
+  });
+
+  it("keeps the full verification block for prompt/code worker tasks", () => {
+    const promptStep = makePromptTestStep({
+      id: "prompt-cleanup",
+      description: "Implement prompt assembly cleanup and add focused tests.",
+      shortSummary: "Clean prompt assembly",
+      successCriteria: "pnpm vitest run src/prompts/prompts.test.ts passes.",
+    });
+    const prompt = buildCliWorkerPrompt({
+      step: promptStep,
+      plan: makePromptTestPlan(promptStep),
+      goal: "Clean prompt assembly",
+      resultPath: "/tmp/worker_result.json",
+    });
+
+    expect(prompt).toContain(
+      "Before reporting completion, run the project's build and test commands",
+    );
+    expect(prompt).not.toContain("For documentation-only tasks");
+  });
+});
+
 describe("src/prompts/ — lessons", () => {
   it("buildLessonExtractionPrompt embeds run metadata", () => {
     const prompt = buildLessonExtractionPrompt({
@@ -577,6 +935,14 @@ describe("src/prompts/ — manual-tests system prompt", () => {
     expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("MANUAL verification tests");
   });
 
+  it("prefers observable behavior without reporter guide links", () => {
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain(
+      'Prefer Manual Tests that check observable behavior ("user can X and sees Y"), not internal structure; a good Manual Test survives an internal rewrite.',
+    );
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain("docs/goal-engine-guides/testing-guidance.md");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain("docs/goal-engine-guides/diagnosis-guide.md");
+  });
+
   it("points dev runtime verification at the dev gateway, not stable by default", () => {
     const forbiddenDevUnit = ["smithersbot", "gateway", "dev.service"].join("-");
     const stableRestartInstruction = [
@@ -585,10 +951,23 @@ describe("src/prompts/ — manual-tests system prompt", () => {
     ].join(" ");
 
     expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("smithersbot-dev-gateway.service");
-    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("node ./smithersbot.mjs dev-gateway restart");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain(
+      "mediated host-control via requiresDevGatewayControl",
+    );
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("mediated requiresDevGatewayControl status/logs");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain(
+      "restart proof must be externalized to stable/operator orchestration",
+    );
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("fresh post-restart dev-owned workers/artifacts");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain(
+      "do not add a manual test merely because mediation was unavailable",
+    );
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("raw systemctl/journalctl");
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("Disabling a worker sandbox");
     expect(MANUAL_TESTS_SYSTEM_PROMPT).toContain("stable smithersbot-gateway.service");
     expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain(stableRestartInstruction);
     expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain(forbiddenDevUnit);
+    expect(MANUAL_TESTS_SYSTEM_PROMPT).not.toContain("dangerouslyDisableSandbox");
   });
 });
 
@@ -809,6 +1188,7 @@ describe("src/prompts/ — Stage 2U-F: no .clawdbot-dev as an agent-facing targe
     { name: "worker payload (codex)", text: codexPayload.persistedPrompt },
     { name: "worker payload (claude_code)", text: claudePayload.persistedPrompt },
     { name: "manual-tests system prompt", text: MANUAL_TESTS_SYSTEM_PROMPT },
+    { name: "continuation system prompt", text: CONTINUATION_SYSTEM_PROMPT },
     {
       name: "lessons extraction prompt",
       text: buildLessonExtractionPrompt({

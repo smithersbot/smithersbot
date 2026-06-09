@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { mirrorRepoChatSessionToAgentHistory } from "../goal/agent-history.js";
 import { redactSecretValues } from "../security/secret-paths.js";
-import type { RepoChatMessageRef, RepoChatSession } from "./types.js";
+import type { RepoChatMessageRef, RepoChatReplyChunk, RepoChatSession } from "./types.js";
 
 const REPO_CHATS_DIRNAME = "repo-chats";
 const SESSION_FILENAME = "session.json";
@@ -43,6 +43,12 @@ function isRepoChatBackend(value: unknown): value is RepoChatSession["backend"] 
   return value === "codex" || value === "claude_code";
 }
 
+function isRepoChatReplyChunk(value: unknown): value is RepoChatReplyChunk {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.html === "string" && typeof record.text === "string";
+}
+
 function isRepoChatSession(value: unknown): value is RepoChatSession {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -56,7 +62,19 @@ function isRepoChatSession(value: unknown): value is RepoChatSession {
   if (typeof record.createdAt !== "string") return false;
   if (typeof record.updatedAt !== "string") return false;
   if (!Array.isArray(record.messageRefs)) return false;
-  return record.messageRefs.every((entry) => isRepoChatMessageRef(entry));
+  if (!record.messageRefs.every((entry) => isRepoChatMessageRef(entry))) return false;
+  if (record.overflowReplies != null) {
+    if (!Array.isArray(record.overflowReplies)) return false;
+    for (const entry of record.overflowReplies) {
+      if (!entry || typeof entry !== "object") return false;
+      const overflow = entry as Record<string, unknown>;
+      if (typeof overflow.id !== "string" || !overflow.id.trim()) return false;
+      if (typeof overflow.createdAt !== "string") return false;
+      if (!Array.isArray(overflow.chunks)) return false;
+      if (!overflow.chunks.every((chunk) => isRepoChatReplyChunk(chunk))) return false;
+    }
+  }
+  return true;
 }
 
 function atomicWriteJson(filePath: string, data: unknown): void {
@@ -79,6 +97,14 @@ function redactSession(session: RepoChatSession): RepoChatSession {
       session.cliSessionId == null ? undefined : redactSecretValues(session.cliSessionId),
     codexSandboxRunId:
       session.codexSandboxRunId == null ? undefined : redactSecretValues(session.codexSandboxRunId),
+    overflowReplies: session.overflowReplies?.map((overflow) => ({
+      ...overflow,
+      id: redactSecretValues(overflow.id),
+      chunks: overflow.chunks.map((chunk) => ({
+        html: redactSecretValues(chunk.html),
+        text: redactSecretValues(chunk.text),
+      })),
+    })),
   };
 }
 

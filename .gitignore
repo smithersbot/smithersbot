@@ -38,6 +38,7 @@ src/canvas-host/a2ui/*.map
 IDENTITY.md
 USER.md
 .tgz
+internal/
 
 # local tooling
 .serena/

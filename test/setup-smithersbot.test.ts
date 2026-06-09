@@ -1172,6 +1172,12 @@ exit 0
 
   it("defaults this checkout workspace name to the package name", async () => {
     const home = await mkTempHome();
+    // Option 1 clones this real checkout (which ships a pnpm-lock.yaml), so stub
+    // pnpm to keep the workspace dependency install fast and deterministic — the
+    // real install links ~950 packages and otherwise blows the test timeout.
+    const bin = path.join(home, "bin");
+    await fs.mkdir(bin);
+    await writePnpmRecorder(bin, { logPath: path.join(home, "pnpm.log") });
     const apiBase = await startTelegramStub((requestPath) => {
       if (requestPath.endsWith("/getMe")) return getMeSuccess;
       if (requestPath.endsWith("/getUpdates")) return getUpdatesPrivate;
@@ -1183,6 +1189,7 @@ exit 0
       apiBase,
       repoPromptInput: "1\n",
       input: `${testToken}\n\n`,
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}` },
     });
 
     expect(result.exitCode).toBe(0);

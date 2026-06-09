@@ -1,9 +1,8 @@
 #!/usr/bin/env tsx
 /**
- * Copy the shared worker contract and its backend mirrors from
- * src/goal/worker-context/ into dist/goal/worker-context/ so the compiled
- * runtime (src/prompts/worker/worker-context.ts) can resolve them at the same
- * relative location it uses in source.
+ * Copy the shared worker contract into its source mirrors and dist so the
+ * compiled runtime (src/prompts/worker/worker-context.ts) can resolve them at
+ * the same relative location it uses in source.
  */
 
 import fs from "node:fs";
@@ -13,7 +12,9 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 
-const FILES = ["shared-worker-contract.md", "AGENTS.md", "CLAUDE.md"];
+const SHARED_FILE = "shared-worker-contract.md";
+const MIRROR_FILES = ["AGENTS.md", "CLAUDE.md"];
+const FILES = [SHARED_FILE, ...MIRROR_FILES];
 
 const srcDir = path.join(projectRoot, "src", "goal", "worker-context");
 const distDir = path.join(projectRoot, "dist", "goal", "worker-context");
@@ -21,8 +22,17 @@ const distDir = path.join(projectRoot, "dist", "goal", "worker-context");
 function main(): void {
   fs.mkdirSync(distDir, { recursive: true });
 
-  let firstBody: string | undefined;
-  let mismatch = false;
+  const sharedPath = path.join(srcDir, SHARED_FILE);
+  if (!fs.existsSync(sharedPath)) {
+    console.warn("[copy-worker-contract] Source file not found:", sharedPath);
+    process.exitCode = 1;
+    return;
+  }
+  const sharedBody = fs.readFileSync(sharedPath);
+
+  for (const file of MIRROR_FILES) {
+    fs.writeFileSync(path.join(srcDir, file), sharedBody);
+  }
 
   for (const file of FILES) {
     const srcPath = path.join(srcDir, file);
@@ -32,20 +42,10 @@ function main(): void {
       return;
     }
     const buf = fs.readFileSync(srcPath);
-    const body = buf.toString("utf8");
-    if (firstBody === undefined) firstBody = body;
-    else if (body !== firstBody) mismatch = true;
     fs.writeFileSync(path.join(distDir, file), buf);
   }
 
-  if (mismatch) {
-    console.error(
-      "[copy-worker-contract] FATAL: shared-worker-contract.md, AGENTS.md, and CLAUDE.md must be byte-identical.",
-    );
-    process.exitCode = 1;
-  } else {
-    console.log("[copy-worker-contract] Copied worker contract files to dist/goal/worker-context/");
-  }
+  console.log("[copy-worker-contract] Synced worker contract mirrors and copied them to dist/goal/worker-context/");
 }
 
 main();
