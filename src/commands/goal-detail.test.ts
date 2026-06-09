@@ -30,6 +30,20 @@ function getStepLines(lines: string[]): string[] {
   return lines.filter((line) => line.startsWith("- "));
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function expectNoRawStepIdNodeTokens(mermaid: string, ids: readonly string[]): void {
+  for (const id of ids) {
+    const escaped = escapeRegExp(id);
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\[`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\s+-->`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`-->\\s+${escaped}\\s*$`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*class\\s+${escaped}\\s+`, "m"));
+  }
+}
+
 let testGoalsDir: string;
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
@@ -285,6 +299,38 @@ describe("goal-detail command", () => {
     expect(output).toContain("- 2. in_progress Generate schema");
     expect(output).toContain("- 3. blocked Apply migration");
     expect(output).toContain("- 4. pending Deploy service");
+  });
+
+  it("mermaid output uses safe node ids for unsafe raw step ids", async () => {
+    const runId = "detail-unsafe-ids";
+    const ids = ["build-api", "data.load", "ask:input", "docs/readme", "1-start"];
+    saveRunFixture({
+      ...sampleRun,
+      runId,
+      state: "executing",
+      plan: {
+        goal: "Build a widget",
+        workingDir: "/tmp",
+        summary: "Unsafe plan",
+        steps: [
+          { id: ids[0], description: "Build API", dependsOn: [], status: "done" },
+          { id: ids[1], description: "Load data", dependsOn: [ids[0]], status: "done" },
+          { id: ids[2], description: "Ask input", dependsOn: [ids[1]], status: "blocked" },
+          { id: ids[3], description: "Write docs", dependsOn: [ids[2]], status: "pending" },
+          { id: ids[4], description: "Numeric leading", dependsOn: [ids[3]], status: "pending" },
+        ],
+      },
+      stepResults: {},
+    });
+
+    const { goalDetailCommand } = await import("./goal-detail.js");
+    const rt = mockRuntime();
+    await goalDetailCommand(runId, { diagram: "mermaid" }, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("flowchart TD");
+    expect(output).toContain("n0 --> n1");
+    expect(output).toContain("class n2 blocked;");
+    expectNoRawStepIdNodeTokens(output, ids);
   });
 
   it("shows blocked details and answer hint while retaining full steps", async () => {

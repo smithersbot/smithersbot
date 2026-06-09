@@ -47,17 +47,39 @@ function renderTelegramHtml(ir: MarkdownIR): string {
   });
 }
 
+/**
+ * Collapse blank-line-heavy output into single newlines. Used by opt-in
+ * callers (e.g. the Goal Brief send path) that want compact sections without
+ * the paragraph-separator blank lines markdownToIR emits between blocks.
+ */
+function compactBlankLines(value: string): string {
+  return value.replace(/\n{2,}/g, "\n");
+}
+
+export type TelegramRenderOptions = {
+  tableMode?: MarkdownTableMode;
+  /**
+   * How to render markdown headings. Defaults to "none" (headings rendered as
+   * plain text) so existing callers are unchanged. "bold" wraps heading text in
+   * <b> for Telegram.
+   */
+  headingStyle?: "none" | "bold";
+  /** Collapse runs of blank lines into a single newline. Default false. */
+  compact?: boolean;
+};
+
 export function markdownToTelegramHtml(
   markdown: string,
-  options: { tableMode?: MarkdownTableMode } = {},
+  options: TelegramRenderOptions = {},
 ): string {
   const ir = markdownToIR(markdown ?? "", {
     linkify: true,
-    headingStyle: "none",
+    headingStyle: options.headingStyle ?? "none",
     blockquotePrefix: "",
     tableMode: options.tableMode,
   });
-  return renderTelegramHtml(ir);
+  const html = renderTelegramHtml(ir);
+  return options.compact ? compactBlankLines(html) : html;
 }
 
 export function renderTelegramHtmlText(
@@ -72,19 +94,22 @@ export function renderTelegramHtmlText(
 export function markdownToTelegramChunks(
   markdown: string,
   limit: number,
-  options: { tableMode?: MarkdownTableMode } = {},
+  options: TelegramRenderOptions = {},
 ): TelegramFormattedChunk[] {
   const ir = markdownToIR(markdown ?? "", {
     linkify: true,
-    headingStyle: "none",
+    headingStyle: options.headingStyle ?? "none",
     blockquotePrefix: "",
     tableMode: options.tableMode,
   });
   const chunks = chunkMarkdownIR(ir, limit);
-  return chunks.map((chunk) => ({
-    html: renderTelegramHtml(chunk),
-    text: chunk.text,
-  }));
+  return chunks.map((chunk) => {
+    const html = renderTelegramHtml(chunk);
+    return {
+      html: options.compact ? compactBlankLines(html) : html,
+      text: options.compact ? compactBlankLines(chunk.text) : chunk.text,
+    };
+  });
 }
 
 export function markdownToTelegramHtmlChunks(markdown: string, limit: number): string[] {

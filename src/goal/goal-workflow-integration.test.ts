@@ -1512,4 +1512,149 @@ describe("goal workflow integration tests", () => {
       expect(loadRun(runId)?.state).toBe("done");
     });
   });
+
+  // =========================================================================
+  // 17. Staged two-plan continuation (Stage 1 done, Stage 2 remaining)
+  // =========================================================================
+  describe("staged two-plan continuation", () => {
+    it("after Stage 1 completes, reports goal NOT achieved and surfaces a concrete Stage 2 proposal", async () => {
+      const { saveRun, loadRun } = await import("./run-store.js");
+      const { generateAndStoreContinuationProposal } = await import("./continuation.js");
+
+      const runId = "staged-two-plan";
+      const goal = [
+        "This goal has two stages.",
+        "Stage 1: create a file at test-workspace/goal1.txt with the exact text: goal 1 completed!",
+        "Stage 2: after Stage 1 is done, continue this same goal with another plan that creates",
+        "test-workspace/goal2.txt with the exact text: goal 2 completed!",
+        "IMPORTANT: the first plan must ONLY do Stage 1 and must NOT create goal2.txt.",
+      ].join(" ");
+
+      // The Goal Brief records that Stage 2 is still outstanding.
+      const briefPath = path.join(testGoalsDir, runId, "wiki", "goal-brief.md");
+      fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+      fs.writeFileSync(
+        briefPath,
+        [
+          "# Goal Brief",
+          "## Long Goal Summary",
+          "This goal has two stages; only Stage 1 has been executed so far.",
+          "## Remaining Work",
+          "Stage 2 remains: create goal2.txt in test-workspace with the exact text: goal 2 completed!",
+          "## Observation Point",
+          "After Stage 1, propose Plan 2 under the same Goal ID for Stage 2 only.",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // The latest Plan Report agrees: goal not achieved, another plan recommended.
+      const reportDir = path.join(testGoalsDir, runId, "report");
+      const reportPath = path.join(reportDir, "post-execution-report.md");
+      const reportJsonPath = path.join(reportDir, "post-execution-report.json");
+      fs.mkdirSync(reportDir, { recursive: true });
+      fs.writeFileSync(
+        reportPath,
+        [
+          "**Post-Execution Report:**",
+          "**Summary:** Stage 1 created goal1.txt only; goal2.txt was intentionally not created.",
+          "**Outcome:**",
+          "- Plan completed: Yes",
+          "- Goal appears achieved: No",
+          "- Another plan recommended: Yes",
+          "**Next Plan:** Create goal2.txt in test-workspace with the exact text: goal 2 completed!",
+          "**Proposed prompt:**",
+          "Create Plan 2 under the same Goal ID to do Stage 2 only: create goal2.txt with the exact text goal 2 completed!",
+        ].join("\n"),
+        "utf8",
+      );
+      fs.writeFileSync(reportJsonPath, "{}\n", "utf8");
+
+      // Plan 1: a single Stage 1 step. The worker creates goal1.txt only.
+      const step = makeStep({
+        id: "stage-1",
+        description: "Create test-workspace/goal1.txt with the exact text: goal 1 completed!",
+        backend: "claude_code",
+      });
+      const plan = { ...makePlan([step]), goal };
+      const session = makeSession(plan);
+
+      mockCliExecute.mockResolvedValueOnce({
+        status: "complete",
+        summary:
+          "Created test-workspace/goal1.txt with the exact text 'goal 1 completed!'. Did NOT create goal2.txt (Stage 2 not started).",
+        turnsUsed: 1,
+      });
+
+      const { executeGoalWithAgent } = await import("./agent-executor.js");
+      const outcome = await executeGoalWithAgent({
+        session,
+        runId,
+        workingDir: "/tmp/moltbot-goal-integration-test",
+      });
+
+      // Plan 1 completes with only the Stage 1 step done.
+      expect(outcome.status).toBe("done");
+      expect(step.status).toBe("done");
+      expect(mockCliExecute).toHaveBeenCalledOnce();
+
+      // Persist the completed run with the Goal Brief + Plan Report attached.
+      saveRun(
+        makeSerializedRun({
+          runId,
+          goal,
+          state: "done",
+          plan,
+          planNumber: 1,
+          planRevision: 1,
+          completionSummary: "Created goal1.txt only; Stage 2 (goal2.txt) still outstanding.",
+          goalBriefPath: briefPath,
+          postExecutionReportArtifacts: {
+            historyDir: reportDir,
+            markdownPath: reportPath,
+            jsonPath: reportJsonPath,
+          },
+        }),
+      );
+
+      // A backend that WRONGLY claims the goal is achieved must NOT win:
+      // stored Remaining Work / Plan Report evidence forces a Stage 2 continuation.
+      const client = {
+        complete: vi.fn(async () => ({
+          text: JSON.stringify({
+            outcome: "goal-achieved-no-continuation",
+            goalAchieved: true,
+            briefSummary: "Stage 2 was already created.",
+          }),
+        })),
+      };
+
+      const proposal = await generateAndStoreContinuationProposal({
+        runId,
+        goalsDir: testGoalsDir,
+        client,
+      });
+
+      expect(proposal).toBeDefined();
+      // Original goal is NOT achieved despite the hallucinating backend.
+      expect(proposal!.goalAchieved).toBe(false);
+      // Concrete Stage 2 Next Plan Summary.
+      expect(proposal!.briefSummary).toContain("goal2.txt");
+      expect(proposal!.briefSummary).toContain("goal 2 completed");
+      // Proposed prompt asks the planner to create Plan 2 for Stage 2 only, same Goal ID.
+      expect(proposal!.proposedPrompt).toContain("Stage 2");
+      expect(proposal!.proposedPrompt).toContain("goal 2 completed");
+      expect(proposal!.proposedPrompt).toContain("same Goal ID");
+      // No Stage 2 hallucination and no "merely validate Stage 1" degenerate proposal.
+      expect(proposal!.proposedPrompt).not.toMatch(
+        /already (?:created|done|complete)|validate Stage 1|verify Stage 1/i,
+      );
+      expect(proposal!.briefSummary).not.toMatch(/already (?:created|done|complete)/i);
+      // The proposal is anchored to Plan 1 under the same run.
+      expect(proposal!.fromPlanNumber).toBe(1);
+
+      const stored = loadRun(runId, testGoalsDir);
+      expect(stored?.pendingContinuation?.goalAchieved).toBe(false);
+      expect(stored?.pendingContinuation?.proposedPrompt).toContain("goal 2 completed");
+    });
+  });
 });

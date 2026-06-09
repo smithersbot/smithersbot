@@ -1,4 +1,5 @@
 import { note as clackNote } from "@clack/prompts";
+import { isJsonOutputMode } from "../globals.js";
 import { visibleWidth } from "./ansi.js";
 import { stylePromptTitle } from "./prompt-style.js";
 
@@ -85,5 +86,12 @@ export function wrapNoteMessage(
 }
 
 export function note(message: string, title?: string) {
-  clackNote(wrapNoteMessage(message), stylePromptTitle(title));
+  const wrapped = wrapNoteMessage(message);
+  const styledTitle = stylePromptTitle(title);
+  if (isJsonOutputMode()) {
+    const text = styledTitle ? `${styledTitle}\n${wrapped}` : wrapped;
+    process.stderr.write(`${text}\n`);
+    return;
+  }
+  clackNote(wrapped, styledTitle);
 }

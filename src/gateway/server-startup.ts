@@ -19,6 +19,7 @@ import type { loadMoltbotPlugins } from "../plugins/loader.js";
 import { type PluginServicesHandle, startPluginServices } from "../plugins/services.js";
 import { reconcileStaleRuns } from "../goal/run-store.js";
 import { startBrowserControlServerIfEnabled } from "./server-browser.js";
+import { startDevGatewayHostMediator } from "../goal/dev-gateway-mediation.js";
 import {
   scheduleRestartSentinelWake,
   shouldWakeFromRestartSentinel,
@@ -49,6 +50,13 @@ export async function startGatewaySidecars(params: {
   } catch (err) {
     params.log.warn(`goal startup sweep failed: ${String(err)}`);
   }
+
+  const devGatewayMediator = startDevGatewayHostMediator({
+    log: {
+      info: (msg) => params.log.info(msg),
+      warn: (msg) => params.log.warn(msg),
+    },
+  });
 
   // Start clawd browser control server (unless disabled via config).
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
@@ -168,5 +176,5 @@ export async function startGatewaySidecars(params: {
     }, 750);
   }
 
-  return { browserControl, pluginServices };
+  return { browserControl, pluginServices, devGatewayMediator };
 }

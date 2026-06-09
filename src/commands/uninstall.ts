@@ -82,10 +82,10 @@ async function stopAndUninstallService(runtime: RuntimeEnv): Promise<boolean> {
 
 async function removeMacApp(runtime: RuntimeEnv, dryRun?: boolean) {
   if (process.platform !== "darwin") return;
-  await removePath("/Applications/Moltbot.app", runtime, {
-    dryRun,
-    label: "/Applications/Moltbot.app",
-  });
+  // Current app bundle, plus the legacy Moltbot.app name so older installs are still cleaned.
+  for (const appPath of ["/Applications/SmithersBot.app", "/Applications/Moltbot.app"]) {
+    await removePath(appPath, runtime, { dryRun, label: appPath });
+  }
 }
 
 export async function uninstallCommand(runtime: RuntimeEnv, opts: UninstallOptions) {
@@ -116,7 +116,7 @@ export async function uninstallCommand(runtime: RuntimeEnv, opts: UninstallOptio
         {
           value: "app",
           label: "macOS app",
-          hint: "/Applications/Moltbot.app",
+          hint: "/Applications/SmithersBot.app",
         },
       ],
       initialValues: ["service", "state", "workspace"],

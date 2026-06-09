@@ -26,6 +26,7 @@ import { getChildLogger } from "../logging.js";
 import { resolveTelegramAccount } from "../telegram/accounts.js";
 import { createCaptureRuntime, handleGoal, sendGoalPlanResult } from "../telegram/goal-commands.js";
 import { CronService } from "./service.js";
+import type { Logger } from "tslog";
 
 export const NIGHTWATCH_DEFAULTS = {
   cronExpr: "0 3 * * *",
@@ -38,7 +39,12 @@ const NIGHTWATCH_SENTINEL_MESSAGE = "__nightwatch__";
 const LESSON_CONDENSE_TIMEOUT_MS = 120_000;
 const MAX_CONDENSED_LESSONS_PER_DIR = 25;
 const MAX_CONDENSED_GLOBAL_LESSONS = 25;
-const nightwatchLogger = getChildLogger({ module: "cron-nightwatch" });
+let nightwatchLogger: Logger<Record<string, unknown>> | null = null;
+
+function getNightwatchLogger(): Logger<Record<string, unknown>> {
+  nightwatchLogger ??= getChildLogger({ module: "cron-nightwatch" });
+  return nightwatchLogger;
+}
 
 export type NightwatchRunResult =
   | { status: "ok"; summary: string }
@@ -452,7 +458,7 @@ export async function pruneAndCondenseLessons(
           validIds,
         });
       } catch (err) {
-        nightwatchLogger.warn(
+        getNightwatchLogger().warn(
           {
             workingDir,
             error: err instanceof Error ? err.message : String(err),
@@ -470,7 +476,7 @@ export async function pruneAndCondenseLessons(
           validIds,
         });
       } catch (err) {
-        nightwatchLogger.warn(
+        getNightwatchLogger().warn(
           {
             workingDir,
             error: err instanceof Error ? err.message : String(err),
@@ -551,7 +557,7 @@ export async function pruneAndCondenseLessons(
     totalPruned += prunedCount;
     totalMerged += mergedCount;
 
-    nightwatchLogger.info(
+    getNightwatchLogger().info(
       {
         workingDir: groupResult.workingDir,
         before: groupResult.group.length,
@@ -564,7 +570,7 @@ export async function pruneAndCondenseLessons(
   }
 
   if (processedGroups > 0) {
-    nightwatchLogger.info(
+    getNightwatchLogger().info(
       {
         groups: processedGroups,
         pruned: totalPruned,
@@ -752,7 +758,7 @@ export async function runNightwatch(params: {
   try {
     await pruneAndCondenseLessons();
   } catch (err) {
-    nightwatchLogger.warn(
+    getNightwatchLogger().warn(
       { error: err instanceof Error ? err.message : String(err) },
       "nightwatch: lesson condensation failed",
     );

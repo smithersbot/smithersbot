@@ -26,6 +26,20 @@ function findLineIndex(lines: string[], prefix: string): number {
   return lines.findIndex((line) => line.startsWith(prefix));
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function expectNoRawStepIdNodeTokens(mermaid: string, ids: readonly string[]): void {
+  for (const id of ids) {
+    const escaped = escapeRegExp(id);
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\[`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*${escaped}\\s+-->`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`-->\\s+${escaped}\\s*$`, "m"));
+    expect(mermaid).not.toMatch(new RegExp(`^\\s*class\\s+${escaped}\\s+`, "m"));
+  }
+}
+
 let testGoalsDir: string;
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
@@ -76,6 +90,23 @@ function saveRunFixture(run: SerializedRun): void {
   saveRun({ ...run, plan: normalizedPlan });
 }
 
+function makeBlockedRunFixture(
+  runId: string,
+  blocked: NonNullable<SerializedRun["blocked"]>,
+): SerializedRun {
+  return {
+    ...sampleRun,
+    runId,
+    state: "blocked",
+    plan: {
+      ...sampleRun.plan!,
+      steps: sampleRun.plan!.steps.map((step) => ({ ...step, status: "pending" })),
+    },
+    stepResults: {},
+    blocked,
+  };
+}
+
 const sampleRun: SerializedRun = {
   runId: "status-test-aaaa",
   goal: "Build a widget",
@@ -121,11 +152,42 @@ describe("goal-status command", () => {
     const headlineIndex = findLineIndex(lines, "✅ Done: Widget plan");
     const progressIndex = findLineIndex(lines, "**Progress** 1/1");
     const retriesIndex = findLineIndex(lines, "**Retries** 0 retries");
+    const planIndex = findLineIndex(lines, "**Plan** Plan 1");
     const runIdIndex = findLineIndex(lines, "Run ID: status-test-aaaa");
     expect(headlineIndex).toBe(0);
     expect(progressIndex).toBeGreaterThan(headlineIndex);
     expect(retriesIndex).toBeGreaterThan(progressIndex);
-    expect(runIdIndex).toBeGreaterThan(retriesIndex);
+    expect(planIndex).toBeGreaterThan(retriesIndex);
+    expect(runIdIndex).toBeGreaterThan(planIndex);
+  });
+
+  it("labels status by user-visible planNumber and shows pending continuation banner", async () => {
+    saveRunFixture({
+      ...sampleRun,
+      runId: "status-plan-two",
+      state: "done",
+      planNumber: 2,
+      planRevision: 7,
+      pendingContinuation: {
+        proposalId: "proposal-status-1",
+        fromPlanNumber: 2,
+        fromRevision: 7,
+        goalAchieved: false,
+        briefSummary: "A follow-up plan is useful.",
+        proposedPrompt: "Make another plan for the next phase.",
+        runAt: "now",
+        status: "pending",
+        createdAt: "2026-01-30T00:02:00.000Z",
+      },
+    });
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand("status-plan-two", {}, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("**Plan** Plan 2");
+    expect(output).toContain("**Continuation** Pending next-plan prompt");
+    expect(output).not.toContain("Revision 7");
+    expect(output.toLowerCase()).not.toContain("cycle");
   });
 
   it("uses plan shortSummary for the status headline when present", async () => {
@@ -178,7 +240,39 @@ describe("goal-status command", () => {
     await goalStatusCommand(runId, { diagram: "mermaid" }, rt);
     const output = rt.logs.join("\n");
     expect(output).toContain("🛠");
-    expect(output).toContain("class 1 inprog;");
+    expect(output).toContain("class n0 inprog;");
+  });
+
+  it("mermaid output uses safe node ids for unsafe raw step ids", async () => {
+    const runId = "status-unsafe-ids";
+    const ids = ["build-api", "data.load", "ask:input", "docs/readme", "1-start"];
+    saveRunFixture({
+      ...sampleRun,
+      runId,
+      state: "executing",
+      plan: {
+        goal: "Build a widget",
+        workingDir: "/tmp",
+        summary: "Unsafe plan",
+        steps: [
+          { id: ids[0], description: "Build API", dependsOn: [], status: "done" },
+          { id: ids[1], description: "Load data", dependsOn: [ids[0]], status: "done" },
+          { id: ids[2], description: "Ask input", dependsOn: [ids[1]], status: "blocked" },
+          { id: ids[3], description: "Write docs", dependsOn: [ids[2]], status: "pending" },
+          { id: ids[4], description: "Numeric leading", dependsOn: [ids[3]], status: "pending" },
+        ],
+      },
+      stepResults: {},
+    });
+
+    const { goalStatusCommand } = await import("./goal-status.js");
+    const rt = mockRuntime();
+    await goalStatusCommand(runId, { diagram: "mermaid" }, rt);
+    const output = rt.logs.join("\n");
+    expect(output).toContain("flowchart TD");
+    expect(output).toContain("n0 --> n1");
+    expect(output).toContain("class n2 blocked;");
+    expectNoRawStepIdNodeTokens(output, ids);
   });
 
   it("--json outputs strict JSON object", async () => {
@@ -289,16 +383,13 @@ describe("goal-status command", () => {
   });
 
   it("text mode shows resume hint for auto-retry execution blocks", async () => {
-    saveRunFixture({
-      ...sampleRun,
-      runId: "blocked-resume-run",
-      state: "blocked",
-      blocked: {
+    saveRunFixture(
+      makeBlockedRunFixture("blocked-resume-run", {
         blockedAt: "execution",
         prompt: "Run interrupted, resume to continue.",
         requiredInputKey: "resume_execution",
-      },
-    });
+      }),
+    );
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("blocked-resume-run", {}, rt);
@@ -558,16 +649,13 @@ describe("goal-status command", () => {
   });
 
   it("actually usage-limit-blocked goal renders a clear usage-limit blocker", async () => {
-    saveRunFixture({
-      ...sampleRun,
-      runId: "blocked-usage-limit",
-      state: "blocked",
-      blocked: {
+    saveRunFixture(
+      makeBlockedRunFixture("blocked-usage-limit", {
         blockedAt: "execution",
         prompt: "You've hit your usage limit. Resume to retry once it resets.",
         requiredInputKey: "resume_execution",
-      },
-    });
+      }),
+    );
     const { goalStatusCommand } = await import("./goal-status.js");
     const rt = mockRuntime();
     await goalStatusCommand("blocked-usage-limit", {}, rt);

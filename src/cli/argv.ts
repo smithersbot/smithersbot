@@ -51,6 +51,16 @@ export function getVerboseFlag(argv: string[], options?: { includeDebug?: boolea
   return false;
 }
 
+export function hasJsonOutputFlag(argv: string[]): boolean {
+  return argv.some(
+    (arg, i) =>
+      arg === "--json" ||
+      arg.startsWith("--json=") ||
+      arg === "--output=json" ||
+      (arg === "--output" && argv[i + 1] === "json"),
+  );
+}
+
 export function getPositiveIntFlagValue(argv: string[], name: string): number | null | undefined {
   const raw = getFlagValue(argv, name);
   if (raw === null || raw === undefined) return raw;

@@ -100,4 +100,22 @@ describe("CliTaskRunner project conventions", () => {
     expect(executeTaskWithCliWorkerMock).toHaveBeenCalledTimes(1);
     expect(executeTaskWithCliWorkerMock.mock.calls[0]?.[0]?.projectConventions).toBeUndefined();
   });
+
+  it("propagates the CLI worker session id for post-execution resume", async () => {
+    executeTaskWithCliWorkerMock.mockResolvedValueOnce({
+      output: { status: "complete", summary: "done" },
+      turnsUsed: 1,
+      sessionId: "thread_123",
+      rawStdout: "",
+      rawStderr: "",
+    });
+
+    const runner = new CliTaskRunner({ backend: "codex" });
+    const result = await runner.execute(
+      makeContext(fs.mkdtempSync(path.join(os.tmpdir(), "cli-runner-session-"))),
+    );
+
+    expect(result.status).toBe("complete");
+    expect(result.executionSessionId).toBe("thread_123");
+  });
 });

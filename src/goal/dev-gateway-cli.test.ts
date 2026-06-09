@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the host/systemd layer so dispatch drives the genuine mediated operation
 // path (dispatch -> runDevGatewayCliAction -> executeDevGatewayOperation ->
@@ -69,6 +69,7 @@ function makeDispatchDeps(cliOverrides: Partial<DevGatewayCliDeps> = {}) {
   const cliDeps: Partial<DevGatewayCliDeps> = {
     resolveContext: () => activeDevContext(),
     cwd: () => "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+    env: {},
     log: (message) => logs.push(message),
     ...cliOverrides,
   };
@@ -127,6 +128,10 @@ describe("parse + match helpers", () => {
   });
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("dispatchDevGatewayCli", () => {
   beforeEach(() => {
     resetSystemdMock();
@@ -165,6 +170,122 @@ describe("dispatchDevGatewayCli", () => {
     const logs = makeDispatchDeps();
     await dispatchDevGatewayCli(argvFor("dev-gateway", "logs"), logs.deps);
     expect(systemdMock.readSystemdServiceRecentLogs).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses mediation from a sandboxed worker and never calls systemctl in-process", async () => {
+    const requestMediated = vi.fn(async () => ({
+      action: "logs" as const,
+      ok: true,
+      serviceUnit: DEV_UNIT,
+      devPort: 18790,
+      message: `Mediated logs completed for ${DEV_UNIT}.`,
+      stdout: "recent log line",
+      evidence: {
+        mediated: true as const,
+        responder: "smithersbot-dev-gateway" as const,
+        serviceUnit: DEV_UNIT,
+        action: "logs" as const,
+        completedAt: "2026-06-01T00:00:00.000Z",
+      },
+    }));
+    const { deps, logs, exits } = makeDispatchDeps({
+      env: {
+        SMITHERSBOT_GOAL_WORKER: "1",
+        SMITHERSBOT_GOAL_RUN_ID: "goal-1",
+        SMITHERSBOT_GOAL_TASK_ID: "task-logs",
+      } as NodeJS.ProcessEnv,
+      requestMediated,
+    });
+
+    expect(await dispatchDevGatewayCli(argvFor("dev-gateway", "logs"), deps)).toBe(true);
+
+    expect(requestMediated).toHaveBeenCalledWith({
+      action: "logs",
+      runId: "goal-1",
+      taskId: "task-logs",
+    });
+    expect(systemdMock.readSystemdServiceRecentLogs).not.toHaveBeenCalled();
+    expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
+    expect(systemdMock.restartSystemdService).not.toHaveBeenCalled();
+    expect(exits).toEqual([]);
+    expect(logs.join("\n")).toContain("Mediated logs completed");
+  });
+
+  it("reports unavailable mediation without leaking raw systemd stderr", async () => {
+    const requestMediated = vi.fn(async () => ({
+      action: "status" as const,
+      ok: false,
+      serviceUnit: DEV_UNIT,
+      devPort: 18790,
+      message: "Dev-gateway host mediation is unavailable: managed scratch root is not present.",
+      stderr: "[host-control unavailable]",
+      errorCode: "capability_blocked",
+    }));
+    const { deps, logs, errors, exits } = makeDispatchDeps({
+      env: {
+        SMITHERSBOT_GOAL_WORKER: "1",
+        SMITHERSBOT_GOAL_RUN_ID: "goal-1",
+        SMITHERSBOT_GOAL_TASK_ID: "task-status",
+      } as NodeJS.ProcessEnv,
+      requestMediated,
+    });
+
+    expect(await dispatchDevGatewayCli(argvFor("dev-gateway", "status", "--json"), deps)).toBe(
+      true,
+    );
+
+    expect(exits).toEqual([1]);
+    expect(errors.join("\n")).toContain("Dev-gateway host mediation is unavailable");
+    expect(`${logs.join("\n")}\n${errors.join("\n")}`).not.toMatch(
+      /Failed to connect to bus|D-Bus|systemctl --user|No data available/i,
+    );
+    expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
+  });
+
+  it("scrubs managed filesystem paths from mediated CLI output and errors", async () => {
+    const managedRoot = "/home/matt/smithersbot-home";
+    const rawPath = `${managedRoot}/scratch/goal-1/task-status/dev-gateway-control/request.json`;
+    const requestMediated = vi.fn(async () => ({
+      action: "status" as const,
+      ok: false,
+      serviceUnit: DEV_UNIT,
+      devPort: 18790,
+      message: `ENOENT: no such file or directory, open '${rawPath}'`,
+      stdout: `request path: ${rawPath}`,
+      stderr: `EROFS: read-only file system, mkdir '${rawPath}'`,
+      errorCode: "capability_blocked",
+    }));
+    const { deps, logs, errors, exits } = makeDispatchDeps({
+      env: {
+        SMITHERSBOT_GOAL_WORKER: "1",
+        SMITHERSBOT_GOAL_RUN_ID: "goal-1",
+        SMITHERSBOT_GOAL_TASK_ID: "task-status",
+        SMITHERSBOT_GOALS_ROOT: managedRoot,
+      } as NodeJS.ProcessEnv,
+      requestMediated,
+    });
+
+    expect(await dispatchDevGatewayCli(argvFor("dev-gateway", "status", "--json"), deps)).toBe(
+      true,
+    );
+
+    const combined = `${logs.join("\n")}\n${errors.join("\n")}`;
+    expect(exits).toEqual([1]);
+    expect(combined).toContain("[managed-path]");
+    expect(combined).not.toContain(rawPath);
+    expect(combined).not.toContain(`${managedRoot}/scratch`);
+    const output = JSON.parse(logs.join("\n")) as {
+      message: string;
+      stdout?: string;
+      stderr?: string;
+    };
+    expect(`${output.message}\n${output.stdout ?? ""}\n${output.stderr ?? ""}`).toContain(
+      "[managed-path]",
+    );
+    expect(`${output.message}\n${output.stdout ?? ""}\n${output.stderr ?? ""}`).not.toContain(
+      rawPath,
+    );
+    expect(systemdMock.readSystemdServiceActiveState).not.toHaveBeenCalled();
   });
 
   it("never reads stable config (~/.smithersbot/smithersbot.json) while dispatching", async () => {
@@ -235,6 +356,10 @@ describe("dev-gateway fast route (tryRouteCli)", () => {
   });
 
   it("dispatches status to the dev unit without reading stable config", async () => {
+    vi.stubEnv("SMITHERSBOT_GOAL_WORKER", undefined);
+    vi.stubEnv("SMITHERSBOT_GOAL_RUN_ID", undefined);
+    vi.stubEnv("SMITHERSBOT_GOAL_TASK_ID", undefined);
+
     const handled = await tryRouteCli(argvFor("dev-gateway", "status"));
     expect(handled).toBe(true);
     expect(systemdMock.readSystemdServiceActiveState).toHaveBeenCalledTimes(1);

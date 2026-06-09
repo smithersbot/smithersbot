@@ -5,23 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlanParseError } from "./planner.js";
 import {
   buildCachedScoutSummary,
+  buildAgentVisibleWikiDir,
   buildPlanningPrompt,
+  buildPlanRevisionPrompt,
   CLAUDE_ALLOWED_TOOLS,
   runCliPlanning,
   runCliPlanRevision,
   EXECUTION_PLAN_FILE,
+  GOAL_BRIEF_FILE,
 } from "./cli-planner.js";
 import { DEV_GATEWAY_PLANNER_GUIDANCE } from "../prompts/planner/system-prompt.js";
-import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import * as runtimeMirror from "./runtime-mirror.js";
-import { validateScoutOutput } from "./scout.js";
+import { SCOUT_NEEDS_DECISION_FILE, validateScoutOutput } from "./scout.js";
 import {
   NO_WORKER_BACKEND_ERROR,
   requireEffectiveEnabledWorkers,
   resolveDefaultPlanAutocheckMode,
   resolveEffectiveEnabledWorkers,
 } from "./effective-workers.js";
+import { resolveStoredGoalBriefPath } from "./goal-brief.js";
+import { PENDING_WORKSPACE_SLUG } from "./history-anchor.js";
+import type { Plan } from "./types.js";
 
 const mockRunCliProcess = vi.fn();
 vi.mock("./cli-process.js", () => ({
@@ -130,6 +135,31 @@ function expectForbiddenAgentEnvAbsent(env: Record<string, string | undefined>):
   for (const key of FORBIDDEN_AGENT_ENV_KEYS) {
     expect(env[key]).toBeUndefined();
   }
+}
+
+function sectionBetween(text: string, startMarker: string, endMarker: string): string {
+  const start = text.indexOf(startMarker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = text.indexOf(endMarker, start + startMarker.length);
+  expect(end).toBeGreaterThan(start);
+  return text.slice(start, end);
+}
+
+function expectComputerBasedCapabilityFraming(text: string): void {
+  expect(text).toContain("full user-requested outcome");
+  expect(text).toContain("broad, real-world, long-running");
+  expect(text).toContain("not fully observable by SmithersBot");
+  expect(text).toContain("do not shrink");
+  expect(text).toContain("only what SmithersBot can finish on a computer");
+  expect(text).toContain(
+    "computer-based work, including software, research, writing, analysis, automation, repo work, workflow automation, structured planning",
+  );
+}
+
+function expectNoSoftwareOnlyLimitingFraming(text: string): void {
+  expect(text).not.toMatch(
+    /autonomous coding agent|coding-agent|coding agent|software-only|software only|software tasks|coding tasks/i,
+  );
 }
 
 describe("CLAUDE_ALLOWED_TOOLS", () => {
@@ -242,7 +272,22 @@ describe("resolveDefaultPlanAutocheckMode", () => {
   });
 });
 
-function writeScoutArtifacts(scoutDir: string, goalId: string): void {
+function goalBriefPathForRun(runId: string): string {
+  return path.join(buildAgentVisibleWikiDir(runId, PENDING_WORKSPACE_SLUG), GOAL_BRIEF_FILE);
+}
+
+function writeGoalBriefForRun(runId: string, text = "# Goal Summary\n\nTest goal brief\n"): string {
+  const briefPath = goalBriefPathForRun(runId);
+  fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+  fs.writeFileSync(briefPath, text, "utf8");
+  return briefPath;
+}
+
+function writeScoutArtifacts(
+  scoutDir: string,
+  goalId: string,
+  options: { goalBrief?: boolean } = {},
+): void {
   fs.mkdirSync(path.join(scoutDir, "node_specs"), { recursive: true });
 
   fs.writeFileSync(
@@ -300,15 +345,39 @@ function writeScoutArtifacts(scoutDir: string, goalId: string): void {
     ].join("\n"),
     "utf8",
   );
+
+  if (options.goalBrief !== false) {
+    writeGoalBriefForRun(goalId);
+  }
+}
+
+function writeNeedsDecisionArtifact(
+  scoutDir: string,
+  decisions = [
+    {
+      id: "deployment-target",
+      question: "Which deployment target should this use?",
+      options: [
+        { key: "A", label: "Staging", recommended: true },
+        { key: "B", label: "Production" },
+      ],
+    },
+  ],
+): void {
+  fs.writeFileSync(
+    path.join(scoutDir, SCOUT_NEEDS_DECISION_FILE),
+    JSON.stringify({ version: 1, decisions }, null, 2),
+    "utf8",
+  );
 }
 
 function readPlannerHistoryEvents(
   runId: string,
-  workingDir = process.cwd(),
+  workspaceSlug = PENDING_WORKSPACE_SLUG,
 ): Record<string, unknown>[] {
   const eventsPath = resolveAgentHistoryEventsPath({
     kind: "goal",
-    workspaceName: workspaceNameFromWorkingDir(workingDir),
+    workspaceName: workspaceSlug,
     goalId: runId,
   });
   return fs
@@ -325,8 +394,24 @@ describe("buildPlanningPrompt dev-gateway guidance gating", () => {
   // never flips runtime instance config.
   const DEV_CWD = "/tmp/agent/workspaces/smithersbot-dev/repo";
   const NON_DEV_CWD = "/tmp/agent/workspaces/smithersbot/repo";
+  const DEV_CAPS_ENV = "SMITHERSBOT_DEV_CAPS";
 
-  function planOnlyPrompt(cwd: string): string {
+  function withDevCapsEnv<T>(value: string | undefined, fn: () => T): T {
+    const previous = process.env[DEV_CAPS_ENV];
+    if (value === undefined) delete process.env[DEV_CAPS_ENV];
+    else process.env[DEV_CAPS_ENV] = value;
+    try {
+      return fn();
+    } finally {
+      if (previous === undefined) delete process.env[DEV_CAPS_ENV];
+      else process.env[DEV_CAPS_ENV] = previous;
+    }
+  }
+
+  function planOnlyPrompt(
+    cwd: string,
+    goalConfig?: Parameters<typeof buildPlanningPrompt>[0]["goalConfig"],
+  ): string {
     return buildPlanningPrompt({
       runId: "run-dev-guidance",
       goalText: "Change gateway restart behavior",
@@ -334,15 +419,146 @@ describe("buildPlanningPrompt dev-gateway guidance gating", () => {
       scoutDir: "/tmp/unused-scout-dir",
       includeScoutArtifacts: false,
       enabledWorkers: ["claude_code", "codex"],
+      ...(goalConfig ? { goalConfig } : {}),
     });
   }
 
-  it("injects dev-gateway guidance for the smithersbot-dev checkout", () => {
-    expect(planOnlyPrompt(DEV_CWD)).toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+  function fullPlanningPrompt(
+    cwd: string,
+    goalConfig?: Parameters<typeof buildPlanningPrompt>[0]["goalConfig"],
+  ): string {
+    return buildPlanningPrompt({
+      runId: "run-dev-guidance",
+      goalText: "Change gateway restart behavior",
+      cwd,
+      scoutDir: "/tmp/unused-scout-dir",
+      includeScoutArtifacts: true,
+      enabledWorkers: ["claude_code", "codex"],
+      ...(goalConfig ? { goalConfig } : {}),
+    });
+  }
+
+  function revisionPrompt(
+    cwd: string,
+    goalConfig?: Parameters<typeof buildPlanRevisionPrompt>[0]["goalConfig"],
+  ): string {
+    const currentPlan: Plan = {
+      goal: "Change gateway restart behavior",
+      workingDir: cwd,
+      summary: "Current plan",
+      steps: [
+        {
+          id: "edit-restart",
+          description: "Update restart resolver and verify with a focused test",
+          dependsOn: [],
+          status: "pending",
+          durationMinutes: 10,
+          backend: "codex",
+        },
+      ],
+    };
+    return buildPlanRevisionPrompt({
+      goalText: "Change gateway restart behavior",
+      currentPlan,
+      cwd,
+      editInstructions: "Tighten the dev-gateway verification step",
+      enabledWorkers: ["claude_code", "codex"],
+      ...(goalConfig ? { goalConfig } : {}),
+    });
+  }
+
+  it("omits dev-gateway guidance for the smithersbot-dev checkout by default", () => {
+    expect(planOnlyPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    expect(fullPlanningPrompt(DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
   });
 
   it("omits dev-gateway guidance for non-dev checkouts", () => {
     expect(planOnlyPrompt(NON_DEV_CWD)).not.toContain("DEV GATEWAY VERIFICATION");
+  });
+
+  it("omits dev-gateway guidance when goal config turns dev capabilities off", () => {
+    expect(planOnlyPrompt(DEV_CWD, { devCapabilities: "off" })).not.toContain(
+      DEV_GATEWAY_PLANNER_GUIDANCE,
+    );
+    expect(fullPlanningPrompt(DEV_CWD, { devCapabilities: "off" })).not.toContain(
+      DEV_GATEWAY_PLANNER_GUIDANCE,
+    );
+  });
+
+  it("omits dev-gateway guidance when the env kill switch is off", () => {
+    withDevCapsEnv("off", () => {
+      expect(planOnlyPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+      expect(fullPlanningPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    });
+  });
+
+  it("applies default and off dev-gateway guidance gates to revision prompts", () => {
+    expect(revisionPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    expect(revisionPrompt(DEV_CWD, { devCapabilities: "off" })).not.toContain(
+      DEV_GATEWAY_PLANNER_GUIDANCE,
+    );
+    withDevCapsEnv("off", () => {
+      expect(revisionPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
+    });
+  });
+});
+
+describe("buildPlanningPrompt Goal-vs-Plan framing", () => {
+  it("preserves the full Goal while scoping only the first Plan to an Observation Point", () => {
+    const prompt = buildPlanningPrompt({
+      runId: "run-goal-plan-framing",
+      goalText:
+        "my goal is to start a business that makes $10m per year in revenue that I own the majority of",
+      cwd: "/tmp/workspaces/smithersbot/repo",
+      scoutDir: "/tmp/unused-scout-dir",
+      includeScoutArtifacts: true,
+      enabledWorkers: ["claude_code", "codex"],
+    });
+
+    const gateSection = sectionBetween(prompt, "### Needs Decision Gate", "### Goal Brief Phase");
+    const goalBriefSection = sectionBetween(prompt, "### Goal Brief Phase", "### Planner Phase");
+
+    expectComputerBasedCapabilityFraming(gateSection);
+    expect(gateSection).toContain(
+      "A Plan is bounded work SmithersBot can do now toward that Goal, stopping at an Observation Point.",
+    );
+    expect(gateSection).toContain("the first Plan toward the Goal");
+    expect(gateSection).toContain("choose or scope the first Plan");
+    expect(gateSection).toContain("ask what the first Plan should do");
+    expect(gateSection).toContain(
+      "time, market response, human action, external feedback, or real-world events",
+    );
+    expectNoSoftwareOnlyLimitingFraming(gateSection);
+
+    expect(goalBriefSection).toContain("Original User Ask");
+    expect(goalBriefSection).toContain("First Plan Intent");
+    expect(goalBriefSection).toContain(
+      "separate the full Goal from the First Plan Intent and Observation Point",
+    );
+    expect(goalBriefSection).toContain("preserve the full Goal in Original User Ask");
+    expect(goalBriefSection).toContain("Goal Summary is WHOLE-GOAL scoped");
+    expect(goalBriefSection).toContain("Plan Summary / First Plan Intent are plan-scoped");
+    expect(goalBriefSection).toContain("describe only the bounded first Plan");
+    expect(goalBriefSection).toContain(
+      "First Plan Intent must state what the first Plan should do",
+    );
+    expect(goalBriefSection).toContain("toward the full Goal");
+    expectNoSoftwareOnlyLimitingFraming(goalBriefSection);
+  });
+});
+
+describe("Needs Decision source cleanup", () => {
+  it("does not keep old scout/planner artifact or status references", () => {
+    const oldArtifact = ["plan", "needs", "clarification.md"].join("_");
+    const oldStatus = ["needs", "clarification"].join("_");
+    const sourceTexts = [
+      fs.readFileSync(new URL("./scout.ts", import.meta.url), "utf8"),
+      fs.readFileSync(new URL("./cli-planner.ts", import.meta.url), "utf8"),
+    ];
+    for (const sourceText of sourceTexts) {
+      expect(sourceText).not.toContain(oldArtifact);
+      expect(sourceText).not.toContain(oldStatus);
+    }
   });
 });
 
@@ -377,9 +593,7 @@ describe("runCliPlanning", () => {
     priorCodexSandboxRoot = process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT;
     priorClaudeSandboxSettingsRoot = process.env.SMITHERSBOT_CLAUDE_SANDBOX_SETTINGS_ROOT;
     managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-managed-"));
-    const hostTempRoot = process.env.CODEX_HOME
-      ? path.join(process.env.CODEX_HOME, "memories")
-      : os.tmpdir();
+    const hostTempRoot = path.join(os.tmpdir(), "cli-planner-host-temp");
     fs.mkdirSync(hostTempRoot, { recursive: true });
     codexSandboxRoot = fs.mkdtempSync(path.join(hostTempRoot, "cli-planner-codex-"));
     claudeSandboxSettingsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-planner-claude-"));
@@ -489,12 +703,34 @@ describe("runCliPlanning", () => {
       "Unified planning summary",
     );
     expect(fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))).toBe(true);
+    const goalBriefPath = path.join(
+      managedRoot,
+      "agent",
+      "history",
+      "goals",
+      PENDING_WORKSPACE_SLUG,
+      "run-success",
+      "wiki",
+      GOAL_BRIEF_FILE,
+    );
+    expect(fs.existsSync(goalBriefPath)).toBe(true);
+    expect(goalBriefPath).not.toContain(`${path.sep}runtime${path.sep}scout${path.sep}`);
+    if (result.status === "success") {
+      expect(result.goalBriefPath).toBe(goalBriefPath);
+      expect(
+        resolveStoredGoalBriefPath({
+          runId: "run-success",
+          workingDir: "/tmp/reassigned-after-planning",
+          goalBriefPath: result.goalBriefPath,
+        }),
+      ).toBe(goalBriefPath);
+    }
     const mirroredPlanPath = path.join(
       managedRoot,
       "agent",
       "history",
       "goals",
-      workspaceNameFromWorkingDir(process.cwd()),
+      PENDING_WORKSPACE_SLUG,
       "run-success",
       "runtime",
       "scout",
@@ -538,6 +774,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       fs.writeFileSync(String(params.stdoutPath), stdoutPlan, "utf8");
       fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeGoalBriefForRun("run-stdout-only-missing-scout");
       return {
         stdout: stdoutPlan,
         stderr: "",
@@ -580,6 +817,7 @@ describe("runCliPlanning", () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       fs.writeFileSync(String(params.stdoutPath), stdoutPlan, "utf8");
       fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeGoalBriefForRun("run-stdout-only-advisory");
       return {
         stdout: stdoutPlan,
         stderr: "",
@@ -705,6 +943,18 @@ describe("runCliPlanning", () => {
     expect(result.status).toBe("success");
     expect(result.scoutStatus).toBe("success");
     expect(result.scoutData).toEqual(scoutData);
+    if (result.status === "success") {
+      const briefPath = goalBriefPathForRun(runId);
+      expect(result.goalBriefPath).toBe(briefPath);
+      expect(fs.readFileSync(briefPath, "utf8").trim()).not.toBe("");
+      expect(
+        resolveStoredGoalBriefPath({
+          runId,
+          workingDir: "/tmp/final-planner-working-dir",
+          goalBriefPath: result.goalBriefPath,
+        }),
+      ).toBe(briefPath);
+    }
     expect(fs.existsSync(path.join(scoutDir, "scout_report.json"))).toBe(true);
     expect(fs.existsSync(path.join(scoutDir, "plan_draft.md"))).toBe(true);
     expect(fs.existsSync(path.join(scoutDir, "node_specs", "analyze-repo.md"))).toBe(true);
@@ -735,6 +985,157 @@ describe("runCliPlanning", () => {
       status: "error",
       error: "plan_draft.md not found",
     });
+  });
+
+  it("repairs a missing Goal Brief with the same backend before accepting a plan", async () => {
+    const runId = "run-missing-brief-repair-same";
+    const plan = {
+      summary: "Plan missing a brief",
+      workingDir: "/tmp/test-wd",
+      steps: [
+        {
+          id: "analyze-repo",
+          description: "Inspect repository files and verify with a targeted test run",
+          dependsOn: [],
+          durationMinutes: 20,
+          backend: "claude_code",
+        },
+      ],
+    };
+
+    mockRunCliProcess
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const scoutDir = path.dirname(String(params.stdoutPath));
+        writeScoutArtifacts(scoutDir, runId, { goalBrief: false });
+        fs.writeFileSync(path.join(scoutDir, EXECUTION_PLAN_FILE), JSON.stringify(plan), "utf8");
+        return {
+          stdout: JSON.stringify(plan),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 40,
+        };
+      })
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        expect(params.command).toBe("/usr/bin/claude");
+        const repairPrompt = String(params.stdin);
+        expect(repairPrompt).toContain("repairing a missing required Goal Brief");
+        expect(repairPrompt).toContain(`${path.join("wiki", GOAL_BRIEF_FILE)}`);
+        expectComputerBasedCapabilityFraming(repairPrompt);
+        expect(repairPrompt).toContain(
+          "A Plan is bounded work SmithersBot can do now toward that Goal, stopping at an Observation Point.",
+        );
+        expect(repairPrompt).toContain(
+          "time, market response, human action, external feedback, or real-world events",
+        );
+        expect(repairPrompt).toContain(
+          "separate the full Goal from the First Plan Intent and Observation Point",
+        );
+        expect(repairPrompt).toContain("preserve the full Goal in Original User Ask");
+        expect(repairPrompt).toContain("Goal Summary is WHOLE-GOAL scoped");
+        expect(repairPrompt).toContain("Plan Summary / First Plan Intent are plan-scoped");
+        expect(repairPrompt).toContain("describe only the bounded first Plan");
+        expect(repairPrompt).toContain(
+          "First Plan Intent must explain what the first Plan should do",
+        );
+        expect(repairPrompt).toContain("toward the full Goal");
+        const repairGuidance = sectionBetween(
+          repairPrompt,
+          "Use the same Goal-vs-Plan framing",
+          "GOAL_ID:",
+        );
+        expectNoSoftwareOnlyLimitingFraming(repairGuidance);
+        writeGoalBriefForRun(runId, "# Goal Summary\n\nRepaired brief\n");
+        return {
+          stdout: "created goal brief",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 12,
+        };
+      });
+
+    const result = await runCliPlanning({
+      runId,
+      goalText: "Create a plan that needs brief repair",
+      goalsDir,
+      enabledWorkers: ["claude_code"],
+    });
+
+    expect(result.status).toBe("success");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(goalBriefPathForRun(runId), "utf8")).toContain("Repaired brief");
+  });
+
+  it("falls back to the other backend when same-backend Goal Brief repair is usage-limited", async () => {
+    const runId = "run-missing-brief-repair-fallback";
+    const plan = {
+      summary: "Plan missing a brief before fallback repair",
+      workingDir: "/tmp/test-wd",
+      steps: [
+        {
+          id: "analyze-repo",
+          description: "Inspect repository files and verify with a targeted test run",
+          dependsOn: [],
+          durationMinutes: 20,
+          backend: "claude_code",
+        },
+      ],
+    };
+
+    mockRunCliProcess
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const scoutDir = path.dirname(String(params.stdoutPath));
+        writeScoutArtifacts(scoutDir, runId, { goalBrief: false });
+        fs.writeFileSync(path.join(scoutDir, EXECUTION_PLAN_FILE), JSON.stringify(plan), "utf8");
+        return {
+          stdout: JSON.stringify(plan),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 40,
+        };
+      })
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "monthly usage limit reached. Resets at 3pm.",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 8,
+      })
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        expect(params.command).toBe("codex");
+        const args = params.args as string[];
+        expect(args.at(-1)).toContain("repairing a missing required Goal Brief");
+        writeGoalBriefForRun(runId, "# Goal Summary\n\nFallback repaired brief\n");
+        return {
+          stdout: "created goal brief",
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 14,
+        };
+      });
+
+    const result = await runCliPlanning({
+      runId,
+      goalText: "Create a plan that needs fallback brief repair",
+      goalsDir,
+      enabledWorkers: ["claude_code", "codex"],
+    });
+
+    expect(result.status).toBe("success");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
+    expect((mockRunCliProcess.mock.calls[1]![0] as { command: string }).command).toBe(
+      "/usr/bin/claude",
+    );
+    expect((mockRunCliProcess.mock.calls[2]![0] as { command: string }).command).toBe("codex");
+    expect(fs.readFileSync(goalBriefPathForRun(runId), "utf8")).toContain("Fallback repaired");
   });
 
   it("keeps planning successful and writes a warning event when runtime mirroring fails", async () => {
@@ -783,12 +1184,14 @@ describe("runCliPlanning", () => {
     expect(result.status).toBe("success");
     expect(mirrorSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceName: workspaceNameFromWorkingDir(process.cwd()),
+        workspaceName: PENDING_WORKSPACE_SLUG,
         goalId: "run-mirror-warning",
         goalsDir,
       }),
     );
-    expect(readPlannerHistoryEvents("run-mirror-warning", process.cwd()).at(-1)).toMatchObject({
+    expect(
+      readPlannerHistoryEvents("run-mirror-warning", PENDING_WORKSPACE_SLUG).at(-1),
+    ).toMatchObject({
       event: "runtime_mirror_warning",
       phase: "planner",
       status: "warning",
@@ -824,13 +1227,22 @@ describe("runCliPlanning", () => {
 
     expect(summary).toContain("## Cached Scout Context");
     expect(summary).toContain("agent/history/goals/repo/run-summary/runtime/scout");
+    expect(summary).toContain("agent/history/goals/repo/run-summary/wiki/goal-brief.md");
+    expect(summary).not.toContain("{{WIKI_DIR}}");
     expect(summary).toContain("step-one (Impl)");
     expect(summary).toContain("step-one -> step-two: dependency");
+    expect(summary).toContain("Prior-version lineage (follow for history):");
+    expect(summary).toContain("Prior ScoutReport:");
+    expect(summary).toContain("Prior Goal Brief:");
+    expect(summary).toContain("What changed since the prior scout:");
+    expect(summary).toContain("Terms: see GLOSSARY.md");
   });
 
   it("writes agent-visible launch and prompt history before planner spawn and captures tokens", async () => {
     const previousToken = process.env.TELEGRAM_BOT_TOKEN;
     process.env.TELEGRAM_BOT_TOKEN = "FAKE_PLANNER_HISTORY_SECRET";
+    const gatewayCwd = path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
+    fs.mkdirSync(gatewayCwd, { recursive: true });
     try {
       mockDetectBackendAvailability.mockReturnValue([
         { id: "pi", available: true },
@@ -839,7 +1251,7 @@ describe("runCliPlanning", () => {
       ]);
       mockResolveClaudeBinary.mockReturnValue(null);
       mockRunCliProcess.mockImplementationOnce(async (params: Record<string, unknown>) => {
-        const events = readPlannerHistoryEvents("run-history-pre-spawn");
+        const events = readPlannerHistoryEvents("run-history-pre-spawn", "test-workspace");
         expect(events).toHaveLength(1);
         expect(events[0]).toMatchObject({
           event: "launch",
@@ -849,6 +1261,9 @@ describe("runCliPlanning", () => {
           status: "launching",
         });
         const promptArtifactPath = String(events[0]?.promptArtifactPath);
+        expect(promptArtifactPath).toContain(
+          path.join("history", "goals", "test-workspace", "run-history-pre-spawn", "prompts"),
+        );
         expect(fs.existsSync(promptArtifactPath)).toBe(true);
         const promptArtifact = fs.readFileSync(promptArtifactPath, "utf8");
         expect(promptArtifact).toContain("[REDACTED]");
@@ -891,12 +1306,14 @@ describe("runCliPlanning", () => {
         runId: "run-history-pre-spawn",
         goalText: "Goal has FAKE_PLANNER_HISTORY_SECRET",
         goalsDir,
+        cwd: gatewayCwd,
+        historyWorkspaceSlug: "test-workspace",
         includeScoutArtifacts: false,
         enabledWorkers: ["codex"],
       });
 
       expect(result.status).toBe("success");
-      const events = readPlannerHistoryEvents("run-history-pre-spawn");
+      const events = readPlannerHistoryEvents("run-history-pre-spawn", "test-workspace");
       expect(events.map((event) => event.event)).toEqual(["launch", "result"]);
       expect(events[1]).toMatchObject({
         event: "result",
@@ -912,6 +1329,15 @@ describe("runCliPlanning", () => {
         },
       });
       expect(JSON.stringify(events)).not.toContain("FAKE_PLANNER_HISTORY_SECRET");
+      expect(
+        fs.existsSync(
+          resolveAgentHistoryEventsPath({
+            kind: "goal",
+            workspaceName: "smithersbot-dev",
+            goalId: "run-history-pre-spawn",
+          }),
+        ),
+      ).toBe(false);
     } finally {
       if (previousToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
       else process.env.TELEGRAM_BOT_TOKEN = previousToken;
@@ -1010,7 +1436,7 @@ describe("runCliPlanning", () => {
           "agent",
           "history",
           "goals",
-          "repo",
+          PENDING_WORKSPACE_SLUG,
           "run-codex-scout-sandbox",
           "runtime",
           "scout",
@@ -1077,6 +1503,19 @@ describe("runCliPlanning", () => {
     expect(configToml).toContain(`${JSON.stringify(process.cwd())} = "read"`);
     expect(configToml).not.toContain(`${JSON.stringify(process.cwd())} = "write"`);
     expect(configToml).toContain(`${JSON.stringify(codexScoutDir)} = "write"`);
+    expect(configToml).toContain(
+      `${JSON.stringify(
+        path.join(
+          managedRoot,
+          "agent",
+          "history",
+          "goals",
+          PENDING_WORKSPACE_SLUG,
+          "run-codex-scout-sandbox",
+          "wiki",
+        ),
+      )} = "write"`,
+    );
   });
 
   it("launches Claude planning with generated read-only sandbox settings and scout-only writes", async () => {
@@ -1150,10 +1589,19 @@ describe("runCliPlanning", () => {
         "agent",
         "history",
         "goals",
-        "repo",
+        PENDING_WORKSPACE_SLUG,
         "run-claude-scout-sandbox",
         "runtime",
         "scout",
+      ),
+      path.join(
+        managedRoot,
+        "agent",
+        "history",
+        "goals",
+        PENDING_WORKSPACE_SLUG,
+        "run-claude-scout-sandbox",
+        "wiki",
       ),
     ]);
     expect(settings.sandbox.filesystem.allowWrite).not.toContain(process.cwd());
@@ -1348,19 +1796,52 @@ describe("runCliPlanning", () => {
     expect(prompt.indexOf("## Context")).toBeGreaterThan(
       prompt.indexOf("Respond ONLY with raw JSON"),
     );
-    expect(prompt).toContain("## Canonical Execution Plan Output");
+    expect(prompt).toContain("## Canonical Goal Brief and Execution Plan Output");
     expect(prompt).toContain("Match the stable planning schema above");
     expect(prompt).toContain("DAG dependencies");
     expect(prompt).toContain('backend: "claude_code"');
     expect(prompt).toContain("### Scout Phase");
+    expect(prompt).toContain("### Needs Decision Gate");
+    expect(prompt).toContain("### Goal Brief Phase");
     expect(prompt).toContain("### Planner Phase");
+    expect(prompt.indexOf("### Scout Phase")).toBeLessThan(
+      prompt.indexOf("### Needs Decision Gate"),
+    );
+    expect(prompt.indexOf("### Needs Decision Gate")).toBeLessThan(
+      prompt.indexOf("### Goal Brief Phase"),
+    );
+    expect(prompt.indexOf("### Goal Brief Phase")).toBeLessThan(
+      prompt.indexOf("### Planner Phase"),
+    );
+    expect(prompt).toContain(SCOUT_NEEDS_DECISION_FILE);
+    expect(prompt).toContain("Specific means");
+    expect(prompt).toContain("Measurable means");
+    expect(prompt).toContain("Attainable means");
+    expect(prompt).toContain("stop before goal-brief.md or execution_plan.json");
+    expect(prompt).toContain("Goal Summary (max 140 characters)");
+    expect(prompt).toContain("Goal Summary is WHOLE-GOAL scoped");
+    expect(prompt).toContain("Plan Summary / First Plan Intent are plan-scoped");
+    expect(prompt).toContain("Key Decision summaries");
+    expect(prompt).not.toContain("{{WIKI_DIR}}");
     expect(prompt).toContain(
       path.join(
         managedRoot,
         "agent",
         "history",
         "goals",
-        "repo",
+        PENDING_WORKSPACE_SLUG,
+        "run-scout-prefix",
+        "wiki",
+        "goal-brief.md",
+      ),
+    );
+    expect(prompt).toContain(
+      path.join(
+        managedRoot,
+        "agent",
+        "history",
+        "goals",
+        PENDING_WORKSPACE_SLUG,
         "run-scout-prefix",
         "runtime",
         "scout",
@@ -1381,7 +1862,7 @@ describe("runCliPlanning", () => {
       "agent",
       "history",
       "goals",
-      "repo",
+      PENDING_WORKSPACE_SLUG,
       runId,
       "runtime",
       "scout",
@@ -1642,17 +2123,13 @@ describe("runCliPlanning", () => {
     expect(firstStep.constraints).toEqual(["Do not narrow tsconfig include"]);
   });
 
-  it("returns blocked-at-planning when clarification artifact is produced", async () => {
+  it("returns blocked-at-planning with decisions when a decision artifact is produced", async () => {
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
       const scoutDir = path.dirname(String(params.stdoutPath));
       fs.mkdirSync(scoutDir, { recursive: true });
       fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
       fs.writeFileSync(String(params.stderrPath), "", "utf8");
-      fs.writeFileSync(
-        path.join(scoutDir, "plan_needs_clarification.md"),
-        "Which deployment target should this use?",
-        "utf8",
-      );
+      writeNeedsDecisionArtifact(scoutDir);
       return {
         stdout: '{"blocked":true,"question":"Which deployment target should this use?"}',
         stderr: "",
@@ -1671,19 +2148,94 @@ describe("runCliPlanning", () => {
 
     expect(result).toEqual({
       status: "blocked",
-      question: "Which deployment target should this use?",
-      scoutStatus: "needs_clarification",
+      question: [
+        "Decision(s) needed:",
+        "Decision 1. Which deployment target should this use?",
+        "(A) Staging (Recommended)",
+        "(B) Production",
+      ].join("\n"),
+      decisions: [
+        {
+          id: "deployment-target",
+          question: "Which deployment target should this use?",
+          options: [
+            { key: "A", label: "Staging", recommended: true },
+            { key: "B", label: "Production" },
+          ],
+        },
+      ],
+      scoutStatus: "needs_decision",
     });
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(goalBriefPathForRun("run-blocked"))).toBe(false);
 
     const attemptPath = path.join(goalsDir, "run-blocked", "scout", "attempt-1.json");
     const attempt = JSON.parse(fs.readFileSync(attemptPath, "utf8")) as Record<string, unknown>;
     expect(attempt.outcome).toBe("blocked");
-    expect(attempt.errorClassification).toBe("needs_clarification");
+    expect(attempt.errorClassification).toBe("needs_decision");
+  });
+
+  it("lets the decision gate block before accepting a plan artifact", async () => {
+    mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
+      const scoutDir = path.dirname(String(params.stdoutPath));
+      fs.mkdirSync(scoutDir, { recursive: true });
+      fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
+      fs.writeFileSync(String(params.stderrPath), "", "utf8");
+      writeNeedsDecisionArtifact(scoutDir, [
+        {
+          id: "success-boundary",
+          question: "What should count as a successful migration?",
+          options: [
+            { key: "A", label: "Typecheck and focused tests", recommended: true },
+            { key: "B", label: "Full deployment proof" },
+          ],
+        },
+      ]);
+      const prematurePlan = {
+        summary: "This plan should not be accepted",
+        workingDir: "/tmp/test-wd",
+        steps: [
+          {
+            id: "premature-plan",
+            description: "Do work before the user decision",
+            dependsOn: [],
+            durationMinutes: 10,
+            backend: "codex",
+          },
+        ],
+      };
+      fs.writeFileSync(
+        path.join(scoutDir, EXECUTION_PLAN_FILE),
+        JSON.stringify(prematurePlan, null, 2),
+        "utf8",
+      );
+      return {
+        stdout: JSON.stringify(prematurePlan),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 90,
+      };
+    });
+
+    const result = await runCliPlanning({
+      runId: "run-decision-beats-plan",
+      goalText: "Migrate this system",
+      goalsDir,
+    });
+
+    expect(result.status).toBe("blocked");
+    if (result.status === "blocked") {
+      expect(result.scoutStatus).toBe("needs_decision");
+      expect(result.question).toContain("What should count as a successful migration?");
+      expect(result.decisions?.[0]?.id).toBe("success-boundary");
+    }
   });
 
   it("honors stdout-only blocked JSON before scout artifact validation (no plan files)", async () => {
     // Reproduces the ordering bug: the planner deliberately blocked (e.g. an invalid
-    // observed-runtime workingDir) and wrote NO plan_draft.md / plan_needs_clarification.md.
+    // observed-runtime workingDir) and wrote NO plan_draft.md / decision artifact.
     // The blocked stdout response must be authoritative — not surfaced as the misleading
     // scout-artifact failure "Planning scout artifacts invalid: plan_draft.md not found".
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
@@ -1691,7 +2243,7 @@ describe("runCliPlanning", () => {
       fs.mkdirSync(scoutDir, { recursive: true });
       fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
       fs.writeFileSync(String(params.stderrPath), "", "utf8");
-      // Intentionally write NO plan_draft.md, plan_needs_clarification.md, or execution_plan.json.
+      // Intentionally write NO plan_draft.md, decision artifact, or execution_plan.json.
       return {
         stdout:
           '{"blocked":true,"question":"This workspace is an observed dev runtime surface and cannot be used as an executable working dir. Pick a managed workspace."}',
@@ -1712,7 +2264,7 @@ describe("runCliPlanning", () => {
     expect(result.status).toBe("blocked");
     if (result.status === "blocked") {
       expect(result.question).toContain("observed dev runtime surface");
-      // Clean actionable clarification — never the generic scout-artifact failure or
+      // Clean actionable decision prompt — never the generic scout-artifact failure or
       // the generic "Planning failed:" formatting.
       expect(result.question).not.toContain("plan_draft.md not found");
       expect(result.question).not.toContain("Planning scout artifacts invalid");
@@ -1724,13 +2276,13 @@ describe("runCliPlanning", () => {
     const scoutDir = path.join(goalsDir, "run-blocked-stdout-only", "scout");
     expect(fs.existsSync(path.join(scoutDir, EXECUTION_PLAN_FILE))).toBe(false);
 
-    // The attempt bundle records a blocked outcome routed through the needs-clarification
+    // The attempt bundle records a blocked outcome routed through the Needs Decision
     // transport, not a failed/validation outcome.
     const attempt = JSON.parse(
       fs.readFileSync(path.join(scoutDir, "attempt-1.json"), "utf8"),
     ) as Record<string, unknown>;
     expect(attempt.outcome).toBe("blocked");
-    expect(attempt.errorClassification).toBe("needs_clarification");
+    expect(attempt.errorClassification).toBe("needs_decision");
   });
 
   it("does not throw a generic planning failure for an intentional stdout-only block", async () => {
@@ -1759,8 +2311,8 @@ describe("runCliPlanning", () => {
     ).resolves.toMatchObject({ status: "blocked", scoutStatus: "skipped" });
   });
 
-  it("clears stale clarification artifacts before replanning the same run", async () => {
-    const runId = "run-replan-stale-clarification";
+  it("clears stale decision artifacts before replanning the same run", async () => {
+    const runId = "run-replan-stale-decision";
     let planningAttempt = 0;
 
     mockRunCliProcess.mockImplementation(async (params: Record<string, unknown>) => {
@@ -1770,11 +2322,7 @@ describe("runCliPlanning", () => {
 
       if (planningAttempt === 1) {
         fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
-        fs.writeFileSync(
-          path.join(scoutDir, "plan_needs_clarification.md"),
-          "Which deployment target should this use?",
-          "utf8",
-        );
+        writeNeedsDecisionArtifact(scoutDir);
         return {
           stdout: '{"blocked":true,"question":"Which deployment target should this use?"}',
           stderr: "",
@@ -1823,7 +2371,7 @@ describe("runCliPlanning", () => {
     expect(firstResult.status).toBe("blocked");
 
     const scoutDir = path.join(goalsDir, runId, "scout");
-    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(true);
+    expect(fs.existsSync(path.join(scoutDir, SCOUT_NEEDS_DECISION_FILE))).toBe(true);
 
     const secondResult = await runCliPlanning({
       runId,
@@ -1833,7 +2381,7 @@ describe("runCliPlanning", () => {
 
     expect(secondResult.status).toBe("success");
     expect(secondResult.scoutStatus).toBe("success");
-    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(false);
+    expect(fs.existsSync(path.join(scoutDir, SCOUT_NEEDS_DECISION_FILE))).toBe(false);
   });
 
   it("clears all stale artifact types (draft, report, node_specs, raw_output) before replanning", async () => {
@@ -1846,7 +2394,7 @@ describe("runCliPlanning", () => {
       fs.writeFileSync(String(params.stderrPath), "", "utf8");
 
       if (planningAttempt === 1) {
-        // First attempt: produce all artifacts plus a clarification file
+        // First attempt: produce all artifacts plus a decision file
         writeScoutArtifacts(scoutDir, runId);
         fs.writeFileSync(
           path.join(scoutDir, EXECUTION_PLAN_FILE),
@@ -1854,11 +2402,16 @@ describe("runCliPlanning", () => {
           "utf8",
         );
         fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
-        fs.writeFileSync(
-          path.join(scoutDir, "plan_needs_clarification.md"),
-          "Which DB should we use?",
-          "utf8",
-        );
+        writeNeedsDecisionArtifact(scoutDir, [
+          {
+            id: "database-target",
+            question: "Which DB should we use?",
+            options: [
+              { key: "A", label: "SQLite", recommended: true },
+              { key: "B", label: "Postgres" },
+            ],
+          },
+        ]);
         return {
           stdout: '{"blocked":true,"question":"Which DB should we use?"}',
           stderr: "",
@@ -1872,7 +2425,7 @@ describe("runCliPlanning", () => {
       // Second attempt: verify stale artifacts were removed before we run
       // If clearStalePlanningArtifacts works, these should NOT exist at this point
       const staleFiles = [
-        "plan_needs_clarification.md",
+        SCOUT_NEEDS_DECISION_FILE,
         "plan_draft.md",
         "scout_report.json",
         EXECUTION_PLAN_FILE,
@@ -1885,6 +2438,9 @@ describe("runCliPlanning", () => {
       }
       if (fs.existsSync(staleNodeSpecs) && fs.readdirSync(staleNodeSpecs).length > 0) {
         throw new Error("Stale node_specs/ directory was not cleared");
+      }
+      if (fs.existsSync(goalBriefPathForRun(runId))) {
+        throw new Error("Stale goal-brief.md was not cleared");
       }
 
       // Produce fresh success artifacts
@@ -1928,7 +2484,7 @@ describe("runCliPlanning", () => {
     }
   });
 
-  it("handles triple replan: clarification → clarification → success", async () => {
+  it("handles triple replan: decision → decision → success", async () => {
     const runId = "run-triple-replan";
     let planningAttempt = 0;
 
@@ -1941,7 +2497,16 @@ describe("runCliPlanning", () => {
         const question =
           planningAttempt === 1 ? "Which framework should we use?" : "Which deployment target?";
         fs.writeFileSync(String(params.stdoutPath), "blocked", "utf8");
-        fs.writeFileSync(path.join(scoutDir, "plan_needs_clarification.md"), question, "utf8");
+        writeNeedsDecisionArtifact(scoutDir, [
+          {
+            id: planningAttempt === 1 ? "framework-choice" : "deployment-target",
+            question,
+            options: [
+              { key: "A", label: "Recommended path", recommended: true },
+              { key: "B", label: "Alternative path" },
+            ],
+          },
+        ]);
         return {
           stdout: JSON.stringify({ blocked: true, question }),
           stderr: "",
@@ -1954,7 +2519,7 @@ describe("runCliPlanning", () => {
 
       // Third attempt: success
       const successPlan = {
-        summary: "Final plan after two clarifications",
+        summary: "Final plan after two decisions",
         workingDir: "/tmp/test-wd",
         steps: [
           {
@@ -1987,26 +2552,28 @@ describe("runCliPlanning", () => {
     const r1 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
     expect(r1.status).toBe("blocked");
     if (r1.status === "blocked") {
-      expect(r1.question).toBe("Which framework should we use?");
+      expect(r1.question).toContain("Decision 1. Which framework should we use?");
+      expect(r1.decisions?.[0]?.id).toBe("framework-choice");
     }
 
     // Second planning attempt → blocked again (different question)
     const r2 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
     expect(r2.status).toBe("blocked");
     if (r2.status === "blocked") {
-      expect(r2.question).toBe("Which deployment target?");
+      expect(r2.question).toContain("Decision 1. Which deployment target?");
+      expect(r2.decisions?.[0]?.id).toBe("deployment-target");
     }
 
-    // Third planning attempt → success (stale clarification from r2 is cleared)
+    // Third planning attempt → success (stale decision from r2 is cleared)
     const r3 = await runCliPlanning({ runId, goalText: "Deploy app", goalsDir });
     expect(r3.status).toBe("success");
     if (r3.status === "success") {
-      expect(r3.plan.summary).toBe("Final plan after two clarifications");
+      expect(r3.plan.summary).toBe("Final plan after two decisions");
     }
 
-    // Verify no stale clarification file remains
+    // Verify no stale decision file remains
     const scoutDir = path.join(goalsDir, runId, "scout");
-    expect(fs.existsSync(path.join(scoutDir, "plan_needs_clarification.md"))).toBe(false);
+    expect(fs.existsSync(path.join(scoutDir, SCOUT_NEEDS_DECISION_FILE))).toBe(false);
   });
 
   it("throws PlanParseError when planner output is invalid and still writes diagnostics", async () => {
@@ -2445,7 +3012,7 @@ describe("runCliPlanning", () => {
     expect(firstCall.command).toBe("/usr/bin/claude");
     expect(secondCall.command).toBe("codex");
 
-    const events = readPlannerHistoryEvents("run-fallback");
+    const events = readPlannerHistoryEvents("run-fallback", PENDING_WORKSPACE_SLUG);
     expect(events.map((event) => event.event)).toEqual([
       "launch",
       "failure",
@@ -2472,6 +3039,66 @@ describe("runCliPlanning", () => {
     });
   });
 
+  it("falls back to the other backend on a non-zero planning subprocess crash", async () => {
+    const runId = "run-generic-crash-fallback";
+    mockRunCliProcess
+      .mockResolvedValueOnce({
+        stdout: "",
+        stderr: "segmentation fault while planning",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 11,
+      })
+      .mockImplementationOnce(async (params: Record<string, unknown>) => {
+        const scoutDir = path.dirname(String(params.stdoutPath));
+        const plan = {
+          summary: "Recovered after generic crash",
+          workingDir: "/tmp/test-wd",
+          steps: [
+            {
+              id: "analyze-repo",
+              description: "Inspect repository files and verify with a targeted test run",
+              dependsOn: [],
+              durationMinutes: 20,
+              backend: "codex",
+            },
+          ],
+        };
+        writeScoutArtifacts(scoutDir, runId);
+        fs.writeFileSync(path.join(scoutDir, EXECUTION_PLAN_FILE), JSON.stringify(plan), "utf8");
+        return {
+          stdout: JSON.stringify(plan),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 30,
+        };
+      });
+
+    const result = await runCliPlanning({
+      runId,
+      goalText: "Recover from a planner crash",
+      goalsDir,
+      enabledWorkers: ["claude_code", "codex"],
+    });
+
+    expect(result.status).toBe("success");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect((mockRunCliProcess.mock.calls[0]![0] as { command: string }).command).toBe(
+      "/usr/bin/claude",
+    );
+    expect((mockRunCliProcess.mock.calls[1]![0] as { command: string }).command).toBe("codex");
+
+    const events = readPlannerHistoryEvents(runId);
+    expect(events.find((event) => event.event === "fallback")).toMatchObject({
+      backend: "claude_code",
+      status: "crash",
+      fallbackBackend: "codex",
+    });
+  });
+
   it("copies codex fallback scout artifacts from writable temp dir into canonical scout dir", async () => {
     mockRunCliProcess
       .mockResolvedValueOnce({
@@ -2494,7 +3121,7 @@ describe("runCliPlanning", () => {
             "agent",
             "history",
             "goals",
-            "repo",
+            PENDING_WORKSPACE_SLUG,
             "run-codex-copy",
             "runtime",
             "scout",

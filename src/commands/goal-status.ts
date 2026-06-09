@@ -150,6 +150,16 @@ function buildDoneStatusLines(run: SerializedRun): string[] {
   return lines;
 }
 
+function buildPlanNumberLine(run: SerializedRun): string | undefined {
+  if (!run.plan) return undefined;
+  return `**Plan** Plan ${run.planNumber ?? 1}`;
+}
+
+function buildPendingContinuationLine(run: SerializedRun): string | undefined {
+  if (!run.pendingContinuation) return undefined;
+  return "**Continuation** Pending next-plan prompt";
+}
+
 function fitLinesToBudget(lines: string[], maxLines: number): string[] {
   if (maxLines <= 0) return [];
   if (lines.length <= maxLines) return lines;
@@ -189,6 +199,14 @@ function renderStatusSummary(run: SerializedRun, opts: GoalStatusOptions): strin
   });
 
   const lines = [...compact.lines];
+  const planNumberLine = buildPlanNumberLine(run);
+  if (planNumberLine) {
+    lines.push(planNumberLine);
+  }
+  const pendingContinuationLine = buildPendingContinuationLine(run);
+  if (pendingContinuationLine) {
+    lines.push(pendingContinuationLine);
+  }
   lines.push(...buildDoneStatusLines(run));
   if (channel === "cli") {
     lines.push(`Run ID: ${run.runId}`);

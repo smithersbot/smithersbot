@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dispatchTelegramRepoChatForInboundTextMock = vi.hoisted(() => vi.fn());
+const handleRepoChatShowMoreCallbackMock = vi.hoisted(() => vi.fn());
+const isRepoChatShowMoreCallbackMock = vi.hoisted(() => vi.fn());
 const findRepoChatSessionByMessageIdMock = vi.hoisted(() => vi.fn());
 const applyGoalResumeNoteByIdMock = vi.hoisted(() => vi.fn());
 const routeTelegramTextMock = vi.hoisted(() => vi.fn());
@@ -8,6 +10,9 @@ const routeTelegramTextMock = vi.hoisted(() => vi.fn());
 vi.mock("./repo-chat-commands.js", () => ({
   dispatchTelegramRepoChatForInboundText: (...args: unknown[]) =>
     dispatchTelegramRepoChatForInboundTextMock(...args),
+  handleRepoChatShowMoreCallback: (...args: unknown[]) =>
+    handleRepoChatShowMoreCallbackMock(...args),
+  isRepoChatShowMoreCallback: (...args: unknown[]) => isRepoChatShowMoreCallbackMock(...args),
 }));
 
 vi.mock("../repo-chat/repo-chat-store.js", async (importOriginal) => {
@@ -42,6 +47,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   applyGoalResumeNoteByIdMock.mockReturnValue({ message: "Router result" });
   dispatchTelegramRepoChatForInboundTextMock.mockReturnValue(true);
+  handleRepoChatShowMoreCallbackMock.mockResolvedValue(true);
+  isRepoChatShowMoreCallbackMock.mockImplementation(
+    (data: string) => typeof data === "string" && data.startsWith("rcm:"),
+  );
   findRepoChatSessionByMessageIdMock.mockReturnValue(undefined);
   routeTelegramTextMock.mockReturnValue({ kind: "CHAT" });
 });
@@ -191,6 +200,81 @@ describe("registerTelegramHandlers repo-chat routing", () => {
     }
     return { bot, messageHandler };
   }
+
+  it("routes repo-chat Show More callbacks to the overflow callback handler", async () => {
+    const callbackHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const bot = {
+      on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
+        callbackHandlers.set(event, handler);
+      }),
+      api: {
+        answerCallbackQuery: vi.fn(async () => undefined),
+        editMessageText: vi.fn(async () => ({ message_id: 1 })),
+        sendMessage: vi.fn(async () => ({ message_id: 2 })),
+        setMessageReaction: vi.fn(async () => undefined),
+      },
+    };
+
+    registerTelegramHandlers({
+      cfg: { goal: { claudeCodeAuth: "subscription" } },
+      accountId: "telegram-account",
+      bot: bot as never,
+      opts: { token: "token" },
+      runtime: {
+        log: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      } as never,
+      mediaMaxBytes: 8 * 1024 * 1024,
+      telegramCfg: {
+        repoChatBackend: "claude_code",
+        dmPolicy: "open",
+        chatMode: "chat",
+      } as never,
+      allowFrom: [],
+      groupAllowFrom: [],
+      resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
+      resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
+      shouldSkipUpdate: () => false,
+      processMessage: vi.fn(async () => undefined),
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+      } as never,
+    });
+
+    const callbackHandler = callbackHandlers.get("callback_query");
+    expect(callbackHandler).toBeTypeOf("function");
+    if (!callbackHandler) {
+      throw new Error("Expected Telegram callback handler to be registered");
+    }
+
+    await callbackHandler({
+      callbackQuery: {
+        id: "callback-1",
+        data: "rcm:repo-chat-session:overflow-id:0",
+        from: { id: 99, username: "tester" },
+        message: {
+          chat: { id: 42, type: "private" },
+          message_id: 777,
+          date: 1,
+        },
+      },
+    });
+
+    expect(bot.api.answerCallbackQuery).toHaveBeenCalledWith("callback-1");
+    expect(handleRepoChatShowMoreCallbackMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bot,
+        chatId: 42,
+        data: "rcm:repo-chat-session:overflow-id:0",
+        replyToMessageId: 777,
+      }),
+    );
+    expect(routeTelegramTextMock).not.toHaveBeenCalled();
+    expect(dispatchTelegramRepoChatForInboundTextMock).not.toHaveBeenCalled();
+  });
 
   function makeTextMessage(text: string, messageId: number, replyToMessageId?: number) {
     return {

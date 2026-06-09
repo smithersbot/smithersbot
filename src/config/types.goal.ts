@@ -3,6 +3,7 @@ export type PlanAutocheckMode = "codex" | "claude_code" | "off";
 export type SemgrepMode = "off" | "step" | "goal";
 export type CliWorkerId = "codex" | "claude_code";
 export type EnabledWorkers = CliWorkerId[];
+export type DevCapabilitiesMode = "auto" | "off";
 
 export type GitHubPushConfig = {
   /** Enable pushing run branches to GitHub after goal completion. Default: false. */
@@ -35,6 +36,14 @@ export type GoalConfig = {
   semgrep?: SemgrepMode;
   /** Enabled CLI workers for goal planning and execution. */
   enabledWorkers?: EnabledWorkers;
+  /**
+   * SmithersBot-dev guidance/policy capability mode. Default: "auto".
+   *
+   * This only controls prompt guidance and dev-aware policy affordances for goal
+   * workers. It NEVER changes the running gateway's runtime instance selection;
+   * that boundary is owned by src/config/gateway-instance.ts.
+   */
+  devCapabilities?: DevCapabilitiesMode;
   /** Require backend-native sandbox support before launching managed workspace workers. */
   requireNativeSandbox?: boolean;
   /** GitHub push integration for completed goal runs. */

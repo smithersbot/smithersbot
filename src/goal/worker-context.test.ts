@@ -88,8 +88,14 @@ describe("src/goal/worker-context — backend unification", () => {
       "pnpm lint",
       "Before reporting completion, list the exact verification commands you ran",
       "never restart, reinstall, stop, enable, disable, or otherwise modify the stable/default `smithersbot-gateway.service`",
-      "Only for SmithersBot runtime changes in the SmithersBot dev checkout may workers restart or inspect `smithersbot-dev-gateway.service`",
+      "A dev-owned worker must not be asked to synchronously restart its own controlling `smithersbot-dev-gateway.service` and then prove post-restart behavior in the same step",
+      "restart proof must be externalized to stable/operator orchestration",
+      "post-restart evidence must come from a fresh dev-owned worker/artifact",
+      "only SmithersBot runtime changes in the SmithersBot dev checkout may inspect only `smithersbot-dev-gateway.service` through the mediated product path",
       "`node ./smithersbot.mjs dev-gateway restart|status|logs`",
+      "Dev-gateway status/restart/logs are mediated host-control operations covered by `requiresDevGatewayControl`, not `requiresNetwork` or broad network access.",
+      "Do not disable the sandbox, request no-sandbox or full-access danger modes, or use backend-specific sandbox escape settings for dev-gateway control.",
+      "Do not claim live dev-gateway verification unless external restart orchestration or mediated status/logs evidence is present",
     ];
     for (const needle of needles) {
       expect(WORKER_CONTEXT).toContain(needle);

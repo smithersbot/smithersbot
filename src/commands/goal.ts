@@ -11,6 +11,8 @@ import { runCliPlanning } from "../goal/cli-planner.js";
 import { ensureGlobalConventions } from "../goal/conventions.js";
 import { formatPlanOutput, formatPlannerFallbackNotice } from "../goal/format-output.js";
 import { ensureWorkingDir, isGitRepo } from "../goal/git-checkpoint.js";
+import { workspaceNameFromWorkingDir } from "../goal/agent-history.js";
+import { migrateGoalHistory, rewriteRunHistoryArtifactPaths } from "../goal/history-anchor.js";
 import { assertGoalWorkerWorkspace } from "../goal/workspace-policy.js";
 import { PlanParseError, persistRawPlanResponse } from "../goal/planner.js";
 import { loadRun, saveRun, sessionToSerialized } from "../goal/run-store.js";
@@ -144,6 +146,7 @@ export async function goalCommand(
   let plannerBackendUsed: SerializedRun["plannerBackendUsed"];
   let plannerDegradedReason: SerializedRun["plannerDegradedReason"];
   let plannerDegradedResetHint: SerializedRun["plannerDegradedResetHint"];
+  let goalBriefPath: SerializedRun["goalBriefPath"];
 
   if (!isJson) {
     runtime.log(`Run: ${runId}`);
@@ -171,6 +174,7 @@ export async function goalCommand(
       createdAt,
       scoutStatus,
       scoutSkipReason,
+      goalBriefPath,
       backendOverride: opts.backend,
       plannerBackendUsed,
       plannerDegradedReason,
@@ -212,6 +216,7 @@ export async function goalCommand(
           ...(opts.config?.goal?.enabledWorkers
             ? { enabledWorkers: opts.config.goal.enabledWorkers }
             : {}),
+          ...(opts.config?.goal ? { goalConfig: opts.config.goal } : {}),
           includeScoutArtifacts: !opts.noScout,
         });
       } finally {
@@ -255,6 +260,7 @@ export async function goalCommand(
         blockedAt: "planning",
         prompt: planningResult.question,
         requiredInputKey: "step:planning:input",
+        ...(planningResult.decisions ? { decisions: planningResult.decisions } : {}),
       };
       persistRun();
       const outcome: GoalOutcome = {
@@ -262,16 +268,18 @@ export async function goalCommand(
         question: planningResult.question,
         requiredInputKey: "step:planning:input",
         blockedAt: "planning",
+        ...(planningResult.decisions ? { decisions: planningResult.decisions } : {}),
       };
       if (isJson) {
         runtime.log(JSON.stringify(outcome, null, 2));
       } else {
-        runtime.log(`\nCLARIFICATION NEEDED: ${planningResult.question}`);
+        runtime.log(`\nDecision needed: ${planningResult.question}`);
       }
       return outcome;
     }
 
     const planResult = planningResult.plan;
+    goalBriefPath = planningResult.goalBriefPath;
 
     // After the blocked check, planResult is narrowed to Plan
     session.plan = planResult;
@@ -279,6 +287,27 @@ export async function goalCommand(
     // ensureWorkingDir/execution, so a planner that drifts into an observed/foreign/
     // out-of-root surface is rejected before any filesystem preparation.
     assertGoalWorkerWorkspace({ workingDir: planResult.workingDir, config: opts.config?.goal });
+    const finalHistoryWorkspaceSlug = workspaceNameFromWorkingDir(planResult.workingDir);
+    session.historyWorkspaceSlug = finalHistoryWorkspaceSlug;
+    migrateGoalHistory({ runId, toSlug: finalHistoryWorkspaceSlug });
+    const historyArtifacts = {
+      runId,
+      workingDir: planResult.workingDir,
+      historyWorkspaceSlug: finalHistoryWorkspaceSlug,
+      ...(goalBriefPath ? { goalBriefPath } : {}),
+      ...(session.postExecutionReportArtifacts
+        ? { postExecutionReportArtifacts: session.postExecutionReportArtifacts }
+        : {}),
+      ...(session.workerSummaries ? { workerSummaries: session.workerSummaries } : {}),
+    };
+    rewriteRunHistoryArtifactPaths(historyArtifacts);
+    goalBriefPath = historyArtifacts.goalBriefPath;
+    if (historyArtifacts.postExecutionReportArtifacts) {
+      session.postExecutionReportArtifacts = historyArtifacts.postExecutionReportArtifacts;
+    }
+    if (historyArtifacts.workerSummaries) {
+      session.workerSummaries = historyArtifacts.workerSummaries;
+    }
     workingDir = planResult.workingDir;
     persistRun();
 

@@ -269,6 +269,63 @@ describe("goal-resume command", () => {
     expect(rt.logs.join("\n")).toContain("moltbot goal answer");
   });
 
+  it("resumes a user-input execution block after a resume note clears the run block", async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-note-cleared-block-ws-"));
+    const runId = "resume-note-cleared-block";
+    saveRun(
+      makeRun({
+        runId,
+        state: "blocked",
+        plan: {
+          goal: "Test goal",
+          summary: "Needs user input",
+          steps: [
+            {
+              id: "needs-input",
+              description: "Continue with user details",
+              dependsOn: [],
+              status: "blocked",
+              durationMinutes: 1,
+              blockedReason: "user_input",
+              blockedQuestion: "What message should I use?",
+            },
+          ],
+        },
+        blocked: {
+          blockedAt: "execution",
+          prompt: "What message should I use?",
+          requiredInputKey: "task:needs-input:input",
+          stepId: "needs-input",
+        },
+        workingDir: workDir,
+      }),
+    );
+
+    const { applyGoalResumeNoteById } = await import("./goal-resume-note.js");
+    const noteResult = applyGoalResumeNoteById({
+      runId,
+      source: "goal_answer",
+      userText: "Message 1",
+      now: () => "2026-06-08T00:00:00.000Z",
+    });
+    expect(noteResult.status).toBe("applied");
+    expect(loadRun(runId, testGoalsDir)).toMatchObject({
+      state: "blocked",
+      blocked: null,
+    });
+
+    const { goalResumeCommand } = await import("./goal-resume.js");
+    const rt = mockRuntime();
+    const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+    expect(result?.status).not.toBe("blocked");
+    expect(result).not.toMatchObject({ status: "blocked", question: "" });
+    expect(rt.logs.join("\n")).not.toContain("Run blocked:");
+    expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
   it("retries execution-time blocked runs without answer when blocked reason is error", async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-error-blocked-ws-"));
     saveRun(
@@ -1118,7 +1175,8 @@ describe("goal-resume command", () => {
       }),
     );
 
-    // Answer the question — auto-resumes blocked runs via goalResumeCommand
+    // Answer the question — records the resume note and leaves execution launch
+    // to the Telegram resume path / goalResumeCommand.
     const { goalAnswerCommand } = await import("./goal-answer.js");
     const answerRt = mockRuntime();
     const result = await goalAnswerCommand(
@@ -1131,7 +1189,7 @@ describe("goal-resume command", () => {
 
     acquireGoalOpLock("answered-run", "test", testGoalsDir);
     const finalRun = loadRun("answered-run", testGoalsDir);
-    expect(finalRun?.state).toBe("executing");
+    expect(finalRun?.state).toBe("blocked");
     expect(finalRun!.resumeNotes?.[0]).toMatchObject({
       source: "goal_answer",
       userText: "the_answer",
@@ -1446,10 +1504,21 @@ describe("goal-resume command", () => {
     });
 
     it("handles replanning that results in blocked", async () => {
+      const decisions = [
+        {
+          id: "database-choice",
+          question: "Which database should the first plan target?",
+          options: [
+            { key: "A", label: "SQLite" },
+            { key: "B", label: "Postgres", recommended: true },
+          ],
+        },
+      ];
       mockRunCliPlanning.mockResolvedValueOnce({
         status: "blocked",
         question: "Need more info about the database",
-        scoutStatus: "needs_clarification",
+        decisions,
+        scoutStatus: "needs_decision",
       });
 
       saveRun(
@@ -1467,11 +1536,185 @@ describe("goal-resume command", () => {
       expect(result).toBeDefined();
       expect(result?.status).toBe("blocked");
       expect(result?.question).toBe("Need more info about the database");
+      expect(result).toMatchObject({ decisions });
 
       const persisted = loadRun("replan-blocked", testGoalsDir);
       expect(persisted?.state).toBe("blocked");
       expect(persisted?.blocked?.prompt).toBe("Need more info about the database");
-      expect(persisted?.scoutStatus).toBe("needs_clarification");
+      expect(persisted?.blocked?.decisions).toEqual(decisions);
+      expect(persisted?.scoutStatus).toBe("needs_decision");
+    });
+
+    it("passes planning decision answers into resumed planning with decision context", async () => {
+      const runId = "planning-decision-resume";
+      mockRunCliPlanning.mockResolvedValueOnce({
+        status: "success",
+        plan: {
+          workingDir: "/tmp/ws",
+          summary: "Plan with decision answer",
+          steps: [
+            {
+              id: "answered-step",
+              description: "Use the selected data store",
+              dependsOn: [],
+              durationMinutes: 10,
+              status: "pending",
+            },
+          ],
+          goal: "Build persistence",
+        },
+        scoutStatus: "success",
+      });
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          goal: "Build persistence",
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Decision needed: choose the data store.",
+            requiredInputKey: "step:planning:input",
+            decisions: [
+              {
+                id: "data-store",
+                question: "Which data store should the first plan use?",
+                options: [
+                  { key: "A", label: "SQLite for local-only storage" },
+                  { key: "B", label: "Postgres for shared storage", recommended: true },
+                ],
+              },
+            ],
+          },
+          answers: { "step:planning:input": "B" },
+          planningDecisionAnswers: {
+            "data-store": {
+              decisionId: "data-store",
+              question: "Which data store should the first plan use?",
+              answer: "B",
+              optionKey: "B",
+              optionLabel: "Postgres for shared storage",
+              answeredAt: "2026-01-30T00:00:00.000Z",
+            },
+          },
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      await goalResumeCommand(runId, {}, rt);
+
+      const planningCall = mockRunCliPlanning.mock.calls[0]?.[0] as { goalText?: string };
+      expect(planningCall.goalText).toContain("Original /new_goal prompt:");
+      expect(planningCall.goalText).toContain("Build persistence");
+      expect(planningCall.goalText).toContain("User decision answers:");
+      expect(planningCall.goalText).toContain(
+        "Decision data-store: Which data store should the first plan use?",
+      );
+      expect(planningCall.goalText).toContain("(B) Postgres for shared storage");
+      expect(planningCall.goalText).not.toContain("User clarification:");
+
+      const persisted = loadRun(runId, testGoalsDir);
+      expect(persisted?.state).toBe("awaiting_approval");
+      expect(persisted?.answers["step:planning:input"]).toBeUndefined();
+      expect(persisted?.planningDecisionAnswers).toBeUndefined();
+    });
+
+    it("clears consumed planning decision answers so later replans do not leak them", async () => {
+      const runId = "planning-decision-no-leak";
+      mockRunCliPlanning
+        .mockResolvedValueOnce({
+          status: "success",
+          plan: {
+            workingDir: "/tmp/ws",
+            summary: "First plan",
+            steps: [
+              {
+                id: "first-step",
+                description: "Use the selected option",
+                dependsOn: [],
+                durationMinutes: 10,
+                status: "pending",
+              },
+            ],
+            goal: "Build persistence",
+          },
+          scoutStatus: "success",
+        })
+        .mockResolvedValueOnce({
+          status: "success",
+          plan: {
+            workingDir: "/tmp/ws",
+            summary: "Unrelated replan",
+            steps: [
+              {
+                id: "second-step",
+                description: "Replan without old answers",
+                dependsOn: [],
+                durationMinutes: 10,
+                status: "pending",
+              },
+            ],
+            goal: "Unrelated follow-up",
+          },
+          scoutStatus: "success",
+        });
+
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          goal: "Build persistence",
+          blocked: {
+            blockedAt: "planning",
+            prompt: "Decision needed: choose the data store.",
+            requiredInputKey: "step:planning:input",
+            decisions: [
+              {
+                id: "data-store",
+                question: "Which data store should the first plan use?",
+                options: [
+                  { key: "A", label: "SQLite for local-only storage" },
+                  { key: "B", label: "Postgres for shared storage", recommended: true },
+                ],
+              },
+            ],
+          },
+          answers: { "step:planning:input": "B" },
+          planningDecisionAnswers: {
+            "data-store": {
+              decisionId: "data-store",
+              question: "Which data store should the first plan use?",
+              answer: "B",
+              optionKey: "B",
+              optionLabel: "Postgres for shared storage",
+              answeredAt: "2026-01-30T00:00:00.000Z",
+            },
+          },
+        }),
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      await goalResumeCommand(runId, { quiet: true }, mockRuntime());
+
+      const afterConsumed = loadRun(runId, testGoalsDir);
+      expect(afterConsumed?.answers["step:planning:input"]).toBeUndefined();
+      expect(afterConsumed?.planningDecisionAnswers).toBeUndefined();
+
+      saveRun({
+        ...afterConsumed!,
+        state: "planning",
+        plan: null,
+        goal: "Unrelated follow-up",
+        blocked: null,
+      });
+
+      await goalResumeCommand(runId, { replan: true, quiet: true }, mockRuntime());
+
+      const secondPlanningCall = mockRunCliPlanning.mock.calls[1]?.[0] as { goalText?: string };
+      expect(secondPlanningCall.goalText).toBe("Unrelated follow-up");
+      expect(secondPlanningCall.goalText).not.toContain("User decision answers:");
+      expect(secondPlanningCall.goalText).not.toContain("Postgres for shared storage");
     });
 
     it("persists error when replanning fails again", async () => {
@@ -3337,6 +3580,73 @@ describe("goal-resume command", () => {
       // The technical block was reset by resetRetryableBlockedSteps (not by the
       // answered-user-input normalization), exactly as before this change.
       expect(captured!.get("tech")).toEqual({ status: "pending", blockedReason: undefined });
+
+      fs.rmSync(workDir, { recursive: true, force: true });
+    });
+
+    it("/goal_resume auto-retries a run-level resume_execution marker with no answer or blocked steps", async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "resume-exec-run-level-ws-"));
+      const runId = "resume-exec-run-level";
+      saveRun(
+        makeRun({
+          runId,
+          state: "blocked",
+          plan: {
+            goal: "Test goal",
+            summary: "Interrupted run with pending work",
+            steps: [
+              {
+                id: "pending-a",
+                description: "Pending A",
+                dependsOn: [],
+                status: "pending",
+                durationMinutes: 1,
+              },
+            ],
+          },
+          blocked: {
+            blockedAt: "execution",
+            prompt:
+              "Run was interrupted (gateway restart or process exit). Use goal resume to continue.",
+            requiredInputKey: "resume_execution",
+          },
+          answers: {},
+          workingDir: workDir,
+        }),
+      );
+
+      let capturedState: string | undefined;
+      let capturedBlocked: unknown;
+      mockExecuteGoalWithAgent.mockImplementationOnce(
+        async (params: {
+          session: {
+            plan: { steps: PlanStep[] } | null;
+            state: string;
+            blocked?: unknown;
+          };
+        }) => {
+          capturedState = params.session.state;
+          capturedBlocked = params.session.blocked;
+          if (params.session.plan) {
+            for (const s of params.session.plan.steps) {
+              if (s.status === "pending" || s.status === "blocked") s.status = "done";
+            }
+          }
+          params.session.state = "done";
+          return { status: "done", summary: "All tasks completed." };
+        },
+      );
+
+      const { goalResumeCommand } = await import("./goal-resume.js");
+      const rt = mockRuntime();
+      const result = await goalResumeCommand(runId, { yes: true, quiet: true }, rt);
+
+      expect(result?.status).toBe("done");
+      expect(mockExecuteGoalWithAgent).toHaveBeenCalledTimes(1);
+      expect(capturedState).toBe("executing");
+      expect(capturedBlocked).toBeNull();
+      expect(rt.logs.join("\n")).not.toContain("Required input: resume_execution");
+      expect(loadRun(runId, testGoalsDir)?.state).toBe("done");
 
       fs.rmSync(workDir, { recursive: true, force: true });
     });

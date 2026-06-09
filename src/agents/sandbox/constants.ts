@@ -2,7 +2,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { CHANNEL_IDS } from "../../channels/registry.js";
-import { STATE_DIR } from "../../config/config.js";
+// Import STATE_DIR from its canonical source (config/paths.js) rather than the
+// config/config.js barrel. This module is pulled in transitively by a very large
+// number of suites; importing from the heavily-mocked config barrel made every
+// such suite require its vi.mock factory to re-export STATE_DIR, and any factory
+// that omitted it threw `No "STATE_DIR" export is defined on the "../config/config.js" mock`,
+// cascading into hundreds of unrelated failures. paths.js is the real owner of
+// STATE_DIR (config.js merely `export *`s it) and is mocked by only a handful of
+// suites (which use importOriginal partial mocks), so this keeps the value live.
+import { STATE_DIR } from "../../config/paths.js";
 
 export const DEFAULT_SANDBOX_WORKSPACE_ROOT = path.join(os.homedir(), ".clawdbot", "sandboxes");
 

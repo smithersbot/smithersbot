@@ -6,15 +6,18 @@ import type { GoalLlmClient, GoalSession, Plan, PlanStep, SerializedRun } from "
 import type { BackendAvailability, GoalBackendId } from "./backend-types.js";
 import type { TaskRunnerContext, TaskRunnerResult } from "./task-runner.js";
 import type { AttemptBundle } from "./attempt-bundle.js";
+import { formatWorkerResumeNotes } from "./resume-note-context.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import {
+  isBackendDevGatewayControlCapable,
   isBackendNetworkCapable,
   MAX_TRANSIENT_RETRY_ATTEMPTS,
   pickFallbackBackend,
   resolveBackendForStep,
 } from "./agent-executor-helpers.js";
 import { classifyStepCategory } from "./run-category.js";
+import { resolveWorkerSummaryPath } from "./worker-summary.js";
 type BuildGateModule = typeof import("./build-gate.js");
 
 const mockCliExecute = vi.fn<Promise<TaskRunnerResult>, [TaskRunnerContext]>();
@@ -28,11 +31,15 @@ const mockBuildDefaultSastCommand = vi.fn<
 let actualBuildDefaultSastCommand: BuildGateModule["buildDefaultSastCommand"] | undefined;
 const mockSpawnSync = vi.fn();
 const mockExecFileSync = vi.fn();
+let devGatewayHostMediationAvailable = false;
 const mockRunCliProcess = vi.fn();
 const mockResolveClaudeBinary = vi.fn();
 const mockExtractRunLessons = vi.fn();
 const mockMirrorGoalRuntimeToAgentHistory = vi.fn();
 const mockAssertGoalWorkerWorkspace = vi.fn();
+const devGatewayWorkspaceMock = vi.hoisted(() => ({
+  resolveDevGatewayWorkerContext: vi.fn(),
+}));
 let actualAssertGoalWorkerWorkspace:
   | (typeof import("./workspace-policy.js"))["assertGoalWorkerWorkspace"]
   | undefined;
@@ -51,9 +58,16 @@ class MockCliTaskRunner {
     constructedCliBackends.push(params.backend);
   }
 
-  execute(context: TaskRunnerContext) {
+  async execute(context: TaskRunnerContext) {
     executedCliBackends.push(this.backend);
-    return mockCliExecute(context);
+    const result = await Promise.resolve(mockCliExecute(context));
+    if (result.status === "complete" && !result.executionSessionId) {
+      return {
+        ...result,
+        executionSessionId: `${this.backend}-session-${context.runId}-${context.task.id}`,
+      };
+    }
+    return result;
   }
 }
 
@@ -92,14 +106,22 @@ vi.mock("./workspace-policy.js", async (importOriginal) => {
   };
 });
 
-vi.mock("./backend-availability.js", () => ({
-  detectBackendAvailability: () => availability,
-  isBackendAvailable: (backend: GoalBackendId, avail: BackendAvailability[]) => {
-    const entry = avail.find((item) => item.id === backend);
-    if (!entry) return { available: false, reason: "Unknown backend" };
-    return entry.available ? { available: true } : { available: false, reason: entry.reason };
-  },
-}));
+vi.mock("./backend-availability.js", async () => {
+  const actual = await vi.importActual<typeof import("./backend-availability.js")>(
+    "./backend-availability.js",
+  );
+  return {
+    ...actual,
+    detectBackendAvailability: () => availability,
+    getCodexAskForApprovalPlacement: () => "before_exec",
+    isDevGatewayHostMediationAvailable: () => devGatewayHostMediationAvailable,
+    isBackendAvailable: (backend: GoalBackendId, avail: BackendAvailability[]) => {
+      const entry = avail.find((item) => item.id === backend);
+      if (!entry) return { available: false, reason: "Unknown backend" };
+      return entry.available ? { available: true } : { available: false, reason: entry.reason };
+    },
+  };
+});
 
 vi.mock("./build-gate.js", async () => {
   const actual = await vi.importActual<BuildGateModule>("./build-gate.js");
@@ -122,9 +144,13 @@ vi.mock("./cli-process.js", () => ({
   runCliProcess: (...args: unknown[]) => mockRunCliProcess(...args),
 }));
 
-vi.mock("./scout.js", () => ({
-  resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
-}));
+vi.mock("./scout.js", async () => {
+  const actual = await vi.importActual<typeof import("./scout.js")>("./scout.js");
+  return {
+    ...actual,
+    resolveClaudeBinary: (...args: unknown[]) => mockResolveClaudeBinary(...args),
+  };
+});
 
 vi.mock("./lessons.js", async () => {
   const actual = await vi.importActual<typeof import("./lessons.js")>("./lessons.js");
@@ -142,6 +168,18 @@ vi.mock("./runtime-mirror.js", async () => {
     mirrorGoalRuntimeToAgentHistory: (
       ...args: Parameters<typeof actual.mirrorGoalRuntimeToAgentHistory>
     ) => mockMirrorGoalRuntimeToAgentHistory(...args),
+  };
+});
+
+vi.mock("./dev-gateway-workspace.js", async () => {
+  const actual = await vi.importActual<typeof import("./dev-gateway-workspace.js")>(
+    "./dev-gateway-workspace.js",
+  );
+  return {
+    ...actual,
+    resolveDevGatewayWorkerContext: (
+      ...args: Parameters<typeof actual.resolveDevGatewayWorkerContext>
+    ) => devGatewayWorkspaceMock.resolveDevGatewayWorkerContext(...args),
   };
 });
 
@@ -250,6 +288,75 @@ function mockGithubPushGit(params: {
   });
 }
 
+function defaultPostExecutionReportPayload() {
+  return {
+    markdown: "# Post Execution Report\n\nThe plan completed and report data was generated.\n",
+    report: {
+      planCompleted: true,
+      goalAchieved: true,
+      summary: "The plan completed successfully.",
+      filesChanged: ["src/example.ts"],
+      verificationCommands: ["pnpm vitest run src/goal/agent-executor.test.ts"],
+      manualTests: [
+        {
+          description: "Verify completion delivery recovery",
+          criticality: 8,
+          reason: "Done-side UX requires operator inspection.",
+          detail: "Complete a goal and confirm the done surface renders report-derived actions.",
+        },
+      ],
+      nextPlanRecommended: false,
+      nextPlanSummary: null,
+      nextPlanPrompt: null,
+      decisionsNeeded: [],
+      failureOrBlockedReason: null,
+    },
+  };
+}
+
+function defaultPostExecutionManualDisplayPayload() {
+  return {
+    manualTests: defaultPostExecutionReportPayload().report.manualTests,
+    displayMarkdown: "1. Verify completion delivery recovery",
+  };
+}
+
+function defaultPostExecutionContinuationPayload() {
+  return {
+    goalAchieved: true,
+    nextPlanRecommended: false,
+    nextPlanSummary: null,
+    nextPlanPrompt: null,
+    decisionsNeeded: [],
+    failureOrBlockedReason: null,
+  };
+}
+
+function defaultRunCliProcessResult(args: unknown) {
+  const rawArgs =
+    typeof args === "object" && args !== null && Array.isArray((args as { args?: unknown }).args)
+      ? (args as { args: unknown[] }).args
+      : [];
+  const lastArg = rawArgs.at(-1);
+  const prompt = typeof lastArg === "string" ? lastArg : "";
+  let result: unknown = { approved: true, issues: [] };
+  if (prompt.includes("Native lifecycle phase: post-execution report generation.")) {
+    result = defaultPostExecutionReportPayload();
+  } else if (prompt.includes("Native lifecycle phase: prepare manual-test display data.")) {
+    result = defaultPostExecutionManualDisplayPayload();
+  } else if (prompt.includes("Native lifecycle phase: decide continuation.")) {
+    result = defaultPostExecutionContinuationPayload();
+  }
+  return {
+    stdout: `${JSON.stringify({ type: "result", session_id: "report-session", result })}\n`,
+    stderr: "",
+    timedOut: false,
+    exitCode: 0,
+    signal: null,
+    durationMs: 50,
+  };
+}
+
 function mockGitCheckpointBranchSetup(params: { legacyBranchExists: boolean; sha?: string }): void {
   mockExecFileSync.mockImplementation((command: unknown, args: unknown) => {
     if (command !== "git") return "";
@@ -313,14 +420,18 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       sourceKind: "goal-runtime",
       entries: [],
     });
-    mockRunCliProcess.mockResolvedValue({
-      stdout: '{"approved":true,"issues":[]}',
-      stderr: "",
-      timedOut: false,
-      exitCode: 0,
-      signal: null,
-      durationMs: 50,
-    });
+    mockRunCliProcess.mockImplementation((args) => defaultRunCliProcessResult(args));
+    devGatewayWorkspaceMock.resolveDevGatewayWorkerContext.mockImplementation(
+      (
+        params: Parameters<
+          typeof import("./dev-gateway-workspace.js").resolveDevGatewayWorkerContext
+        >[0],
+      ) => ({
+        isDevWorkspace: String(params.workingDir).split(path.sep).includes("smithersbot-dev"),
+        servicePresent: false,
+        active: false,
+      }),
+    );
     availability = [
       { id: "pi", available: true },
       { id: "codex", available: true },
@@ -331,6 +442,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
     testManagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agent-executor-managed-"));
     process.env.SMITHERSBOT_GOALS_ROOT = testManagedRoot;
+    devGatewayHostMediationAvailable = false;
   });
 
   afterEach(() => {
@@ -427,6 +539,91 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(step.status).toBe("done");
     expect(step.executedBackend).toBe("claude_code");
     expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
+  it("blocks a dev-gateway-control step as capability_blocked when mediation is unavailable", async () => {
+    availability = [
+      { id: "pi", available: false, reason: "disabled" },
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const step = makeStep({ backend: "codex", requiresDevGatewayControl: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-dev-gateway-control-blocked",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("blocked");
+    expect(step.status).toBe("blocked");
+    expect(step.blockedReason).toBe("capability_blocked");
+    expect(step.blockedQuestion).toContain("mediated dev-gateway control");
+    expect(mockCliExecute).not.toHaveBeenCalled();
+  });
+
+  it("routes a dev-gateway-control step to an available mediated backend before launch", async () => {
+    devGatewayHostMediationAvailable = true;
+    availability = [
+      { id: "pi", available: false, reason: "disabled" },
+      { id: "codex", available: true },
+      { id: "claude_code", available: false, reason: "not on PATH" },
+    ];
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Status checked",
+      turnsUsed: 1,
+    });
+    const step = makeStep({ backend: "claude_code", requiresDevGatewayControl: true });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-dev-gateway-control-reroute",
+      workingDir: "/tmp/moltbot-goal-test",
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(step.executedBackend).toBe("codex");
+    expect(mockCliExecute).toHaveBeenCalledOnce();
+  });
+
+  it("passes goal devCapabilities config into the worker hard-deny context resolver", async () => {
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Dev capability guidance suppressed",
+      turnsUsed: 1,
+    });
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const workingDir = "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev";
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-dev-capability-off-executor",
+      workingDir,
+      config: { goal: { devCapabilities: "off" } },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(devGatewayWorkspaceMock.resolveDevGatewayWorkerContext).toHaveBeenCalledWith({
+      workingDir,
+      cfg: { devCapabilities: "off" },
+    });
+    const launchedContext = mockCliExecute.mock.calls[0]?.[0];
+    expect(launchedContext?.denyPolicy.map((deny) => deny.pattern)).toContain(
+      "systemctl --user restart",
+    );
+    expect(launchedContext?.denyPolicy.map((deny) => deny.pattern)).not.toContain(
+      "systemctl restart non-dev gateway",
+    );
   });
 
   it("clears stale run-level blocker fields on transition to done", async () => {
@@ -649,7 +846,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    const persistCallIndex = recorder.mock.calls.findIndex(([stage]) => stage === "persist");
+    const persistCallIndex = recorder.mock.calls.findIndex(
+      ([stage, payload]) =>
+        stage === "persist" &&
+        typeof payload === "object" &&
+        payload !== null &&
+        typeof (payload as { completionSummary?: unknown }).completionSummary === "string" &&
+        Array.isArray((payload as { manualTests?: unknown[] }).manualTests),
+    );
     const allDoneCallIndex = recorder.mock.calls.findIndex(
       ([stage, event]) =>
         stage === "status" &&
@@ -668,12 +872,50 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         succeeded: true,
         reviewUrl,
       }),
-      manualTests: [
-        expect.objectContaining({
-          description: "Verify completion delivery recovery",
-        }),
-      ],
+      manualTests: expect.any(Array),
       manualTestsError: undefined,
+    });
+  });
+
+  it("persists a deterministic pendingContinuation in the run store after Done with no continuation client", async () => {
+    // Channel-neutral guarantee: harness / dev-owned /new_goal completions never
+    // pass through the Telegram formatting callback, so the agent-executor done
+    // path itself must leave run.json carrying a current pendingContinuation.
+    // This test inspects the SAVED run state (mockRunStore), not the formatting
+    // layer or an injected continuation client.
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const runId = "run-channel-neutral-continuation";
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Smoke file created",
+      turnsUsed: 1,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId,
+      workingDir: "/tmp/moltbot-goal-test",
+      // Persist the live session into the run store exactly like production
+      // onRunStatePersist, so the channel-neutral continuation persistence can
+      // reload it as a done run and store the proposal.
+      onRunStatePersist: () => {
+        mockRunStore.set(runId, session);
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    const saved = mockRunStore.get(runId);
+    expect(saved.state).toBe("done");
+    expect(saved.pendingContinuation).toBeDefined();
+    expect(saved.pendingContinuation).toMatchObject({
+      goalAchieved: true,
+      proposedPrompt: "",
+      status: "pending",
+      runAt: "now",
     });
   });
 
@@ -1025,7 +1267,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(constructedCliBackends).toEqual(["codex", "claude_code"]);
   });
 
-  it("omits manualTests and emits manualTestsError when manual-test auth fails", async () => {
+  it("uses report-derived manual tests even when the legacy manual-test client would fail auth", async () => {
     const step = makeStep({ backend: "codex", description: "Implement login validation" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -1036,15 +1278,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       turnsUsed: 1,
     });
 
-    const manualTestsClient: GoalLlmClient = {
-      complete: vi
-        .fn()
-        .mockRejectedValue(
-          new Error(
-            '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
-          ),
+    const complete = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          '401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
         ),
-    };
+      );
+    const manualTestsClient: GoalLlmClient = { complete };
     const statusEvents: unknown[] = [];
 
     const { executeGoalWithAgent } = await import("./agent-executor.js");
@@ -1059,6 +1300,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
+    expect(complete).not.toHaveBeenCalled();
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1073,9 +1315,11 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         (event as { type?: string }).type === "all_done",
     );
     expect(allDoneEvent).toBeDefined();
-    expect(allDoneEvent?.manualTests).toBeUndefined();
-    expect(allDoneEvent?.manualTestsError).toContain("authentication_error");
-    expect(allDoneEvent?.manualTestsStatus).toBe("failed");
+    expect(allDoneEvent?.manualTests).toEqual([
+      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+    ]);
+    expect(allDoneEvent?.manualTestsError).toBeUndefined();
+    expect(allDoneEvent?.manualTestsStatus).toBe("generated");
   });
 
   it('emits manualTestsStatus "generated" when manual-test generation succeeds', async () => {
@@ -1089,19 +1333,18 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       turnsUsed: 1,
     });
 
-    const manualTestsClient: GoalLlmClient = {
-      complete: vi.fn().mockResolvedValue({
-        text: JSON.stringify({
-          tests: [
-            {
-              description: "Verify login banner",
-              criticality: 6,
-              detail: "Step 1. Submit invalid credentials.\nStep 2. Confirm inline error.",
-            },
-          ],
-        }),
+    const complete = vi.fn().mockResolvedValue({
+      text: JSON.stringify({
+        tests: [
+          {
+            description: "Verify login banner",
+            criticality: 6,
+            detail: "Step 1. Submit invalid credentials.\nStep 2. Confirm inline error.",
+          },
+        ],
       }),
-    };
+    });
+    const manualTestsClient: GoalLlmClient = { complete };
     const statusEvents: unknown[] = [];
 
     const { executeGoalWithAgent } = await import("./agent-executor.js");
@@ -1116,6 +1359,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
+    expect(complete).not.toHaveBeenCalled();
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1134,7 +1378,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(allDoneEvent?.manualTests).toBeDefined();
   });
 
-  it('emits manualTestsStatus "skipped_no_backend" when manual-tests reports no available backend', async () => {
+  it("keeps report-derived manual tests when the legacy client has no backend", async () => {
     const step = makeStep({ backend: "codex", description: "Implement login validation" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -1145,11 +1389,10 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       turnsUsed: 1,
     });
 
-    const manualTestsClient: GoalLlmClient = {
-      complete: vi
-        .fn()
-        .mockRejectedValue(new Error("no worker backend available — install Codex or Claude Code")),
-    };
+    const complete = vi
+      .fn()
+      .mockRejectedValue(new Error("no worker backend available — install Codex or Claude Code"));
+    const manualTestsClient: GoalLlmClient = { complete };
     const statusEvents: unknown[] = [];
 
     const { executeGoalWithAgent } = await import("./agent-executor.js");
@@ -1164,6 +1407,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
+    expect(complete).not.toHaveBeenCalled();
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1177,12 +1421,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         event !== null &&
         (event as { type?: string }).type === "all_done",
     );
-    expect(allDoneEvent?.manualTestsStatus).toBe("skipped_no_backend");
-    expect(allDoneEvent?.manualTestsError).toContain("no worker backend available");
-    expect(allDoneEvent?.manualTests).toBeUndefined();
+    expect(allDoneEvent?.manualTestsStatus).toBe("generated");
+    expect(allDoneEvent?.manualTestsError).toBeUndefined();
+    expect(allDoneEvent?.manualTests).toEqual([
+      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+    ]);
   });
 
-  it('emits manualTestsStatus "skipped_no_embedded_auth" and a deterministic fallback when anthropic auth is unavailable', async () => {
+  it("does not use embedded auth for report-derived manual tests", async () => {
     const step = makeStep({ backend: "codex", description: "Implement login validation" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -1193,15 +1439,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       turnsUsed: 1,
     });
 
-    const manualTestsClient: GoalLlmClient = {
-      complete: vi
-        .fn()
-        .mockRejectedValue(
-          new Error(
-            'No API key found for provider "anthropic". Auth store: /agentDir/auth-profiles.json (agentDir: /agentDir).',
-          ),
+    const complete = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'No API key found for provider "anthropic". Auth store: /agentDir/auth-profiles.json (agentDir: /agentDir).',
         ),
-    };
+      );
+    const manualTestsClient: GoalLlmClient = { complete };
     const statusEvents: unknown[] = [];
     const progress: string[] = [];
 
@@ -1220,6 +1465,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
+    expect(complete).not.toHaveBeenCalled();
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1233,16 +1479,14 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         event !== null &&
         (event as { type?: string }).type === "all_done",
     );
-    expect(allDoneEvent?.manualTestsStatus).toBe("skipped_no_embedded_auth");
-    expect(allDoneEvent?.manualTestsError).toMatch(/embedded-agent auth unavailable/i);
-    expect(allDoneEvent?.manualTestsError).not.toContain("/agentDir");
+    expect(allDoneEvent?.manualTestsStatus).toBe("generated");
+    expect(allDoneEvent?.manualTestsError).toBeUndefined();
     expect(allDoneEvent?.manualTests?.length ?? 0).toBeGreaterThan(0);
-    expect(progress.some((line) => line.includes("[manual-tests] Skipped:"))).toBe(true);
     expect(
       progress.some((line) =>
         line.includes("embedded-agent auth unavailable, using deterministic fallback"),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {
@@ -1489,7 +1733,10 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(progress).toContain(
       "  [usage-limit] Codex hit a rate limit. Falling back to Claude Code.",
     );
-    expect(readGoalHistoryEvents(workingDir, runId)).toEqual([
+    const usageEvents = readGoalHistoryEvents(workingDir, runId).filter(
+      (event) => event.event === "usage_limit" || event.event === "usage_limit_fallback",
+    );
+    expect(usageEvents).toEqual([
       expect.objectContaining({
         event: "usage_limit",
         phase: "worker",
@@ -1508,6 +1755,85 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         status: "pending",
       }),
     ]);
+  });
+
+  it("includes goal-level resume notes in the Claude Code prompt after Codex usage-limit fallback", async () => {
+    const step = makeStep({ backend: "codex" });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    session.resumeNotes = [
+      {
+        timestamp: "2026-06-08T13:45:00.000Z",
+        source: "goal_answer",
+        affectedStepIds: [step.id],
+        userText: "Resume fallback sentinel: use the invoice import fixture.",
+      },
+    ];
+    let claudeAttemptContext: TaskRunnerContext | undefined;
+
+    mockCliExecute.mockImplementation(async (context) => {
+      const currentBackend = executedCliBackends.at(-1);
+      if (currentBackend === "codex") {
+        return {
+          status: "blocked",
+          question: "Codex usage limit reached",
+          blockedReason: "rate_limit",
+          turnsUsed: 1,
+        };
+      }
+      if (currentBackend === "claude_code") {
+        claudeAttemptContext = context;
+        return {
+          status: "complete",
+          summary: "Recovered with Claude Code using the resume note",
+          turnsUsed: 1,
+        };
+      }
+      throw new Error(`Unexpected backend attempt: ${String(currentBackend)}`);
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-resume-note-fallback-prompt",
+      workingDir: "/tmp/moltbot-goal-test",
+      enabledWorkers: ["codex", "claude_code"],
+      retryConfig: { maxAttempts: 2, retryDelayMs: 1 },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(executedCliBackends).toEqual(["codex", "claude_code"]);
+    expect(claudeAttemptContext?.resumeNotes).toEqual(session.resumeNotes);
+
+    const expectedResumeNoteContext = formatWorkerResumeNotes(session.resumeNotes);
+    expect(expectedResumeNoteContext).toContain(
+      "Resume fallback sentinel: use the invoice import fixture.",
+    );
+    const claudeContext = claudeAttemptContext;
+    if (!claudeContext) {
+      throw new Error("Expected to capture the Claude Code fallback worker context");
+    }
+    const { buildCliWorkerPrompt } = await import("./cli-worker.js");
+    const claudePrompt = buildCliWorkerPrompt({
+      step: claudeContext.task,
+      plan: claudeContext.plan,
+      goal: claudeContext.goal,
+      runId: claudeContext.runId,
+      workingDir: claudeContext.workingDir,
+      ...(claudeContext.historyWorkspaceSlug
+        ? { historyWorkspaceSlug: claudeContext.historyWorkspaceSlug }
+        : {}),
+      hardDenies: claudeContext.denyPolicy,
+      completedSummaries: claudeContext.completedSummaries,
+      ...(claudeContext.resumeAnswer ? { resumeAnswer: claudeContext.resumeAnswer } : {}),
+      ...(claudeContext.resumeQuestion ? { resumeQuestion: claudeContext.resumeQuestion } : {}),
+      ...(claudeContext.resumeNotes ? { resumeNotes: claudeContext.resumeNotes } : {}),
+      previousAttempt: claudeContext.attemptBundles?.at(-1)
+        ? JSON.stringify(claudeContext.attemptBundles.at(-1))
+        : null,
+      resultPath: "/tmp/moltbot-goal-test/worker_result.json",
+    });
+    expect(claudePrompt).toContain(expectedResumeNoteContext);
   });
 
   it("blocks clearly when Codex rate-limits and Claude Code is disabled", async () => {
@@ -2165,6 +2491,122 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(session.buildGateResults?.["1"]?.passed).toBe(true);
   });
 
+  it("mints a verified Worker Summary after a passed between-step gate and injects the childless set into the next worker", async () => {
+    const setup = makeStep({
+      id: "setup",
+      description: "Create durable summary support",
+      shortSummary: "Summary support",
+      backend: "codex",
+    });
+    const finish = makeStep({
+      id: "finish",
+      description: "Consume the prior summary",
+      shortSummary: "Consume summary",
+      dependsOn: ["setup"],
+      backend: "codex",
+    });
+    const plan = makePlan([setup, finish]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+
+    const contexts: TaskRunnerContext[] = [];
+    mockCliExecute.mockImplementation(async (context) => {
+      contexts.push(context);
+      return {
+        status: "complete",
+        summary:
+          context.task.id === "setup"
+            ? "Created the Worker Summary writer."
+            : "Consumed the leaf summary reference.",
+        turnsUsed: 1,
+      };
+    });
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      signal: null,
+      stdout: "",
+      stderr: "",
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-worker-summary-mint",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    const setupSummaryPath = resolveWorkerSummaryPath({
+      runId: "run-worker-summary-mint",
+      workingDir: "/tmp/moltbot-goal-test",
+      stepId: "setup",
+    });
+    expect(outcome.status).toBe("done");
+    expect(fs.existsSync(setupSummaryPath)).toBe(true);
+    const summaryMarkdown = fs.readFileSync(setupSummaryPath, "utf8");
+    expect(summaryMarkdown).toContain("## Sources");
+    expect(summaryMarkdown).toContain("## Claims to verify before relying on them");
+    expect(summaryMarkdown).toContain("- pnpm build - passed");
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]!.completedSummaries).toHaveLength(0);
+    expect(contexts[1]!.completedSummaries).toEqual([
+      expect.objectContaining({
+        id: "setup",
+        summary: "Created the Worker Summary writer.",
+        path: setupSummaryPath,
+      }),
+    ]);
+    expect(session.workerSummaries?.map((summary) => summary.id).sort()).toEqual([
+      "finish",
+      "setup",
+    ]);
+  });
+
+  it("does not mint a Worker Summary for a failed or unverified build-gate attempt", async () => {
+    const step = makeStep({ id: "verify-fails", backend: "codex" });
+    const plan = makePlan([step]);
+    plan.buildGate = {
+      commands: ["pnpm build"],
+      runBetweenSteps: true,
+      postExecutionReview: false,
+    };
+    const session = makeSession(plan);
+    session.taskCheckpoints = { "verify-fails": { baseSha: "base-sha-worker-summary" } };
+
+    mockCliExecute.mockResolvedValue({
+      status: "complete",
+      summary: "Claimed complete before verification.",
+      turnsUsed: 1,
+    });
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "TS2307: Cannot find module ./generated/client",
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-worker-summary-no-mint",
+      workingDir: "/tmp/moltbot-goal-test",
+      config: { goal: { semgrep: "off" } },
+    });
+
+    const summaryPath = resolveWorkerSummaryPath({
+      runId: "run-worker-summary-no-mint",
+      workingDir: "/tmp/moltbot-goal-test",
+      stepId: "verify-fails",
+    });
+    expect(outcome.status).toBe("blocked");
+    expect(fs.existsSync(summaryPath)).toBe(false);
+    expect(session.workerSummaries ?? []).toHaveLength(0);
+  });
+
   it("notifies task updates when build-gate reset returns a step to pending", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
@@ -2804,7 +3246,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(capturedContext?.resumeNotes).toEqual(session.resumeNotes);
   });
 
-  it("does not spawn the LLM post-execution review after a completed goal", async () => {
+  it("runs native post-execution reporting instead of the removed LLM post-execution review", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -2815,23 +3257,6 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       summary: "Done",
       turnsUsed: 1,
     });
-    // If the removed review still ran it would consume this error_max_turns
-    // envelope and leak it into the summary; assert it never does.
-    mockRunCliProcess.mockResolvedValue({
-      stdout: JSON.stringify({
-        type: "result",
-        is_error: true,
-        stop_reason: "tool_use",
-        num_turns: 2,
-        result: "error_max_turns",
-      }),
-      stderr: "",
-      timedOut: false,
-      exitCode: 1,
-      signal: null,
-      durationMs: 20,
-    });
-
     const { executeGoalWithAgent } = await import("./agent-executor.js");
     const outcome = await executeGoalWithAgent({
       session,
@@ -2840,8 +3265,12 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    // The review's backend spawn (runCliProcess) must never be invoked.
-    expect(mockRunCliProcess).not.toHaveBeenCalled();
+    const prompts = mockRunCliProcess.mock.calls.map(
+      (call) => ((call[0] as { args: string[] }).args.at(-1) ?? "") as string,
+    );
+    expect(prompts).toHaveLength(3);
+    expect(prompts.every((prompt) => prompt.includes("Native lifecycle phase:"))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("Post-Execution Review"))).toBe(false);
     if (outcome.status === "done") {
       expect(outcome.summary).not.toContain("Post-Execution Review");
       expect(outcome.summary).not.toContain("Post-execution review skipped");
@@ -2874,7 +3303,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(plan.steps.find((item) => item.id === "system-polish")).toBeUndefined();
   });
 
-  it("still generates manual tests after a completed goal", async () => {
+  it("uses native post-execution reporting to produce manual tests after a completed goal", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -2909,16 +3338,21 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    // The manual-tests phase still runs after completion.
-    expect(complete).toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
     const allDone = onStatusChange.mock.calls
-      .map((call) => call[0] as { type: string; manualTestsStatus?: string })
+      .map(
+        (call) => call[0] as { type: string; manualTestsStatus?: string; manualTests?: unknown[] },
+      )
       .find((event) => event.type === "all_done");
     expect(allDone).toBeDefined();
     expect(allDone?.manualTestsStatus).toBe("generated");
+    expect(allDone?.manualTests).toEqual([
+      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+    ]);
   });
 
-  it("mirrors goal runtime after lessons and manual-tests completion artifacts are produced", async () => {
+  it("mirrors goal runtime after lessons and post-execution report artifacts are produced", async () => {
     const step = makeStep({ backend: "codex" });
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -2984,8 +3418,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     expect(outcome.status).toBe("done");
     expect(mockExtractRunLessons).toHaveBeenCalled();
-    expect(complete).toHaveBeenCalled();
-    expect(onRunStatePersist).toHaveBeenCalledOnce();
+    expect(complete).not.toHaveBeenCalled();
+    expect(onRunStatePersist).toHaveBeenCalledTimes(2);
     expect(stateAtMirror).toBe("done");
     expect(mockMirrorGoalRuntimeToAgentHistory).toHaveBeenCalledWith({
       workspaceName: "moltbot-goal-test",
@@ -2995,10 +3429,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(mockExtractRunLessons.mock.invocationCallOrder[0]).toBeLessThan(
       onRunStatePersist.mock.invocationCallOrder[0]!,
     );
-    expect(complete.mock.invocationCallOrder[0]).toBeLessThan(
-      onRunStatePersist.mock.invocationCallOrder[0]!,
-    );
-    expect(onRunStatePersist.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(onRunStatePersist.mock.invocationCallOrder[1]!).toBeLessThan(
       mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
     );
     expect(onStatusChange).toHaveBeenCalledWith(
@@ -3032,8 +3463,8 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(onRunStatePersist).toHaveBeenCalledOnce();
-    expect(onRunStatePersist.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(onRunStatePersist).toHaveBeenCalledTimes(2);
+    expect(onRunStatePersist.mock.invocationCallOrder[1]!).toBeLessThan(
       mockMirrorGoalRuntimeToAgentHistory.mock.invocationCallOrder[0]!,
     );
     expect(progress).toContain(
@@ -3071,7 +3502,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
       );
     });
     expect(reviewDiffCalls).toHaveLength(0);
-    expect(mockRunCliProcess).not.toHaveBeenCalled();
+    expect(mockRunCliProcess).toHaveBeenCalled();
   });
 
   it("still runs lessons extraction after a completed goal", async () => {
@@ -3797,5 +4228,91 @@ describe("network-aware backend selection (requiresNetwork parity)", () => {
       isBackendNetworkCapable("claude_code", [{ id: "claude_code", available: false }], {}),
     ).toBe(false);
     expect(isBackendNetworkCapable("codex", [{ id: "codex", available: false }], {})).toBe(false);
+  });
+});
+
+describe("dev-gateway-control backend selection", () => {
+  const stepWith = (overrides: Partial<PlanStep>): PlanStep => ({
+    id: "s",
+    description: "d",
+    shortSummary: "d",
+    dependsOn: [],
+    status: "pending",
+    ...overrides,
+  });
+  const codexCapable = (b: GoalBackendId) => b === "codex";
+
+  it("reroutes a dev-gateway-control step off a mediator-incapable backend", () => {
+    const step = stepWith({ backend: "claude_code", requiresDevGatewayControl: true });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: () => false,
+      networkCandidates: ["claude_code", "codex"],
+      devGatewayControlCapable: codexCapable,
+      devGatewayControlCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("codex");
+  });
+
+  it("does not treat dev-gateway control as network capability", () => {
+    const step = stepWith({
+      backend: "claude_code",
+      requiresDevGatewayControl: true,
+      requiresNetwork: false,
+    });
+    const resolved = resolveBackendForStep(step, undefined, "claude_code", {
+      networkCapable: () => false,
+      networkCandidates: ["claude_code", "codex"],
+      devGatewayControlCapable: () => true,
+      devGatewayControlCandidates: ["claude_code", "codex"],
+    });
+    expect(resolved).toBe("claude_code");
+  });
+
+  it("prevents fallback to a backend that cannot use mediated dev-gateway control", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+    ];
+    const result = pickFallbackBackend(
+      "codex",
+      { status: "blocked", blockedReason: "usage_limit" },
+      ["codex", "claude_code"],
+      avail,
+      undefined,
+      {
+        requiresNetwork: false,
+        networkCapable: () => true,
+        requiresDevGatewayControl: true,
+        devGatewayControlCapable: codexCapable,
+      },
+    );
+    expect(result.backend).toBeNull();
+    expect(result.reason).toBe("fallback_unavailable");
+    expect(result.detail).toContain("requiresDevGatewayControl");
+  });
+
+  it("classifies dev-gateway control capability from backend availability and mediator availability", () => {
+    const avail: BackendAvailability[] = [
+      { id: "codex", available: true },
+      { id: "claude_code", available: true },
+      { id: "pi", available: true },
+    ];
+    expect(isBackendDevGatewayControlCapable("codex", avail, { mediationAvailable: true })).toBe(
+      true,
+    );
+    expect(
+      isBackendDevGatewayControlCapable("claude_code", avail, { mediationAvailable: true }),
+    ).toBe(true);
+    expect(isBackendDevGatewayControlCapable("pi", avail, { mediationAvailable: true })).toBe(
+      false,
+    );
+    expect(
+      isBackendDevGatewayControlCapable("codex", [{ id: "codex", available: false }], {
+        mediationAvailable: true,
+      }),
+    ).toBe(false);
+    expect(isBackendDevGatewayControlCapable("codex", avail, { mediationAvailable: false })).toBe(
+      false,
+    );
   });
 });

@@ -8,30 +8,35 @@ import { ensureMoltbotModelsJson } from "./models-config.js";
 type ModelEntry = { id: string; contextWindow?: number };
 
 const MODEL_CACHE = new Map<string, number>();
-const loadPromise = (async () => {
-  try {
-    const { AuthStorage, ModelRegistry } = await import("@mariozechner/pi-coding-agent");
-    const pathMod = await import("node:path");
-    const cfg = loadConfig();
-    await ensureMoltbotModelsJson(cfg);
-    const agentDir = resolveMoltbotAgentDir();
-    const authStorage = new AuthStorage(pathMod.join(agentDir, "auth.json"));
-    const modelRegistry = new ModelRegistry(authStorage, pathMod.join(agentDir, "models.json"));
-    const models = modelRegistry.getAll() as ModelEntry[];
-    for (const m of models) {
-      if (!m?.id) continue;
-      if (typeof m.contextWindow === "number" && m.contextWindow > 0) {
-        MODEL_CACHE.set(m.id, m.contextWindow);
+let loadPromise: Promise<void> | null = null;
+
+function loadModelContextMetadata(): Promise<void> {
+  loadPromise ??= (async () => {
+    try {
+      const { AuthStorage, ModelRegistry } = await import("@mariozechner/pi-coding-agent");
+      const pathMod = await import("node:path");
+      const cfg = loadConfig();
+      await ensureMoltbotModelsJson(cfg);
+      const agentDir = resolveMoltbotAgentDir();
+      const authStorage = new AuthStorage(pathMod.join(agentDir, "auth.json"));
+      const modelRegistry = new ModelRegistry(authStorage, pathMod.join(agentDir, "models.json"));
+      const models = modelRegistry.getAll() as ModelEntry[];
+      for (const m of models) {
+        if (!m?.id) continue;
+        if (typeof m.contextWindow === "number" && m.contextWindow > 0) {
+          MODEL_CACHE.set(m.id, m.contextWindow);
+        }
       }
+    } catch {
+      // If pi-ai isn't available, leave cache empty; lookup will fall back.
     }
-  } catch {
-    // If pi-ai isn't available, leave cache empty; lookup will fall back.
-  }
-})();
+  })();
+  return loadPromise;
+}
 
 export function lookupContextTokens(modelId?: string): number | undefined {
   if (!modelId) return undefined;
   // Best-effort: kick off loading, but don't block.
-  void loadPromise;
+  void loadModelContextMetadata();
   return MODEL_CACHE.get(modelId);
 }
