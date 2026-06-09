@@ -11,6 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
+import type { DevCapabilitiesMode, GoalConfig } from "../config/types.goal.js";
+import { DEV_GATEWAY_PROMPT_GUIDANCE_ENABLED } from "../prompts/shared/dev-gateway-guidance.js";
 
 /** The managed-workspace name of the SmithersBot dev checkout. */
 export const DEV_GATEWAY_WORKSPACE_NAME = "smithersbot-dev";
@@ -24,6 +26,24 @@ export type DevGatewayWorkerContext = {
   active: boolean;
 };
 
+const DEV_CAPABILITIES_ENV = "SMITHERSBOT_DEV_CAPS";
+
+function isDevCapabilitiesMode(value: unknown): value is DevCapabilitiesMode {
+  return value === "auto" || value === "off";
+}
+
+/**
+ * Resolve the SmithersBot-dev guidance/policy mode. Env wins over merged config
+ * when it is a recognized value; unrecognized env/config values fall through to
+ * the behavior-preserving default.
+ */
+export function resolveDevCapabilitiesMode(cfg?: GoalConfig): DevCapabilitiesMode {
+  const envMode = process.env[DEV_CAPABILITIES_ENV];
+  if (isDevCapabilitiesMode(envMode)) return envMode;
+  if (isDevCapabilitiesMode(cfg?.devCapabilities)) return cfg.devCapabilities;
+  return "auto";
+}
+
 /**
  * Path-based detection that a worker's checkout/cwd is the SmithersBot dev
  * workspace. Guidance only — never used to resolve runtime config.
@@ -32,6 +52,17 @@ export function isSmithersbotDevWorkspace(workingDir: string): boolean {
   const resolved = path.resolve(workingDir);
   const segments = resolved.split(path.sep).filter(Boolean);
   return segments.includes(DEV_GATEWAY_WORKSPACE_NAME);
+}
+
+/**
+ * Resolve whether planner/checker dev-gateway guidance should be injected.
+ * Guidance only — never used to resolve runtime config.
+ */
+export function shouldInjectDevGatewayGuidance(workingDir: string, cfg?: GoalConfig): boolean {
+  if (!DEV_GATEWAY_PROMPT_GUIDANCE_ENABLED) return false;
+  const mode = resolveDevCapabilitiesMode(cfg);
+  if (mode === "off") return false;
+  return isSmithersbotDevWorkspace(workingDir);
 }
 
 /**
@@ -58,11 +89,15 @@ export function devGatewayServicePresent(opts?: {
  */
 export function resolveDevGatewayWorkerContext(params: {
   workingDir: string;
+  cfg?: GoalConfig;
   servicePresent?: boolean;
   homedir?: () => string;
   fileExists?: (filePath: string) => boolean;
 }): DevGatewayWorkerContext {
   const isDevWorkspace = isSmithersbotDevWorkspace(params.workingDir);
+  if (resolveDevCapabilitiesMode(params.cfg) === "off") {
+    return { isDevWorkspace, servicePresent: false, active: false };
+  }
   const servicePresent = !isDevWorkspace
     ? false
     : (params.servicePresent ??

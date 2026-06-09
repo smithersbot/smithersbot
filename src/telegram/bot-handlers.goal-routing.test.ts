@@ -4,7 +4,9 @@ const mockRuns = vi.hoisted(() => [] as SerializedRun[]);
 const mockHandleGoalEdit = vi.hoisted(() => vi.fn());
 const mockHandleGoalAnswer = vi.hoisted(() => vi.fn());
 const mockHandleGoalFeedback = vi.hoisted(() => vi.fn());
+const mockHandleGoalApprove = vi.hoisted(() => vi.fn());
 const mockApplyGoalResumeNoteById = vi.hoisted(() => vi.fn());
+const mockApplyContinuationEditReply = vi.hoisted(() => vi.fn());
 
 vi.mock("../goal/run-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../goal/run-store.js")>();
@@ -22,6 +24,7 @@ vi.mock("./goal-commands.js", async (importOriginal) => {
     handleGoalEdit: (...args: unknown[]) => mockHandleGoalEdit(...args),
     handleGoalAnswer: (...args: unknown[]) => mockHandleGoalAnswer(...args),
     handleGoalFeedback: (...args: unknown[]) => mockHandleGoalFeedback(...args),
+    handleGoalApprove: (...args: unknown[]) => mockHandleGoalApprove(...args),
   };
 });
 
@@ -33,10 +36,22 @@ vi.mock("../commands/goal-resume-note.js", async (importOriginal) => {
   };
 });
 
+vi.mock("./continuation-core.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./continuation-core.js")>();
+  return {
+    ...actual,
+    applyContinuationEditReply: (...args: unknown[]) => mockApplyContinuationEditReply(...args),
+  };
+});
+
 import { handleTelegramGoalRouting, registerTelegramHandlers } from "./bot-handlers.js";
 import { acquireGoalOpLock } from "../goal/goal-lock.js";
 import type { SerializedRun } from "../goal/types.js";
 import { COMMAND_FRAGMENT_MAX_GAP_MS, CommandFragmentBuffer } from "./command-fragments.js";
+import {
+  clearAllPendingContinuationEditInteractionsForTest,
+  recordPendingContinuationEditInteraction,
+} from "./continuation-edit-interactions.js";
 
 const now = new Date().toISOString();
 
@@ -45,7 +60,7 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     runId: partial.runId ?? "run-1",
     goal: "Test goal",
     state: partial.state ?? "awaiting_approval",
-    plan: null,
+    plan: partial.plan ?? null,
     stepResults: {},
     blocked: partial.blocked ?? null,
     answers: {},
@@ -58,6 +73,7 @@ function makeRun(partial: Partial<SerializedRun>): SerializedRun {
     telegramQuestionMessages: partial.telegramQuestionMessages,
     telegramDoneMessage: partial.telegramDoneMessage,
     telegramFeedbackPromptMessages: partial.telegramFeedbackPromptMessages,
+    pendingContinuation: partial.pendingContinuation,
   };
 }
 
@@ -588,18 +604,26 @@ describe("handleTelegramGoalRouting", () => {
 });
 
 describe("registerTelegramHandlers goal-router reply threading", () => {
-  function makeBotHarness(options: { commandFragmentBuffer?: CommandFragmentBuffer } = {}) {
+  function makeBotHarness(
+    options: { commandFragmentBuffer?: CommandFragmentBuffer; operatorHonorific?: string } = {},
+  ) {
     mockHandleGoalEdit.mockReset();
     mockHandleGoalAnswer.mockReset();
     mockHandleGoalFeedback.mockReset();
+    mockHandleGoalApprove.mockReset();
     mockApplyGoalResumeNoteById.mockReset();
+    mockApplyContinuationEditReply.mockReset();
     mockApplyGoalResumeNoteById.mockReturnValue({
       status: "applied",
-      message: "Got it. Added your note and rescheduled 1 step.",
+      message: "Got it. Added those details and am resuming the goal now.",
       rescheduledStepIds: ["task-a"],
     });
+    mockHandleGoalApprove.mockResolvedValue(
+      "Executing: add-detai (0/1). I'll notify you if input is needed.",
+    );
 
     const messageHandlers = new Map<string, (ctx: Record<string, unknown>) => Promise<void>>();
+    const processMessage = vi.fn(async () => undefined);
     const bot = {
       on: vi.fn((event: string, handler: (ctx: Record<string, unknown>) => Promise<void>) => {
         messageHandlers.set(event, handler);
@@ -607,11 +631,17 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       api: {
         sendMessage: vi.fn(async () => ({ message_id: 999 })),
         sendChatAction: vi.fn(async () => undefined),
+        setMessageReaction: vi.fn(async () => true),
       },
     };
 
     registerTelegramHandlers({
-      cfg: { goal: { claudeCodeAuth: "api_key" } },
+      cfg: {
+        goal: { claudeCodeAuth: "api_key" },
+        agents: options.operatorHonorific
+          ? { defaults: { identity: { operatorHonorific: options.operatorHonorific } } }
+          : undefined,
+      },
       accountId: "telegram-account",
       bot: bot as never,
       opts: { token: "token" },
@@ -631,7 +661,7 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       resolveGroupPolicy: () => ({ allowlistEnabled: false, allowed: true }),
       resolveTelegramGroupConfig: () => ({ groupConfig: undefined, topicConfig: undefined }),
       shouldSkipUpdate: () => false,
-      processMessage: vi.fn(async () => undefined),
+      processMessage,
       logger: {
         debug: vi.fn(),
         info: vi.fn(),
@@ -643,10 +673,11 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     const messageHandler = messageHandlers.get("message");
     expect(messageHandler).toBeTypeOf("function");
     if (!messageHandler) throw new Error("Expected message handler");
-    return { bot, messageHandler };
+    return { bot, messageHandler, processMessage };
   }
 
   afterEach(() => {
+    clearAllPendingContinuationEditInteractionsForTest();
     vi.useRealTimers();
   });
 
@@ -655,10 +686,15 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     messageId: number;
     replyToMessageId?: number;
     runs?: SerializedRun[];
+    operatorHonorific?: string;
+    commandFragmentBuffer?: CommandFragmentBuffer;
   }) {
     mockRuns.length = 0;
     mockRuns.push(...(params.runs ?? []));
-    const harness = makeBotHarness();
+    const harness = makeBotHarness({
+      operatorHonorific: params.operatorHonorific,
+      commandFragmentBuffer: params.commandFragmentBuffer,
+    });
     await harness.messageHandler({
       message: {
         chat: { id: 42, type: "private" },
@@ -726,7 +762,7 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     );
   });
 
-  it("records direct replies as goal-level resume notes without using handleGoalAnswer", async () => {
+  it("records direct replies as goal-level resume notes and resumes without using handleGoalAnswer", async () => {
     const run = makeRun({
       runId: "direct-reply-run",
       state: "blocked",
@@ -750,11 +786,23 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       source: "direct_reply",
       userText: "use postgres for both",
     });
+    await vi.waitFor(() => expect(mockHandleGoalApprove).toHaveBeenCalledTimes(1));
+    expect(mockHandleGoalApprove).toHaveBeenCalledWith(
+      "direct-reply-run",
+      expect.any(Function),
+      expect.any(Object),
+    );
     expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
-    expectSendReplyToCurrentMessage(bot.api.sendMessage, 704);
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      "Right away, sir. Resuming the goal now.",
+      expect.objectContaining({
+        reply_parameters: { message_id: 704 },
+      }),
+    );
   });
 
-  it("records Add Details prompt replies with the add_details source", async () => {
+  it("records Add Details prompt replies with the add_details source and resumes", async () => {
     const run = makeRun({
       runId: "add-details-run",
       state: "blocked",
@@ -766,7 +814,7 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       telegramQuestionMessages: [{ chatId: 42, messageId: 421, requiredInputKey: "add_details" }],
     });
 
-    await routeText({
+    const { bot } = await routeText({
       text: "the fix is ready",
       messageId: 705,
       replyToMessageId: 421,
@@ -778,6 +826,188 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
       source: "add_details",
       userText: "the fix is ready",
     });
+    await vi.waitFor(() => expect(mockHandleGoalApprove).toHaveBeenCalledTimes(1));
+    expect(bot.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      "Right away, sir. Resuming the goal now.",
+      expect.objectContaining({
+        reply_parameters: { message_id: 705 },
+      }),
+    );
+  });
+
+  it("routes Add Details prompt replies for planning Needs Decision blocks through handleGoalAnswer", async () => {
+    const run = makeRun({
+      runId: "planning-decision-run",
+      state: "blocked",
+      plan: null,
+      blocked: {
+        blockedAt: "planning",
+        prompt: "Decision(s) needed",
+        requiredInputKey: "step:planning:input",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 424, requiredInputKey: "add_details" }],
+    });
+    mockHandleGoalAnswer.mockResolvedValue("Planning resumed.");
+
+    const { bot } = await routeText({
+      text: "A",
+      messageId: 706,
+      replyToMessageId: 424,
+      runs: [run],
+    });
+
+    await vi.waitFor(() => expect(mockHandleGoalAnswer).toHaveBeenCalledTimes(1));
+    expect(mockHandleGoalAnswer).toHaveBeenCalledWith(
+      "planning-decision-run",
+      "A",
+      expect.any(Function),
+      expect.any(Object),
+    );
+    expect(mockApplyGoalResumeNoteById).not.toHaveBeenCalled();
+    const sentText = bot.api.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(sentText).not.toContain(
+      "No blocked, paused, or failed steps need input/resume right now.",
+    );
+  });
+
+  it("Add Details on a run-level resume_execution marker records the note and resumes", async () => {
+    const run = makeRun({
+      runId: "add-details-run-level",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "worker interrupted - resume needed",
+        requiredInputKey: "resume_execution",
+      },
+      plan: {
+        goal: "Resume interrupted goal",
+        workingDir: "/tmp",
+        summary: "Resume interrupted goal",
+        steps: [
+          {
+            id: "resume-work",
+            description: "Resume work",
+            dependsOn: [],
+            status: "pending",
+          },
+        ],
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 423, requiredInputKey: "add_details" }],
+    });
+    mockApplyGoalResumeNoteById.mockReturnValueOnce({
+      status: "applied",
+      message: "Got it. Added those details and am resuming the goal now.",
+      rescheduledStepIds: [],
+    });
+
+    const { bot } = await routeText({
+      text: "the external issue is fixed",
+      messageId: 707,
+      replyToMessageId: 423,
+      runs: [run],
+    });
+
+    await vi.waitFor(() => expect(mockHandleGoalApprove).toHaveBeenCalledTimes(1));
+    expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+      runId: "add-details-run-level",
+      source: "add_details",
+      userText: "the external issue is fixed",
+    });
+    expect(mockHandleGoalApprove).toHaveBeenCalledWith(
+      "add-details-run-level",
+      expect.any(Function),
+      expect.any(Object),
+    );
+    const sentText = bot.api.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+    expect(sentText).toContain("Right away, sir. Resuming the goal now.");
+    expect(sentText).not.toContain("rescheduled");
+  });
+
+  it("acknowledges Request Edit replies, reacts, types, and preserves continuation buttons", async () => {
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: "✅ Continue Goal", callback_data: "gca:continue:proposal" }],
+        [{ text: "📝 Request Edit", callback_data: "gce:continue:proposal" }],
+      ],
+    };
+    const run = makeRun({
+      runId: "continuation-edit-run",
+      state: "done",
+      pendingContinuation: {
+        proposalId: "proposal-1",
+        fromPlanNumber: 1,
+        goalAchieved: false,
+        briefSummary: "Continue from the last plan.",
+        proposedPrompt: "Draft the next plan.",
+        runAt: "now",
+        status: "pending",
+        createdAt: now,
+        notify: { chatId: 42, messageId: 500 },
+      },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const harness = makeBotHarness({ operatorHonorific: "Matthew" });
+    mockApplyContinuationEditReply.mockResolvedValue({
+      runId: "continuation-edit-run",
+      state: "done",
+      messages: [{ text: "Revised continuation surface", replyMarkup }],
+    });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Aim the continuation at paid customer discovery.",
+        message_id: 708,
+        reply_to_message: { message_id: 500 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    await vi.waitFor(() => expect(mockApplyContinuationEditReply).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(harness.bot.api.sendMessage).toHaveBeenCalledWith(
+        42,
+        "Revised continuation surface",
+        expect.objectContaining({ reply_markup: replyMarkup }),
+      ),
+    );
+
+    expect(mockApplyContinuationEditReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "continuation-edit-run",
+        text: "Aim the continuation at paid customer discovery.",
+      }),
+    );
+    expect(harness.bot.api.setMessageReaction).toHaveBeenCalledWith(42, 708, [
+      { type: "emoji", emoji: "\u270D" },
+    ]);
+    expect(harness.bot.api.sendChatAction).toHaveBeenCalledWith(42, "typing");
+
+    const sentTexts = harness.bot.api.sendMessage.mock.calls.map((call) => String(call[1]));
+    expect(sentTexts.indexOf("Right away, Matthew.")).toBeGreaterThanOrEqual(0);
+    expect(sentTexts.indexOf("Right away, Matthew.")).toBeLessThan(
+      sentTexts.indexOf("Revised continuation surface"),
+    );
+    expect(harness.bot.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      "Right away, Matthew.",
+      expect.objectContaining({
+        reply_parameters: { message_id: 708 },
+      }),
+    );
+    expect(harness.bot.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      "Revised continuation surface",
+      expect.objectContaining({
+        reply_markup: replyMarkup,
+        reply_parameters: { message_id: 708 },
+      }),
+    );
   });
 
   it("does not route direct replies to tracked blocked messages into repo-chat", async () => {
@@ -813,7 +1043,43 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     expect(mockHandleGoalAnswer).not.toHaveBeenCalled();
   });
 
-  it("threads lock-failed edit, answer, and feedback replies to the current message", async () => {
+  it("preserves answer notes without an extra message when the resume lock is already held", async () => {
+    const run = makeRun({
+      runId: "locked-answer",
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Need input",
+        requiredInputKey: "input_key",
+      },
+      telegramQuestionMessages: [{ chatId: 42, messageId: 420, requiredInputKey: "input_key" }],
+    });
+    const lock = acquireGoalOpLock(run.runId, "test");
+    expect(lock.acquired).toBe(true);
+    try {
+      const { bot } = await routeText({
+        text: "answer while locked",
+        messageId: 705,
+        replyToMessageId: 420,
+        runs: [run],
+      });
+
+      expect(mockApplyGoalResumeNoteById).toHaveBeenCalledWith({
+        runId: "locked-answer",
+        source: "direct_reply",
+        userText: "answer while locked",
+      });
+      expect(mockHandleGoalApprove).not.toHaveBeenCalled();
+      const sentText = bot.api.sendMessage.mock.calls.map((call) => String(call[1])).join("\n");
+      expect(sentText).not.toContain("locked");
+      expect(sentText).not.toContain("did not start");
+      expect(sentText).not.toContain("Use /goal_resume");
+    } finally {
+      if (lock.acquired) lock.release();
+    }
+  });
+
+  it("threads lock-failed edit and feedback replies to the current message", async () => {
     for (const scenario of [
       {
         text: "edit while locked",
@@ -823,21 +1089,6 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
           runId: "locked-edit",
           state: "awaiting_approval",
           telegramPlanMessage: { chatId: 42, messageId: 410 },
-        }),
-      },
-      {
-        text: "answer while locked",
-        messageId: 705,
-        replyToMessageId: 420,
-        run: makeRun({
-          runId: "locked-answer",
-          state: "blocked",
-          blocked: {
-            blockedAt: "execution",
-            prompt: "Need input",
-            requiredInputKey: "input_key",
-          },
-          telegramQuestionMessages: [{ chatId: 42, messageId: 420, requiredInputKey: "input_key" }],
         }),
       },
       {
@@ -1028,5 +1279,141 @@ describe("registerTelegramHandlers goal-router reply threading", () => {
     expect(mockHandleGoalEdit.mock.calls[0]?.[1]).toBe(
       "First edit chunk second chunk via global append",
     );
+  });
+
+  it("joins split continuation Request Edit replies into one revision call", async () => {
+    vi.useFakeTimers();
+    const run = makeRun({
+      runId: "continuation-edit-run",
+      state: "done",
+      pendingContinuation: {
+        proposalId: "proposal-1",
+        fromPlanNumber: 1,
+        goalAchieved: false,
+        briefSummary: "Continue from the last plan.",
+        proposedPrompt: "Draft the next plan.",
+        runAt: "now",
+        status: "pending",
+        createdAt: now,
+        notify: { chatId: 42, messageId: 500 },
+      },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, COMMAND_FRAGMENT_MAX_GAP_MS);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+    mockApplyContinuationEditReply.mockResolvedValue({
+      runId: "continuation-edit-run",
+      state: "done",
+      messages: [{ text: "Revised continuation surface" }],
+    });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Aim the continuation at customer discovery ",
+        message_id: 801,
+        reply_to_message: { message_id: 500 },
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "and include pricing interviews.",
+        message_id: 802,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockApplyContinuationEditReply).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+    await vi.waitFor(() => expect(mockApplyContinuationEditReply).toHaveBeenCalledTimes(1));
+    expect(mockApplyContinuationEditReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "continuation-edit-run",
+        text: "Aim the continuation at customer discovery and include pricing interviews.",
+      }),
+    );
+  });
+
+  it("joins split active continuation Request Edit text when later chunks lose reply metadata", async () => {
+    vi.useFakeTimers();
+    const run = makeRun({
+      runId: "continuation-edit-run",
+      state: "done",
+      pendingContinuation: {
+        proposalId: "proposal-1",
+        fromPlanNumber: 1,
+        goalAchieved: false,
+        briefSummary: "Continue from the last plan.",
+        proposedPrompt: "Draft the next plan.",
+        runAt: "now",
+        status: "pending",
+        createdAt: now,
+        notify: { chatId: 42, messageId: 500 },
+      },
+    });
+    mockRuns.length = 0;
+    mockRuns.push(run);
+    recordPendingContinuationEditInteraction({
+      chatId: 42,
+      senderId: "99",
+      runId: "continuation-edit-run",
+      originalMessageId: 499,
+      promptMessageId: 500,
+    });
+    const commandFragmentBuffer = new CommandFragmentBuffer(undefined, COMMAND_FRAGMENT_MAX_GAP_MS);
+    const harness = makeBotHarness({ commandFragmentBuffer });
+    mockApplyContinuationEditReply.mockResolvedValue({
+      runId: "continuation-edit-run",
+      state: "done",
+      messages: [{ text: "Revised continuation surface" }],
+    });
+
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Part A: remove dev gateway prompts. ",
+        message_id: 811,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+    await harness.messageHandler({
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 99, username: "tester" },
+        text: "Part B: update README without gateway mention.",
+        message_id: 812,
+        date: 1,
+      },
+      me: { username: "moltbot_bot" },
+      getFile: async () => ({}),
+    });
+
+    expect(mockApplyContinuationEditReply).not.toHaveBeenCalled();
+    expect(harness.processMessage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(COMMAND_FRAGMENT_MAX_GAP_MS + 50);
+
+    await vi.waitFor(() => expect(mockApplyContinuationEditReply).toHaveBeenCalledTimes(1));
+    expect(mockApplyContinuationEditReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "continuation-edit-run",
+        text: "Part A: remove dev gateway prompts. Part B: update README without gateway mention.",
+      }),
+    );
+    expect(harness.processMessage).not.toHaveBeenCalled();
   });
 });

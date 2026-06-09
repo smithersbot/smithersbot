@@ -61,3 +61,39 @@ describe("ensureGlobalConventions", () => {
     expect(codex.trimEnd().split("\n").length).toBeLessThanOrEqual(40);
   });
 });
+
+describe("worker-context mirrors", () => {
+  it("keeps source mirrors byte-identical and points workers at GLOSSARY.md", () => {
+    const workerContextDir = path.join(process.cwd(), "src", "goal", "worker-context");
+    const shared = fs.readFileSync(
+      path.join(workerContextDir, "shared-worker-contract.md"),
+      "utf8",
+    );
+    const agents = fs.readFileSync(path.join(workerContextDir, "AGENTS.md"), "utf8");
+    const claude = fs.readFileSync(path.join(workerContextDir, "CLAUDE.md"), "utf8");
+
+    expect(agents).toBe(shared);
+    expect(claude).toBe(shared);
+    expect(shared).toContain("GLOSSARY.md");
+    expect(shared).toContain("Blocked, Failed, and Ralph");
+    expect(shared).toContain(
+      "When verifying a Task, check observable behavior end-to-end (what a user or caller can do and see), not internal wiring.",
+    );
+    expect(shared).toContain(
+      "If a Task's core deliverable is test design/coverage or you must decide what to mock, see docs/goal-engine-guides/testing-guidance.md.",
+    );
+    expect(shared).toContain(
+      "For a hard or intermittent failure, establish a fast, deterministic way to reproduce and check it before theorizing.",
+    );
+    expect(shared).toContain(
+      "For hard or intermittent bugs, follow docs/goal-engine-guides/diagnosis-guide.md.",
+    );
+    expect(shared).toContain(
+      "When a Task's approach is uncertain, prove the core path with the smallest runnable check before expanding.",
+    );
+    expect(shared).toContain("Don't add indirection that earns nothing.");
+    expect(shared).toContain("docs/goal-engine-guides/wiki-conventions.md");
+    expect(shared).not.toContain("form 3-5 ranked falsifiable hypotheses");
+    expect(shared).not.toContain("[DEBUG-");
+  });
+});

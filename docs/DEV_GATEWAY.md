@@ -116,7 +116,7 @@ use that token for the dev instance.
 
 ## Daily dev commands
 
-Restart the dev gateway:
+Restart the dev gateway from an operator shell:
 
 ```bash
 systemctl --user restart smithersbot-dev-gateway.service
@@ -141,6 +141,51 @@ instance the running process is configured as: stable reports
 
 Stable and dev services can exist and run at the same time. Restarting the dev
 gateway does not restart the stable gateway.
+
+## Trusted local RPC harness
+
+After an external operator restart has loaded newly built code into the dev
+gateway, use the trusted local RPC harness for supported Telegram-equivalent
+smoke flows against the selected running instance. The harness always requires
+an explicit target and prints ownership evidence.
+
+Create a dev-owned goal through the dev gateway command path:
+
+```bash
+smithersbot harness command --instance dev /new_goal "smoke goal text"
+```
+
+Drive supported command follow-ups:
+
+```bash
+smithersbot harness command --instance dev /goal_status <runId>
+smithersbot harness command --instance dev /goal_answer <runId> "answer text"
+smithersbot harness command --instance dev /goal_resume <runId>
+```
+
+Drive supported continuation, Request Edit, Add Details, and resume callback or
+reply flows:
+
+```bash
+smithersbot harness callback --instance dev <action> <runId> [text...]
+smithersbot harness reply --instance dev <kind> <runId> "reply text"
+```
+
+For stable-owned proof, use the same commands with `--instance stable`.
+Concrete ownership proof is the harness ownership output: dev-owned vs
+stable-owned, instance name, target gateway port, state root, and the run.json
+path under the selected target state root for goal runs. Dev-owned proof must
+show `instance=dev`, the dev gateway port, and a run.json path under the dev
+state root; stable-owned proof must show `instance=stable`, the stable gateway
+port, and a run.json path under the stable state root.
+
+Do not use `agent --message "/new_goal ..."` as dev-owned live proof; it sends
+chat text to the agent/LLM path and does not invoke the goal command dispatcher.
+Do not use `goal "..."` as dev-owned live proof; it runs locally/in-process in
+the caller and is not proof of target-gateway ownership. Do not claim Telegram
+is required when `smithersbot harness` supports the needed flow; fall back to
+manual Telegram only when the harness lacks the exact operator surface and state
+what is missing.
 
 ## Stable edits dev; dev never controls stable
 

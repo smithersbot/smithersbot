@@ -39,7 +39,7 @@ export function resolveMessagePrefix(
   const hasAllowFrom = opts?.hasAllowFrom === true;
   if (hasAllowFrom) return "";
 
-  return resolveIdentityNamePrefix(cfg, agentId) ?? opts?.fallback ?? "[moltbot]";
+  return resolveIdentityNamePrefix(cfg, agentId) ?? opts?.fallback ?? "[smithersbot]";
 }
 
 export function resolveResponsePrefix(cfg: MoltbotConfig, agentId: string): string | undefined {

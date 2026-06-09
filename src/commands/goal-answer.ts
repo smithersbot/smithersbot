@@ -1,8 +1,11 @@
 import { JsonExitError } from "../cli/cli-utils.js";
 import type { MoltbotConfig } from "../config/types.clawdbot.js";
 import type { GoalStatusChangeEvent } from "../goal/agent-executor.js";
+import { recordPlanningDecisionAnswer } from "../goal/planning-decision-answers.js";
+import { loadRun, resolveRunId, saveRun } from "../goal/run-store.js";
 import type { GoalOutcome, OutputFormat } from "../goal/types.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { goalResumeCommand } from "./goal-resume.js";
 import { applyGoalResumeNoteById } from "./goal-resume-note.js";
 
 export type GoalAnswerOptions = {
@@ -30,6 +33,37 @@ export async function goalAnswerCommand(
   runtime: RuntimeEnv,
 ): Promise<GoalOutcome | undefined> {
   const isJson = resolveIsJson(opts);
+  const resolvedId = resolveRunId(runId);
+  const run = resolvedId ? loadRun(resolvedId) : undefined;
+
+  if (
+    run &&
+    resolvedId &&
+    recordPlanningDecisionAnswer({
+      run,
+      inputKey: opts.key,
+      value: opts.value,
+      now: new Date().toISOString(),
+    })
+  ) {
+    saveRun(run);
+    // The recorded answer passes the planning Needs Decision gate. Auto-resume
+    // planning instead of asking the user to run /goal_resume — goalResumeCommand
+    // routes a blocked planning run that has a recorded answer to retryPlanning.
+    // On a real backend/env failure retryPlanning surfaces its own clear blocker
+    // and leaves the run in "planning" (with lastError), never silently stuck.
+    return await goalResumeCommand(
+      resolvedId,
+      {
+        ...(opts.json !== undefined ? { json: opts.json } : {}),
+        ...(opts.output !== undefined ? { output: opts.output } : {}),
+        ...(opts.quiet !== undefined ? { quiet: opts.quiet } : {}),
+        ...(opts.config !== undefined ? { config: opts.config } : {}),
+        ...(opts.onStatusChange !== undefined ? { onStatusChange: opts.onStatusChange } : {}),
+      },
+      runtime,
+    );
+  }
 
   const result = applyGoalResumeNoteById({
     runId,

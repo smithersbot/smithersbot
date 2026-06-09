@@ -419,6 +419,23 @@ describe("checkCommandDeny", () => {
 describe("buildDevWorkspaceHardDenies", () => {
   const devDenies = buildDevWorkspaceHardDenies();
 
+  it("relaxes only the dev restart deny while the base safety floor remains stricter", () => {
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service"),
+    ).toMatchObject({
+      pattern: "systemctl --user restart",
+    });
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service", devDenies),
+    ).toBeNull();
+    expect(checkCommandDeny("systemctl --user restart smithersbot-gateway.service")).toMatchObject({
+      pattern: "systemctl --user restart",
+    });
+    expect(
+      checkCommandDeny("systemctl --user restart smithersbot-gateway.service", devDenies)?.reason,
+    ).toBe(DEV_GATEWAY_WORKSPACE_DENY_REASON);
+  });
+
   it("allows restarting/inspecting only the dev gateway unit", () => {
     expect(
       checkCommandDeny("systemctl --user restart smithersbot-dev-gateway.service", devDenies),

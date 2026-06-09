@@ -38,18 +38,26 @@ function orderedStepIds(plan: Plan): string[] {
   return orderStepIdsCriticalPathFirst(plan.steps, scores);
 }
 
+function nodeId(plan: Plan, stepId: string): string {
+  const index = plan.steps.findIndex((step) => step.id === stepId);
+  expect(index).toBeGreaterThanOrEqual(0);
+  return `n${index}`;
+}
+
 function expectedNodeDeclarations(plan: Plan): string[] {
   const stepById = new Map(plan.steps.map((step) => [step.id, step]));
   return orderedStepIds(plan).map((stepId, index) => {
     const orderedStep = stepById.get(stepId);
     expect(orderedStep).toBeDefined();
-    return `  ${stepId}["${index + 1}. ${orderedStep!.shortSummary}"]`;
+    return `  ${nodeId(plan, stepId)}["${index + 1}. ${orderedStep!.shortSummary}"]`;
   });
 }
 
 function expectedInvisibleEdges(plan: Plan): string[] {
   const order = orderedStepIds(plan);
-  return order.slice(0, -1).map((stepId, index) => `  ${stepId} ~~~ ${order[index + 1]}`);
+  return order
+    .slice(0, -1)
+    .map((stepId, index) => `  ${nodeId(plan, stepId)} ~~~ ${nodeId(plan, order[index + 1])}`);
 }
 
 function nodeDeclarations(out: string): string[] {
@@ -65,6 +73,13 @@ function visibleEdges(out: string): string[] {
     .split("\n")
     .filter((line) => line.includes("-->"))
     .map((line) => line.trim());
+}
+
+function classAssignments(out: string): string[] {
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("class "));
 }
 
 describe("normalizeLabel", () => {
@@ -205,9 +220,9 @@ describe("orderStepIdsCriticalPathFirst", () => {
       step({ id: "B", dependsOn: ["A"], description: "Second" }),
     ]);
     const out = renderMermaid(plan);
-    expect(out).toContain('A["1. First"]');
-    expect(out).toContain('B["2. Second"]');
-    expect(out).toContain('C["3. Third"]');
+    expect(out).toContain(`${nodeId(plan, "A")}["1. First"]`);
+    expect(out).toContain(`${nodeId(plan, "B")}["2. Second"]`);
+    expect(out).toContain(`${nodeId(plan, "C")}["3. Third"]`);
   });
 });
 
@@ -240,8 +255,8 @@ describe("renderMermaid", () => {
     expect(out).not.toContain("(mkdir)");
     expect(out).toContain("2. Write file");
     expect(out).not.toContain("(file_write)");
-    expect(out).toContain("1 --> 2");
-    expect(out).toContain("2 --> 3");
+    expect(out).toContain(`${nodeId(plan, "1")} --> ${nodeId(plan, "2")}`);
+    expect(out).toContain(`${nodeId(plan, "2")} --> ${nodeId(plan, "3")}`);
   });
 
   it("truncates very long node labels to keep Mermaid output compact", () => {
@@ -256,7 +271,7 @@ describe("renderMermaid", () => {
     ]);
 
     const out = renderMermaid(plan);
-    expect(out).toContain('1["1. ');
+    expect(out).toContain(`${nodeId(plan, "1")}["1. `);
     expect(out).toContain("...");
     expect(out).not.toContain(longDescription);
   });
@@ -273,7 +288,7 @@ describe("renderMermaid", () => {
     ]);
 
     const out = renderMermaid(plan);
-    expect(out).toContain('1["1. Readable task label"]');
+    expect(out).toContain(`${nodeId(plan, "1")}["1. Readable task label"]`);
     expect(out).not.toContain("Verbose description that should not be used in the node label");
   });
 
@@ -350,10 +365,107 @@ describe("renderMermaid", () => {
     ]);
 
     const out = renderMermaid(plan);
-    expect(out).toContain("A --> B");
-    expect(out).toContain("A --> C");
-    expect(out).toContain("B --> D");
-    expect(out).toContain("C --> D");
+    expect(out).toContain(`${nodeId(plan, "A")} --> ${nodeId(plan, "B")}`);
+    expect(out).toContain(`${nodeId(plan, "A")} --> ${nodeId(plan, "C")}`);
+    expect(out).toContain(`${nodeId(plan, "B")} --> ${nodeId(plan, "D")}`);
+    expect(out).toContain(`${nodeId(plan, "C")} --> ${nodeId(plan, "D")}`);
+  });
+
+  it("maps Mermaid-unsafe step ids to deterministic safe node tokens", () => {
+    const plan = makePlan([
+      step({
+        id: "build-api",
+        description: "Build API service for build-api",
+        status: "done",
+        durationMinutes: 3,
+      }),
+      step({
+        id: "data.load",
+        description: "Load data.load inputs",
+        dependsOn: ["build-api"],
+        status: "done",
+        durationMinutes: 5,
+      }),
+      step({
+        id: "ask:input",
+        description: "Ask about ask:input",
+        dependsOn: ["build-api"],
+        status: "blocked",
+        durationMinutes: 1,
+      }),
+      step({
+        id: "docs/readme",
+        description: "Write docs/readme",
+        dependsOn: ["data.load", "ask:input"],
+        status: "pending",
+        durationMinutes: 2,
+      }),
+      step({
+        id: "1-start",
+        description: "Start 1-start",
+        status: "pending",
+        durationMinutes: 1,
+      }),
+      step({
+        id: "class",
+        description: "Handle reserved word class",
+        dependsOn: ["1-start"],
+        status: "in_progress",
+        durationMinutes: 1,
+      }),
+    ]);
+    const cpm = computeCpm(plan);
+    const statuses = new Map<string, ExecutionDisplayStatus>([
+      ["build-api", "done"],
+      ["data.load", "done"],
+      ["ask:input", "blocked"],
+      ["docs/readme", "pending"],
+      ["1-start", "pending"],
+      ["class", "in_progress"],
+    ]);
+    const stepResults = new Map<string, StepResult>([
+      ["build-api", { stepId: "build-api", success: true, output: "ok", durationMs: 42_000 }],
+      ["data.load", { stepId: "data.load", success: true, output: "ok", durationMs: 125_000 }],
+    ]);
+
+    const out = renderMermaid(plan, cpm, statuses, stepResults);
+
+    expect(nodeDeclarations(out).map((line) => line.trim().match(/^(\w+)\[/)?.[1])).toEqual([
+      "n0",
+      "n1",
+      "n2",
+      "n3",
+      "n4",
+      "n5",
+    ]);
+    expect(visibleEdges(out)).toEqual([
+      "n0 --> n1",
+      "n0 --> n2",
+      "n1 --> n3",
+      "n2 --> n3",
+      "n4 --> n5",
+    ]);
+    expect(classAssignments(out)).toEqual([
+      "class n0 done;",
+      "class n1 done;",
+      "class n2 blocked;",
+      "class n3 pending;",
+      "class n4 pending;",
+      "class n5 inprog;",
+    ]);
+    expect(out).toContain("Build API service for build-api<br/>42s");
+    expect(out).toContain("Load data.load inputs<br/>2m 5s");
+    expect(out).toContain("Ask about ask:input<br/>~1 min");
+    expect(out).toContain("Write docs/readme<br/>~2 min");
+    expect(out).toContain("linkStyle 0 stroke:#718096,stroke-width:4px;");
+    expect(out).toContain("linkStyle 2 stroke:#718096,stroke-width:4px;");
+    expect(out).not.toContain("linkStyle 1 stroke:#718096,stroke-width:4px;");
+
+    for (const rawId of plan.steps.map((item) => item.id)) {
+      expect(nodeDeclarations(out).some((line) => line.trim().startsWith(`${rawId}[`))).toBe(false);
+      expect(visibleEdges(out).some((line) => line.split(/\s+-->\s+/).includes(rawId))).toBe(false);
+      expect(classAssignments(out).some((line) => line.startsWith(`class ${rawId} `))).toBe(false);
+    }
   });
 
   it("escapes double quotes in descriptions", () => {
@@ -606,25 +718,25 @@ describe("renderMermaid", () => {
         ["D", "in_progress"],
       ]);
       const out = renderMermaid(statusPlan, undefined, statuses);
-      expect(out).toContain("class A done;");
-      expect(out).toContain("class B blocked;");
-      expect(out).toContain("class C waiting;");
-      expect(out).toContain("class D inprog;");
+      expect(out).toContain(`class ${nodeId(statusPlan, "A")} done;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "B")} blocked;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "C")} waiting;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "D")} inprog;`);
     });
 
     it("uses done class directly for done status", () => {
       const statuses = new Map<string, ExecutionDisplayStatus>([["A", "done"]]);
       const out = renderMermaid(statusPlan, undefined, statuses);
-      expect(out).toContain("class A done;");
+      expect(out).toContain(`class ${nodeId(statusPlan, "A")} done;`);
     });
 
     it("assigns pending class to all nodes when displayStatuses is omitted (plan mode: no emojis)", () => {
       const out = renderMermaid(statusPlan);
       // All nodes get pending class by default
-      expect(out).toContain("class A pending;");
-      expect(out).toContain("class B pending;");
-      expect(out).toContain("class C pending;");
-      expect(out).toContain("class D pending;");
+      expect(out).toContain(`class ${nodeId(statusPlan, "A")} pending;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "B")} pending;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "C")} pending;`);
+      expect(out).toContain(`class ${nodeId(statusPlan, "D")} pending;`);
       // No emojis in labels when displayStatuses is omitted
       expect(out).not.toContain("✅");
       expect(out).not.toContain("⛔");
@@ -651,7 +763,7 @@ describe("renderMermaid", () => {
       const statuses = new Map<string, ExecutionDisplayStatus>([["C", "soft_blocked"]]);
       const out = renderMermaid(statusPlan, undefined, statuses);
       expect(out).toContain("⏳ 3.");
-      expect(out).toContain("class C waiting;");
+      expect(out).toContain(`class ${nodeId(statusPlan, "C")} waiting;`);
     });
 
     it("usage_limited follows the approved blocked rule (no amber/dashed class, no battery icon)", () => {
@@ -660,7 +772,7 @@ describe("renderMermaid", () => {
       // A usage-limit block uses the same approved blocked style/icon — no
       // invented amber/dashed `usagelimited` class and no battery icon.
       expect(out).toContain("⛔ 3.");
-      expect(out).toContain("class C blocked;");
+      expect(out).toContain(`class ${nodeId(statusPlan, "C")} blocked;`);
       expect(out).not.toContain("🪫");
       expect(out).not.toContain("usagelimited");
       expect(out).not.toContain("#FBBF24");
@@ -692,7 +804,7 @@ describe("renderMermaid", () => {
       expect(out).toContain("linkStyle default");
       expect(out).not.toContain("classDef critical");
       expect(out).toContain("classDef done");
-      expect(out).toContain("class X done;");
+      expect(out).toContain(`class ${nodeId(plan, "X")} done;`);
     });
 
     it("uses actual elapsed duration labels for done steps when stepResults are provided", () => {
@@ -782,7 +894,7 @@ describe("renderMermaid", () => {
       // ...but the VISUAL mapping is the approved blocked style/icon only — no
       // invented amber/dashed `usagelimited` class, no battery icon, no colors.
       expect(out).toContain("⛔ 1.");
-      expect(out).toContain("class A blocked;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} blocked;`);
       expect(out).not.toContain("usagelimited");
       expect(out).not.toContain("🪫");
       expect(out).not.toContain("#FBBF24");
@@ -801,8 +913,8 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(out).toContain("class A blocked;");
-      expect(out).toContain("class B waiting;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} blocked;`);
+      expect(out).toContain(`class ${nodeId(plan, "B")} waiting;`);
       expect(out).toContain("⏳");
     });
 
@@ -818,8 +930,8 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(out).toContain("class A blocked;");
-      expect(out).toContain("class B pending;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} blocked;`);
+      expect(out).toContain(`class ${nodeId(plan, "B")} pending;`);
     });
 
     it("recomputes ALL node display states (resume), not just the first node", () => {
@@ -845,11 +957,11 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(out).toContain("class A done;");
-      expect(out).toContain("class B blocked;");
-      expect(out).toContain("class C pending;");
-      expect(out).toContain("class D blocked;");
-      expect(out).toContain("class E waiting;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} done;`);
+      expect(out).toContain(`class ${nodeId(plan, "B")} blocked;`);
+      expect(out).toContain(`class ${nodeId(plan, "C")} pending;`);
+      expect(out).toContain(`class ${nodeId(plan, "D")} blocked;`);
+      expect(out).toContain(`class ${nodeId(plan, "E")} waiting;`);
       // No stale invented usage-limited styling anywhere.
       expect(out).not.toContain("usagelimited");
       expect(out).not.toContain("🪫");
@@ -862,10 +974,10 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(out).toContain("class A done;");
-      expect(out).toContain("class B done;");
-      expect(out).not.toContain("class A blocked;");
-      expect(out).not.toContain("class B blocked;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} done;`);
+      expect(out).toContain(`class ${nodeId(plan, "B")} done;`);
+      expect(out).not.toContain(`class ${nodeId(plan, "A")} blocked;`);
+      expect(out).not.toContain(`class ${nodeId(plan, "B")} blocked;`);
       expect(out).not.toContain("usagelimited");
       expect(out).not.toContain("⛔");
       expect(out).not.toContain("🪫");
@@ -881,8 +993,8 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(out).toContain("class A done;");
-      expect(out).toContain("class B pending;");
+      expect(out).toContain(`class ${nodeId(plan, "A")} done;`);
+      expect(out).toContain(`class ${nodeId(plan, "B")} pending;`);
       expect(out).not.toContain("usagelimited");
       expect(out).not.toContain("⛔");
       expect(out).not.toContain("🪫");
@@ -896,8 +1008,11 @@ describe("renderMermaid", () => {
       ]);
       const statuses = computeDisplayStatuses(plan.steps);
       const out = renderMermaid(plan, undefined, statuses);
-      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c"]);
-      expect(out).not.toContain("a --> c");
+      expect(visibleEdges(out)).toEqual([
+        `${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`,
+        `${nodeId(plan, "b")} --> ${nodeId(plan, "c")}`,
+      ]);
+      expect(out).not.toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "c")}`);
     });
   });
 
@@ -1059,9 +1174,9 @@ describe("renderMermaid", () => {
     ]);
     const out = renderMermaid(plan);
     // Z should be #1 (root), Y #2, X #3 in dependency order
-    expect(out).toContain('Z["1. First task"]');
-    expect(out).toContain('Y["2. Middle task"]');
-    expect(out).toContain('X["3. Last task"]');
+    expect(out).toContain(`${nodeId(plan, "Z")}["1. First task"]`);
+    expect(out).toContain(`${nodeId(plan, "Y")}["2. Middle task"]`);
+    expect(out).toContain(`${nodeId(plan, "X")}["3. Last task"]`);
   });
 
   it("normalizes LLM-prefixed descriptions in labels", () => {
@@ -1133,8 +1248,11 @@ describe("renderMermaid", () => {
         step({ id: "c", description: "C", dependsOn: ["b", "a"] }),
       ]);
       const out = renderMermaid(plan);
-      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c"]);
-      expect(out).not.toContain("a --> c");
+      expect(visibleEdges(out)).toEqual([
+        `${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`,
+        `${nodeId(plan, "b")} --> ${nodeId(plan, "c")}`,
+      ]);
+      expect(out).not.toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "c")}`);
     });
 
     it("drops a redundant edge spanning a longer chain (a->b->c->d, a->d)", () => {
@@ -1145,8 +1263,12 @@ describe("renderMermaid", () => {
         step({ id: "d", description: "D", dependsOn: ["c", "a"] }),
       ]);
       const out = renderMermaid(plan);
-      expect(out).not.toContain("a --> d");
-      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c", "c --> d"]);
+      expect(out).not.toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "d")}`);
+      expect(visibleEdges(out)).toEqual([
+        `${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`,
+        `${nodeId(plan, "b")} --> ${nodeId(plan, "c")}`,
+        `${nodeId(plan, "c")} --> ${nodeId(plan, "d")}`,
+      ]);
     });
 
     it("keeps all diamond edges (none are transitively implied)", () => {
@@ -1158,13 +1280,13 @@ describe("renderMermaid", () => {
       ]);
       const out = renderMermaid(plan);
       const edges = visibleEdges(out);
-      expect(edges).toContain("A --> B");
-      expect(edges).toContain("A --> C");
-      expect(edges).toContain("B --> D");
-      expect(edges).toContain("C --> D");
+      expect(edges).toContain(`${nodeId(plan, "A")} --> ${nodeId(plan, "B")}`);
+      expect(edges).toContain(`${nodeId(plan, "A")} --> ${nodeId(plan, "C")}`);
+      expect(edges).toContain(`${nodeId(plan, "B")} --> ${nodeId(plan, "D")}`);
+      expect(edges).toContain(`${nodeId(plan, "C")} --> ${nodeId(plan, "D")}`);
       // The diamond has exactly four edges; nothing should be added or removed.
       expect(edges).toHaveLength(4);
-      expect(out).not.toContain("A --> D");
+      expect(out).not.toContain(`${nodeId(plan, "A")} --> ${nodeId(plan, "D")}`);
     });
 
     it("keeps independent dependency chains intact", () => {
@@ -1176,8 +1298,8 @@ describe("renderMermaid", () => {
       ]);
       const out = renderMermaid(plan);
       const edges = visibleEdges(out);
-      expect(edges).toContain("a --> b");
-      expect(edges).toContain("x --> y");
+      expect(edges).toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`);
+      expect(edges).toContain(`${nodeId(plan, "x")} --> ${nodeId(plan, "y")}`);
       expect(edges).toHaveLength(2);
     });
 
@@ -1190,8 +1312,8 @@ describe("renderMermaid", () => {
       ]);
       const out = renderMermaid(plan);
       const edges = visibleEdges(out);
-      expect(edges).toContain("a --> b");
-      expect(edges).toContain("a --> c");
+      expect(edges).toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`);
+      expect(edges).toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "c")}`);
       expect(edges).toHaveLength(2);
     });
 
@@ -1206,7 +1328,11 @@ describe("renderMermaid", () => {
       ]);
       const cpm = computeCpm(plan);
       const out = renderMermaid(plan, cpm);
-      expect(visibleEdges(out)).toEqual(["a --> b", "b --> c", "c --> d"]);
+      expect(visibleEdges(out)).toEqual([
+        `${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`,
+        `${nodeId(plan, "b")} --> ${nodeId(plan, "c")}`,
+        `${nodeId(plan, "c")} --> ${nodeId(plan, "d")}`,
+      ]);
       expect(out).toContain("linkStyle 0 stroke:#718096,stroke-width:4px;");
       expect(out).toContain("linkStyle 1 stroke:#718096,stroke-width:4px;");
       expect(out).toContain("linkStyle 2 stroke:#718096,stroke-width:4px;");
@@ -1224,10 +1350,10 @@ describe("renderMermaid", () => {
       ]);
       const out = renderMermaid(plan);
       const edges = visibleEdges(out);
-      expect(edges).toContain("a --> c");
-      expect(edges).toContain("b --> c");
-      expect(edges).toContain("a --> b");
-      expect(edges).toContain("b --> a");
+      expect(edges).toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "c")}`);
+      expect(edges).toContain(`${nodeId(plan, "b")} --> ${nodeId(plan, "c")}`);
+      expect(edges).toContain(`${nodeId(plan, "a")} --> ${nodeId(plan, "b")}`);
+      expect(edges).toContain(`${nodeId(plan, "b")} --> ${nodeId(plan, "a")}`);
     });
   });
 });

@@ -61,11 +61,12 @@ describe("noteSecurityWarnings gateway exposure", () => {
     expect(message).toContain("CRITICAL");
   });
 
-  it("skips warning for loopback bind", async () => {
+  it("warns for loopback bind without auth because token auth is recommended by default", async () => {
     const cfg = { gateway: { bind: "loopback" } } as MoltbotConfig;
     await noteSecurityWarnings(cfg);
     const message = lastMessage();
-    expect(message).toContain("No channel security warnings detected");
-    expect(message).not.toContain("Gateway bound");
+    expect(message).toContain("CRITICAL");
+    expect(message).toContain('Gateway bound to "loopback"');
+    expect(message).toContain("without authentication");
   });
 });

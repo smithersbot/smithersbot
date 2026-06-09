@@ -14,12 +14,14 @@ import {
   repairMermaidDiagram,
   type MermaidRenderResult,
 } from "../goal/mermaid-png.js";
+import { extractGoalBriefSection, loadGoalBriefContent } from "../goal/goal-brief.js";
 import { loadRun, saveRun } from "../goal/run-store.js";
 import { resolveClaudeBinary } from "../goal/scout.js";
 import type {
   BlockedDetail,
   ManualTestSuggestion,
   Plan,
+  GoalImageFailureReason,
   PlanStep,
   PlannerBackendId,
   SerializedRun,
@@ -46,6 +48,133 @@ import type { GoalPlanResult } from "./goal-commands.js";
 // Telegram reply delivery
 // ---------------------------------------------------------------------------
 
+type SendMessageOptions = Parameters<Bot["api"]["sendMessage"]>[2];
+type SendPhotoOptions = Parameters<Bot["api"]["sendPhoto"]>[2];
+type SendMessageResult = Awaited<ReturnType<Bot["api"]["sendMessage"]>>;
+type SendPhotoResult = Awaited<ReturnType<Bot["api"]["sendPhoto"]>>;
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isStaleReplyTargetError(err: unknown): boolean {
+  const message = describeError(err).toLowerCase();
+  return (
+    (message.includes("reply") || message.includes("replied")) &&
+    (message.includes("not found") ||
+      message.includes("not exist") ||
+      message.includes("message_id_invalid") ||
+      message.includes("replied message not found"))
+  );
+}
+
+function withReplyTarget<T extends Record<string, unknown>>(params: {
+  base: T;
+  threadId?: number;
+  replyToMessageId?: number;
+}): T & { message_thread_id?: number; reply_parameters?: { message_id: number } } {
+  return {
+    ...params.base,
+    ...(params.threadId != null ? { message_thread_id: params.threadId } : {}),
+    ...(params.replyToMessageId != null
+      ? { reply_parameters: { message_id: params.replyToMessageId } }
+      : {}),
+  };
+}
+
+function withoutReplyParameters<T extends { reply_parameters?: unknown }>(options: T): T {
+  const { reply_parameters: _replyParameters, ...rest } = options;
+  return rest as T;
+}
+
+export async function sendGoalTelegramMessage(params: {
+  bot: Bot;
+  chatId: number;
+  text: string;
+  runtime: RuntimeEnv;
+  threadId?: number;
+  replyToMessageId?: number;
+  options?: SendMessageOptions;
+  operation?: string;
+}): Promise<SendMessageResult> {
+  const operation = params.operation ?? "sendMessage";
+  const options = withReplyTarget({
+    base: params.options ?? {},
+    threadId: params.threadId,
+    replyToMessageId: params.replyToMessageId,
+  });
+  try {
+    return await params.bot.api.sendMessage(params.chatId, params.text, options);
+  } catch (err) {
+    if (params.replyToMessageId != null && isStaleReplyTargetError(err)) {
+      params.runtime.error?.(
+        `telegram goal ${operation} reply target ${params.replyToMessageId} rejected; retrying without reply_parameters: ${describeError(err)}`,
+      );
+      return params.bot.api.sendMessage(
+        params.chatId,
+        params.text,
+        withoutReplyParameters(options),
+      );
+    }
+    throw err;
+  }
+}
+
+async function sendGoalTelegramHtmlMessage(params: {
+  bot: Bot;
+  chatId: number;
+  html: string;
+  text: string;
+  runtime: RuntimeEnv;
+  threadId?: number;
+  replyToMessageId?: number;
+  options?: SendMessageOptions;
+  operation?: string;
+}): Promise<SendMessageResult> {
+  try {
+    return await sendGoalTelegramMessage({
+      ...params,
+      text: params.html,
+      options: { ...params.options, parse_mode: "HTML" },
+    });
+  } catch {
+    return sendGoalTelegramMessage({
+      ...params,
+      text: params.text,
+      options: { ...params.options, parse_mode: undefined },
+    });
+  }
+}
+
+export async function sendGoalTelegramPhoto(params: {
+  bot: Bot;
+  chatId: number;
+  photo: InputFile;
+  runtime: RuntimeEnv;
+  threadId?: number;
+  replyToMessageId?: number;
+  options?: SendPhotoOptions;
+  operation?: string;
+}): Promise<SendPhotoResult> {
+  const operation = params.operation ?? "sendPhoto";
+  const options = withReplyTarget({
+    base: params.options ?? {},
+    threadId: params.threadId,
+    replyToMessageId: params.replyToMessageId,
+  });
+  try {
+    return await params.bot.api.sendPhoto(params.chatId, params.photo, options);
+  } catch (err) {
+    if (params.replyToMessageId != null && isStaleReplyTargetError(err)) {
+      params.runtime.error?.(
+        `telegram goal ${operation} reply target ${params.replyToMessageId} rejected; retrying without reply_parameters: ${describeError(err)}`,
+      );
+      return params.bot.api.sendPhoto(params.chatId, params.photo, withoutReplyParameters(options));
+    }
+    throw err;
+  }
+}
+
 export async function sendGoalReply(
   bot: Bot,
   chatId: number,
@@ -54,56 +183,49 @@ export async function sendGoalReply(
   threadId?: number,
   replyToMessageId?: number,
   replyMarkup?: InlineKeyboardMarkup,
+  renderOptions?: { headingStyle?: "none" | "bold"; compact?: boolean },
 ): Promise<number | undefined> {
   const safeMarkdown = redactSecretValues(markdown);
   if (!safeMarkdown.trim()) {
-    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-    const replyParams =
-      replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
-    const keyboardParams = replyMarkup ? { reply_markup: replyMarkup } : {};
     const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
       fn: () =>
-        bot.api.sendMessage(chatId, "No output.", {
-          ...threadParams,
-          ...replyParams,
-          ...keyboardParams,
+        sendGoalTelegramMessage({
+          bot,
+          chatId,
+          text: "No output.",
+          runtime,
+          threadId,
+          replyToMessageId,
+          options: replyMarkup ? { reply_markup: replyMarkup } : {},
         }),
     });
     return sent?.message_id;
   }
   let lastMessageId: number | undefined;
-  const chunks = markdownToTelegramChunks(safeMarkdown, 4000);
+  const chunks = markdownToTelegramChunks(safeMarkdown, 4000, renderOptions);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const isLast = i === chunks.length - 1;
-    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
     const keyboardParams = isLast && replyMarkup ? { reply_markup: replyMarkup } : {};
-    const replyParams =
-      replyToMessageId != null && i === 0
-        ? { reply_parameters: { message_id: replyToMessageId } }
-        : {};
     const sent = await withTelegramApiErrorLogging({
       operation: "sendMessage",
       runtime,
       fn: () =>
-        bot.api
-          .sendMessage(chatId, chunk.html, {
-            parse_mode: "HTML",
+        sendGoalTelegramHtmlMessage({
+          bot,
+          chatId,
+          html: chunk.html,
+          text: chunk.text,
+          runtime,
+          threadId,
+          replyToMessageId: i === 0 ? replyToMessageId : undefined,
+          options: {
             link_preview_options: { is_disabled: true },
-            ...threadParams,
-            ...replyParams,
             ...keyboardParams,
-          })
-          .catch(() =>
-            bot.api.sendMessage(chatId, chunk.text, {
-              link_preview_options: { is_disabled: true },
-              ...threadParams,
-              ...replyParams,
-              ...keyboardParams,
-            }),
-          ),
+          },
+        }),
     });
     if (sent?.message_id != null) {
       lastMessageId = sent.message_id;
@@ -123,8 +245,8 @@ function buildGoalInlineKeyboard(runIdPrefix: string, revision: number) {
       { text: "\uD83D\uDD0D Plan Detail", callback_data: `gD:${runIdPrefix}:${revision}` },
     ],
     [
-      { text: "\u270F\uFE0F Request changes", callback_data: `ge:${runIdPrefix}:${revision}` },
-      { text: "\uD83D\uDC4E Reject", callback_data: `gr:${runIdPrefix}:${revision}` },
+      { text: "\uD83D\uDCD8 Goal Brief", callback_data: `gB:${runIdPrefix}:${revision}` },
+      { text: "\u270F\uFE0F Edit Plan", callback_data: `ge:${runIdPrefix}:${revision}` },
     ],
   ]);
 }
@@ -152,34 +274,22 @@ async function sendGoalPlanMessage(params: {
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const isLast = i === chunks.length - 1;
-    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
     const keyboardParams = isLast && replyMarkup ? { reply_markup: replyMarkup } : {};
-    const replyParams =
-      replyToMessageId != null && i === 0
-        ? { reply_parameters: { message_id: replyToMessageId } }
-        : {};
 
     try {
-      const sent = await bot.api.sendMessage(chatId, chunk.html, {
-        parse_mode: "HTML",
-        ...threadParams,
-        ...replyParams,
-        ...keyboardParams,
+      const sent = await sendGoalTelegramHtmlMessage({
+        bot,
+        chatId,
+        html: chunk.html,
+        text: chunk.text,
+        runtime,
+        threadId,
+        replyToMessageId: i === 0 ? replyToMessageId : undefined,
+        options: keyboardParams,
       });
       lastMessageId = sent.message_id;
-    } catch {
-      try {
-        const sent = await bot.api.sendMessage(chatId, chunk.text, {
-          ...threadParams,
-          ...replyParams,
-          ...keyboardParams,
-        });
-        lastMessageId = sent.message_id;
-      } catch (err) {
-        runtime.error?.(
-          `telegram goal sendMessage failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    } catch (err) {
+      runtime.error?.(`telegram goal sendMessage failed: ${describeError(err)}`);
     }
   }
 
@@ -312,6 +422,28 @@ export function persistCompletionDeliveryFailure(runId: string, deliveryError: s
   saveRun(run);
 }
 
+/** Persist failed Telegram DAG image generation/send state on a run. */
+export function persistGoalImageFailure(params: {
+  runId: string;
+  reason: GoalImageFailureReason;
+  error: string;
+}): void {
+  const run = loadRun(params.runId);
+  if (!run) return;
+  const at = new Date().toISOString();
+  const event = {
+    reason: params.reason,
+    error: redactSecretValues(params.error.trim() || "unknown image failure"),
+    at,
+  };
+  run.imageFailure = {
+    ...event,
+    events: [...(run.imageFailure?.events ?? []), event].slice(-10),
+  };
+  run.updatedAt = at;
+  saveRun(run);
+}
+
 const TELEGRAM_FEEDBACK_PROMPT_MESSAGE_CAP = 5;
 
 /** Persist Telegram feedback-prompt message tracking on a run (for ForceReply routing). */
@@ -334,6 +466,113 @@ export function persistFeedbackPromptMessage(params: {
     TELEGRAM_FEEDBACK_PROMPT_MESSAGE_CAP,
   );
   saveRun(run);
+}
+
+export type GoalDagDeliveryResult =
+  | { ok: true; path: "image" | "text" | "minimal"; messageId: number }
+  | { ok: false; error: string };
+
+export async function sendGoalDagWithFallback(params: {
+  bot: Bot;
+  chatId: number;
+  threadId?: number;
+  runtime: RuntimeEnv;
+  runId?: string;
+  plan: Plan;
+  steps: PlanStep[];
+  stepResults?: ReadonlyMap<string, StepResult>;
+  caption: string;
+  textMarkdown?: string;
+  minimalMarkdown?: string;
+  replyMarkup?: InlineKeyboardMarkup;
+  replyToMessageId?: number;
+  textReplyToMessageId?: number | null;
+  minimalReplyToMessageId?: number | null;
+}): Promise<GoalDagDeliveryResult> {
+  const failures: string[] = [];
+  try {
+    const imageMessageId = await sendDagPng({
+      bot: params.bot,
+      chatId: params.chatId,
+      threadId: params.threadId,
+      runtime: params.runtime,
+      runId: params.runId,
+      plan: params.plan,
+      steps: params.steps,
+      stepResults: params.stepResults,
+      caption: params.caption,
+      replyMarkup: params.replyMarkup,
+      replyToMessageId: params.replyToMessageId,
+    });
+    if (imageMessageId != null) {
+      return { ok: true, path: "image", messageId: imageMessageId };
+    }
+    failures.push("image delivery returned no message");
+  } catch (err) {
+    failures.push(`image delivery threw: ${describeError(err)}`);
+  }
+
+  const textMarkdown = params.textMarkdown ?? params.caption;
+  if (textMarkdown.trim()) {
+    try {
+      const textMessageId = await sendGoalReply(
+        params.bot,
+        params.chatId,
+        textMarkdown,
+        params.runtime,
+        params.threadId,
+        params.textReplyToMessageId !== undefined
+          ? (params.textReplyToMessageId ?? undefined)
+          : params.replyToMessageId,
+        params.replyMarkup,
+      );
+      if (textMessageId != null) {
+        return { ok: true, path: "text", messageId: textMessageId };
+      }
+      failures.push("text fallback returned no message");
+    } catch (err) {
+      failures.push(`text fallback threw: ${describeError(err)}`);
+    }
+  }
+
+  if (params.minimalMarkdown?.trim()) {
+    try {
+      const minimalMessageId = await sendGoalReply(
+        params.bot,
+        params.chatId,
+        params.minimalMarkdown,
+        params.runtime,
+        params.threadId,
+        params.minimalReplyToMessageId !== undefined
+          ? (params.minimalReplyToMessageId ?? undefined)
+          : params.replyToMessageId,
+        params.replyMarkup,
+      );
+      if (minimalMessageId != null) {
+        return { ok: true, path: "minimal", messageId: minimalMessageId };
+      }
+      failures.push("minimal fallback returned no message");
+    } catch (err) {
+      failures.push(`minimal fallback threw: ${describeError(err)}`);
+    }
+  }
+
+  return { ok: false, error: failures.join("; ") || "goal delivery failed" };
+}
+
+export function formatGoalDagTextFallback(params: {
+  plan: Plan;
+  caption: string;
+  stepResults?: ReadonlyMap<string, StepResult>;
+}): string {
+  let cpm: ReturnType<typeof computeCpm> | undefined;
+  try {
+    cpm = computeCpm(params.plan);
+  } catch {
+    /* non-critical; renderMermaid can render without CPM styling */
+  }
+  const mermaidText = renderMermaid(params.plan, cpm, undefined, params.stepResults);
+  return `${params.caption}\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,14 +610,52 @@ function formatCaptionLabel(label: string, value: string): string {
   return `**${label}:** ${value}`;
 }
 
+/** Plan-specific summary text (the short plan summary, full summary fallback). */
+function planSummaryText(plan: Plan): string {
+  return (typeof plan.shortSummary === "string" ? plan.shortSummary.trim() : "") || plan.summary;
+}
+
+/**
+ * Full-goal summary from the run's Goal Brief. Prefers the brief's "Goal
+ * Summary" section, falling back to "Long Goal Summary". Returns undefined when
+ * the brief is missing/empty so callers can fall back to the plan summary.
+ */
+function resolveGoalBriefSummary(run: SerializedRun | undefined): string | undefined {
+  if (!run) return undefined;
+  const brief = loadGoalBriefContent(run);
+  if (!brief.ok) return undefined;
+  const section =
+    extractGoalBriefSection(brief.content, ["Goal Summary"]) ??
+    extractGoalBriefSection(brief.content, ["Long Goal Summary"]);
+  const summary = section?.replace(/\s+/g, " ").trim();
+  return summary ? summary : undefined;
+}
+
 /** Build a metadata caption header for plan messages. */
 function buildCaptionHeader(result: GoalPlanResult): string {
   const lines: string[] = [];
+  // Load run early: the Goal Summary line, workspace, planner notice, and plan
+  // number all derive from it (the run was persisted before planning).
+  const run = result.runId ? loadRun(result.runId) : undefined;
+  const planNumber = run?.planNumber ?? 1;
+
+  if (result.plan) {
+    // Goal Summary is the FULL-goal summary from the Goal Brief — not the
+    // plan-specific summary. Fall back to the plan summary only when the brief
+    // is missing/empty.
+    lines.push(
+      formatCaptionLabel(
+        "Goal Summary",
+        resolveGoalBriefSummary(run) ?? planSummaryText(result.plan),
+      ),
+    );
+    // The plan-specific summary lives on its own Plan N line, directly beneath
+    // the Goal Summary and before the Goal ID.
+    lines.push(formatCaptionLabel(`Plan ${planNumber}`, planSummaryText(result.plan)));
+  }
   if (result.runId) {
     lines.push(formatCaptionLabel("Goal ID", result.runId.slice(0, 8)));
   }
-  // Load run to get workingDir (already persisted before planning)
-  const run = result.runId ? loadRun(result.runId) : undefined;
   if (run?.workingDir) {
     lines.push(formatCaptionLabel("Workspace", shortenHomePath(run.workingDir)));
   }
@@ -410,13 +687,6 @@ function buildCaptionHeader(result: GoalPlanResult): string {
       workers.add(resolveStepWorker(step));
     }
     lines.push(formatCaptionLabel("Workers", [...workers].join(", ")));
-    lines.push(
-      formatCaptionLabel(
-        "Plan",
-        (typeof result.plan.shortSummary === "string" ? result.plan.shortSummary.trim() : "") ||
-          result.plan.summary,
-      ),
-    );
   }
   return lines.join("\n");
 }
@@ -452,51 +722,46 @@ export async function sendBlockedNotification(params: {
   // user-facing category so task-level and goal-level behave consistently.
   const level = blockedDetail.stepId ? "task" : "goal";
   const category = classifyBlockedNotification(steps, blockedDetail);
+  const planningDecision =
+    blockedDetail.blockedAt === "planning" &&
+    !!blockedDetail.decisions &&
+    blockedDetail.decisions.length > 0;
+  const keyboardOpts = { planningDecision };
   const replyMarkup =
     level === "task"
-      ? buildTaskBlockedInlineKeyboard(runIdPrefix, category)
-      : buildGoalBlockedInlineKeyboard(runIdPrefix, category);
+      ? buildTaskBlockedInlineKeyboard(runIdPrefix, category, keyboardOpts)
+      : buildGoalBlockedInlineKeyboard(runIdPrefix, category, keyboardOpts);
   const copy = buildBlockedSurfaceCopy({
     level,
     category,
     runIdPrefix,
     stepId: blockedDetail.stepId,
+    blockedAt: blockedDetail.blockedAt,
+    decisions: blockedDetail.decisions,
   });
-  const body = blockedCaption || blockedDetail.prompt;
-  const caption = `${copy.title}\n\n${body}\n\n${copy.actionHint}`;
+  const body = copy.body ?? (blockedCaption || blockedDetail.prompt);
+  // Planning-decision blocks omit copy.title (the bold "Decision(s) Needed:" in
+  // body is the only heading) — filter empty parts so no leading blank lines.
+  const caption = [copy.title, body, copy.actionHint].filter(Boolean).join("\n\n");
 
-  let messageId: number | undefined;
-  try {
-    messageId = await sendDagPng({
-      bot,
-      chatId,
-      threadId,
-      runtime,
-      runId,
-      plan,
-      steps,
-      stepResults,
-      caption,
-      replyMarkup,
-      replyToMessageId,
-    });
-  } catch (err) {
-    runtime.error?.(
-      `telegram goal sendBlockedNotification DAG failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    messageId = undefined;
-  }
-
-  if (messageId == null) {
-    messageId = await sendGoalReply(
-      bot,
-      chatId,
-      caption,
-      runtime,
-      threadId,
-      replyToMessageId,
-      replyMarkup,
-    );
+  const delivery = await sendGoalDagWithFallback({
+    bot,
+    chatId,
+    threadId,
+    runtime,
+    runId,
+    plan,
+    steps,
+    stepResults,
+    caption,
+    textMarkdown: caption,
+    minimalMarkdown: [copy.title, copy.actionHint].filter(Boolean).join("\n\n"),
+    replyMarkup,
+    replyToMessageId,
+  });
+  const messageId = delivery.ok ? delivery.messageId : undefined;
+  if (!delivery.ok) {
+    runtime.error?.(`telegram goal blocked notification delivery failed: ${delivery.error}`);
   }
 
   if (messageId != null) {
@@ -527,16 +792,16 @@ export async function sendGoalPlanResult(params: {
   if (result.runId && result.revision) {
     const runIdPrefix = result.runId.slice(0, 8);
     const replyMarkup = buildGoalInlineKeyboard(runIdPrefix, result.revision);
+    let deliveryError = "goal delivery failed";
+
+    // Build a rich caption header with metadata.
+    const captionHeader = redactSecretValues(
+      result.plan ? buildCaptionHeader(result) : formatCaptionLabel("Plan", runIdPrefix),
+    );
 
     try {
-      // Build a rich caption header with metadata
-      const captionHeader = redactSecretValues(
-        result.plan ? buildCaptionHeader(result) : formatCaptionLabel("Plan", runIdPrefix),
-      );
-
-      // Try to send plan DAG as a single PNG photo with inline keyboard
       if (result.plan) {
-        const pngId = await sendDagPng({
+        const delivery = await sendGoalDagWithFallback({
           bot,
           chatId,
           threadId,
@@ -546,77 +811,73 @@ export async function sendGoalPlanResult(params: {
           steps: result.plan.steps,
           stepResults: result.stepResults,
           caption: captionHeader,
+          textMarkdown: formatGoalDagTextFallback({
+            plan: result.plan,
+            caption: captionHeader,
+            stepResults: result.stepResults,
+          }),
+          minimalMarkdown: `Plan ready for review (Goal ID: ${runIdPrefix}). Use /goal_detail ${runIdPrefix} to view.`,
           replyMarkup,
           replyToMessageId,
+          // Text/minimal fallbacks must not depend on the original message
+          // still being a valid reply target.
+          textReplyToMessageId: null,
+          minimalReplyToMessageId: null,
         });
-        if (pngId != null) {
-          // Single-message success: photo with keyboard is the plan message
-          persistTelegramPlanMessage({ runId: result.runId, chatId, messageId: pngId, threadId });
+        if (delivery.ok) {
+          persistTelegramPlanMessage({
+            runId: result.runId,
+            chatId,
+            messageId: delivery.messageId,
+            threadId,
+          });
           if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
             warn(
-              `telegram-goal: plan sent as single photo messageId=${pngId} (sendGoalPlanMessage skipped)`,
+              `telegram-goal: plan delivered via ${delivery.path} messageId=${delivery.messageId}`,
             );
           }
           return;
         }
-      }
-
-      // PNG failed — fall back to text message with Mermaid code block
-      let markdown = captionHeader;
-      if (result.plan) {
-        let cpm: ReturnType<typeof computeCpm> | undefined;
-        try {
-          cpm = computeCpm(result.plan);
-        } catch {
-          /* non-critical */
-        }
-        const mermaidText = renderMermaid(result.plan, cpm, undefined, result.stepResults);
-        markdown += `\n\n\`\`\`mermaid\n${mermaidText}\n\`\`\``;
-      }
-
-      if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
-        warn("telegram-goal: PNG failed, falling back to sendGoalPlanMessage text");
-      }
-
-      const sentId = await sendGoalPlanMessage({
-        bot,
-        chatId,
-        markdown,
-        runtime,
-        runIdPrefix,
-        revision: result.revision,
-        threadId,
-        replyToMessageId,
-      });
-      if (sentId != null) {
-        persistTelegramPlanMessage({
-          runId: result.runId,
+        deliveryError = delivery.error;
+      } else {
+        const sentId = await sendGoalPlanMessage({
+          bot,
           chatId,
-          messageId: sentId,
+          markdown: captionHeader,
+          runtime,
+          runIdPrefix,
+          revision: result.revision,
           threadId,
         });
-        return;
+        if (sentId != null) {
+          persistTelegramPlanMessage({
+            runId: result.runId,
+            chatId,
+            messageId: sentId,
+            threadId,
+          });
+          return;
+        }
+        deliveryError = "plan text delivery returned no message";
       }
     } catch (deliveryErr) {
+      deliveryError =
+        deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr) || deliveryError;
       warn(
         `[goal] plan delivery threw for ${runIdPrefix}: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}`,
       );
     }
 
-    // All delivery attempts failed — send a minimal fallback so the user is not left hanging
-    warn(`[goal] plan delivery failed for ${runIdPrefix}; sending minimal fallback`);
-    const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-    const replyParams =
-      replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
-    await bot.api
-      .sendMessage(
-        chatId,
-        `Plan ready for review (Goal ID: ${runIdPrefix}). Use /goal_detail ${runIdPrefix} to view.`,
-        { ...threadParams, ...replyParams, reply_markup: replyMarkup },
-      )
-      .catch(() => {});
+    warn(`[goal] plan delivery failed for ${runIdPrefix}: ${deliveryError}`);
+    persistCompletionDeliveryFailure(result.runId, deliveryError);
   } else if (result.runId && result.blocked) {
     // Question/clarification message — track for reply-to-answer routing
+    const replyMarkup =
+      result.decisions && result.decisions.length > 0
+        ? buildGoalBlockedInlineKeyboard(result.runId.slice(0, 8), "blocked", {
+            planningDecision: true,
+          })
+        : undefined;
     const sentId = await sendGoalReply(
       bot,
       chatId,
@@ -624,6 +885,7 @@ export async function sendGoalPlanResult(params: {
       runtime,
       threadId,
       replyToMessageId,
+      replyMarkup,
     );
     if (sentId != null) {
       const run = loadRun(result.runId);
@@ -725,6 +987,23 @@ function splitTelegramCaption(caption: string): { caption: string; remainder?: s
 
 const MERMAID_REPAIR_TIMEOUT_MS = 60_000;
 
+function recordDagImageFailure(params: {
+  runtime: RuntimeEnv;
+  runId?: string;
+  reason: GoalImageFailureReason;
+  error: string;
+}): void {
+  const message = redactSecretValues(params.error.trim() || "unknown image failure");
+  params.runtime.error?.(`telegram goal DAG image ${params.reason}: ${message}`);
+  if (params.runId) {
+    persistGoalImageFailure({
+      runId: params.runId,
+      reason: params.reason,
+      error: message,
+    });
+  }
+}
+
 function buildCodexMermaidRepairArgs(params: {
   workingDir: string;
   prompt: string;
@@ -822,10 +1101,6 @@ export async function sendDagPng(params: {
     replyToMessageId,
     runId,
   } = params;
-  const threadParams = threadId != null ? { message_thread_id: threadId } : {};
-  const replyParams =
-    replyToMessageId != null ? { reply_parameters: { message_id: replyToMessageId } } : {};
-
   const displayStatuses = computeDisplayStatuses(steps);
   let cpm: ReturnType<typeof computeCpm> | undefined;
   try {
@@ -840,36 +1115,95 @@ export async function sendDagPng(params: {
   if (renderResult && "buffer" in renderResult) {
     pngBuffer = renderResult.buffer;
   } else if (renderResult && "error" in renderResult) {
-    if (!runId) return undefined;
+    recordDagImageFailure({
+      runtime,
+      runId,
+      reason: "render-syntax-failure",
+      error: renderResult.error,
+    });
+    if (!runId) {
+      recordDagImageFailure({
+        runtime,
+        runId,
+        reason: "repair-unavailable",
+        error: "runId unavailable for Mermaid repair",
+      });
+      return undefined;
+    }
     const run = loadRun(runId);
     const backend = run?.plannerBackendUsed;
-    if (!run?.workingDir || !backend) return undefined;
-    const repaired = await repairMermaidDiagram({
-      source: mermaidText,
-      error: renderResult.error,
-      askFn: (prompt) =>
-        askPlannerBackendForMermaidRepair({
-          backend,
-          workingDir: run.workingDir,
-          prompt,
-          model: run.model,
-        }),
-    });
-    if (!repaired) return undefined;
+    if (!run?.workingDir || !backend) {
+      const missing = [
+        !run ? "run" : undefined,
+        run && !run.workingDir ? "workingDir" : undefined,
+        run && !backend ? "plannerBackendUsed" : undefined,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      recordDagImageFailure({
+        runtime,
+        runId,
+        reason: "repair-unavailable",
+        error: `Mermaid repair unavailable: missing ${missing || "repair context"}`,
+      });
+      return undefined;
+    }
+    let repaired: Buffer | null | undefined;
+    try {
+      repaired = await repairMermaidDiagram({
+        source: mermaidText,
+        error: renderResult.error,
+        askFn: (prompt) =>
+          askPlannerBackendForMermaidRepair({
+            backend,
+            workingDir: run.workingDir,
+            prompt,
+            model: run.model,
+          }),
+      });
+    } catch (err) {
+      recordDagImageFailure({
+        runtime,
+        runId,
+        reason: "repair-failure",
+        error: describeError(err),
+      });
+      return undefined;
+    }
+    if (!repaired) {
+      recordDagImageFailure({
+        runtime,
+        runId,
+        reason: "repair-failure",
+        error: "Mermaid repair did not produce a PNG",
+      });
+      return undefined;
+    }
     pngBuffer = repaired;
   } else {
-    // Timeout render path: let caller fall back to keyboarded text plan delivery.
+    recordDagImageFailure({
+      runtime,
+      runId,
+      reason: "render-timeout",
+      error: "Mermaid PNG renderer timed out",
+    });
     return undefined;
   }
 
   const split = splitTelegramCaption(caption);
   try {
-    const sent = await bot.api.sendPhoto(chatId, new InputFile(pngBuffer, "dag.png"), {
-      caption: split.caption,
-      parse_mode: "HTML",
-      ...threadParams,
-      ...replyParams,
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    const sent = await sendGoalTelegramPhoto({
+      bot,
+      chatId,
+      photo: new InputFile(pngBuffer, "dag.png"),
+      runtime,
+      threadId,
+      replyToMessageId,
+      options: {
+        caption: split.caption,
+        parse_mode: "HTML",
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      },
     });
     if (process.env.MOLTBOT_DEBUG_TELEGRAM === "1") {
       warn(`telegram-goal: sendDagPng OK messageId=${sent.message_id} chatId=${chatId}`);
@@ -879,9 +1213,12 @@ export async function sendDagPng(params: {
     }
     return sent.message_id;
   } catch (err) {
-    runtime.error?.(
-      `telegram goal sendPhoto failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    recordDagImageFailure({
+      runtime,
+      runId,
+      reason: "photo-send-failure",
+      error: describeError(err),
+    });
     return undefined;
   }
 }

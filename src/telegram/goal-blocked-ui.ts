@@ -6,6 +6,7 @@ import {
   type UsageLimitBackend,
 } from "../goal/error-patterns.js";
 import { classifyRunCategory, type RunCategory } from "../goal/run-category.js";
+import type { ScoutDecision } from "../goal/scout.js";
 import type { BlockedDetail, PlanStep } from "../goal/types.js";
 import { describeUsageLimitEvent, type UsageLimitEvent } from "../goal/usage-limit-message.js";
 import { buildInlineKeyboard } from "./send.js";
@@ -28,13 +29,21 @@ function buildBlockedKeyboard(
   runIdPrefix: string,
   level: BlockedSurfaceLevel,
   category: RunCategory,
+  opts: { planningDecision?: boolean } = {},
 ) {
   const addDetails = { text: "✏️ Add Details", callback_data: `gAD:${runIdPrefix}` };
   const resume = { text: "▶️ Resume Goal", callback_data: `gResume:${runIdPrefix}` };
   const stop = { text: "⏹️ Stop Goal", callback_data: `gStop:${runIdPrefix}` };
+  // The planning Needs Decision surface answers via the existing reply/answer
+  // flow, so the button reuses the gAD force-reply callback — no second
+  // answer mechanism is introduced.
+  const makeDecisions = { text: "☑️ Make Decision(s)", callback_data: `gAD:${runIdPrefix}` };
 
   switch (category) {
     case "blocked":
+      if (opts.planningDecision) {
+        return buildInlineKeyboard([[makeDecisions]]);
+      }
       return buildInlineKeyboard(
         level === "goal" ? [[addDetails], [resume, stop]] : [[addDetails], [stop]],
       );
@@ -50,15 +59,17 @@ function buildBlockedKeyboard(
 export function buildGoalBlockedInlineKeyboard(
   runIdPrefix: string,
   category: RunCategory = "blocked",
+  opts: { planningDecision?: boolean } = {},
 ) {
-  return buildBlockedKeyboard(runIdPrefix, "goal", category);
+  return buildBlockedKeyboard(runIdPrefix, "goal", category, opts);
 }
 
 export function buildTaskBlockedInlineKeyboard(
   runIdPrefix: string,
   category: RunCategory = "blocked",
+  opts: { planningDecision?: boolean } = {},
 ) {
-  return buildBlockedKeyboard(runIdPrefix, "task", category);
+  return buildBlockedKeyboard(runIdPrefix, "task", category, opts);
 }
 
 /**
@@ -93,10 +104,43 @@ export function classifyBlockedNotification(
 }
 
 export interface BlockedSurfaceCopy {
-  /** Bold title line for the surface (markdown). */
-  title: string;
+  /**
+   * Bold title line for the surface (markdown). Omitted for planning-decision
+   * blocks, whose only heading is the bold "Decision(s) Needed:" inside body.
+   */
+  title?: string;
+  /** Optional body override for structured planning-decision blocks. */
+  body?: string;
   /** One-line hint making the next user action obvious. */
   actionHint: string;
+}
+
+function normalizeDecisionText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Render the planning Needs Decision body in the continuation-decision style:
+ * one bold "Decision(s) Needed:" heading, then per decision a bold
+ * "Decision N." label, then per option a bold "(KEY)" marker with a bold
+ * "(Recommended)" suffix when applicable. Only those fixed markers are bold —
+ * the model-provided question/label text stays plain and is HTML-escaped
+ * downstream by markdownToTelegramHtml (escapeHtml). Output is compact: a single
+ * newline between every line, with no blank-line separators between decisions.
+ */
+export function formatPlanningDecisionMarkdown(decisions: readonly ScoutDecision[]): string {
+  const lines = ["**Decision(s) Needed:**"];
+  decisions.forEach((decision, index) => {
+    const question = normalizeDecisionText(decision.question) || "Decision needed";
+    lines.push(`**Decision ${index + 1}.** ${question}`);
+    for (const option of decision.options) {
+      const key = normalizeDecisionText(option.key) || "?";
+      const label = normalizeDecisionText(option.label) || "Option";
+      const recommended = option.recommended === true ? " **(Recommended)**" : "";
+      lines.push(`**(${key})** ${label}${recommended}`);
+    }
+  });
+  return lines.join("\n");
 }
 
 /**
@@ -109,8 +153,19 @@ export function buildBlockedSurfaceCopy(params: {
   category: RunCategory;
   runIdPrefix: string;
   stepId?: string;
+  blockedAt?: BlockedDetail["blockedAt"];
+  decisions?: readonly ScoutDecision[];
 }): BlockedSurfaceCopy {
   const { level, category, runIdPrefix, stepId } = params;
+  if (params.blockedAt === "planning" && params.decisions && params.decisions.length > 0) {
+    // No separate title heading — the bold "Decision(s) Needed:" inside body is
+    // the only heading. The runIdPrefix lives in the action hint, not a heading.
+    return {
+      body: formatPlanningDecisionMarkdown(params.decisions),
+      actionHint: `**Goal ID:** ${runIdPrefix}`,
+    };
+  }
+
   const subject = level === "task" ? `Step ${stepId}` : "Goal";
   switch (category) {
     case "blocked":
