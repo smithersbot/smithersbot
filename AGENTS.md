@@ -117,6 +117,13 @@ Do not ralph with the same approach — explain what went wrong and what to do d
   `config.goal.allowLegacyWorkingDir = false`.
 - If you need a real credential to test something, request it through the trusted
   host-side opt-in path instead of trying to read private env files yourself.
+- If a required project secret is absent from `process.env`, env injection is
+  almost certainly disabled (the default). An operator can enable it for this
+  workspace with the `/goal_secrets` command, which loads
+  `<managed-root>/private/env/<workspace-name>/.env` into Claude Code workers;
+  the values themselves are never printed. Report the missing variable by name
+  and point the operator at `/goal_secrets` rather than guessing or fabricating
+  the value.
 
 ## Git
 
