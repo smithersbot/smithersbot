@@ -48,4 +48,11 @@ export type GoalConfig = {
   requireNativeSandbox?: boolean;
   /** GitHub push integration for completed goal runs. */
   githubPush?: GitHubPushConfig;
+  /**
+   * When true, inject the workspace's private/env/<workspace>/.env values into
+   * Claude Code goal workers (merged after credential stripping). Default: false.
+   * Toggled via the /goal_secrets slash command. Off preserves the historical
+   * behavior of never passing project secrets to workers.
+   */
+  injectWorkspaceEnv?: boolean;
 };

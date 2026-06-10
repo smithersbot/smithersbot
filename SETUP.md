@@ -427,7 +427,11 @@ Secret model: `~/.smithersbot/.env` is for SmithersBot/gateway secrets such as
 the Telegram bot token. Project/workspace secrets belong in
 `~/smithersbot-home/private/env/<workspace-name>/.env`, which is not
 agent-visible. Private env, config, auth, and session files live outside the
-workspace.
+workspace. By default goal workers never receive those project secrets; the
+`/goal_secrets` command (off by default) is how you enable worker access to
+`~/smithersbot-home/private/env/<workspace-name>/.env`, injecting them into
+Claude Code and Codex goal workers without softening credential stripping or the
+private-root deny, and without ever printing the values.
 
 Managed workspaces organize access for workers and repo chat, but are not by themselves a kernel boundary. Backend-native sandboxing is configured per worker; if it cannot be established, workers fail and escalate to the user by blocking the task. Backend-specific live probes can confirm sandbox behavior on a host.
 
@@ -445,7 +449,11 @@ the portable variable-name contract — it must contain placeholder values only.
 Workers do NOT receive raw secrets in env by default. Real env files at
 `~/smithersbot-home/private/env/<workspace-name>/.env` may only be loaded by
 trusted host-side commands (gateway-side flows) with an explicit, narrowly-scoped
-opt-in. Worker subprocesses never see those values unless that opt-in is set.
+opt-in. Worker subprocesses never see those values unless that opt-in is set. That
+opt-in is the default-OFF `/goal_secrets` command: enable it to inject
+`~/smithersbot-home/private/env/<workspace-name>/.env` into Claude Code and Codex
+goal workers (values are never printed); leave it off to preserve the
+no-secrets-in-workers default.
 Runtime artifacts are mirrored in redacted form under `agent/history`, including
 prompt artifacts, events, and runtime indexes that make runs inspectable without
 exposing private gateway config, env, auth, or session data.

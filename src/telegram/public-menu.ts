@@ -81,6 +81,12 @@ export const PUBLIC_TELEGRAM_MENU: TelegramPublicMenuCommand[] = [
     publicDescription: "Dangerous/admin: toggle automatic GitHub branch push (no PRs).",
   },
   {
+    command: "goal_secrets",
+    label: "Goal diagnostics & tuning",
+    publicDescription:
+      "Toggle injecting workspace private-env secrets into goal workers (off by default).",
+  },
+  {
     command: "nightwatch",
     label: "Advanced & admin",
     publicDescription: "Configure scheduled code review.",

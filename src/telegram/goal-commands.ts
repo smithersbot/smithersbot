@@ -186,6 +186,10 @@ export const GOAL_COMMAND_SPECS: Array<{ command: string; description: string }>
   { command: "goal_list", description: "List recent goal runs" },
   { command: "goal_lessons", description: "List or clear persistent goal lessons" },
   { command: "goal_github_push", description: "Toggle global GitHub push for completed goals" },
+  {
+    command: "goal_secrets",
+    description: "Toggle injecting workspace private env secrets into goal workers",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -338,6 +342,9 @@ function formatGoalWorkersStatus(params: {
 const GOAL_GITHUB_PUSH_USAGE = "Usage: /goal\\_github\\_push \\[on|off]";
 const GOAL_GITHUB_PUSH_BEHAVIOR =
   "This is a global setting. When enabled, SmithersBot tries to push completed goal branches only when that goal's working directory is eligible for GitHub push. When a GitHub branch URL is available, SmithersBot links to the pushed branch for review. It does not automatically create pull requests. Local-only workspaces still keep local branches and checkpoints; GitHub push is skipped and recorded.";
+const GOAL_SECRETS_USAGE = "Usage: /goal\\_secrets \\[on|off]";
+const GOAL_SECRETS_BEHAVIOR =
+  "This is a global setting. When off (the default), goal workers never receive a project's private secrets. When on, SmithersBot loads private/env/<workspace>/.env into Claude Code and Codex goal workers so they can use real project credentials; secret values are never printed, only the on/off state.";
 const GOAL_PLAN_AUTOCHECK_MAX_ROUNDS = 3;
 
 function describeEffectivePlanAutocheckMode(configured: PlanAutocheckMode | undefined): string {
@@ -3419,6 +3426,88 @@ export function registerTelegramGoalCommands({
     cfg.goal.githubPush = { ...cfg.goal.githubPush, enabled };
 
     const confirmation = `GitHub push ${enabled ? "enabled" : "disabled"}.\n${GOAL_GITHUB_PUSH_BEHAVIOR}`;
+    await sendGoalReply(
+      bot,
+      resolved.chatId,
+      confirmation,
+      runtime,
+      resolved.threadIdForSend,
+      replyToMessageId,
+    );
+  });
+
+  // /goal_secrets [on|off]
+  bot.command("goal_secrets", async (ctx: TelegramGoalCommandContext) => {
+    const resolved = await authAndResolve(ctx);
+    if (!resolved) return;
+    const replyToMessageId = ctx.message?.message_id;
+
+    const rawArg = ctx.match?.trim().toLowerCase() ?? "";
+    if (!rawArg) {
+      const current = cfg.goal?.injectWorkspaceEnv ? "on" : "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Workspace secret injection is currently \`${current}\`.\n${GOAL_SECRETS_BEHAVIOR}\n${GOAL_SECRETS_USAGE}`,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (rawArg !== "on" && rawArg !== "off") {
+      const current = cfg.goal?.injectWorkspaceEnv ? "on" : "off";
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        `Invalid argument: \`${rawArg}\`.\n${GOAL_SECRETS_USAGE}\nCurrent: \`${current}\``,
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Config writes are disabled for this Telegram account.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    const enabled = rawArg === "on";
+    const nextConfig = loadConfig();
+    nextConfig.goal ??= {};
+    nextConfig.goal.injectWorkspaceEnv = enabled;
+    try {
+      await writeConfigFile(nextConfig);
+    } catch (error) {
+      runtime.error?.(
+        `[goal_secrets] failed to write config: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      await sendGoalReply(
+        bot,
+        resolved.chatId,
+        "Could not save workspace secret injection setting. Check logs and try again.",
+        runtime,
+        resolved.threadIdForSend,
+        replyToMessageId,
+      );
+      return;
+    }
+
+    cfg.goal ??= {};
+    cfg.goal.injectWorkspaceEnv = enabled;
+
+    const confirmation = `Workspace secret injection ${enabled ? "enabled" : "disabled"}.\n${GOAL_SECRETS_BEHAVIOR}`;
     await sendGoalReply(
       bot,
       resolved.chatId,

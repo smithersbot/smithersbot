@@ -37,7 +37,11 @@ import {
 import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import { WORKER_CONTEXT } from "./worker-context.js";
 import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
-import { buildCodexNativeSandboxConfig, claudeCodeNativeSandboxStatus } from "./backend-sandbox.js";
+import {
+  buildCodexNativeSandboxConfig,
+  claudeCodeNativeSandboxStatus,
+  mergeCodexNativeSandboxEnv,
+} from "./backend-sandbox.js";
 import { resolveAgentHistoryEventsPath } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
 import * as runtimeMirror from "./runtime-mirror.js";
@@ -567,6 +571,79 @@ describe("cli-worker", () => {
           trustedHostEnv: loaded,
         });
         expect(trustedEnv.GOOGLE_DRIVE_API_KEY).toBe("fake-private-key");
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("injects an _API_KEY-suffixed private env var into the claude_code worker env when opted in, and omits it otherwise", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "inject-private-env-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = dir;
+      try {
+        const privateEnvDir = path.join(dir, "private", "env", "sample");
+        fs.mkdirSync(privateEnvDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(privateEnvDir, ".env"),
+          "EXAMPLE_API_KEY=test-value-123\n",
+          "utf8",
+        );
+
+        // ON: trustedHostEnv merges AFTER credential stripping, so an _API_KEY var survives.
+        const onEnv = buildGoalWorkerEnv("claude_code", "subscription", {
+          trustedHostEnv: loadWorkspacePrivateEnv("sample"),
+        });
+        expect(onEnv.EXAMPLE_API_KEY).toBe("test-value-123");
+
+        // OFF: no trustedHostEnv, so the private var never reaches the worker env.
+        const offEnv = buildGoalWorkerEnv("claude_code", "subscription");
+        expect(offEnv.EXAMPLE_API_KEY).toBeUndefined();
+      } finally {
+        if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+        else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("injects an _API_KEY-suffixed private env var into the codex worker env (after the native-sandbox merge) when opted in, and omits it otherwise", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "inject-codex-private-env-"));
+      const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+      process.env.SMITHERSBOT_GOALS_ROOT = dir;
+      try {
+        const privateEnvDir = path.join(dir, "private", "env", "sample");
+        fs.mkdirSync(privateEnvDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(privateEnvDir, ".env"),
+          "EXAMPLE_API_KEY=test-value-123\n",
+          "utf8",
+        );
+
+        const codexNativeSandbox = buildCodexNativeSandboxConfig({
+          workingDir: "/tmp/sample-workspace",
+          runId: "inject-codex-test",
+          purpose: "goal-worker",
+          codexPath: "/usr/local/bin/codex",
+        });
+
+        // ON: trustedHostEnv merges AFTER credential stripping, and the
+        // native-sandbox merge only overrides CODEX_HOME/PATH, so an _API_KEY var
+        // survives all the way into the final codex worker env.
+        const onEnv = mergeCodexNativeSandboxEnv(
+          buildGoalWorkerEnv("codex", "subscription", {
+            trustedHostEnv: loadWorkspacePrivateEnv("sample"),
+          }),
+          codexNativeSandbox,
+        );
+        expect(onEnv.EXAMPLE_API_KEY).toBe("test-value-123");
+
+        // OFF: no trustedHostEnv, so the private var never reaches the worker env.
+        const offEnv = mergeCodexNativeSandboxEnv(
+          buildGoalWorkerEnv("codex", "subscription", { trustedHostEnv: undefined }),
+          codexNativeSandbox,
+        );
+        expect(offEnv.EXAMPLE_API_KEY).toBeUndefined();
       } finally {
         if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
         else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;

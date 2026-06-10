@@ -241,6 +241,7 @@ describe("createTelegramBot", () => {
     expect(registered.map((command) => command.command)).toEqual(
       PUBLIC_TELEGRAM_MENU.map((command) => command.command),
     );
+    expect(registered.map((command) => command.command)).toContain("goal_secrets");
     expect(registered).not.toContainEqual(expect.objectContaining({ command: "custom_backup" }));
     expect(registered).not.toContainEqual(expect.objectContaining({ command: "custom_generate" }));
   });

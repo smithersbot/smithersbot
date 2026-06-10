@@ -5603,6 +5603,189 @@ describe("goal-commands telegram adapter", () => {
     });
   });
 
+  describe("registerTelegramGoalCommands /goal_secrets", () => {
+    function makeCommandHarness(cfg: Record<string, unknown> = {}): {
+      handlers: Record<string, (ctx: unknown) => Promise<void>>;
+      sendMessage: ReturnType<typeof vi.fn>;
+      register: () => Promise<void>;
+      config: Record<string, unknown>;
+    } {
+      const handlers: Record<string, (ctx: unknown) => Promise<void>> = {};
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 99 });
+      const bot = {
+        api: {
+          sendMessage,
+          sendPhoto: vi.fn(),
+          answerCallbackQuery: vi.fn(),
+          setMessageReaction: vi.fn(),
+        },
+        command: (name: string | string[], handler: (ctx: unknown) => Promise<void>) => {
+          if (Array.isArray(name)) {
+            for (const entry of name) handlers[entry] = handler;
+            return;
+          }
+          handlers[name] = handler;
+        },
+        on: vi.fn(),
+      } as unknown as import("grammy").Bot;
+
+      const runtime = {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: ((_: number) => {
+          throw new Error("exit called");
+        }) as never,
+      };
+
+      const register = async () => {
+        const { registerTelegramGoalCommands } = await import("./goal-commands.js");
+        registerTelegramGoalCommands({
+          bot,
+          cfg: cfg as never,
+          runtime,
+          accountId: "default",
+          telegramCfg: {} as never,
+          allowFrom: ["42"],
+          groupAllowFrom: [],
+          useAccessGroups: false,
+          resolveGroupPolicy: () =>
+            ({
+              allowlistEnabled: false,
+              allowed: true,
+            }) as never,
+          resolveTelegramGroupConfig: () => ({
+            groupConfig: undefined,
+            topicConfig: undefined,
+          }),
+          shouldSkipUpdate: () => false,
+          textLimit: 4000,
+        });
+      };
+
+      return { handlers, sendMessage, register, config: cfg };
+    }
+
+    function makeCommandCtx(match = ""): Record<string, unknown> {
+      return {
+        match,
+        message: {
+          chat: { id: 42, type: "private" },
+          from: { id: 42, username: "tester" },
+          message_id: 11,
+          date: 123_456,
+        },
+      };
+    }
+
+    function lastReplyMessageId(sendMessage: ReturnType<typeof vi.fn>): number | undefined {
+      const options = sendMessage.mock.calls.at(-1)?.[2] as
+        | { reply_parameters?: { message_id?: number } }
+        | undefined;
+      return options?.reply_parameters?.message_id;
+    }
+
+    it("shows current secret injection state when no argument is provided", async () => {
+      const harness = makeCommandHarness({ goal: { injectWorkspaceEnv: true } });
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx());
+
+      expect(harness.sendMessage).toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Workspace secret injection is currently");
+      expect(sentText).toContain("on");
+      expect(sentText).toContain("global setting");
+      expect(sentText).toContain("private/env/");
+      expect(sentText).toContain("never printed");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+    });
+
+    it("persists enabled secret injection and updates in-memory config", async () => {
+      const cfg = { goal: { injectWorkspaceEnv: false } };
+      mockLoadConfig.mockReturnValue({ goal: {} });
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx("on"));
+
+      expect(mockResolveChannelConfigWrites).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: "telegram", accountId: "default" }),
+      );
+      expect(mockWriteConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          goal: expect.objectContaining({ injectWorkspaceEnv: true }),
+        }),
+      );
+      expect((cfg.goal as { injectWorkspaceEnv: boolean }).injectWorkspaceEnv).toBe(true);
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Workspace secret injection enabled");
+      expect(sentText).toContain("global setting");
+      expect(sentText).toContain("never printed");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("persists disabled secret injection", async () => {
+      const cfg = { goal: { injectWorkspaceEnv: true } };
+      mockLoadConfig.mockReturnValue({ goal: { injectWorkspaceEnv: true } });
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx("off"));
+
+      expect(mockWriteConfigFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          goal: expect.objectContaining({ injectWorkspaceEnv: false }),
+        }),
+      );
+      expect((cfg.goal as { injectWorkspaceEnv: boolean }).injectWorkspaceEnv).toBe(false);
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Workspace secret injection disabled");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("keeps in-memory secret injection unchanged when config write fails", async () => {
+      const cfg = { goal: { injectWorkspaceEnv: false } };
+      mockLoadConfig.mockReturnValue({ goal: { injectWorkspaceEnv: false } });
+      mockWriteConfigFile.mockRejectedValueOnce(new Error("disk full"));
+      const harness = makeCommandHarness(cfg);
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx("on"));
+
+      expect((cfg.goal as { injectWorkspaceEnv: boolean }).injectWorkspaceEnv).toBe(false);
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Could not save workspace secret injection setting");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("rejects invalid secret injection input", async () => {
+      const harness = makeCommandHarness({ goal: { injectWorkspaceEnv: false } });
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx("maybe"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Invalid argument");
+      expect(sentText).toContain("goal_secrets");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+
+    it("blocks secret injection changes when config writes are disabled", async () => {
+      mockResolveChannelConfigWrites.mockReturnValue(false);
+      const harness = makeCommandHarness({ goal: { injectWorkspaceEnv: false } });
+      await harness.register();
+
+      await harness.handlers.goal_secrets?.(makeCommandCtx("on"));
+
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      const sentText = String(harness.sendMessage.mock.calls.at(-1)?.[1] ?? "");
+      expect(sentText).toContain("Config writes are disabled");
+      expect(lastReplyMessageId(harness.sendMessage)).toBe(11);
+    });
+  });
+
   describe("answered user-input normalization through Telegram resume entry points", () => {
     // Every public Telegram resume entry point converges on goalResumeCommand:
     //   /goal_resume, the gResume:<id> button, and the approve/reaction path all

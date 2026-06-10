@@ -39,6 +39,7 @@ IDENTITY.md
 USER.md
 .tgz
 internal/
+update-smithersbot-stable.sh
 
 # local tooling
 .serena/
