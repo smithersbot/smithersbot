@@ -57,7 +57,7 @@ SmithersBot handles the hard parts of long-running agent work correctly.
 
 **Run SmithersBot in an isolated environment** such as a VirtualBox VM, VPS, dedicated machine, or isolated development machine. Do not run it directly on your primary personal computer.
 
-**Do not put API keys, tokens, or secrets in workspaces.** SmithersBot agents can read anything within `~/smithersbot-home/agent/workspaces`. Put real project secrets in `~/smithersbot-home/private/env/<workspace-name>/.env` and keep a redacted `.env.example` in the project workspace.
+**Do not put API keys, tokens, or secrets in workspaces.** SmithersBot agents can read anything within `~/smithersbot-home/agent/workspaces`. Put real project secrets in `~/smithersbot-home/private/env/<workspace-name>/.env` and keep a redacted `.env.example` in the project workspace. Those secrets are not injected into goal workers by default; use `/goal_secrets` (off by default) when a worker genuinely needs them — see [Safety rails](#safety-rails).
 
 For full installation instructions, see [SETUP.md](SETUP.md).
 
@@ -239,6 +239,7 @@ A node is red only when the goal truly cannot proceed without you.
 | `/goal_semgrep`                 | Configures Semgrep checks for goals.                                             |
 | `/goal_workers`                 | Chooses which worker backends can run goal tasks.                                |
 | `/goal_github_push`             | Toggles automatic GitHub branch push for completed runs.                         |
+| `/goal_secrets`                 | Toggles injecting a workspace's private env secrets into goal workers (off by default). |
 | `/nightwatch`                   | Configures scheduled daily review.                                               |
 | `/gateway_restart`              | Restarts the local gateway service from an authorized private chat.              |
 
@@ -276,6 +277,8 @@ SmithersBot runs workers inside a sandboxed setup instead of giving a raw Codex 
 
 Project secrets live in `private/env/<workspace>/.env` and are **not** loaded into a worker’s environment by default. Gateway secrets, API keys, auth tokens, and common credential-style variables are removed before worker processes start.
 
+`/goal_secrets` is the explicit, default-OFF opt-in that injects `private/env/<workspace>/.env` into Claude Code and Codex goal workers when a task genuinely needs project credentials. Turning it on does not soften credential stripping or the private-root filesystem deny — the worker still reads the values from `process.env`, never the file — and the secret values themselves are never printed. With it off (the default), today's behavior is unchanged and workers never receive those secrets.
+
 Codex and Claude Code handle sandboxing differently, so SmithersBot configures them separately:
 
 * **Codex workers** run under Codex’s native OS sandbox with a generated per-run permission profile. The workspace and its `.git` directory are writable, known secret files and private SmithersBot state are denied, and network access is off by default. Codex uses an isolated `CODEX_HOME`, with auth shared by symlink rather than copied.
@@ -303,6 +306,8 @@ Put real project secrets in:
 `~/smithersbot-home/private/env/<workspace-name>/.env`
 
 Keep a redacted `.env.example` in the project workspace so agents and humans can see which variables the project expects without exposing real values.
+
+Those private-env values are not handed to goal workers unless you opt in with `/goal_secrets` (off by default), which injects `private/env/<workspace-name>/.env` into Claude Code and Codex goal workers; the values themselves are never printed.
 
 ### Working directory boundary
 

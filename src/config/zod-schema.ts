@@ -477,6 +477,7 @@ export const MoltbotSchema = z
           })
           .strict()
           .optional(),
+        injectWorkspaceEnv: z.boolean().optional(),
       })
       .strict()
       .optional(),
