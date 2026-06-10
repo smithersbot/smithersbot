@@ -69,6 +69,7 @@ import {
   type AgentBackendUsage,
 } from "./agent-history-events.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
+import { loadWorkspacePrivateEnv } from "./workspace-private-env.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 import { formatWorkerResumeNotes } from "./resume-note-context.js";
 import { resolveScratchDir } from "../config/managed-paths.js";
@@ -531,11 +532,22 @@ export async function executeTaskWithCliWorker(
         })
       : undefined;
 
-  // Build worker env based on auth mode
+  // Build worker env based on auth mode. When injectWorkspaceEnv is enabled,
+  // load the workspace's private env host-side and merge it into the worker env
+  // (after credential stripping, via buildGoalWorkerEnv) for both backends. For
+  // Codex, mergeCodexNativeSandboxEnv spreads baseEnv first and only overrides
+  // CODEX_HOME/PATH, so the injected vars survive the native-sandbox merge too.
+  const trustedHostEnv =
+    goalConfig?.injectWorkspaceEnv === true
+      ? loadWorkspacePrivateEnv(historyWorkspaceSlug ?? workspaceNameFromWorkingDir(workingDir))
+      : undefined;
   const workerEnv =
     backend === "codex"
-      ? mergeCodexNativeSandboxEnv(buildGoalWorkerEnv(backend, claudeCodeAuth), codexNativeSandbox!)
-      : buildGoalWorkerEnv(backend, claudeCodeAuth);
+      ? mergeCodexNativeSandboxEnv(
+          buildGoalWorkerEnv(backend, claudeCodeAuth, { trustedHostEnv }),
+          codexNativeSandbox!,
+        )
+      : buildGoalWorkerEnv(backend, claudeCodeAuth, { trustedHostEnv });
   workerEnv.SMITHERSBOT_GOAL_WORKER = "1";
   workerEnv.SMITHERSBOT_GOAL_RUN_ID = runId;
   workerEnv.SMITHERSBOT_GOAL_TASK_ID = step.id;
