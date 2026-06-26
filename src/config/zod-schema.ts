@@ -7,6 +7,20 @@ import { HookMappingSchema, HooksGmailSchema, InternalHooksSchema } from "./zod-
 import { ChannelsSchema } from "./zod-schema.providers.js";
 import { CommandsSchema, MessagesSchema, SessionSchema } from "./zod-schema.session.js";
 
+// Keep in sync with ClaudeDriverSite in src/config/types.goal.ts. Used to refine the
+// partial goal.tuiPilot.sites map so unknown site ids are rejected.
+const CLAUDE_DRIVER_SITES = [
+  "cli-worker",
+  "cli-planner",
+  "post-execution-report",
+  "repo-chat-worker",
+  "lessons",
+  "manual-tests",
+  "nightwatch",
+  "goal-sending",
+  "plan-autocheck",
+] as const;
+
 const BrowserSnapshotDefaultsSchema = z
   .object({
     mode: z.literal("efficient").optional(),
@@ -454,6 +468,7 @@ export const MoltbotSchema = z
           })
           .strict()
           .optional(),
+        observedInstances: z.array(z.string()).optional(),
       })
       .strict()
       .optional(),
@@ -464,6 +479,30 @@ export const MoltbotSchema = z
         allowLegacyWorkingDir: z.boolean().optional(),
         readOnlyRoots: z.array(z.string()).optional(),
         claudeCodeAuth: z.enum(["subscription", "api_key"]).optional(),
+        claudeDriver: z.enum(["direct", "tui-pilot"]).optional(),
+        tuiPilotBinary: z.string().optional(),
+        tuiPilot: z
+          .object({
+            version: z.string().optional(),
+            preflight: z.enum(["off", "warn", "enforce"]).optional(),
+            maxConcurrent: z.number().int().min(1).optional(),
+            maxQueued: z.number().int().min(0).optional(),
+            queueTimeoutMs: z.number().int().min(0).optional(),
+            // Partial per-site driver map. A string-keyed record (so a subset of
+            // sites is valid — the S3 canary only lists four) refined to reject any
+            // key that is not a known ClaudeDriverSite.
+            sites: z
+              .record(z.string(), z.enum(["direct", "tui-pilot"]))
+              .refine(
+                (rec) =>
+                  Object.keys(rec).every((k) =>
+                    (CLAUDE_DRIVER_SITES as readonly string[]).includes(k),
+                  ),
+                { message: "unknown tui-pilot site id in goal.tuiPilot.sites" },
+              )
+              .optional(),
+          })
+          .optional(),
         planAutocheck: z.enum(["codex", "claude_code", "off"]).optional(),
         semgrep: z.enum(["off", "step", "goal"]).optional(),
         enabledWorkers: z

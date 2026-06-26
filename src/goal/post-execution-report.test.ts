@@ -155,6 +155,10 @@ function reportPayload(report = makeReport()) {
   };
 }
 
+function structuredReportPayload(report = makeReport()) {
+  return { report };
+}
+
 function manualPayload(report = makeReport()) {
   return {
     manualTests: report.manualTests,
@@ -177,9 +181,26 @@ function jsonlResult(value: unknown, sessionId = "exec-session-1"): string {
   return `${JSON.stringify({ type: "result", session_id: sessionId, result: value })}\n`;
 }
 
-function lastArg(callIndex: number): string {
+function rawLastArg(callIndex: number): string {
   const call = mockRunCliProcess.mock.calls[callIndex]?.[0] as { args: string[] } | undefined;
   return call?.args.at(-1) ?? "";
+}
+
+function promptArtifactPathFor(callIndex: number): string | undefined {
+  const instruction = rawLastArg(callIndex);
+  const lines = instruction.split(/\r?\n/);
+  const markerIndex = lines.indexOf(
+    "Read the complete post-execution prompt from this agent-history artifact path:",
+  );
+  return markerIndex >= 0 ? lines[markerIndex + 1]?.trim() : undefined;
+}
+
+function lastArg(callIndex: number): string {
+  const artifactPath = promptArtifactPathFor(callIndex);
+  if (artifactPath && fs.existsSync(artifactPath)) {
+    return fs.readFileSync(artifactPath, "utf8");
+  }
+  return rawLastArg(callIndex);
 }
 
 function argsFor(callIndex: number): string[] {
@@ -358,25 +379,43 @@ describe("post-execution report engine", () => {
     });
     expect(lastArg(0)).toContain("Native lifecycle phase: post-execution report generation.");
     expect(lastArg(0)).not.toContain("/new_goal");
+    expect(lastArg(0)).not.toContain('"markdown"');
+    expect(lastArg(0)).not.toContain("Markdown formatting rules:");
     expect(lastArg(0)).toContain(
-      'The markdown field must end with a Sources Section using the bold label "**Sources:**".',
+      "The system will render markdown deterministically from the report object.",
     );
-    expect(lastArg(0)).toContain(
-      'Render only these core sections: "**Summary:**", "**Outcome:**", "**Files Changed:**", "**Verification Commands:**", and "**Sources:**".',
-    );
-    expect(lastArg(0)).toContain(
-      "Do not render Manual Tests, Next Plan, Proposed prompt, or Decision(s) in the markdown body",
-    );
-    expect(lastArg(0)).toContain("In Sources, link the Goal Brief:");
+    expect(lastArg(0)).toContain("Evidence source links:");
+    expect(lastArg(0)).toContain("Goal Brief:");
     expect(lastArg(0)).toContain(path.join("run-native", "wiki", "goal-brief.md"));
-    expect(lastArg(0)).toContain("In Sources, link the ScoutReport mirror:");
+    expect(lastArg(0)).toContain("ScoutReport mirror:");
     expect(lastArg(0)).toContain(path.join("runtime", "scout", "scout_report.json"));
-    expect(lastArg(0)).toContain("In Sources, link the prior Plan Report:");
+    expect(lastArg(0)).toContain("Prior Plan Report:");
     expect(lastArg(0)).toContain(path.join("run-native", "post-execution-report.md"));
-    expect(lastArg(0)).toContain(
-      "In Sources, link Test Details, the continuation message, and View Prompt",
+  });
+
+  it("accepts structured report JSON without reading a model-provided markdown field", async () => {
+    const report = makeReport({ summary: "Structured report only." });
+    mockRunCliProcess.mockResolvedValueOnce(
+      cliResult({ stdout: jsonlResult(structuredReportPayload(report)) }),
     );
-    expect(lastArg(0)).toContain("Terms: see GLOSSARY.md");
+
+    const result = await generateReport({
+      runId: "run-structured-report",
+      goal: "Build native reporting",
+      plan,
+      workingDir,
+      backend: "claude_code",
+      sessionId: "exec-session-1",
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.markdown).toContain("**Post-Execution Report:**");
+    expect(result.markdown).toContain("**Summary:** Structured report only.");
+    expect(result.markdown).toContain("**Sources:**");
+    const prompt = lastArg(0);
+    expect(prompt).not.toContain('"markdown"');
+    expect(prompt).not.toContain("Markdown formatting rules:");
   });
 
   it("falls back to the plan summary for Long Goal Summary when the Goal Brief is absent", async () => {
@@ -476,8 +515,10 @@ describe("post-execution report engine", () => {
       ],
       buildGateResults: {
         "report-engine": {
-          passed: true,
+          passed: false,
           timestamp: "2026-06-06T00:00:00.000Z",
+          failedCommand: "pnpm build",
+          output: `build failed ${"x".repeat(3_000)} sentinel-after-truncation`,
         },
       },
     });
@@ -493,10 +534,13 @@ describe("post-execution report engine", () => {
     expect(prompt).toContain("Claims to verify before relying on this summary:");
     expect(prompt).toContain("Verify Task report-engine's worker summary");
     expect(prompt).toContain("Recorded build-gate results:");
-    expect(prompt).toContain("- report-engine: passed at 2026-06-06T00:00:00.000Z");
+    expect(prompt).toContain("- report-engine: failed at 2026-06-06T00:00:00.000Z");
+    expect(prompt).toContain("failedCommand: pnpm build");
+    expect(prompt).toContain("build failed");
+    expect(prompt).not.toContain("sentinel-after-truncation");
   });
 
-  it("includes the inline Goal Brief content and Long Goal Summary in the reporter prompt", async () => {
+  it("links Goal Brief content and keeps only compact derived fields in the reporter prompt", async () => {
     const report = makeReport();
     const briefPath = path.join(managedRoot, "stored", "wiki", "goal-brief.md");
     const briefContent = [
@@ -549,10 +593,10 @@ describe("post-execution report engine", () => {
     expect(prompt).toContain("Long Goal Summary: Two-stage goal: create goal1.txt then goal2.txt.");
     // The stored brief path is surfaced.
     expect(prompt).toContain(`Goal brief: ${briefPath}`);
-    // The brief content is inlined, not just the path.
-    expect(prompt).toContain("Goal Brief content (read from the stored brief path):");
-    expect(prompt).toContain("Stage 2 still needs goal2.txt created.");
-    expect(prompt).toContain("Stop after Stage 1; confirm goal1.txt before Stage 2.");
+    expect(prompt).toContain("Open the Goal Brief path above if you need the full brief");
+    expect(prompt).not.toContain("Goal Brief content (read from the stored brief path):");
+    expect(prompt).not.toContain("Stage 2 still needs goal2.txt created.");
+    expect(prompt).not.toContain("Stop after Stage 1; confirm goal1.txt before Stage 2.");
     expect(prompt).not.toContain("Goal Brief is missing");
   });
 
@@ -715,7 +759,7 @@ describe("post-execution report engine", () => {
     expect(lastArg(0)).toContain("The next plan must directly perform the remaining work");
     expect(lastArg(0)).toContain("Original user goal:");
     expect(lastArg(0)).toContain("Stage 2 continues this same goal");
-    expect(lastArg(0)).toContain("completion: Created the first-stage artifact");
+    expect(lastArg(0)).toContain("completion snippet: Created the first-stage artifact");
 
     const continuation = await decideContinuation({
       runId: "run-staged",
@@ -767,6 +811,126 @@ describe("post-execution report engine", () => {
     expect(lastArg(0)).toContain("post-execution report generation");
     expect(lastArg(1)).toContain("prepare manual-test display data");
     expect(lastArg(2)).toContain("decide continuation");
+  });
+
+  it("preserves the phase-1 report when manual-test display generation fails", async () => {
+    const report = makeReport();
+    mockRunCliProcess
+      .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(structuredReportPayload(report)) }))
+      .mockResolvedValueOnce(cliResult({ stderr: "manual display backend failed", exitCode: 1 }))
+      .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(continuationPayload(report)) }));
+
+    const result = await runPostExecutionReporting({
+      runId: "run-manual-phase-fails",
+      goal: "Build native reporting",
+      plan,
+      workingDir,
+      backend: "claude_code",
+      sessionId: "exec-session-1",
+      enabledBackends: ["claude_code"],
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.report.summary).toBe(report.summary);
+    expect(result.markdown).toContain("**Post-Execution Report:**");
+    expect(result.manualTestDisplay.manualTests).toHaveLength(1);
+    expect(result.manualTestDisplay.manualTests[0]?.description).toContain("report engine");
+    expect(result.manualTestDisplay.displayMarkdown).toContain("Post-execution manual-test");
+    expect(result.continuation.goalAchieved).toBe(true);
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves the phase-1 report and manual tests when continuation decision fails", async () => {
+    const report = makeReport();
+    const briefPath = path.join(managedRoot, "stored", "wiki", "goal-brief.md");
+    fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+    fs.writeFileSync(
+      briefPath,
+      [
+        "# Goal Brief",
+        "",
+        "## Remaining Work",
+        "Stage 2 still needs the final smoke test artifact.",
+        "",
+        "## Observation Point",
+        "Confirm the smoke artifact after the next plan.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    mockRunCliProcess
+      .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(structuredReportPayload(report)) }))
+      .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(manualPayload(report)) }))
+      .mockResolvedValueOnce(
+        cliResult({ stderr: "continuation decision backend failed", exitCode: 1 }),
+      );
+
+    const result = await runPostExecutionReporting({
+      runId: "run-continuation-phase-fails",
+      goal: "Build native reporting",
+      plan,
+      workingDir,
+      backend: "claude_code",
+      sessionId: "exec-session-1",
+      enabledBackends: ["claude_code"],
+      serializedRun: {
+        runId: "run-continuation-phase-fails",
+        goal: "Build native reporting",
+        state: "done",
+        plan,
+        stepResults: {},
+        blocked: null,
+        answers: {},
+        workingDir,
+        goalBriefPath: briefPath,
+        model: undefined,
+        dryRun: false,
+        createdAt: "2026-01-30T00:00:00.000Z",
+        updatedAt: "2026-01-30T00:00:00.000Z",
+      },
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.report.summary).toBe(report.summary);
+    expect(result.manualTestDisplay.manualTests).toEqual(report.manualTests);
+    expect(result.continuation.goalAchieved).toBe(false);
+    expect(result.continuation.nextPlanRecommended).toBe(true);
+    expect(result.continuation.nextPlanSummary).toContain("Stage 2 still needs");
+    expect(result.continuation.nextPlanPrompt).toContain("Goal Brief");
+    expect(result.continuation.failureOrBlockedReason).toContain(
+      "Post-execution continuation decision failed",
+    );
+  });
+
+  it("re-prompts the same resumed session once when a clean phase response is invalid JSON", async () => {
+    const report = makeReport({ summary: "Retry produced valid JSON." });
+    mockRunCliProcess
+      .mockResolvedValueOnce(cliResult({ stdout: jsonlResult("not valid json", "exec-session-1") }))
+      .mockResolvedValueOnce(
+        cliResult({ stdout: jsonlResult(structuredReportPayload(report), "exec-session-1") }),
+      );
+
+    const result = await generateReport({
+      runId: "run-json-retry",
+      goal: "Build native reporting",
+      plan,
+      workingDir,
+      backend: "claude_code",
+      sessionId: "exec-session-1",
+      enabledBackends: ["claude_code"],
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
+    expect(result.report.summary).toBe("Retry produced valid JSON.");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
+    expect(argsFor(0)).toEqual(expect.arrayContaining(["--resume", "exec-session-1"]));
+    expect(argsFor(1)).toEqual(expect.arrayContaining(["--resume", "exec-session-1"]));
+    expect(lastArg(1)).toBe(
+      "Your previous message was not valid JSON. Resend ONLY the JSON object this phase requested, with no prose or code fences.",
+    );
   });
 
   it("resolves report, scout, and goal-brief source paths under the history anchor", async () => {
@@ -907,6 +1071,7 @@ describe("post-execution report engine", () => {
             postExecutionPhase?: string;
             argv?: string[];
             model?: string;
+            promptArtifactPath?: string;
           },
       );
     expect(eventLines.map((event) => event.phase)).toEqual([
@@ -920,10 +1085,84 @@ describe("post-execution report engine", () => {
       "decideContinuation",
     ]);
     expect(eventLines.every((event) => event.model === "claude-test-model")).toBe(true);
-    expect(eventLines.flatMap((event) => event.argv ?? [])).toContain("<prompt>");
-    expect(eventLines.flatMap((event) => event.argv ?? []).join("\n")).not.toContain(
-      "Native lifecycle phase:",
+    expect(eventLines.every((event) => event.promptArtifactPath)).toBe(true);
+    for (const event of eventLines) {
+      expect(fs.existsSync(event.promptArtifactPath!)).toBe(true);
+    }
+    const argvText = eventLines.flatMap((event) => event.argv ?? []).join("\n");
+    expect(argvText).toContain(
+      "Read the complete post-execution prompt from this agent-history artifact path:",
     );
+    expect(argvText).not.toContain("<prompt>");
+    expect(argvText).not.toContain("Original user goal:");
+    expect(argvText).not.toContain("Structured completion context:");
+
+    const promptContents = eventLines.map((event) =>
+      fs.readFileSync(event.promptArtifactPath!, "utf8"),
+    );
+    expect(promptContents[0]).toContain("post-execution report generation");
+    expect(promptContents[1]).toContain("prepare manual-test display data");
+    expect(promptContents[2]).toContain("decide continuation");
+  });
+
+  it("keeps Claude Code and Codex argv bounded while storing large post-execution prompts", async () => {
+    const largeMarker = `x402-large-post-exec-context-${"A".repeat(150_000)}`;
+    const largePlan: Plan = {
+      ...plan,
+      goal: `Fix a large completed-plan reporting context. ${largeMarker}`,
+      summary: `Generate reports from a very large completed plan. ${largeMarker}`,
+      steps: [
+        {
+          ...plan.steps[0]!,
+          taskSummary: `Completed the first reporting stage with a very large summary. ${largeMarker}`,
+        },
+      ],
+    };
+
+    const backends: CliWorkerId[] = ["claude_code", "codex"];
+    for (const backend of backends) {
+      mockRunCliProcess.mockReset();
+      mockRunCliProcess
+        .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(reportPayload()) }))
+        .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(manualPayload()) }))
+        .mockResolvedValueOnce(cliResult({ stdout: jsonlResult(continuationPayload()) }));
+
+      const result = await runPostExecutionReporting({
+        runId: `run-large-${backend}`,
+        goal: largePlan.goal,
+        plan: largePlan,
+        workingDir,
+        backend,
+        enabledBackends: [backend],
+      });
+
+      expect(result.status, backend).toBe("success");
+      expect(mockRunCliProcess, backend).toHaveBeenCalledTimes(3);
+      const argvText = mockRunCliProcess.mock.calls
+        .map((call) => ((call[0] as { args: string[] }).args ?? []).join("\n"))
+        .join("\n");
+      expect(argvText.length, backend).toBeLessThan(10_000);
+      expect(argvText, backend).toContain(
+        "Read the complete post-execution prompt from this agent-history artifact path:",
+      );
+      expect(argvText, backend).not.toContain(largeMarker.slice(0, 120));
+
+      const promptArtifacts = [0, 1, 2].map((index) => promptArtifactPathFor(index));
+      expect(
+        promptArtifacts.every((artifactPath) => artifactPath && fs.existsSync(artifactPath)),
+      ).toBe(true);
+      const promptContents = promptArtifacts.map((artifactPath) =>
+        fs.readFileSync(artifactPath!, "utf8"),
+      );
+      expect(promptContents[0], backend).toContain("post-execution report generation");
+      expect(promptContents[0], backend).toContain(largeMarker.slice(0, 120));
+      expect(promptContents[0], backend).toContain("Return exactly one JSON object:");
+      expect(promptContents[1], backend).toContain("prepare manual-test display data");
+      expect(promptContents[1], backend).toContain("Saved post-execution report markdown:");
+      expect(promptContents[2], backend).toContain("decide continuation");
+      expect(promptContents[2], backend).toContain("Structured completion context:");
+      expect(promptContents[2], backend).toContain(largeMarker.slice(0, 120));
+    }
   });
 
   it("falls back to the other backend on a usage limit for each phase", async () => {

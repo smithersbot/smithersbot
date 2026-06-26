@@ -818,6 +818,180 @@ claude_code_cli_path() {
   command -v claude 2>/dev/null || command -v claude_code 2>/dev/null || true
 }
 
+# Pinned tui-pilot version SmithersBot depends on. tui-pilot is an INSTALLED
+# prerequisite (uv tool install), never vendored. Override the version/source via
+# SMITHERSBOT_TUI_PILOT_VERSION / SMITHERSBOT_TUI_PILOT_SOURCE.
+TUI_PILOT_PINNED_VERSION="${SMITHERSBOT_TUI_PILOT_VERSION:-0.8.61}"
+
+# Provider credentials the tui-pilot-driven Claude session must NOT inherit. The
+# driven session authenticates via the Max subscription OAuth token (HOME-relative
+# ~/.claude/.credentials.json), so these keys are scrubbed at the claude spawn to
+# keep a stray API key from silently switching billing away from the subscription.
+# Mirrors src/goal/claude-code-env.ts AUTH_KEYS_TO_STRIP + CREDENTIAL_KEYS_TO_STRIP.
+TUI_PILOT_PROVIDER_KEY_SCRUB=(
+  ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY_OLD ANTHROPIC_BASE_URL
+  OPENAI_API_KEY OPENAI_BASE_URL OPENROUTER_API_KEY GOOGLE_API_KEY GEMINI_API_KEY
+  AZURE_OPENAI_API_KEY MISTRAL_API_KEY GROQ_API_KEY DEEPSEEK_API_KEY COHERE_API_KEY
+  HF_TOKEN REPLICATE_API_TOKEN
+)
+
+# tui-pilot is OPTIONAL — the direct `claude -p` path is the default/main path. Setup
+# only installs + enables tui-pilot when the operator opts in.
+tui_pilot_opt_in() {
+  case "$(printf '%s' "${SMITHERSBOT_ENABLE_TUI_PILOT:-}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# When opted in, point goal.claudeDriver at tui-pilot (+ pin) in the freshly written
+# config. Default (no opt-in) leaves goal.claudeDriver unset → the code default `direct`.
+enable_tui_pilot_driver_in_config() {
+  local config_file=$1
+  [[ -f "$config_file" ]] || return 0
+  if SMITHERSBOT_CONFIG_FILE="$config_file" TUI_PILOT_PIN="$TUI_PILOT_PINNED_VERSION" python3 - <<'PY'
+import json, os
+path = os.environ["SMITHERSBOT_CONFIG_FILE"]
+pin = os.environ["TUI_PILOT_PIN"]
+with open(path) as fh:
+    cfg = json.load(fh)
+goal = cfg.setdefault("goal", {})
+goal["claudeDriver"] = "tui-pilot"
+goal["tuiPilot"] = {"version": pin}
+with open(path, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+    fh.write("\n")
+print(f"enabled tui-pilot driver in {path} (pin {pin})")
+PY
+  then
+    chmod 600 "$config_file"
+    info "$(success_marker) tui-pilot enabled in config (goal.claudeDriver=tui-pilot)"
+  else
+    info "$(warning_label) Could not enable tui-pilot in $config_file; leaving direct \`claude -p\` default."
+  fi
+}
+
+# Resolve the tui-pilot install source: an explicit override, else the sibling
+# local checkout (dev + single-host prod), mirroring resolveClaudeBinary's
+# local-checkout-in-dev / installed-in-prod intent.
+resolve_tui_pilot_source() {
+  if [[ -n "${SMITHERSBOT_TUI_PILOT_SOURCE:-}" ]]; then
+    printf '%s' "$SMITHERSBOT_TUI_PILOT_SOURCE"
+    return 0
+  fi
+  local script_dir repo_root sibling
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  repo_root="$(cd "$script_dir/.." && pwd)"
+  sibling="$(cd "$repo_root/.." 2>/dev/null && pwd)/tui-pilot"
+  if [[ -f "$sibling/pyproject.toml" ]]; then
+    printf '%s' "$sibling"
+    return 0
+  fi
+  return 1
+}
+
+# Install the pinned tui-pilot via `uv tool install` and verify the version. The
+# runtime preflight (src/goal/tui-pilot-driver.ts) is the fail-closed gate per run;
+# setup is best-effort and reports status so an unbuilt local checkout doesn't block
+# the rest of provisioning.
+install_tui_pilot_dependency() {
+  info "Installing tui-pilot prompt-run driver (pinned $TUI_PILOT_PINNED_VERSION)..."
+  if ! command -v uv >/dev/null 2>&1; then
+    info "$(warning_label) uv was not found on PATH; cannot install tui-pilot."
+    info "  Install uv (https://docs.astral.sh/uv/) then re-run setup."
+    return 0
+  fi
+
+  local source
+  if ! source="$(resolve_tui_pilot_source)"; then
+    info "$(warning_label) Could not resolve a tui-pilot install source."
+    info "  Set SMITHERSBOT_TUI_PILOT_SOURCE to a local path or 'tui-pilot @ git+<url>@v$TUI_PILOT_PINNED_VERSION'."
+    return 0
+  fi
+
+  if ! run_captured_command "Installing tui-pilot via uv tool install" \
+    uv tool install --force "$source"; then
+    info "$(warning_label) uv tool install of tui-pilot failed (source: $source)."
+    return 0
+  fi
+
+  local installed
+  installed="$(tui-pilot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [[ -z "$installed" ]]; then
+    info "$(warning_label) tui-pilot installed but 'tui-pilot --version' produced no version."
+  elif [[ "$installed" == "$TUI_PILOT_PINNED_VERSION" ]]; then
+    info "$(success_marker) tui-pilot $installed installed (matches pin $TUI_PILOT_PINNED_VERSION)"
+  else
+    info "$(warning_label) tui-pilot $installed installed but pin is $TUI_PILOT_PINNED_VERSION (runtime preflight will fail closed)."
+  fi
+
+  if ! command -v tui-pilot >/dev/null 2>&1; then
+    info "$(warning_label) tui-pilot is not on PATH after install."
+    info "  Ensure the uv tool bin dir (usually ~/.local/bin) is on the service PATH."
+  fi
+}
+
+# Write ~/.tui-pilot/config.toml so the tui-pilot-driven Claude session scrubs
+# provider API keys (env_scrub_extra) while keeping HOME/OAuth intact. Merge-
+# preserving: existing sandbox_root / seed_config_dir / env_scrub_extra are kept.
+write_tui_pilot_operator_config() {
+  local cfg="$HOME/.tui-pilot/config.toml"
+  mkdir -p "$(dirname "$cfg")"
+  if ! TUI_PILOT_CONFIG_PATH="$cfg" \
+    TUI_PILOT_SCRUB_KEYS="${TUI_PILOT_PROVIDER_KEY_SCRUB[*]}" \
+    python3 - <<'PY'
+# tomllib is 3.11+; setup may run under an older system python, so parse the simple
+# flat config.toml (only sandbox_root / seed_config_dir / env_scrub_extra) by regex.
+import os, re
+
+path = os.environ["TUI_PILOT_CONFIG_PATH"]
+scrub = os.environ["TUI_PILOT_SCRUB_KEYS"].split()
+
+text = ""
+if os.path.isfile(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+
+
+def read_str(key):
+    m = re.search(rf'^\s*{re.escape(key)}\s*=\s*"([^"]*)"', text, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def read_array(key):
+    m = re.search(rf'^\s*{re.escape(key)}\s*=\s*\[(.*?)\]', text, re.MULTILINE | re.DOTALL)
+    if not m:
+        return []
+    return re.findall(r'"([^"]*)"', m.group(1))
+
+
+sandbox_root = read_str("sandbox_root")
+seed_config_dir = read_str("seed_config_dir")
+merged = list(dict.fromkeys([*read_array("env_scrub_extra"), *scrub]))
+
+lines = [
+    "# Managed by setup-smithersbot.sh. env_scrub_extra scrubs provider API keys\n",
+    "# from tui-pilot-driven Claude sessions so they authenticate via the Max\n",
+    "# subscription OAuth token (HOME / ~/.claude/.credentials.json), not an API key.\n",
+]
+if sandbox_root:
+    lines.append(f'sandbox_root = "{sandbox_root}"\n')
+if seed_config_dir:
+    lines.append(f'seed_config_dir = "{seed_config_dir}"\n')
+arr = ", ".join(f'"{name}"' for name in merged)
+lines.append(f"env_scrub_extra = [{arr}]\n")
+
+with open(path, "w", encoding="utf-8") as fh:
+    fh.writelines(lines)
+print(f"wrote {path} ({len(merged)} scrubbed names)")
+PY
+  then
+    info "$(warning_label) Could not write $cfg (provider-key scrub for tui-pilot)."
+    return 0
+  fi
+  info "$(success_marker) tui-pilot provider-key scrub configured ($cfg)"
+}
+
 check_claude_sandbox_dependencies() {
   local active_backend=$1
   local claude_path missing=()
@@ -867,6 +1041,16 @@ check_claude_code_backend() {
     info "$(warning_label) Claude Code CLI was not found on PATH."
   fi
   check_claude_sandbox_dependencies 1
+  # The direct `claude -p` path is the default. tui-pilot is an OPTIONAL prompt-run
+  # driver: provision it (install + provider-key scrub) only when the operator opts in
+  # with SMITHERSBOT_ENABLE_TUI_PILOT=1. A host without tui-pilot runs entirely on
+  # `claude -p` (the runtime never invokes tui-pilot unless goal.claudeDriver is set).
+  if tui_pilot_opt_in; then
+    install_tui_pilot_dependency
+    write_tui_pilot_operator_config
+  else
+    info "tui-pilot driver: not enabled (default is direct \`claude -p\`). Set SMITHERSBOT_ENABLE_TUI_PILOT=1 to install + enable it."
+  fi
 }
 
 check_repo_backend() {
@@ -1563,6 +1747,11 @@ fi
 
 if confirm_overwrite "$config_file"; then
   write_config_file "$config_file" "$allowed_id" "$backend" "$gateway_token" "$workspace_name" "$workspace_repo" "$operator_honorific"
+  # Default config leaves goal.claudeDriver unset → direct `claude -p`. Only opt-in
+  # flips it to the (optional) tui-pilot driver.
+  if tui_pilot_opt_in; then
+    enable_tui_pilot_driver_in_config "$config_file"
+  fi
 else
   chmod 600 "$config_file"
   info "Kept existing $config_file"

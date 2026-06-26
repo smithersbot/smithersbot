@@ -65,13 +65,17 @@ vi.mock("./attempt-bundle.js", () => ({
   formatAttemptBundleSummary: () => "previous attempt",
 }));
 
-vi.mock("./manual-tests.js", () => ({
-  generateManualTests: () => Promise.reject(new Error("mock: no client in integration tests")),
-  isNoBackendManualTestsError: (err: unknown) => {
-    const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-    return message.includes("no worker backend available");
-  },
-}));
+vi.mock("./manual-tests.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./manual-tests.js")>();
+  return {
+    ...actual,
+    generateManualTests: () => Promise.reject(new Error("mock: no client in integration tests")),
+    isNoBackendManualTestsError: (err: unknown) => {
+      const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+      return message.includes("no worker backend available");
+    },
+  };
+});
 
 // Pretend semgrep is not installed so the goal-level final gate's SAST step is a no-op.
 // Integration tests don't simulate a real repo workingDir.

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resolveGatewayInstanceIdentity } from "../config/gateway-instance.js";
 import {
@@ -22,6 +22,7 @@ import {
 const DEV_UNIT = resolveGatewayInstanceIdentity("dev").serviceUnit;
 const STABLE_UNIT = resolveGatewayInstanceIdentity("stable").serviceUnit;
 let tmpDirs: string[] = [];
+const ORIGINAL_DEV_CAPS_ENV = process.env.SMITHERSBOT_DEV_CAPS;
 
 function makeTmpDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dev-gateway-mediation-test-"));
@@ -29,11 +30,20 @@ function makeTmpDir(): string {
   return dir;
 }
 
+beforeEach(() => {
+  delete process.env.SMITHERSBOT_DEV_CAPS;
+});
+
 afterEach(() => {
   for (const dir of tmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   tmpDirs = [];
+  if (ORIGINAL_DEV_CAPS_ENV === undefined) {
+    delete process.env.SMITHERSBOT_DEV_CAPS;
+  } else {
+    process.env.SMITHERSBOT_DEV_CAPS = ORIGINAL_DEV_CAPS_ENV;
+  }
 });
 
 // Active dev context: a worker on the smithersbot-dev checkout with the dev

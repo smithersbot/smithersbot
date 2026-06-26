@@ -277,6 +277,16 @@ function makeRun(overrides: Partial<SerializedRun> = {}): SerializedRun {
   });
 }
 
+function makePriorUserPlanHistory(count: number): NonNullable<SerializedRun["planHistory"]> {
+  const priorPlan = makeRun().plan!;
+  return Array.from({ length: count }, (_, index) => ({
+    revision: index + 1,
+    plan: priorPlan,
+    editInstructions: `prior user edit ${index + 1}`,
+    source: "user",
+  }));
+}
+
 async function withTempManagedRoot<T>(fn: (managedRoot: string) => Promise<T>): Promise<T> {
   const previousManagedRoot = process.env.SMITHERSBOT_GOALS_ROOT;
   const previousInstance = process.env.SMITHERSBOT_INSTANCE;
@@ -564,7 +574,13 @@ describe("goal-commands telegram adapter", () => {
       mockGoalCommand.mockImplementation(
         async (opts: { runId: string }, runtime: { log: (...args: unknown[]) => void }) => {
           createdRunId = opts.runId;
-          saveRunFixture(makeRun({ runId: opts.runId, state: "planning" }));
+          saveRunFixture(
+            makeRun({
+              runId: opts.runId,
+              state: "planning",
+              planHistory: makePriorUserPlanHistory(5),
+            }),
+          );
           runtime.log("## Plan\n1. Do something");
           return undefined;
         },
@@ -602,6 +618,7 @@ describe("goal-commands telegram adapter", () => {
           mode: "codex",
           workingDir: "/tmp/ws",
           readOnlyRoots,
+          userEditInstructions: [],
         }),
       );
 
@@ -3848,6 +3865,7 @@ describe("goal-commands telegram adapter", () => {
         makeRun({
           autocheckSessionId: "session-old",
           autocheckBackend: "codex",
+          planHistory: makePriorUserPlanHistory(8),
         }),
       );
 
@@ -3893,6 +3911,7 @@ describe("goal-commands telegram adapter", () => {
           existingSessionId: "session-old",
           existingBackend: "codex",
           mode: "claude_code",
+          userEditInstructions: ["tighten dependencies"],
         }),
       );
 

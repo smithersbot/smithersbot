@@ -2,7 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runCliProcess } from "./cli-process.js";
+
+const { mockLoadConfig } = vi.hoisted(() => ({
+  mockLoadConfig: vi.fn(() => ({})),
+}));
+
+vi.mock("../config/config.js", () => ({
+  loadConfig: mockLoadConfig,
+}));
+
+import {
+  buildClaudeDriverSpawnCommand,
+  resolveClaudeDriver,
+  runCliProcess,
+} from "./cli-process.js";
 
 // Smoke tests for the runCliProcess default-env contract: callers that omit
 // `env` get a credential-stripped copy of process.env, so any new LLM caller
@@ -16,6 +29,7 @@ describe("runCliProcess default env", () => {
   const originalLegacyToken = process.env.MOLTBOT_GATEWAY_TOKEN;
 
   beforeEach(() => {
+    mockLoadConfig.mockReturnValue({});
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-process-test-"));
     outPath = path.join(workDir, "stdout.txt");
     errPath = path.join(workDir, "stderr.txt");
@@ -120,5 +134,239 @@ describe("runCliProcess default env", () => {
       setTimeoutSpy.mockRestore();
       clearTimeoutSpy.mockRestore();
     }
+  });
+});
+
+describe("runCliProcess Claude driver seam", () => {
+  let workDir: string;
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  function writeExecutableMarker(name: string): string {
+    const filePath = path.join(binDir, name);
+    fs.writeFileSync(filePath, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 });
+    return filePath;
+  }
+
+  beforeEach(() => {
+    mockLoadConfig.mockReturnValue({});
+    workDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-cli-process-driver-test-"));
+    binDir = path.join(workDir, "bin");
+    fs.mkdirSync(binDir);
+    originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    mockLoadConfig.mockReturnValue({});
+    if (originalPath == null) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("defaults to direct mode and preserves Claude prompt-run args byte-for-byte", async () => {
+    const claude = "/usr/local/bin/claude";
+    const args = [
+      "-p",
+      "--verbose",
+      "--output-format",
+      "stream-json",
+      "--settings",
+      path.join(workDir, "settings.json"),
+      "--setting-sources",
+      "",
+      "--permission-mode",
+      "default",
+      "--allowedTools",
+      "Read,Bash",
+      "--append-system-prompt",
+      "caps",
+      "--model",
+      "claude-test",
+      "hello",
+    ];
+
+    const result = buildClaudeDriverSpawnCommand({
+      command: claude,
+      args,
+      cwd: workDir,
+      env: { PATH: process.env.PATH },
+    });
+
+    expect(result.command).toBe(claude);
+    expect(result.args).toEqual(args);
+  });
+
+  it("maps Claude prompt-run args to tui-pilot print when goal.claudeDriver is tui-pilot", async () => {
+    const claude = "/usr/local/bin/claude";
+    const tuiPilot = writeExecutableMarker("tui-pilot");
+    const settingsPath = path.join(workDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      `${JSON.stringify({ sandbox: { enabled: true }, permissions: { deny: ["WebFetch"] } })}\n`,
+    );
+    mockLoadConfig.mockReturnValue({ goal: { claudeDriver: "tui-pilot" } });
+
+    const result = buildClaudeDriverSpawnCommand({
+      command: claude,
+      args: [
+        "-p",
+        "--verbose",
+        "--output-format",
+        "stream-json",
+        "--settings",
+        settingsPath,
+        "--setting-sources",
+        "",
+        "--permission-mode",
+        "default",
+        "--allowedTools",
+        "Read,Bash",
+        "--append-system-prompt",
+        "caps",
+        "--max-turns",
+        "1",
+        "--session-id",
+        "11111111-1111-4111-8111-111111111111",
+        "--model",
+        "claude-test",
+        "hello",
+      ],
+      cwd: workDir,
+      env: { PATH: process.env.PATH, TUI_PILOT_BIN: tuiPilot },
+    });
+
+    expect(result.command).toBe(tuiPilot);
+    expect(result.args).toEqual([
+      "print",
+      "--output-format",
+      "stream-json",
+      "--policy",
+      "deny",
+      "--cwd",
+      workDir,
+      "--settings",
+      settingsPath,
+      "--setting-sources",
+      "",
+      "--session-id",
+      "11111111-1111-4111-8111-111111111111",
+      "--append-system-prompt",
+      "caps",
+      "--allowedTools",
+      "Read,Bash",
+      "--max-turns",
+      "1",
+      "hello",
+    ]);
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toMatchObject({
+      sandbox: { enabled: true },
+      permissions: { deny: ["WebFetch"] },
+      model: "claude-test",
+    });
+  });
+
+  it("uses configured tui-pilot binary before PATH lookup", async () => {
+    const claude = "/usr/local/bin/claude";
+    const configuredTuiPilot = path.join(workDir, "configured-tui-pilot");
+    mockLoadConfig.mockReturnValue({
+      goal: { claudeDriver: "tui-pilot", tuiPilotBinary: configuredTuiPilot },
+    });
+
+    const result = buildClaudeDriverSpawnCommand({
+      command: claude,
+      args: ["-p", "--output-format", "stream-json", "hello"],
+      cwd: workDir,
+      env: { PATH: process.env.PATH },
+    });
+
+    expect(result.command).toBe(configuredTuiPilot);
+    expect(result.args).toEqual([
+      "print",
+      "--output-format",
+      "stream-json",
+      "--policy",
+      "deny",
+      "--cwd",
+      workDir,
+      "hello",
+    ]);
+  });
+
+  it("passes non-Claude commands through unchanged even when tui-pilot is enabled", async () => {
+    const helper = "/usr/local/bin/helper";
+    mockLoadConfig.mockReturnValue({ goal: { claudeDriver: "tui-pilot" } });
+
+    const result = buildClaudeDriverSpawnCommand({
+      command: helper,
+      args: ["-p", "--output-format", "stream-json", "hello"],
+      cwd: workDir,
+      env: { PATH: process.env.PATH },
+    });
+
+    expect(result.command).toBe(helper);
+    expect(result.args).toEqual(["-p", "--output-format", "stream-json", "hello"]);
+  });
+
+  it("passes non-prompt Claude commands through unchanged when tui-pilot is enabled", async () => {
+    const claude = "/usr/local/bin/claude";
+    mockLoadConfig.mockReturnValue({ goal: { claudeDriver: "tui-pilot" } });
+
+    const result = buildClaudeDriverSpawnCommand({
+      command: claude,
+      args: ["--version"],
+      cwd: workDir,
+      env: { PATH: process.env.PATH },
+    });
+
+    expect(result.command).toBe(claude);
+    expect(result.args).toEqual(["--version"]);
+  });
+});
+
+describe("resolveClaudeDriver per-site selection", () => {
+  beforeEach(() => mockLoadConfig.mockReturnValue({}));
+  afterEach(() => mockLoadConfig.mockReturnValue({}));
+
+  it("defaults to direct when nothing is configured", () => {
+    mockLoadConfig.mockReturnValue({});
+    expect(resolveClaudeDriver()).toBe("direct");
+    expect(resolveClaudeDriver("cli-worker")).toBe("direct");
+  });
+
+  it("honors the global goal.claudeDriver for every site", () => {
+    mockLoadConfig.mockReturnValue({ goal: { claudeDriver: "tui-pilot" } });
+    expect(resolveClaudeDriver()).toBe("tui-pilot");
+    expect(resolveClaudeDriver("lessons")).toBe("tui-pilot");
+  });
+
+  it("lets a per-site override win over the global default (the S3 canary)", () => {
+    mockLoadConfig.mockReturnValue({
+      goal: {
+        claudeDriver: "direct",
+        tuiPilot: {
+          sites: {
+            "cli-worker": "tui-pilot",
+            "cli-planner": "tui-pilot",
+            "post-execution-report": "tui-pilot",
+            "repo-chat-worker": "tui-pilot",
+          },
+        },
+      },
+    });
+    // Canary sites flip to tui-pilot while the global default stays direct.
+    expect(resolveClaudeDriver("cli-worker")).toBe("tui-pilot");
+    expect(resolveClaudeDriver("repo-chat-worker")).toBe("tui-pilot");
+    // A non-canary site (and the global default) stay direct.
+    expect(resolveClaudeDriver("lessons")).toBe("direct");
+    expect(resolveClaudeDriver()).toBe("direct");
+  });
+
+  it("lets a per-site override pin a site back to direct when the global default is tui-pilot", () => {
+    mockLoadConfig.mockReturnValue({
+      goal: { claudeDriver: "tui-pilot", tuiPilot: { sites: { nightwatch: "direct" } } },
+    });
+    expect(resolveClaudeDriver("nightwatch")).toBe("direct");
+    expect(resolveClaudeDriver("cli-worker")).toBe("tui-pilot");
   });
 });

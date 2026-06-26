@@ -346,6 +346,14 @@ const FIELD_LABELS: Record<string, string> = {
   "channels.mattermost.requireMention": "Mattermost Require Mention",
   "channels.signal.account": "Signal Account",
   "channels.imessage.cliPath": "iMessage CLI Path",
+  "goal.claudeDriver": "Claude Prompt Driver",
+  "goal.tuiPilotBinary": "tui-pilot Binary",
+  "goal.tuiPilot.version": "tui-pilot Pinned Version",
+  "goal.tuiPilot.preflight": "tui-pilot Preflight Mode",
+  "goal.tuiPilot.maxConcurrent": "tui-pilot Max Concurrent Sessions",
+  "goal.tuiPilot.maxQueued": "tui-pilot Max Queued Runs",
+  "goal.tuiPilot.queueTimeoutMs": "tui-pilot Queue Timeout (ms)",
+  "goal.tuiPilot.sites": "tui-pilot Per-Site Drivers",
   "agents.list[].identity.avatar": "Agent Avatar",
   "discovery.mdns.mode": "mDNS Discovery Mode",
   "plugins.enabled": "Enable Plugins",
@@ -401,6 +409,22 @@ const FIELD_HELP: Record<string, string> = {
     "Extra node.invoke commands to allow beyond the gateway defaults (array of command strings).",
   "gateway.nodes.denyCommands":
     "Commands to block even if present in node claims or default allowlist.",
+  "goal.claudeDriver":
+    'Driver for Claude prompt runs. Defaults to "direct"; "tui-pilot" is a migration opt-in.',
+  "goal.tuiPilotBinary":
+    "Optional path or command for the installed tui-pilot executable; defaults to local dev checkout lookup, then PATH.",
+  "goal.tuiPilot.version":
+    'Pinned tui-pilot version (e.g. "0.8.60"). When set, preflight fails closed if `tui-pilot --version` does not match.',
+  "goal.tuiPilot.preflight":
+    'Fail-closed preflight when a tui-pilot run is required: "enforce" (default) blocks, "warn" logs and proceeds, "off" skips.',
+  "goal.tuiPilot.maxConcurrent":
+    "Max concurrent tui-pilot tmux sessions before runs queue (default 3).",
+  "goal.tuiPilot.maxQueued":
+    "Max runs allowed to wait for a session slot before failing closed (default 64; 0 disables queueing).",
+  "goal.tuiPilot.queueTimeoutMs":
+    "Max milliseconds a run may wait in the tui-pilot queue before failing closed (default 600000).",
+  "goal.tuiPilot.sites":
+    'Per-site driver overrides (site id -> "direct" | "tui-pilot"). Overrides goal.claudeDriver for the listed sites; drives the S3 canary.',
   "nodeHost.browserProxy.enabled": "Expose the local browser control server via node proxy.",
   "nodeHost.browserProxy.allowProfiles":
     "Optional allowlist of browser profile names exposed via the node proxy.",
