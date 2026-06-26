@@ -45,6 +45,11 @@ function shouldRecordResumeAnswerForStep(step: PlanStep): boolean {
   return step.blockedReason == null || step.blockedReason === "user_input";
 }
 
+function clearBuildGateFixStateForResume(session: GoalSession, stepId: string): void {
+  delete session.buildGateFixCounts?.[stepId];
+  delete session.buildGateFixSignatures?.[stepId];
+}
+
 export function applyResumeNote(
   session: GoalSession,
   params: ApplyResumeNoteParams,
@@ -83,7 +88,12 @@ export function applyResumeNote(
     if (answerText != null && shouldRecordResumeAnswerForStep(step)) {
       session.answers[`task:${step.id}:input`] = answerText;
     }
+    clearBuildGateFixStateForResume(session, step.id);
     clearBlockedStepForResume(step);
+  }
+
+  if (isRunLevelResumeExecution) {
+    clearBuildGateFixStateForResume(session, "__final__");
   }
 
   if (session.state === "blocked") {

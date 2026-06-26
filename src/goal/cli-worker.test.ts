@@ -790,7 +790,7 @@ describe("cli-worker", () => {
       expect(args).toContain("--setting-sources");
       expect(args).not.toContain("--dangerously-skip-permissions");
       expect(args).not.toContain("--allow-dangerously-skip-permissions");
-      expect(args[args.length - 1]).toBe("do the task");
+      expect(args).not.toContain("do the task");
       expect(args.join(" ")).not.toContain("PROJECT CONVENTIONS (from CLAUDE.md):");
     });
 
@@ -853,8 +853,8 @@ describe("cli-worker", () => {
         "--skip-git-repo-check",
         "--cd",
         workingDir,
-        args.at(-1),
       ]);
+      expect(args).not.toContain("test");
       expect(args).not.toContain("--sandbox");
       expect(args).not.toContain("workspace-write");
       expect(args.join(" ")).not.toContain("danger-full-access");
@@ -1090,15 +1090,23 @@ describe("cli-worker", () => {
     });
 
     it("prepends hard denies, then project conventions before worker context for codex workers", () => {
+      const payload = buildCliPromptPayload({
+        backend: "codex",
+        prompt: "do the task",
+        denyFilePath: "/tmp/deny",
+        projectConventions: "Use yarn test\nNo force-push",
+      });
       const args = buildCliArgs({
         backend: "codex",
         prompt: "do the task",
         workingDir: "/tmp",
         denyFilePath: "/tmp/deny",
         projectConventions: "Use yarn test\nNo force-push",
+        promptPayload: payload,
       });
 
-      const prompt = args[args.length - 1]!;
+      const prompt = payload.promptArg;
+      expect(args).not.toContain(prompt);
       expect(prompt.startsWith("Hard Denies\n")).toBe(true);
       const conventionsHeader = "## PROJECT CONVENTIONS";
       const workerGuidelinesHeader = "## WORKER GUIDELINES";
@@ -1113,15 +1121,23 @@ describe("cli-worker", () => {
     });
 
     it("skips project conventions when codex input is empty", () => {
+      const payload = buildCliPromptPayload({
+        backend: "codex",
+        prompt: "do the task",
+        denyFilePath: "/tmp/deny",
+        projectConventions: "   ",
+      });
       const args = buildCliArgs({
         backend: "codex",
         prompt: "do the task",
         workingDir: "/tmp",
         denyFilePath: "/tmp/deny",
         projectConventions: "   ",
+        promptPayload: payload,
       });
 
-      const prompt = args[args.length - 1]!;
+      const prompt = payload.promptArg;
+      expect(args).not.toContain(prompt);
       expect(prompt).not.toContain("## PROJECT CONVENTIONS");
     });
   });
@@ -1342,6 +1358,72 @@ describe("cli-worker", () => {
         expect(call?.env?.SMITHERSBOT_GOAL_TASK_ID).toBe(stepId);
         expect(call?.args).not.toContain("--dangerously-bypass-approvals-and-sandbox");
         expect(JSON.stringify(call?.args ?? [])).not.toContain("dangerouslyDisableSandbox");
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    );
+
+    it.each(["codex", "claude_code"] as const)(
+      "sends assembled %s worker prompts through stdin instead of argv",
+      async (backend) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-stdin-"));
+        const runId = `run-stdin-${backend}`;
+        const stepId = `step-stdin-${backend}`;
+        const step = makeStep({
+          id: stepId,
+          description: "Implement stdin prompt delivery",
+        });
+        const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+        const workerDir = path.join(dir, "worker", stepId);
+        const workspaceResultPath = path.join(
+          dir,
+          ".moltbot-goal-worker-results",
+          runId,
+          stepId,
+          "attempt-1",
+          "worker_result.json",
+        );
+
+        resolveWorkerDirMock.mockReturnValue(workerDir);
+        writeAttemptBundleMock.mockImplementation(() => {});
+        runCliProcessMock.mockImplementationOnce(async () => {
+          fs.mkdirSync(path.dirname(workspaceResultPath), { recursive: true });
+          fs.writeFileSync(
+            workspaceResultPath,
+            JSON.stringify({ status: "complete", summary: "Prompt arrived over stdin" }),
+            "utf8",
+          );
+          return {
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 20,
+          };
+        });
+
+        await executeTaskWithCliWorker({
+          backend,
+          step,
+          plan,
+          goal: "Verify worker stdin prompt delivery",
+          workingDir: dir,
+          runId,
+          hardDenies: HARD_DENIES.slice(0, 1),
+          timeoutMs: 30_000,
+        });
+
+        const call = runCliProcessMock.mock.calls[0]?.[0];
+        expect(call?.stdin).toContain("YOUR TASK: Implement stdin prompt delivery");
+        expect(call?.args).not.toContain(call?.stdin);
+        if (backend === "codex") {
+          expect(call?.stdin).toContain("Hard Denies");
+          expect(call?.stdin).toContain("## WORKER GUIDELINES");
+        } else {
+          expect(call?.args).toContain("--append-system-prompt");
+          expect(call?.stdin).not.toContain("## APPENDED SYSTEM PROMPT");
+        }
+
         fs.rmSync(dir, { recursive: true, force: true });
       },
     );
@@ -2294,6 +2376,51 @@ describe("cli-worker", () => {
       ).toBe(false);
     });
 
+    it("classifies pre-flight Claude failures from surfaced output when no transcript exists", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-preflight-auth-"));
+      const runId = "run-preflight-auth";
+      const stepId = "step-preflight-auth";
+      const step = makeStep({ id: stepId });
+      const plan: Plan = { ...makePlan(), workingDir: dir, steps: [step] };
+      const workerDir = path.join(dir, "worker", stepId);
+
+      resolveWorkerDirMock.mockReturnValue(workerDir);
+      writeAttemptBundleMock.mockImplementation(() => {});
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: "ERRORED\nNot logged in · Please run /login",
+        stderr: "",
+        timedOut: false,
+        exitCode: 1,
+        signal: null,
+        durationMs: 22,
+      });
+
+      const result = await executeTaskWithCliWorker({
+        backend: "claude_code",
+        step,
+        plan,
+        goal: "Verify no-transcript preflight auth classification",
+        workingDir: dir,
+        runId,
+        hardDenies: HARD_DENIES.slice(0, 1),
+        timeoutMs: 30_000,
+      });
+
+      expect(result.output.status).toBe("failed");
+      expect(result.output.errorType).toBe("auth");
+      if (result.output.status === "failed") {
+        expect(result.output.reason).toContain("Not logged in");
+        expect(result.output.whatTried).toContain("before any transcript");
+      }
+      expect(writeAttemptBundleMock).toHaveBeenCalledWith(
+        workerDir,
+        expect.objectContaining({
+          outcome: "failed",
+          errorClassification: "auth",
+        }),
+      );
+    });
+
     it("writes prompt artifact and launch event before spawning the backend", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-worker-history-launch-"));
       const runId = "run-history-launch";
@@ -3109,6 +3236,28 @@ describe("cli-worker", () => {
       const result = parseClaudeCodeStreamError(stdout, "");
       expect(result).not.toBeNull();
       expect(result!.errorType).toBe("auth");
+    });
+
+    it("routes transcript assistant.error through provider classification", () => {
+      const stdout = [
+        JSON.stringify({
+          type: "assistant",
+          error: "authentication_failed",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Not logged in · Please run /login" }],
+          },
+        }),
+        JSON.stringify({
+          type: "result",
+          is_error: true,
+          result: "Not logged in · Please run /login",
+        }),
+      ].join("\n");
+      const result = parseClaudeCodeStreamError(stdout, "");
+      expect(result).not.toBeNull();
+      expect(result!.errorType).toBe("auth");
+      expect(result!.message).toContain("Not logged in");
     });
 
     it("detects rate limit from result text", () => {

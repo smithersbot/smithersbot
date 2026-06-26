@@ -23,11 +23,32 @@ const SEMGREP_INFRA_FAILURE_PATTERNS: RegExp[] = [
   /Max retries exceeded with url:\s*\/c\/auto/i,
 ];
 
+function extractTapFailureDigest(text: string): string | null {
+  const digestLines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^not ok\b/.test(line) || /^# (?:tests|pass|fail)\b/.test(line));
+
+  if (!digestLines.some((line) => /^not ok\b/.test(line))) {
+    return null;
+  }
+
+  return ["Failing tests:", ...digestLines].join("\n");
+}
+
 export function truncateForPrompt(text: string): string {
   if (!text) return "";
   const trimmed = text.trim();
   if (trimmed.length <= BUILD_GATE_OUTPUT_MAX_CHARS) return trimmed;
-  return trimmed.slice(-BUILD_GATE_OUTPUT_MAX_CHARS);
+  const failureDigest = extractTapFailureDigest(trimmed);
+  if (!failureDigest) return trimmed.slice(-BUILD_GATE_OUTPUT_MAX_CHARS);
+
+  const separator = "\n\n--- Output tail ---\n";
+  const tailBudget = BUILD_GATE_OUTPUT_MAX_CHARS - failureDigest.length - separator.length;
+  if (tailBudget <= 0) {
+    return failureDigest;
+  }
+  return [failureDigest, trimmed.slice(-tailBudget)].join(separator);
 }
 
 export function formatExecError(error: unknown): string {

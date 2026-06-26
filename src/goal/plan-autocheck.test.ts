@@ -305,6 +305,54 @@ describe("runPlanAutocheck", () => {
     expect(firstCall.args).toContain("stream-json");
   });
 
+  it.each(["claude_code", "codex"] as const)(
+    "sends large %s reviewer prompts through stdin instead of argv",
+    async (backend) => {
+      const largeText = "large-plan-section ".repeat(8_500);
+      const initialPlan = {
+        ...makePlan(`Large ${backend} plan`),
+        summary: largeText,
+        shortSummary: largeText,
+        steps: [
+          {
+            ...makePlan(`Large ${backend} plan`).steps[0]!,
+            description: largeText,
+            successCriteria: largeText,
+            backend,
+          },
+        ],
+      };
+      const workingDir = path.join(tmpDir, `workspace-${backend}`);
+      fs.mkdirSync(workingDir, { recursive: true });
+
+      mockRunCliProcess.mockResolvedValueOnce(
+        cliResult({
+          stdout:
+            backend === "claude_code"
+              ? claudeStdout({ decision: { approved: true } })
+              : '{"approved":true}\n',
+        }),
+      );
+
+      await runPlanAutocheck({
+        plan: initialPlan,
+        goalText: largeText,
+        mode: backend,
+        workingDir,
+        runDir: runPath(tmpDir, `run-large-stdin-${backend}`),
+        commitRevision: vi.fn(),
+      });
+
+      const call = mockRunCliProcess.mock.calls[0]?.[0] as {
+        args: string[];
+        stdin?: string;
+      };
+      expect(call.stdin).toBeDefined();
+      expect(call.stdin!.length).toBeGreaterThan(131_072);
+      expect(call.args).not.toContain(call.stdin);
+    },
+  );
+
   it("mirrors autocheck round artifacts and records a warning when mirroring fails", async () => {
     const initialPlan = makePlan("Initial plan");
     const mirrorSpy = vi
@@ -771,9 +819,9 @@ describe("runPlanAutocheck", () => {
     const readOnlyRoots = [observedDevAgentRoot, observedDevWorkspacesRoot, observedDevHistoryRoot];
     fs.mkdirSync(stableWorkingDir, { recursive: true });
     const initialPlan = { ...makePlan("Observed read roots"), workingDir: stableWorkingDir };
-    mockRunCliProcess.mockImplementationOnce(async (call: { cwd: string; args: string[] }) => {
+    mockRunCliProcess.mockImplementationOnce(async (call: { cwd: string; stdin?: string }) => {
       expect(call.cwd).toBe(stableWorkingDir);
-      const prompt = call.args.at(-1) ?? "";
+      const prompt = call.stdin ?? "";
       expect(prompt).toContain(`"workingDir": "${stableWorkingDir}"`);
       expect(prompt).not.toContain(`"workingDir": "${observedDevWorkspacesRoot}"`);
       return cliResult({ stdout: '{"approved":true}\n' });
@@ -1177,8 +1225,7 @@ describe("runPlanAutocheck", () => {
       commitRevision: vi.fn(),
     });
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
-    const prompt = firstArgs.at(-1) ?? "";
+    const prompt = (mockRunCliProcess.mock.calls[0][0] as { stdin?: string }).stdin ?? "";
     expect(prompt).toContain('"shortSummary": "Ship auth flow updates"');
     expect(prompt).toContain('"shortSummary": "Implement auth flow"');
   });
@@ -1203,8 +1250,7 @@ describe("runPlanAutocheck", () => {
       commitRevision: vi.fn(),
     });
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
-    const prompt = firstArgs.at(-1) ?? "";
+    const prompt = (mockRunCliProcess.mock.calls[0][0] as { stdin?: string }).stdin ?? "";
     expect(prompt).toContain("User-requested changes (treat as authoritative requirements):");
     expect(prompt).toContain("1. Add an explicit Add Details button for revision requests.");
     expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
@@ -1235,11 +1281,12 @@ describe("runPlanAutocheck", () => {
       commitRevision: vi.fn(),
     });
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
+    const firstCall = mockRunCliProcess.mock.calls[0][0] as { args: string[]; stdin?: string };
+    const firstArgs = firstCall.args;
     expect(firstArgs).toContain("--resume");
     expect(firstArgs).toContain("resume-user-edits-session");
 
-    const prompt = firstArgs.at(-1) ?? "";
+    const prompt = firstCall.stdin ?? "";
     expect(prompt).toContain("User-requested changes (treat as authoritative requirements):");
     expect(prompt).toContain("1. Add an explicit Add Details button for revision requests.");
     expect(prompt).toContain("2. Keep user-requested changes intact across planner revisions.");
@@ -1272,9 +1319,9 @@ describe("runPlanAutocheck", () => {
       commitRevision: vi.fn(),
     });
 
-    const secondCallArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
-    expect(secondCallArgs).not.toContain("--resume");
-    const secondPrompt = secondCallArgs.at(-1) ?? "";
+    const secondCall = mockRunCliProcess.mock.calls[1][0] as { args: string[]; stdin?: string };
+    expect(secondCall.args).not.toContain("--resume");
+    const secondPrompt = secondCall.stdin ?? "";
     expect(secondPrompt).toContain("Prior reviewer feedback summary:");
     expect(secondPrompt).toContain("1. Please add missing file paths.");
   });
@@ -1299,9 +1346,9 @@ describe("runPlanAutocheck", () => {
 
     expect(result.sessionId).toBe("new-backend-session");
 
-    const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
-    expect(firstArgs).not.toContain("--resume");
-    const prompt = firstArgs.at(-1) ?? "";
+    const firstCall = mockRunCliProcess.mock.calls[0][0] as { args: string[]; stdin?: string };
+    expect(firstCall.args).not.toContain("--resume");
+    const prompt = firstCall.stdin ?? "";
     expect(prompt).toContain(
       'Previous reviewer backend was "codex" but current mode is "claude_code"',
     );
@@ -1343,12 +1390,13 @@ describe("runPlanAutocheck", () => {
 
     expect(mockRunCliProcess).toHaveBeenCalledTimes(2);
     const firstArgs = (mockRunCliProcess.mock.calls[0][0] as { args: string[] }).args;
-    const secondArgs = (mockRunCliProcess.mock.calls[1][0] as { args: string[] }).args;
+    const secondCall = mockRunCliProcess.mock.calls[1][0] as { args: string[]; stdin?: string };
+    const secondArgs = secondCall.args;
     expect(firstArgs).toContain("--resume");
     expect(firstArgs).toContain("stale-session");
     expect(secondArgs).not.toContain("--resume");
 
-    const secondPrompt = secondArgs.at(-1) ?? "";
+    const secondPrompt = secondCall.stdin ?? "";
     expect(secondPrompt).toContain("session resume failed");
 
     const resumeFailurePath = path.join(runDir, "autocheck", "round-1", "resume_failure.txt");
@@ -1585,9 +1633,11 @@ describe("runPlanAutocheck", () => {
 
     const call = mockRunCliProcess.mock.calls[0]?.[0] as {
       args: string[];
+      stdin?: string;
       env: Record<string, string | undefined>;
     };
-    expect(call.args).toEqual(["exec", "resume", "codex-resume-session", expect.any(String)]);
+    expect(call.args).toEqual(["exec", "resume", "codex-resume-session"]);
+    expect(call.stdin).toContain("Updated plan JSON:");
     expect(call.args).not.toContain("--json");
     expect(call.args).not.toContain("--color");
     expect(call.args).not.toContain("--cd");
@@ -2114,6 +2164,55 @@ describe("runPlanAutocheck", () => {
       expect(calls[0]).toEqual([]);
       expect(calls[1]).toEqual(["Round 1: add file paths."]);
       expect(calls[2]).toEqual(["Round 1: add file paths.", "Round 2: fix dependency order."]);
+    });
+
+    it("threads user edit instructions into autocheck-triggered plan revisions", async () => {
+      const currentPlan = makePlan("Current frontend plan", "1", "claude_code");
+      const revisedPlan = makePlan("Revised frontend plan", "2", "claude_code");
+      const userInstruction =
+        "Each task that edits the frontend needs to use Playwright to test within the task.";
+      const staleContinuationPrompt =
+        "Prove Private Monitor live and refresh cheap storage recommendations.";
+
+      mockRunCliProcess
+        .mockResolvedValueOnce(
+          cliResult({
+            stdout: claudeStdout({
+              decision: {
+                approved: false,
+                editInstructions: "Tighten the plan while preserving user-requested tests.",
+              },
+              sessionId: "user-edit-session",
+            }),
+          }),
+        )
+        .mockResolvedValueOnce(
+          cliResult({ stdout: claudeStdout({ decision: { approved: true } }) }),
+        );
+      mockRunCliPlanRevision.mockResolvedValueOnce({ plan: revisedPlan });
+
+      await runPlanAutocheck({
+        plan: currentPlan,
+        goalText: "Ship the frontend",
+        userEditInstructions: [userInstruction],
+        mode: "claude_code",
+        workingDir: tmpDir,
+        runDir: runPath(tmpDir, "run-user-edit-revision-context"),
+        commitRevision: vi.fn(),
+      });
+
+      expect(mockRunCliPlanRevision).toHaveBeenCalledOnce();
+      const revisionParams = mockRunCliPlanRevision.mock.calls[0]?.[0] as {
+        currentPlan?: Plan;
+        editInstructions?: string;
+        userEditInstructions?: string[];
+      };
+      expect(revisionParams.currentPlan).toBe(currentPlan);
+      expect(revisionParams.editInstructions).toContain(
+        "Tighten the plan while preserving user-requested tests.",
+      );
+      expect(revisionParams.userEditInstructions).toEqual([userInstruction]);
+      expect(JSON.stringify(revisionParams)).not.toContain(staleContinuationPrompt);
     });
 
     it("records launch/result/round history with token usage for EVERY round", async () => {

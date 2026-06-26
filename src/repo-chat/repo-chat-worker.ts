@@ -18,7 +18,12 @@ import { runWithBackendFallback } from "../goal/phase-fallback.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "../goal/claude-code-env.js";
 import { CLAUDE_READ_ONLY_PROMPT } from "../goal/claude-code-constants.js";
 import { appendStrictMcpArgs, ensureEmptyMcpConfig } from "../goal/claude-code-mcp-isolation.js";
-import { collectText, parseJsonLines } from "../goal/cli-output-parsing.js";
+import {
+  collectText,
+  extractCliTextAndSession,
+  parseCliJsonEvents,
+  parseJsonLines,
+} from "../goal/cli-output-parsing.js";
 import { runCliProcess } from "../goal/cli-process.js";
 import { getLogger } from "../logging/logger.js";
 import { REPO_CHAT_SANDBOX_REPAIR_PROMPT } from "../prompts/repair/repo-chat-repair.js";
@@ -30,9 +35,14 @@ import { redactSecretValues } from "../security/secret-paths.js";
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import type { RepoChatBackend, RepoChatWorkerParams, RepoChatWorkerResult } from "./types.js";
 import {
+  resolveObservedInstanceSet,
+  type ObservedInstanceOptions,
+} from "../config/gateway-instance.js";
+import {
   isPathInsideAgentRoot,
   isPathInsidePrivateRoot,
   resolveAgentRoot,
+  resolveObservedAgentRoot,
   resolveObservedInspectionTarget,
 } from "../config/managed-paths.js";
 import {
@@ -73,11 +83,13 @@ export function buildClaudeRepoChatArgs(params: {
   runId?: string;
   cliSessionId?: string;
   model?: string;
+  readOnlyRoots?: string[];
 }): string[] {
   const sandboxConfig = buildClaudeCodeSandboxLaunchConfig({
     workingDir: params.workingDir ?? process.cwd(),
     runId: params.runId ?? "repo-chat",
     purpose: "repo-chat",
+    readOnlyRoots: params.readOnlyRoots,
   });
   const baseArgs = [
     "-p",
@@ -160,11 +172,41 @@ export function buildCodexRepoChatArgs(params: {
   return args;
 }
 
-export function resolveRepoChatExecutionRoot(workingDir: string): string {
+/**
+ * Build the {@link ObservedInstanceOptions} for a repo-chat run from the explicit
+ * `observedInstances` param. When provided (even as an empty array) it is
+ * authoritative and the env signal is NOT consulted; `undefined` returns
+ * `undefined` so the resolvers fall back to the env signal.
+ */
+function repoChatObservedOptions(
+  observedInstances: string[] | undefined,
+): ObservedInstanceOptions | undefined {
+  return observedInstances != null ? { observedInstances } : undefined;
+}
+
+/**
+ * Agent roots of every explicitly-observed instance, used as read-only grant
+ * roots for the inspection sandbox. Derived purely from the gateway-instance
+ * identity mapping (never a path literal): each observed instance resolves its
+ * own agent root, which the sandbox builders recognize as an observed surface and
+ * grant read while sealing that instance's private/state dirs.
+ */
+function resolveObservedReadOnlyRoots(options?: ObservedInstanceOptions): string[] {
+  const roots: string[] = [];
+  for (const instance of resolveObservedInstanceSet(options)) {
+    roots.push(resolveObservedAgentRoot(instance, options));
+  }
+  return roots;
+}
+
+export function resolveRepoChatExecutionRoot(
+  workingDir: string,
+  options?: ObservedInstanceOptions,
+): string {
   // An explicitly opted-in observed instance (e.g. the dev gateway) lets stable
   // read-scope to that instance's agent root. Its private/state targets are
   // refused exactly like the current process's own private paths.
-  const observed = resolveObservedInspectionTarget(workingDir);
+  const observed = resolveObservedInspectionTarget(workingDir, options);
   if (observed.kind === "sealed") {
     throw new Error("Repo chat cannot run from SmithersBot private paths.");
   }
@@ -200,23 +242,7 @@ function isCodexMissingRolloutState(params: {
 }
 
 function parseClaudeStdoutEvents(stdout: string): Array<Record<string, unknown>> {
-  const lineEvents = parseJsonLines(stdout);
-  if (lineEvents.length > 0) return lineEvents;
-
-  const trimmed = stdout.trim();
-  if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return [];
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      return parsed.filter((entry): entry is Record<string, unknown> =>
-        Boolean(entry && typeof entry === "object" && !Array.isArray(entry)),
-      );
-    }
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return [parsed as Record<string, unknown>];
-    }
-  } catch {}
-  return [];
+  return parseCliJsonEvents(stdout);
 }
 
 function isInitOnlyClaudeStdout(stdout: string): boolean {
@@ -231,124 +257,11 @@ function isInitOnlyClaudeStdout(stdout: string): boolean {
 }
 
 function extractSessionIdFromStdout(stdout: string): string | undefined {
-  const sessionIdFields = [
-    "session_id",
-    "sessionId",
-    "conversation_id",
-    "conversationId",
-    "thread_id",
-    "threadId",
-  ];
-  const nestedSessionIdFields = ["id", "session_id", "thread_id", "conversation_id"];
-  const nestedSessionEnvelopes = ["session_configured", "session", "thread"];
-
-  function findInSessionObject(
-    obj: Record<string, unknown>,
-    fields: readonly string[],
-  ): string | undefined {
-    let latest: string | undefined;
-
-    for (const field of fields) {
-      const value = obj[field];
-      if (typeof value === "string" && value.trim()) {
-        latest = value.trim();
-      }
-    }
-
-    return latest;
-  }
-
-  function findInObject(obj: Record<string, unknown>): string | undefined {
-    let latest: string | undefined;
-
-    for (const field of sessionIdFields) {
-      const value = obj[field];
-      if (typeof value === "string" && value.trim()) {
-        latest = value.trim();
-      }
-    }
-
-    for (const envelope of nestedSessionEnvelopes) {
-      const value = obj[envelope];
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        latest =
-          findInSessionObject(value as Record<string, unknown>, nestedSessionIdFields) ?? latest;
-      }
-    }
-
-    return latest;
-  }
-
-  function findLatestInParsedJson(parsed: unknown): string | undefined {
-    if (Array.isArray(parsed)) {
-      let latest: string | undefined;
-
-      for (const item of parsed) {
-        if (item && typeof item === "object" && !Array.isArray(item)) {
-          latest = findInObject(item as Record<string, unknown>) ?? latest;
-        }
-      }
-
-      return latest;
-    }
-
-    if (parsed && typeof parsed === "object") {
-      return findInObject(parsed as Record<string, unknown>);
-    }
-
-    return undefined;
-  }
-
-  let latest: string | undefined;
-
-  for (const line of stdout.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("{")) continue;
-
-    try {
-      latest = findLatestInParsedJson(JSON.parse(trimmed) as unknown) ?? latest;
-    } catch {
-      continue;
-    }
-  }
-
-  if (latest) {
-    return latest;
-  }
-
-  const wholeStdout = stdout.trim();
-  if (!wholeStdout) {
-    return undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(wholeStdout) as unknown;
-    // Handle JSON array (Claude Code --output-format json emits an array of event objects).
-    return findLatestInParsedJson(parsed);
-  } catch {}
-
-  return undefined;
+  return extractCliTextAndSession(stdout).sessionId;
 }
 
 function extractResponseFromClaudeStdout(stdout: string): string {
-  const events = parseClaudeStdoutEvents(stdout);
-  let latestAssistantText = "";
-  let latestResultText = "";
-
-  for (const event of events) {
-    const type = typeof event.type === "string" ? event.type : "";
-    if (type === "assistant") {
-      const text = collectText(event).trim();
-      if (text) latestAssistantText = text;
-      continue;
-    }
-    if (type === "result") {
-      const text = collectText(event).trim();
-      if (text) latestResultText = text;
-    }
-  }
-
-  return (latestAssistantText || latestResultText).trim();
+  return extractCliTextAndSession(stdout).text;
 }
 
 export function extractResponseFromCodexStdout(stdout: string): string {
@@ -532,12 +445,17 @@ async function runSandboxSafeRepair(params: {
     cwd: params.cwd,
     timeoutMs: REPAIR_TIMEOUT_MS,
     abortSignal: params.abortSignal,
+    claudeDriverSite: "repo-chat-worker",
     env: params.env,
   });
 }
 
 async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<RepoChatWorkerResult> {
-  const executionRoot = resolveRepoChatExecutionRoot(params.workingDir);
+  const observedOptions = repoChatObservedOptions(params.observedInstances);
+  const executionRoot = resolveRepoChatExecutionRoot(params.workingDir, observedOptions);
+  // Read-only grant roots for the inspection sandbox: the agent root of every
+  // explicitly-observed instance (e.g. dev), derived from the identity mapping.
+  const observedReadOnlyRoots = resolveObservedReadOnlyRoots(observedOptions);
   const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const responseFileId = crypto.randomUUID();
   const historySessionId =
@@ -560,6 +478,7 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
           workingDir: params.workingDir,
           runId: params.codexSandboxRunId ?? `repo-chat-${responseFileId}`,
           purpose: "repo-chat",
+          readOnlyRoots: observedReadOnlyRoots,
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
@@ -571,6 +490,7 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
           runId: `repo-chat-${responseFileId}`,
           cliSessionId: params.cliSessionId,
           model: params.model,
+          readOnlyRoots: observedReadOnlyRoots,
         })
       : buildCodexRepoChatArgs({
           prompt: codexPrompt,
@@ -636,6 +556,7 @@ async function runRepoChatWorkerOnce(params: RepoChatWorkerParams): Promise<Repo
       cwd: executionRoot,
       timeoutMs,
       abortSignal: params.abortSignal,
+      claudeDriverSite: "repo-chat-worker",
       env,
     });
     durationMsForHistory = durationMs;

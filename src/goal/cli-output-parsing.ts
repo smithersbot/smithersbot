@@ -21,6 +21,135 @@ export function collectText(value: unknown): string {
   return "";
 }
 
+const SESSION_ID_FIELDS = [
+  "session_id",
+  "sessionId",
+  "conversation_id",
+  "conversationId",
+  "thread_id",
+  "threadId",
+] as const;
+
+const NESTED_SESSION_ID_FIELDS = ["id", "session_id", "sessionId", "thread_id", "threadId"];
+const NESTED_SESSION_ENVELOPES = ["session_configured", "session", "thread"];
+
+export function pickCliSessionId(parsed: Record<string, unknown>): string | undefined {
+  let latest: string | undefined;
+
+  for (const field of SESSION_ID_FIELDS) {
+    const value = parsed[field];
+    if (typeof value === "string" && value.trim()) latest = value.trim();
+  }
+
+  for (const envelope of NESTED_SESSION_ENVELOPES) {
+    const value = parsed[envelope];
+    if (!isRecord(value)) continue;
+    for (const field of NESTED_SESSION_ID_FIELDS) {
+      const nested = value[field];
+      if (typeof nested === "string" && nested.trim()) latest = nested.trim();
+    }
+  }
+
+  return latest;
+}
+
+export function parseCliJsonEvents(text: string): Record<string, unknown>[] {
+  const trimmed = text.trim();
+  if ((trimmed.startsWith("[") || (trimmed.startsWith("{") && trimmed.includes("\n"))) && trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((entry): entry is Record<string, unknown> => isRecord(entry));
+      }
+      if (isRecord(parsed)) return [parsed];
+    } catch {
+      // Fall through to JSONL parsing.
+    }
+  }
+
+  const lineEvents = parseJsonLines(text);
+  if (lineEvents.length > 0) return lineEvents;
+
+  if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) return [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is Record<string, unknown> => isRecord(entry));
+    }
+    if (isRecord(parsed)) return [parsed];
+  } catch {
+    // Ignore non-JSON output.
+  }
+  return [];
+}
+
+function isAssistantLikeEvent(entry: Record<string, unknown>): boolean {
+  const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+  const message = isRecord(entry.message) ? entry.message : undefined;
+  const messageRole = typeof message?.role === "string" ? message.role.toLowerCase() : "";
+
+  if (role === "assistant" || messageRole === "assistant") return true;
+  if (!type) return false;
+  return (
+    type === "assistant" ||
+    type.includes("assistant") ||
+    type === "agent_message" ||
+    type === "agent_message_delta" ||
+    type === "item.completed" ||
+    type === "item.text"
+  );
+}
+
+function stringifyIfStructured(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  const text = collectText(value).trim();
+  if (text) return text;
+  if (isRecord(value) || Array.isArray(value)) return JSON.stringify(value);
+  return "";
+}
+
+export function extractCliTextAndSession(raw: string): { text: string; sessionId?: string } {
+  const events = parseCliJsonEvents(raw);
+  let sessionId: string | undefined;
+  let finalResultText: string | undefined;
+  let latestAssistantText: string | undefined;
+  const assistantParts: string[] = [];
+
+  for (const event of events) {
+    sessionId = pickCliSessionId(event) ?? sessionId;
+    const type = typeof event.type === "string" ? event.type : "";
+    const isError = event.is_error === true;
+
+    if (type === "result" && !isError) {
+      const resultText = stringifyIfStructured(event.result).trim();
+      if (resultText) finalResultText = resultText;
+      continue;
+    }
+
+    if (!isAssistantLikeEvent(event)) continue;
+    const eventText =
+      collectText(event.message).trim() ||
+      collectText(event.content).trim() ||
+      collectText(event.item).trim() ||
+      collectText(event.delta).trim() ||
+      collectText(event).trim();
+    if (!eventText) continue;
+    if (type === "assistant") {
+      latestAssistantText = eventText;
+    } else if (assistantParts.at(-1) !== eventText) {
+      assistantParts.push(eventText);
+    }
+  }
+
+  const text = finalResultText ?? latestAssistantText ?? assistantParts.join("\n");
+  return {
+    text: text.trim(),
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
 export function collapseWhitespace(value: unknown): string {
   if (typeof value !== "string") return "";
   return value.replace(/\s+/g, " ").trim();
