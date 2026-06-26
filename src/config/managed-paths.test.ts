@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveGatewayInstanceIdentity, resolveObservedInstanceSet } from "./gateway-instance.js";
 import {
   isObservedAgentPathAllowed,
   isPathInsideAgentRoot,
@@ -11,6 +12,8 @@ import {
   resolveAgentRoot,
   resolveManagedRoot,
   resolveObservedAgentRoot,
+  resolveObservedInspectionTarget,
+  resolveObservedSealedRoots,
   resolveObservedWorkspacesRoot,
   resolvePrivateEnvFile,
   resolvePrivateRoot,
@@ -33,9 +36,10 @@ describe("managed paths", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("defaults fresh installs to ~/smithersbot-home", () => {
+  it("defaults fresh installs to the stable instance managed root", () => {
+    const stableIdentity = resolveGatewayInstanceIdentity("stable", () => tmpDir);
     expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(
-      path.join(tmpDir, "smithersbot-home"),
+      stableIdentity.managedRoot,
     );
   });
 
@@ -49,26 +53,32 @@ describe("managed paths", () => {
   it("resolves the dev managed root from an explicit dev instance", () => {
     const legacyRoot = path.join(tmpDir, "smithersbot-goals");
     fs.mkdirSync(legacyRoot);
+    const devIdentity = resolveGatewayInstanceIdentity("dev", () => tmpDir);
 
     expect(
       resolveManagedRoot({ SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv, () => tmpDir),
-    ).toBe(path.join(tmpDir, "smithersbot-dev-home"));
+    ).toBe(devIdentity.managedRoot);
   });
 
   it("does not use the legacy fallback when an instance is selected explicitly", () => {
     const legacyRoot = path.join(tmpDir, "smithersbot-goals");
     fs.mkdirSync(legacyRoot);
+    const stableIdentity = resolveGatewayInstanceIdentity("stable", () => tmpDir);
 
     expect(
       resolveManagedRoot({ SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv, () => tmpDir),
-    ).toBe(path.join(tmpDir, "smithersbot-home"));
+    ).toBe(stableIdentity.managedRoot);
   });
 
   it("resolves the smithersbot-dev workspace name under the selected instance root", () => {
     const home = "/home/matt";
+    const stableIdentity = resolveGatewayInstanceIdentity("stable", () => home);
+    const devIdentity = resolveGatewayInstanceIdentity("dev", () => home);
+    const workspacePath = (managedRoot: string) =>
+      path.join(managedRoot, "agent", "workspaces", "smithersbot-dev");
 
     expect(resolveWorkspaceRepoDir("smithersbot-dev", {} as NodeJS.ProcessEnv, () => home)).toBe(
-      "/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev",
+      workspacePath(stableIdentity.managedRoot),
     );
     expect(
       resolveWorkspaceRepoDir(
@@ -76,14 +86,14 @@ describe("managed paths", () => {
         { SMITHERSBOT_INSTANCE: "stable" } as NodeJS.ProcessEnv,
         () => home,
       ),
-    ).toBe("/home/matt/smithersbot-home/agent/workspaces/smithersbot-dev");
+    ).toBe(workspacePath(stableIdentity.managedRoot));
     expect(
       resolveWorkspaceRepoDir(
         "smithersbot-dev",
         { SMITHERSBOT_INSTANCE: "dev" } as NodeJS.ProcessEnv,
         () => home,
       ),
-    ).toBe("/home/matt/smithersbot-dev-home/agent/workspaces/smithersbot-dev");
+    ).toBe(workspacePath(devIdentity.managedRoot));
   });
 
   it("keeps an explicit managed-root override over the selected instance root", () => {
@@ -100,9 +110,9 @@ describe("managed paths", () => {
 
   it("does not infer dev managed root from a smithersbot-dev working directory", () => {
     const prevCwd = process.cwd();
+    const stableIdentity = resolveGatewayInstanceIdentity("stable", () => tmpDir);
     const devCheckout = path.join(
-      tmpDir,
-      "smithersbot-home",
+      stableIdentity.managedRoot,
       "agent",
       "workspaces",
       "smithersbot-dev",
@@ -111,7 +121,7 @@ describe("managed paths", () => {
     try {
       process.chdir(devCheckout);
       expect(resolveManagedRoot({} as NodeJS.ProcessEnv, () => tmpDir)).toBe(
-        path.join(tmpDir, "smithersbot-home"),
+        stableIdentity.managedRoot,
       );
     } finally {
       process.chdir(prevCwd);
@@ -230,10 +240,11 @@ describe("managed paths", () => {
 
     beforeEach(() => {
       devHome = () => tmpDir;
-      const devManagedRoot = path.join(tmpDir, "smithersbot-dev-home");
-      devAgentRoot = path.join(devManagedRoot, "agent");
+      const devIdentity = resolveGatewayInstanceIdentity("dev", devHome);
+      const devManagedRoot = devIdentity.managedRoot;
+      devAgentRoot = path.join(devIdentity.managedRoot, "agent");
       devPrivateRoot = path.join(devManagedRoot, "private");
-      devStateDir = path.join(tmpDir, ".smithersbot-dev");
+      devStateDir = devIdentity.stateDir;
       for (const dir of [
         path.join(devAgentRoot, "workspaces"),
         path.join(devAgentRoot, "history", "goals"),
@@ -247,10 +258,24 @@ describe("managed paths", () => {
     });
 
     it("resolves the dev agent surface from the explicit identity mapping", () => {
+      expect(resolveObservedInstanceSet(observed()).has("dev")).toBe(true);
       expect(resolveObservedAgentRoot("dev", observed())).toBe(devAgentRoot);
       expect(resolveObservedWorkspacesRoot("dev", observed())).toBe(
         path.join(devAgentRoot, "workspaces"),
       );
+    });
+
+    it("classifies observed agent targets and computes sealed roots from the identity mapping", () => {
+      const workspace = path.join(devAgentRoot, "workspaces", "ws");
+      expect(resolveObservedInspectionTarget(workspace, observed())).toEqual({
+        kind: "agent",
+        instance: "dev",
+        agentRoot: devAgentRoot,
+      });
+      expect(resolveObservedSealedRoots("dev", observed())).toEqual({
+        privateRoot: devPrivateRoot,
+        stateDir: devStateDir,
+      });
     });
 
     it("allows agent workspaces/history and rejects private/state", () => {

@@ -74,7 +74,14 @@ import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 import { formatWorkerResumeNotes } from "./resume-note-context.js";
 import { resolveScratchDir } from "../config/managed-paths.js";
 import { resolveDevGatewayMediationPaths } from "./dev-gateway-mediation.js";
-import { parseJsonLines } from "./cli-output-parsing.js";
+import {
+  collapseWhitespace,
+  collectText,
+  extractCliTextAndSession,
+  isRecord,
+  parseJsonLines,
+  pickCliSessionId as pickStreamCliSessionId,
+} from "./cli-output-parsing.js";
 
 // --- Constants ---
 
@@ -235,34 +242,15 @@ function sanitizeWorkerArgvForHistory(args: readonly string[]): string[] {
       continue;
     }
   }
-  if (sanitized.length > 0) {
-    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
-  }
   return sanitized;
 }
 
 export function pickCliSessionId(parsed: Record<string, unknown>): string | undefined {
-  const fields = [
-    "session_id",
-    "sessionId",
-    "conversation_id",
-    "conversationId",
-    "thread_id",
-    "threadId",
-  ];
-  for (const field of fields) {
-    const value = parsed[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
+  return pickStreamCliSessionId(parsed);
 }
 
 export function pickCliSessionIdFromOutput(stdout: string): string | undefined {
-  for (const parsed of parseJsonLines(stdout)) {
-    const sessionId = pickCliSessionId(parsed);
-    if (sessionId) return sessionId;
-  }
-  return undefined;
+  return extractCliTextAndSession(stdout).sessionId;
 }
 
 function appendWorkerHistoryBestEffort(params: {
@@ -425,6 +413,11 @@ export async function repairResultFile(params: {
           sandboxRoot: process.env.SMITHERSBOT_CODEX_SANDBOX_ROOT,
         })
       : undefined;
+  const promptPayload = buildCliPromptPayload({
+    backend,
+    prompt: repairPrompt,
+    denyFilePath,
+  });
   const args = buildCliArgs({
     backend,
     prompt: repairPrompt,
@@ -433,6 +426,7 @@ export async function repairResultFile(params: {
     model,
     codexNativeSandbox,
     readOnlyRoots,
+    promptPayload,
   });
 
   const command = backend === "codex" ? "codex" : "claude";
@@ -447,8 +441,10 @@ export async function repairResultFile(params: {
     cwd: workingDir,
     timeoutMs: REPAIR_TIMEOUT_MS,
     abortSignal,
+    stdin: promptPayload.promptArg,
     stdoutPath,
     stderrPath,
+    claudeDriverSite: "cli-worker",
     env:
       backend === "codex"
         ? mergeCodexNativeSandboxEnv(buildCredentialStrippedEnv(), codexNativeSandbox!)
@@ -686,8 +682,10 @@ export async function executeTaskWithCliWorker(
     cwd: workingDir,
     timeoutMs,
     abortSignal: localAbortController.signal,
+    stdin: promptPayload.promptArg,
     stdoutPath,
     stderrPath,
+    claudeDriverSite: "cli-worker",
     env: workerEnv,
   })
     .then((result) => {
@@ -783,8 +781,12 @@ export async function executeTaskWithCliWorker(
   let errorType: string | undefined;
   let blockedClassification: string | undefined;
 
-  // Check stdout JSONL stream for structured error info (billing, auth, rate limit)
+  // Check stdout JSONL stream for structured error info (billing, auth, rate limit).
   const streamError = parseClaudeCodeStreamError(stdout, stderr);
+  const preflightError =
+    !streamError && ((exitCode != null && exitCode !== 0) || signal)
+      ? parseClaudeCodePreflightError(stdout, stderr)
+      : null;
 
   if (
     !output &&
@@ -824,67 +826,15 @@ export async function executeTaskWithCliWorker(
   }
 
   if (!output) {
-    if (timedOut) {
-      output = makeFailureOutput(
-        `CLI worker timed out after ${(timeoutMs / 60_000).toFixed(0)} minutes.`,
-        "timeout",
-        "Retry with more time or split the task into smaller steps.",
-        "Ran worker until hard timeout.",
-      );
-    } else if (streamError) {
-      output = makeFailureOutput(
-        streamError.message,
-        streamError.errorType,
-        streamError.suggestedNext,
-        "Parsed Claude Code JSONL stream output.",
-      );
-    } else if (resultRead.error?.kind === "missing") {
-      const missingResultMessage =
-        exitCode == null && signal == null
-          ? "Worker process was lost/interrupted before producing worker_result.json."
-          : `Worker did not produce result artifact (process exited code ${exitCode ?? "unknown"}).`;
-      output = makeFailureOutput(
-        missingResultMessage,
-        "missing_result",
-        "Retry the task and ensure the worker writes worker_result.json.",
-        "Looked for worker_result.json after process exit.",
-      );
-    } else if (resultRead.error?.kind === "invalid_json") {
-      output = makeFailureOutput(
-        "Worker produced invalid result file.",
-        "invalid_result",
-        "Retry the task and ensure the result file contains valid JSON.",
-        "Read worker_result.json and failed to parse JSON.",
-      );
-    } else if (resultRead.error?.kind === "invalid_schema") {
-      output = makeFailureOutput(
-        "Worker produced result file that does not match the expected schema.",
-        "invalid_result",
-        "Retry the task and ensure the result file matches the documented schema.",
-        "Parsed worker_result.json but schema validation failed.",
-      );
-    } else if (signal) {
-      output = makeFailureOutput(
-        `CLI worker exited due to signal ${signal}.`,
-        "process_error",
-        "Check CLI logs and retry the task.",
-        "Process was terminated by signal before producing a valid result.",
-      );
-    } else if (exitCode && exitCode !== 0) {
-      output = makeFailureOutput(
-        `CLI worker exited with code ${exitCode}.`,
-        "process_error",
-        "Check CLI logs and retry the task.",
-        "Process exited non-zero before producing a valid result.",
-      );
-    } else {
-      output = makeFailureOutput(
-        "CLI worker failed without producing a valid result.",
-        "unknown",
-        "Check CLI logs and retry the task.",
-        "Process exited without a valid worker_result.json.",
-      );
-    }
+    output = deriveFailureOutput({
+      resultRead,
+      streamError,
+      preflightError,
+      timedOut,
+      exitCode,
+      signal,
+      timeoutMs,
+    });
   }
 
   if (output.status === "failed") {
@@ -1351,7 +1301,6 @@ export function buildCliArgs(params: {
     appendCodexNativeSandboxExecArgs(args, sandboxConfig);
 
     if (model) args.push("--model", model);
-    args.push(assembledPrompt.promptArg);
     return args;
   }
 
@@ -1379,7 +1328,6 @@ export function buildCliArgs(params: {
     assembledPrompt.appendedSystemPrompt ?? "",
   ];
   if (model) args.push("--model", model);
-  args.push(assembledPrompt.promptArg);
   return args;
 }
 
@@ -1474,6 +1422,95 @@ function makeFailureOutput(
   };
 }
 
+/**
+ * Derive the failed-attempt {@link GoalWorkerOutput} from a process result when
+ * the worker did not produce a valid `worker_result.json`. This is the single
+ * source of truth for the failure cascade (timeout → stream/pre-flight provider
+ * error → missing/invalid result → signal/exit → unknown). Both the live worker
+ * runner and the shadow-parity harness call it so a tui-pilot leg and a direct
+ * leg classify identical raw process results the same way.
+ */
+export function deriveFailureOutput(params: {
+  resultRead: ReturnType<typeof readWorkerResultFile>;
+  streamError: StreamError | null;
+  preflightError: StreamError | null;
+  timedOut: boolean;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timeoutMs: number;
+}): GoalWorkerOutput {
+  const { resultRead, streamError, preflightError, timedOut, exitCode, signal, timeoutMs } = params;
+  if (timedOut) {
+    return makeFailureOutput(
+      `CLI worker timed out after ${(timeoutMs / 60_000).toFixed(0)} minutes.`,
+      "timeout",
+      "Retry with more time or split the task into smaller steps.",
+      "Ran worker until hard timeout.",
+    );
+  }
+  if (streamError || preflightError) {
+    const cliError = streamError ?? preflightError!;
+    return makeFailureOutput(
+      cliError.message,
+      cliError.errorType,
+      cliError.suggestedNext,
+      streamError
+        ? "Parsed Claude Code JSONL stream output."
+        : "Classified Claude Code process failure output before any transcript was available.",
+    );
+  }
+  if (resultRead.error?.kind === "missing") {
+    const missingResultMessage =
+      exitCode == null && signal == null
+        ? "Worker process was lost/interrupted before producing worker_result.json."
+        : `Worker did not produce result artifact (process exited code ${exitCode ?? "unknown"}).`;
+    return makeFailureOutput(
+      missingResultMessage,
+      "missing_result",
+      "Retry the task and ensure the worker writes worker_result.json.",
+      "Looked for worker_result.json after process exit.",
+    );
+  }
+  if (resultRead.error?.kind === "invalid_json") {
+    return makeFailureOutput(
+      "Worker produced invalid result file.",
+      "invalid_result",
+      "Retry the task and ensure the result file contains valid JSON.",
+      "Read worker_result.json and failed to parse JSON.",
+    );
+  }
+  if (resultRead.error?.kind === "invalid_schema") {
+    return makeFailureOutput(
+      "Worker produced result file that does not match the expected schema.",
+      "invalid_result",
+      "Retry the task and ensure the result file matches the documented schema.",
+      "Parsed worker_result.json but schema validation failed.",
+    );
+  }
+  if (signal) {
+    return makeFailureOutput(
+      `CLI worker exited due to signal ${signal}.`,
+      "process_error",
+      "Check CLI logs and retry the task.",
+      "Process was terminated by signal before producing a valid result.",
+    );
+  }
+  if (exitCode && exitCode !== 0) {
+    return makeFailureOutput(
+      `CLI worker exited with code ${exitCode}.`,
+      "process_error",
+      "Check CLI logs and retry the task.",
+      "Process exited non-zero before producing a valid result.",
+    );
+  }
+  return makeFailureOutput(
+    "CLI worker failed without producing a valid result.",
+    "unknown",
+    "Check CLI logs and retry the task.",
+    "Process exited without a valid worker_result.json.",
+  );
+}
+
 // --- JSONL stream error parsing ---
 
 export type StreamError = {
@@ -1491,6 +1528,12 @@ export function parseClaudeCodeStreamError(stdout: string, stderr: string): Stre
   return parseStreamLines(stdout) ?? parseStreamLines(stderr);
 }
 
+export function parseClaudeCodePreflightError(stdout: string, stderr: string): StreamError | null {
+  const detail = collapseWhitespace([stderr, stdout].filter(Boolean).join("\n"));
+  if (!detail) return null;
+  return classifyStreamError(detail, findAssistantErrorInText(`${stdout}\n${stderr}`));
+}
+
 function parseStreamLines(text: string): StreamError | null {
   if (!text) return null;
   const lines = text.split("\n");
@@ -1506,8 +1549,10 @@ function parseStreamLines(text: string): StreamError | null {
       continue;
     }
 
-    if (parsed.type === "result" && parsed.is_error === true && typeof parsed.result === "string") {
-      const resultText = parsed.result;
+    if (parsed.type === "result" && parsed.is_error === true) {
+      const resultText =
+        typeof parsed.result === "string" ? parsed.result : collectText(parsed.result).trim();
+      if (!resultText) continue;
 
       // Look backward for a preceding assistant error with billing_error etc.
       const assistantError = findPrecedingAssistantError(lines, i);
@@ -1539,12 +1584,31 @@ function findPrecedingAssistantError(lines: string[], fromIndex: number): string
     if (!line.startsWith("{")) continue;
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
-      if (parsed.type === "assistant" && typeof parsed.error === "string") {
-        return parsed.error;
-      }
+      const assistantError = pickAssistantError(parsed);
+      if (assistantError) return assistantError;
     } catch {
       continue;
     }
+  }
+  return null;
+}
+
+function findAssistantErrorInText(text: string): string | null {
+  const lines = parseJsonLines(text);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const error = pickAssistantError(lines[i]!);
+    if (error) return error;
+  }
+  return null;
+}
+
+function pickAssistantError(parsed: Record<string, unknown>): string | null {
+  if (parsed.type !== "assistant") return null;
+  const direct = parsed.error;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  if (isRecord(parsed.message)) {
+    const messageError = parsed.message.error;
+    if (typeof messageError === "string" && messageError.trim()) return messageError.trim();
   }
   return null;
 }
@@ -1590,7 +1654,7 @@ function classifyStreamError(resultText: string, assistantError: string | null):
   }
 }
 
-function classifyAttemptOutcome(
+export function classifyAttemptOutcome(
   output: GoalWorkerOutput,
   timedOut: boolean,
   exitCode: number | null,

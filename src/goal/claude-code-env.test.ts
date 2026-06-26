@@ -106,6 +106,20 @@ describe("buildClaudeCodeEnv", () => {
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
   });
 
+  it("keeps subscription API-key env stripped when filesystem credentials are exposed", () => {
+    // The driven-session credential carve-out is a sandbox filesystem setting only;
+    // subscription-mode process env must remain scrubbed.
+    const env = buildClaudeCodeEnv("subscription", {
+      ANTHROPIC_API_KEY: "placeholder-api-key",
+      ANTHROPIC_AUTH_TOKEN: "placeholder-auth-token",
+      ANTHROPIC_API_KEY_OLD: "placeholder-old-api-key",
+      ANTHROPIC_BASE_URL: "https://placeholder.invalid",
+      PATH: "/usr/bin",
+    });
+
+    expect(env).toEqual({ PATH: "/usr/bin" });
+  });
+
   it.each(["subscription", "api_key"] as const)(
     "strips configured LLM provider keys in %s mode",
     (mode) => {

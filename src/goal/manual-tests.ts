@@ -398,6 +398,7 @@ async function runManualTestsForBackend(params: {
     args,
     cwd: params.workingDir,
     timeoutMs: MANUAL_TESTS_TIMEOUT_MS,
+    claudeDriverSite: "manual-tests",
     ...(useCodex ? {} : { stdin: combinedPrompt }),
     env: useCodex
       ? mergeCodexNativeSandboxEnv(
@@ -642,7 +643,7 @@ function buildFallbackDetail(step: PlanStep): string {
   return `**Step 1.** Manually exercise the behavior described by "${step.description}".\n${stepTwo}`;
 }
 
-function buildFallbackTests(
+export function buildFallbackTests(
   doneSteps: PlanStep[],
   needed: number,
   usedDescriptions: Set<string>,
@@ -662,6 +663,24 @@ function buildFallbackTests(
     });
   }
   return fallback;
+}
+
+export function buildFallbackManualTestsForSteps(
+  steps: readonly PlanStep[],
+  options: { minTests?: number; maxTests?: number; reason?: string } = {},
+): ManualTestSuggestion[] {
+  const doneSteps = steps.filter((step) => (step.status ?? "done") === "done");
+  if (doneSteps.length === 0) return [];
+
+  const maxTests = Math.max(0, options.maxTests ?? DEFAULT_MAX_TESTS);
+  if (maxTests === 0) return [];
+
+  const minTests = Math.max(0, options.minTests ?? Math.min(doneSteps.length, maxTests));
+  const needed = Math.min(maxTests, minTests || doneSteps.length);
+  return buildFallbackTests(doneSteps, needed, new Set<string>()).map((entry) => ({
+    ...entry,
+    ...(options.reason ? { reason: options.reason } : {}),
+  }));
 }
 
 function compactManualPromptText(value: string, maxChars = MAX_MANUAL_PROMPT_TEXT_CHARS): string {
@@ -854,10 +873,10 @@ function collectAutomatedChecks(doneSteps: PlanStep[]): string[] {
 }
 
 function buildOptionalEmbeddedAuthFallback(doneSteps: PlanStep[]): ManualTestSuggestion[] {
-  return buildFallbackTests(doneSteps, doneSteps.length, new Set<string>()).map((entry) => ({
-    ...entry,
+  return buildFallbackManualTestsForSteps(doneSteps, {
+    maxTests: doneSteps.length,
     reason: OPTIONAL_EMBEDDED_AUTH_FALLBACK_REASON,
-  }));
+  });
 }
 
 export async function generateManualTests(

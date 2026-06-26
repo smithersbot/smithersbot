@@ -471,6 +471,7 @@ async function runGoalPlanAutocheck(params: {
   config?: MoltbotConfig;
   existingSessionId?: string;
   existingBackend?: SerializedRun["autocheckBackend"];
+  userEditInstructions?: string[];
 }): Promise<{ run: SerializedRun; plan: Plan; display: PlanAutocheckDisplayInfo } | undefined> {
   const configuredMode = params.config?.goal?.planAutocheck;
   if (configuredMode === "off") return undefined;
@@ -478,15 +479,11 @@ async function runGoalPlanAutocheck(params: {
     ? configuredMode
     : resolveDefaultPlanAutocheckMode();
   if (!mode) return undefined;
-  const userEditInstructions = (params.run.planHistory ?? [])
-    .filter((entry) => entry.source === "user")
-    .map((entry) => entry.editInstructions?.trim() ?? "")
-    .filter((instruction) => instruction.length > 0);
 
   const autocheckResult = await runPlanAutocheck({
     plan: params.plan,
     goalText: params.run.goal,
-    userEditInstructions,
+    userEditInstructions: params.userEditInstructions ?? [],
     mode,
     maxRounds: GOAL_PLAN_AUTOCHECK_MAX_ROUNDS,
     workingDir: params.run.workingDir,
@@ -1557,6 +1554,7 @@ export async function handleGoalEdit(
         config,
         existingSessionId: run.autocheckSessionId,
         existingBackend: run.autocheckBackend,
+        userEditInstructions: trimmedInstructions ? [trimmedInstructions] : [],
       });
       if (autocheckResult) {
         run = autocheckResult.run;
@@ -1750,6 +1748,7 @@ export async function handleGoalContinuationApprove(
       config,
       existingSessionId: run.autocheckSessionId,
       existingBackend: run.autocheckBackend,
+      userEditInstructions: proposal.proposedPrompt.trim() ? [proposal.proposedPrompt] : [],
     });
     if (autocheckResult) {
       finalRun = autocheckResult.run;

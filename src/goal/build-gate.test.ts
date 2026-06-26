@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BUILD_GATE_OUTPUT_MAX_CHARS,
   buildDefaultSastCommand,
   classifyBuildGateFailure,
   makeBuildGateFailurePrompt,
   resolveChangedFilesSinceCheckpoint,
   runBuildGateCommands,
+  truncateForPrompt,
 } from "./build-gate.js";
 
 const mockSpawnSync = vi.fn();
@@ -202,6 +204,44 @@ describe("classifyBuildGateFailure", () => {
   it("keeps non-semgrep failures as command failures", () => {
     const kind = classifyBuildGateFailure("pnpm build", "TS2307: Cannot find module");
     expect(kind).toBe("command_failed");
+  });
+});
+
+describe("truncateForPrompt", () => {
+  it("preserves early TAP failures and summary lines in long output", () => {
+    const earlyOutput = [
+      "TAP version 13",
+      "ok 1 - setup passed",
+      "ok 2 - nearby passing test",
+      "not ok 3 - lower-numbered failure hidden by tail truncation",
+      "  failure details near the top",
+    ].join("\n");
+    const longMiddle = Array.from(
+      { length: 1_200 },
+      (_, index) =>
+        `# verbose passing output ${index.toString().padStart(4, "0")} ${"x".repeat(32)}`,
+    ).join("\n");
+    const summary = ["# tests 1200", "# pass 1199", "# fail 1"].join("\n");
+    const output = [earlyOutput, longMiddle, summary].join("\n");
+
+    expect(output.length).toBeGreaterThan(50_000);
+
+    const truncated = truncateForPrompt(output);
+    const prompt = makeBuildGateFailurePrompt("pnpm test", truncated);
+
+    expect(truncated.length).toBeLessThanOrEqual(BUILD_GATE_OUTPUT_MAX_CHARS);
+    expect(truncated).toContain("Failing tests:");
+    expect(truncated).toContain("not ok 3 - lower-numbered failure hidden by tail truncation");
+    expect(truncated).toContain("# tests 1200");
+    expect(truncated).toContain("# pass 1199");
+    expect(truncated).toContain("# fail 1");
+    expect(prompt).toContain("not ok 3 - lower-numbered failure hidden by tail truncation");
+  });
+
+  it("keeps the existing tail truncation behavior for long non-TAP output", () => {
+    const output = `start-${"a".repeat(BUILD_GATE_OUTPUT_MAX_CHARS)}-end`;
+
+    expect(truncateForPrompt(output)).toBe(output.slice(-BUILD_GATE_OUTPUT_MAX_CHARS));
   });
 });
 

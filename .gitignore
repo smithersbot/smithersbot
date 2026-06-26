@@ -59,3 +59,7 @@ assets/dmg-background-small.png
 /agent/history/
 /agent/workspaces/
 /agent/scratch/
+
+# tui-pilot parity tooling transient artifacts (per-run Controller logs + pycache)
+docs/tui-pilot-parity/tools/__pycache__/
+docs/tui-pilot-parity/tools/logs/

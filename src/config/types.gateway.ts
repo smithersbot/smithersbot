@@ -234,6 +234,11 @@ export type GatewayConfig = {
   http?: GatewayHttpConfig;
   nodes?: GatewayNodesConfig;
   /**
+   * Other gateway instances this gateway may inspect read-only by explicit opt-in.
+   * The environment signal SMITHERSBOT_OBSERVED_INSTANCES remains supported.
+   */
+  observedInstances?: string[];
+  /**
    * IPs of trusted reverse proxies (e.g. Traefik, nginx). When a connection
    * arrives from one of these IPs, the Gateway trusts `x-forwarded-for` (or
    * `x-real-ip`) to determine the client IP for local pairing and HTTP checks.

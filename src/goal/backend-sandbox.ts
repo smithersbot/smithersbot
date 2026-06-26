@@ -882,6 +882,8 @@ type SensitiveScanDeps = {
   isDirectory: (candidate: string) => boolean;
 };
 
+const CLAUDE_SUBSCRIPTION_CREDENTIAL_BASENAME = ".credentials.json";
+
 /**
  * Shallow, bounded scan of a single directory for sensitive regular files. Reads
  * directory listings and stat metadata only — never file contents. Bounded by depth
@@ -930,7 +932,7 @@ function isRepoEnvFileName(name: string): boolean {
 
 /** Known sensitive credential/config/session basenames found inside credential dirs. */
 const SENSITIVE_FILE_BASENAMES = new Set<string>([
-  ".credentials.json",
+  CLAUDE_SUBSCRIPTION_CREDENTIAL_BASENAME,
   "credentials",
   "credentials.json",
   "auth.json",
@@ -993,9 +995,15 @@ function buildClaudeSensitiveFileDenies(
   workingDir: string,
   deps: ResolvedClaudeDenyDeps,
   extraScanDirs: string[] = [],
+  options: { exposeClaudeSubscriptionCredentialsForDrivenSession?: boolean } = {},
 ): string[] {
   const { homedir, privateRoot, pathExists, realPath, readDir, isRegularFile, isDirectory } = deps;
   const home = homedir();
+  const claudeSubscriptionCredentialPath = path.join(
+    home,
+    ".claude",
+    CLAUDE_SUBSCRIPTION_CREDENTIAL_BASENAME,
+  );
   const budget = { remaining: SENSITIVE_SCAN_BUDGET };
   const scanDeps: SensitiveScanDeps = { pathExists, readDir, isRegularFile, isDirectory };
 
@@ -1049,13 +1057,19 @@ function buildClaudeSensitiveFileDenies(
     );
   }
 
-  return resolveExistingRealFiles(candidates, { pathExists, realPath, isRegularFile });
+  const effectiveCandidates =
+    options.exposeClaudeSubscriptionCredentialsForDrivenSession === true
+      ? candidates.filter((candidate) => candidate !== claudeSubscriptionCredentialPath)
+      : candidates;
+
+  return resolveExistingRealFiles(effectiveCandidates, { pathExists, realPath, isRegularFile });
 }
 
 function buildClaudeDenyReadPaths(
   workingDir: string,
   deps: ClaudeDenyReadDeps = {},
   extraDenyDirs: string[] = [],
+  options: { exposeClaudeSubscriptionCredentialsForDrivenSession?: boolean } = {},
 ): string[] {
   const resolved = resolveClaudeDenyDeps(deps);
   const { homedir, privateRoot, pathExists, realPath } = resolved;
@@ -1073,7 +1087,12 @@ function buildClaudeDenyReadPaths(
     realPath,
   });
   // Exact existing sensitive regular files — the reliable Bash-deny mechanism.
-  const exactFileDenies = buildClaudeSensitiveFileDenies(workingDir, resolved, extraDenyDirs);
+  const exactFileDenies = buildClaudeSensitiveFileDenies(
+    workingDir,
+    resolved,
+    extraDenyDirs,
+    options,
+  );
   return uniqueValues([...dirAndLiteralDenies, ...exactFileDenies]);
 }
 
@@ -1161,6 +1180,7 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
   denyReadDeps?: ClaudeDenyReadDeps;
   requiresNetwork?: boolean;
   requiresDevGatewayControl?: boolean;
+  exposeClaudeSubscriptionCredentialsForDrivenSession?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   if (isPathInsidePrivateRoot(params.workingDir)) {
     throw new Error("Claude Code sandbox cannot run from SmithersBot private paths.");
@@ -1223,7 +1243,21 @@ export function buildClaudeCodeSandboxSettingsConfig(params: {
         filesystem: {
           allowRead,
           allowWrite,
-          denyRead: buildClaudeDenyReadPaths(params.workingDir, params.denyReadDeps, extraDenyDirs),
+          denyRead: buildClaudeDenyReadPaths(
+            params.workingDir,
+            params.denyReadDeps,
+            extraDenyDirs,
+            {
+              // Item #6: a tui-pilot driven Claude Code session may need the
+              // subscription OAuth store while API-key env remains scrubbed. This
+              // opt-in removes only ~/.claude/.credentials.json from exact-file
+              // denies; the ~/.claude directory deny and every other sensitive
+              // file deny remain. Live apiKeySource!=none validation is an
+              // operator Observation Point, not a unit-test requirement.
+              exposeClaudeSubscriptionCredentialsForDrivenSession:
+                params.exposeClaudeSubscriptionCredentialsForDrivenSession,
+            },
+          ),
         },
         ...(networkGrant ? { network: networkGrant } : {}),
       },
@@ -1248,6 +1282,7 @@ export function writeClaudeCodeSandboxSettings(params: {
   denyReadDeps?: ClaudeDenyReadDeps;
   requiresNetwork?: boolean;
   requiresDevGatewayControl?: boolean;
+  exposeClaudeSubscriptionCredentialsForDrivenSession?: boolean;
 }): ClaudeCodeSandboxSettingsConfig {
   const config = buildClaudeCodeSandboxSettingsConfig(params);
   if (
@@ -1274,6 +1309,7 @@ export function buildClaudeCodeSandboxLaunchConfig(params: {
   settingsRoot?: string;
   requiresNetwork?: boolean;
   requiresDevGatewayControl?: boolean;
+  exposeClaudeSubscriptionCredentialsForDrivenSession?: boolean;
 }): ClaudeCodeLaunchSandboxConfig {
   const config = writeClaudeCodeSandboxSettings({
     ...params,

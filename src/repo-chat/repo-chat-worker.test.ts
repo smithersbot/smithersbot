@@ -100,7 +100,19 @@ import {
 import { REPO_CHAT_CONTEXT } from "./repo-chat-context.js";
 import { EMPTY_MCP_CONFIG_PATH } from "../goal/claude-code-mcp-isolation.js";
 import { buildCodexNativeSandboxConfig } from "../goal/backend-sandbox.js";
-import { resolveAgentRepoChatHistoryDir } from "../config/managed-paths.js";
+import {
+  resolveAgentRepoChatHistoryDir,
+  resolveObservedAgentRoot,
+  resolveObservedSealedRoots,
+} from "../config/managed-paths.js";
+
+// Identity-mapping–derived dev surfaces (never literal folder names): the dev
+// agent root that an observed grant must expose, and the dev private/state roots
+// that must stay sealed.
+const DEV_OBSERVED_OPTIONS = { observedInstances: ["dev"] };
+const devAgentRoot = (): string => resolveObservedAgentRoot("dev", DEV_OBSERVED_OPTIONS);
+const devSealedRoots = (): { privateRoot: string; stateDir: string } =>
+  resolveObservedSealedRoots("dev", DEV_OBSERVED_OPTIONS);
 
 const FIXED_UUID = "repo-chat-worker-test-uuid";
 const RESPONSE_FILE_PATH = path.join(os.tmpdir(), `moltbot-rc-${FIXED_UUID}.md`);
@@ -351,6 +363,131 @@ describe("repo-chat-worker", () => {
         if (originalManagedRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
         else process.env.SMITHERSBOT_GOALS_ROOT = originalManagedRoot;
         fs.rmSync(managedRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("grants the observed dev agent root in Claude args while sealing dev private state", () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-observed-home-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      try {
+        const agentRoot = devAgentRoot();
+        const sealed = devSealedRoots();
+        // Create the dev surfaces so Claude's existence-filtered deny list keeps them.
+        fs.mkdirSync(path.join(agentRoot, "workspaces"), { recursive: true });
+        fs.mkdirSync(path.join(sealed.privateRoot, "env"), { recursive: true });
+        fs.mkdirSync(sealed.stateDir, { recursive: true });
+
+        const args = buildClaudeRepoChatArgs({
+          prompt: "Inspect the dev workspace",
+          workingDir: path.join(home, "smithersbot-home", "agent", "workspaces", "stable"),
+          readOnlyRoots: [agentRoot],
+        });
+        const settingsPath = args[args.indexOf("--settings") + 1]!;
+        const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+          sandbox: { filesystem: { allowRead: string[]; denyRead: string[] } };
+          permissions: { deny: string[] };
+        };
+
+        expect(settings.sandbox.filesystem.allowRead).toContain(agentRoot);
+        expect(settings.sandbox.filesystem.denyRead).toContain(sealed.privateRoot);
+        expect(settings.sandbox.filesystem.denyRead).toContain(sealed.stateDir);
+        expect(settings.permissions.deny).toContain(`Read(${sealed.privateRoot}/**)`);
+        expect(settings.permissions.deny).toContain(`Read(${sealed.stateDir}/**)`);
+        // The grant must NOT expose the sealed roots for reading.
+        expect(settings.sandbox.filesystem.allowRead).not.toContain(sealed.privateRoot);
+        expect(settings.sandbox.filesystem.allowRead).not.toContain(sealed.stateDir);
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it("threads observedInstances into the codex sandbox: dev agent root read, private/state denied", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-observed-codex-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      try {
+        const agentRoot = devAgentRoot();
+        const sealed = devSealedRoots();
+        fs.mkdirSync(path.join(agentRoot, "workspaces"), { recursive: true });
+
+        runCliProcessMock.mockImplementationOnce(async () => {
+          fs.writeFileSync(RESPONSE_FILE_PATH, "Dev inspection answer\n", "utf-8");
+          return {
+            stdout: '{"session_id":"codex-observed","thread_id":"codex-observed"}',
+            stderr: "",
+            timedOut: false,
+            exitCode: 0,
+            signal: null,
+            durationMs: 21,
+          };
+        });
+
+        await runRepoChatWorker({
+          backend: "codex",
+          prompt: "What is in the dev workspace?",
+          workingDir: path.join(home, "smithersbot-home", "agent", "workspaces", "stable"),
+          observedInstances: ["dev"],
+        });
+
+        const call = runCliProcessMock.mock.calls.at(-1)?.[0] as {
+          env: Record<string, string>;
+        };
+        const configToml = fs.readFileSync(path.join(call.env.CODEX_HOME, "config.toml"), "utf8");
+        expect(configToml).toContain(`${JSON.stringify(agentRoot)} = "read"`);
+        expect(configToml).toContain(`${JSON.stringify(sealed.privateRoot)} = "deny"`);
+        expect(configToml).toContain(`${JSON.stringify(sealed.stateDir)} = "deny"`);
+        expect(configToml).not.toContain(`${JSON.stringify(sealed.privateRoot)} = "read"`);
+        expect(configToml).not.toContain(`${JSON.stringify(sealed.stateDir)} = "read"`);
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it("threads observedInstances into Claude settings allowRead for the dev agent root", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "repo-chat-observed-claude-"));
+      const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(home);
+      try {
+        const agentRoot = devAgentRoot();
+        const sealed = devSealedRoots();
+        fs.mkdirSync(path.join(agentRoot, "workspaces"), { recursive: true });
+        fs.mkdirSync(path.join(sealed.privateRoot, "env"), { recursive: true });
+        fs.mkdirSync(sealed.stateDir, { recursive: true });
+
+        runCliProcessMock.mockResolvedValueOnce({
+          stdout: [
+            JSON.stringify({ type: "system", subtype: "init", session_id: "claude-observed" }),
+            JSON.stringify({
+              type: "assistant",
+              message: { role: "assistant", content: [{ type: "text", text: "Dev answer" }] },
+              session_id: "claude-observed",
+            }),
+          ].join("\n"),
+          stderr: "",
+          timedOut: false,
+          exitCode: 0,
+          signal: null,
+          durationMs: 12,
+        });
+
+        await runRepoChatWorker({
+          backend: "claude_code",
+          prompt: "Inspect dev workspace",
+          workingDir: path.join(home, "smithersbot-home", "agent", "workspaces", "stable"),
+          observedInstances: ["dev"],
+        });
+
+        const call = runCliProcessMock.mock.calls.at(-1)?.[0] as { args: string[] };
+        const settingsPath = call.args[call.args.indexOf("--settings") + 1]!;
+        const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as {
+          sandbox: { filesystem: { allowRead: string[]; denyRead: string[] } };
+        };
+        expect(settings.sandbox.filesystem.allowRead).toContain(agentRoot);
+        expect(settings.sandbox.filesystem.denyRead).toContain(sealed.privateRoot);
+        expect(settings.sandbox.filesystem.denyRead).toContain(sealed.stateDir);
+      } finally {
+        homedirSpy.mockRestore();
+        fs.rmSync(home, { recursive: true, force: true });
       }
     });
 
@@ -999,6 +1136,56 @@ describe("repo-chat-worker", () => {
       expect(call.args.at(-1)).not.toContain("cat <<");
       expect(result.text).toBe("Final Claude answer from stdout");
       expect(result.cliSessionId).toBe("claude-json-session");
+    });
+
+    it("extracts transcript-derived Claude text and latest camelCase session identity", async () => {
+      runCliProcessMock.mockResolvedValueOnce({
+        stdout: [
+          JSON.stringify({
+            type: "system",
+            subtype: "init",
+            session_id: "stale-session",
+          }),
+          JSON.stringify({
+            type: "assistant",
+            sessionId: "live-session",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Draft transcript answer" }],
+            },
+          }),
+          JSON.stringify({
+            type: "user",
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", content: "tool output" }],
+            },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            sessionId: "live-session",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "Final transcript answer" }],
+            },
+          }),
+        ].join("\n"),
+        stderr: "",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        durationMs: 120,
+      });
+
+      const result = await runRepoChatWorker({
+        backend: "claude_code",
+        prompt: "Summarize the repo",
+        workingDir: "/repo",
+      });
+
+      expect(result.text).toBe("Final transcript answer");
+      expect(result.text).not.toContain("tool output");
+      expect(result.cliSessionId).toBe("live-session");
     });
 
     it("falls back to Claude Code when Codex hits a usage limit", async () => {

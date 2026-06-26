@@ -363,6 +363,7 @@ function runRepoChatInBackground(params: {
   sourceMessageId: number;
   backend: RepoChatBackend;
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  observedInstances?: string[];
   existingSession?: RepoChatSession;
   workingDir: string;
 }): void {
@@ -390,6 +391,7 @@ function runRepoChatInBackground(params: {
             cliSessionId: params.existingSession?.cliSessionId,
             codexSandboxRunId,
             claudeCodeAuth: params.claudeCodeAuth,
+            observedInstances: params.observedInstances,
           }),
       });
       const sentReply = await sendRepoChatReply({
@@ -446,6 +448,7 @@ function startRepoChat(params: {
   replyToMessageId?: number;
   allowNewSessionWhenReplyMissing: boolean;
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  observedInstances?: string[];
 }): StartRepoChatResult {
   const configuredBackend = params.telegramCfg.repoChatBackend;
   if (!isRepoChatBackend(configuredBackend)) {
@@ -478,6 +481,7 @@ function startRepoChat(params: {
     prompt: params.prompt,
     backend,
     claudeCodeAuth: params.claudeCodeAuth,
+    observedInstances: params.observedInstances,
     existingSession,
     workingDir: path.resolve(process.cwd()),
   });
@@ -494,6 +498,7 @@ export function dispatchTelegramRepoChatForInboundText(params: {
   sourceMessageId: number;
   replyToMessageId?: number;
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  observedInstances?: string[];
 }): boolean {
   const result = startRepoChat({
     bot: params.bot,
@@ -506,6 +511,9 @@ export function dispatchTelegramRepoChatForInboundText(params: {
     replyToMessageId: params.replyToMessageId,
     allowNewSessionWhenReplyMissing: false,
     claudeCodeAuth: params.claudeCodeAuth,
+    // Default repo-chat opt-in to observing the dev instance when the caller did
+    // not supply an explicit set. An explicit empty array stays an opt-out.
+    observedInstances: params.observedInstances ?? ["dev"],
   });
   return result.started;
 }
@@ -524,6 +532,10 @@ export function registerTelegramRepoChatCommands({
   shouldSkipUpdate,
   commandFragmentBuffer,
 }: RegisterRepoChatCommandsParams): void {
+  // Repo-chat default opt-in: observe the dev instance unless config narrows the
+  // set. Threaded explicitly into the worker so the grant never depends on the
+  // SMITHERSBOT_OBSERVED_INSTANCES env var. An explicit empty array opts out.
+  const observedInstances = cfg.gateway?.observedInstances ?? ["dev"];
   async function authAndResolve(ctx: TelegramRepoChatCommandContext) {
     const msg = ctx.message;
     if (!msg) return null;
@@ -581,6 +593,7 @@ export function registerTelegramRepoChatCommands({
         replyToMessageId: resolved.replyToMessageId,
         allowNewSessionWhenReplyMissing: true,
         claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+        observedInstances,
       });
       if (!result.started && result.reason === "disabled") {
         return sendRepoChatReply({
@@ -644,6 +657,7 @@ export function registerTelegramRepoChatCommands({
                 sourceMessageId: resolved.sourceMessageId,
                 replyToMessageId: resolved.sourceMessageId,
                 claudeCodeAuth: cfg.goal?.claudeCodeAuth,
+                observedInstances,
               });
             },
           });

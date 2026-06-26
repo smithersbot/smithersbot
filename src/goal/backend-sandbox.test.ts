@@ -1425,6 +1425,73 @@ describe("Claude Code native sandbox settings", () => {
     }
   });
 
+  it("only exposes Claude subscription credentials for an opted-in driven session", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "claude-driven-auth-")));
+    const previousRoot = process.env.SMITHERSBOT_GOALS_ROOT;
+    process.env.SMITHERSBOT_GOALS_ROOT = root;
+    const mkfile = (filePath: string): string => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "sensitive\n");
+      return filePath;
+    };
+    try {
+      const home = path.join(root, "home");
+      const workingDir = path.join(root, "agent", "workspaces", "smithersbot", "repo");
+      fs.mkdirSync(workingDir, { recursive: true });
+
+      const claudeCreds = mkfile(path.join(home, ".claude", ".credentials.json"));
+      const claudeSettings = mkfile(path.join(home, ".claude", "settings.json"));
+      const claudeAuth = mkfile(path.join(home, ".claude", "auth.json"));
+      const claudeOauth = mkfile(path.join(home, ".claude", "oauth.json"));
+      const codexAuth = mkfile(path.join(home, ".codex", "auth.json"));
+
+      const baseParams = {
+        workingDir,
+        runId: "driven-auth-carve-out",
+        purpose: "goal-worker" as const,
+        denyReadDeps: {
+          homedir: () => home,
+          privateRoot: () => path.join(root, "private"),
+          readDir: (dir: string) => fs.readdirSync(dir),
+        },
+      };
+      const defaultConfig = buildClaudeCodeSandboxSettingsConfig(baseParams);
+      const explicitFalseConfig = buildClaudeCodeSandboxSettingsConfig({
+        ...baseParams,
+        exposeClaudeSubscriptionCredentialsForDrivenSession: false,
+      });
+      const drivenConfig = buildClaudeCodeSandboxSettingsConfig({
+        ...baseParams,
+        exposeClaudeSubscriptionCredentialsForDrivenSession: true,
+      });
+
+      expect(explicitFalseConfig.settings).toEqual(defaultConfig.settings);
+
+      const defaultDeny = defaultConfig.settings.sandbox.filesystem.denyRead;
+      const drivenDeny = drivenConfig.settings.sandbox.filesystem.denyRead;
+
+      expect(defaultDeny).toContain(claudeCreds);
+      expect(drivenDeny).not.toContain(claudeCreds);
+      expect(drivenDeny).toContain(path.join(home, ".claude"));
+
+      for (const stillDenied of [claudeSettings, claudeAuth, claudeOauth, codexAuth]) {
+        expect(defaultDeny).toContain(stillDenied);
+        expect(drivenDeny).toContain(stillDenied);
+      }
+
+      expect(defaultConfig.settings.permissions.deny).toContain(
+        `Read(${path.join(home, ".claude")}/**)`,
+      );
+      expect(drivenConfig.settings.permissions.deny).toContain(
+        `Read(${path.join(home, ".claude")}/**)`,
+      );
+    } finally {
+      if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
+      else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns a structured fail-closed blocker until the live probe is explicitly enabled", () => {
     mockCommandPaths();
 

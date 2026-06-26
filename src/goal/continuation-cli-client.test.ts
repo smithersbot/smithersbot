@@ -3,7 +3,10 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ClaudeCodeLaunchSandboxConfig, CodexNativeSandboxConfig } from "./backend-sandbox.js";
-import { createContinuationCliClient } from "./continuation-cli-client.js";
+import {
+  createContinuationCliClient,
+  DEFAULT_CONTINUATION_CLI_TIMEOUT_MS,
+} from "./continuation-cli-client.js";
 import { generateContinuationAssessment } from "./continuation.js";
 import type { GoalLlmClient, SerializedRun } from "./types.js";
 import { resolveContinuationClient } from "../telegram/continuation-client.js";
@@ -65,6 +68,44 @@ function fakeCodexSandbox(workingDir: string): CodexNativeSandboxConfig {
 }
 
 describe("continuation CLI client backend selection", () => {
+  it("uses the long continuation CLI timeout by default", async () => {
+    const runCliProcess = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        type: "result",
+        result: JSON.stringify({
+          outcome: "continuation-recommended-now",
+          goalAchieved: false,
+          briefSummary: "Claude produced the continuation proposal.",
+          proposedPrompt: "Create the next plan from the continuation prompt.",
+        }),
+      }),
+      stderr: "",
+    });
+
+    const client = createContinuationCliClient({
+      backends: ["claude_code"],
+      workingDir: "/tmp/workspace",
+      deps: {
+        runCliProcess,
+        detectBackendAvailability: () => [{ id: "claude_code", available: true }],
+        resolveClaudeBinary: () => "/usr/bin/claude",
+        buildClaudeSandbox: () => fakeClaudeSandbox(),
+      },
+    });
+
+    if (!client) throw new Error("expected continuation CLI client");
+    await client.complete({
+      systemPrompt: "Assess whether the run needs a continuation.",
+      userMessage: "The run needs a request edit prompt.",
+    });
+
+    expect(DEFAULT_CONTINUATION_CLI_TIMEOUT_MS).toBeGreaterThanOrEqual(600_000);
+    expect(runCliProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: DEFAULT_CONTINUATION_CLI_TIMEOUT_MS }),
+    );
+  });
+
   it("prefers claude_code, then codex, through backend fallback", async () => {
     const runCliProcess = vi
       .fn()

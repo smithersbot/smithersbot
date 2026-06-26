@@ -1300,7 +1300,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1316,7 +1316,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     );
     expect(allDoneEvent).toBeDefined();
     expect(allDoneEvent?.manualTests).toEqual([
-      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+      expect.objectContaining({ description: "Test login validation" }),
     ]);
     expect(allDoneEvent?.manualTestsError).toBeUndefined();
     expect(allDoneEvent?.manualTestsStatus).toBe("generated");
@@ -1359,7 +1359,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1375,7 +1375,9 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     );
     expect(allDoneEvent?.manualTestsStatus).toBe("generated");
     expect(allDoneEvent?.manualTestsError).toBeUndefined();
-    expect(allDoneEvent?.manualTests).toBeDefined();
+    expect(allDoneEvent?.manualTests).toEqual([
+      expect.objectContaining({ description: "Verify login banner" }),
+    ]);
   });
 
   it("keeps report-derived manual tests when the legacy client has no backend", async () => {
@@ -1407,7 +1409,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1424,7 +1426,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(allDoneEvent?.manualTestsStatus).toBe("generated");
     expect(allDoneEvent?.manualTestsError).toBeUndefined();
     expect(allDoneEvent?.manualTests).toEqual([
-      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+      expect.objectContaining({ description: "Test login validation" }),
     ]);
   });
 
@@ -1465,7 +1467,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     const allDoneEvent = statusEvents.find(
       (
         event,
@@ -1487,6 +1489,70 @@ describe("agent-executor (TaskRunner orchestration)", () => {
         line.includes("embedded-agent auth unavailable, using deterministic fallback"),
       ),
     ).toBe(false);
+  });
+
+  it("uses deterministic fallback manual tests when post-execution reporting degrades", async () => {
+    const step = makeStep({
+      backend: "codex",
+      description: "Implement login validation",
+      status: "done",
+      taskSummary: "Added login validation and visible failure messaging.",
+    });
+    const plan = makePlan([step]);
+    const session = makeSession(plan);
+    const statusEvents: unknown[] = [];
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "All set",
+      turnsUsed: 1,
+    });
+    mockRunCliProcess.mockReturnValue({
+      stdout: `${JSON.stringify({
+        type: "result",
+        session_id: "report-session",
+        result: "not valid JSON",
+      })}\n`,
+      stderr: "",
+      timedOut: false,
+      exitCode: 0,
+      signal: null,
+      durationMs: 50,
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-degraded-manual-test-floor",
+      workingDir: "/tmp/moltbot-goal-test",
+      onStatusChange: (event) => {
+        statusEvents.push(event);
+      },
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(session.postExecutionReport?.manualTests).toEqual([
+      expect.objectContaining({ description: "Test login validation" }),
+    ]);
+    expect(session.postExecutionManualTestDisplay?.manualTests).toEqual([
+      expect.objectContaining({ description: "Test login validation" }),
+    ]);
+    const allDoneEvent = statusEvents.find(
+      (
+        event,
+      ): event is {
+        type: "all_done";
+        manualTests?: Array<{ description: string }>;
+        manualTestsStatus?: string;
+      } =>
+        typeof event === "object" &&
+        event !== null &&
+        (event as { type?: string }).type === "all_done",
+    );
+    expect(allDoneEvent?.manualTestsStatus).toBe("generated");
+    expect(allDoneEvent?.manualTests).toEqual([
+      expect.objectContaining({ description: "Test login validation" }),
+    ]);
   });
 
   it("blocks a task via PI runner and sets blocked details", async () => {
@@ -3338,7 +3404,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     });
 
     expect(outcome.status).toBe("done");
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
     const allDone = onStatusChange.mock.calls
       .map(
@@ -3348,7 +3414,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
     expect(allDone).toBeDefined();
     expect(allDone?.manualTestsStatus).toBe("generated");
     expect(allDone?.manualTests).toEqual([
-      expect.objectContaining({ description: "Verify completion delivery recovery" }),
+      expect.objectContaining({ description: "Verify the thing works end to end" }),
     ]);
   });
 
@@ -3418,7 +3484,7 @@ describe("agent-executor (TaskRunner orchestration)", () => {
 
     expect(outcome.status).toBe("done");
     expect(mockExtractRunLessons).toHaveBeenCalled();
-    expect(complete).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
     expect(onRunStatePersist).toHaveBeenCalledTimes(2);
     expect(stateAtMirror).toBe("done");
     expect(mockMirrorGoalRuntimeToAgentHistory).toHaveBeenCalledWith({
