@@ -141,6 +141,8 @@ describe("devGatewayServicePresent", () => {
 
 describe("resolveDevGatewayWorkerContext", () => {
   it("is active only when both the dev workspace and dev service are present", () => {
+    delete process.env.SMITHERSBOT_DEV_CAPS;
+
     const ctx = resolveDevGatewayWorkerContext({
       workingDir: DEV_WORKSPACE,
       servicePresent: true,

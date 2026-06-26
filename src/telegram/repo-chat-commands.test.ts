@@ -67,6 +67,7 @@ function buildRuntime(): RuntimeEnv {
 function makeRepoChatCommandHarness(
   options: {
     commandFragmentBuffer?: CommandFragmentBuffer;
+    gateway?: { observedInstances?: string[] };
   } = {},
 ): {
   handlers: Record<string, (ctx: unknown) => Promise<void>>;
@@ -89,7 +90,10 @@ function makeRepoChatCommandHarness(
 
   registerTelegramRepoChatCommands({
     bot: bot as never,
-    cfg: { goal: { claudeCodeAuth: "subscription" } } as never,
+    cfg: {
+      goal: { claudeCodeAuth: "subscription" },
+      ...(options.gateway ? { gateway: options.gateway } : {}),
+    } as never,
     runtime: buildRuntime(),
     accountId: "default",
     telegramCfg: buildTelegramCfg(),
@@ -606,6 +610,37 @@ describe("repo-chat-commands", () => {
         prompt: "appended part",
         cliSessionId: "session-anchor-1",
       }),
+    );
+  });
+
+  it("passes the default dev observed-instance opt-in into the repo-chat worker", async () => {
+    runRepoChatWorkerMock.mockResolvedValue({ text: "worker output", cliSessionId: "session-obs" });
+    const harness = makeRepoChatCommandHarness();
+
+    await harness.handlers.repo_chat!(makeRepoChatCommandCtx("What changed in dev?", 1401));
+
+    await waitForAssertion(() => {
+      expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+    });
+    expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ observedInstances: ["dev"] }),
+    );
+  });
+
+  it("threads cfg.gateway.observedInstances through to the repo-chat worker", async () => {
+    runRepoChatWorkerMock.mockResolvedValue({ text: "worker output", cliSessionId: "session-cfg" });
+    // An explicit empty array is an opt-out: it must reach the worker verbatim
+    // instead of being overwritten by the ["dev"] default — proving the caller
+    // threads cfg rather than hardcoding the default downstream.
+    const harness = makeRepoChatCommandHarness({ gateway: { observedInstances: [] } });
+
+    await harness.handlers.repo_chat!(makeRepoChatCommandCtx("Inspect only stable", 1501));
+
+    await waitForAssertion(() => {
+      expect(runRepoChatWorkerMock).toHaveBeenCalledTimes(1);
+    });
+    expect(runRepoChatWorkerMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ observedInstances: [] }),
     );
   });
 });

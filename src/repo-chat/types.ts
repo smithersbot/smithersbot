@@ -56,6 +56,14 @@ export type RepoChatWorkerParams = {
   codexSandboxRunId?: string;
   /** Claude Code auth mode (defaults to subscription). */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /**
+   * Explicit set of OTHER gateway instances this repo-chat run may observe
+   * (read-only), e.g. `["dev"]`. Threaded from `gateway.observedInstances` so the
+   * worker grants read-scope to the observed instance's agent root WITHOUT relying
+   * on the `SMITHERSBOT_OBSERVED_INSTANCES` env var. An empty array is an explicit
+   * opt-out; `undefined` falls back to the env signal in the resolvers.
+   */
+  observedInstances?: string[];
   timeoutMs?: number;
   abortSignal?: AbortSignal;
   model?: string;

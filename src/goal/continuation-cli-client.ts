@@ -21,13 +21,13 @@ import {
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
-import { collectText, formatCliFailure, isRecord, parseJsonLines } from "./cli-output-parsing.js";
+import { extractCliTextAndSession, formatCliFailure } from "./cli-output-parsing.js";
 import { runCliProcess, type RunCliProcessParams } from "./cli-process.js";
 import { runWithBackendFallback } from "./phase-fallback.js";
 import { resolveClaudeBinary } from "./scout.js";
 import type { GoalLlmClient, GoalLlmResponse } from "./types.js";
 
-const DEFAULT_CONTINUATION_CLI_TIMEOUT_MS = 180_000;
+export const DEFAULT_CONTINUATION_CLI_TIMEOUT_MS = 600_000;
 
 type ContinuationCliRunner = (params: RunCliProcessParams) => ReturnType<typeof runCliProcess>;
 
@@ -98,30 +98,9 @@ function buildCodexContinuationArgs(params: {
   return args;
 }
 
-function jsonOrText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (isRecord(value)) return collectText(value);
-  return "";
-}
-
 function parseCliAssistantText(stdout: string): string {
-  const lines = parseJsonLines(stdout);
-  let finalResultText: string | undefined;
-  const parts: string[] = [];
-
-  for (const parsed of lines) {
-    const type = typeof parsed.type === "string" ? parsed.type : "";
-    const isError = parsed.is_error === true;
-    if (type === "result" && !isError) {
-      const resultText = jsonOrText(parsed.result).trim();
-      if (resultText) finalResultText = resultText;
-      continue;
-    }
-    const eventText = collectText(parsed).trim();
-    if (eventText && parts.at(-1) !== eventText) parts.push(eventText);
-  }
-
-  return ((finalResultText ?? parts.join("\n")) || stdout.trim()).trim();
+  const parsed = extractCliTextAndSession(stdout);
+  return (parsed.text || stdout.trim()).trim();
 }
 
 function availableStatus(

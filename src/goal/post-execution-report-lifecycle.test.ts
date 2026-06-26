@@ -216,11 +216,28 @@ function failedReportCliResult() {
   };
 }
 
-function extractPrompt(args: unknown): string {
+function extractRawPrompt(args: unknown): string {
   if (typeof args !== "object" || args === null) return "";
   const rawArgs = (args as { args?: unknown }).args;
   if (!Array.isArray(rawArgs)) return "";
   return String(rawArgs.at(-1) ?? "");
+}
+
+function extractPromptArtifactPath(args: unknown): string | undefined {
+  const instruction = extractRawPrompt(args);
+  const lines = instruction.split(/\r?\n/);
+  const markerIndex = lines.indexOf(
+    "Read the complete post-execution prompt from this agent-history artifact path:",
+  );
+  return markerIndex >= 0 ? lines[markerIndex + 1]?.trim() : undefined;
+}
+
+function extractPrompt(args: unknown): string {
+  const artifactPath = extractPromptArtifactPath(args);
+  if (artifactPath && fs.existsSync(artifactPath)) {
+    return fs.readFileSync(artifactPath, "utf8");
+  }
+  return extractRawPrompt(args);
 }
 
 function extractArgs(args: unknown): string[] {
@@ -373,7 +390,67 @@ describe("post-execution reporting lifecycle", () => {
     );
   });
 
-  it("feeds inline Goal Brief content into the lifecycle reporter prompt", async () => {
+  it("keeps large lifecycle reporter context out of backend argv and stores prompt artifacts", async () => {
+    const largeMarker = `x402-lifecycle-large-context-${"B".repeat(150_000)}`;
+    const step = makeStep({
+      taskSummary: `Implemented Stage 1 while preserving a large completion summary. ${largeMarker}`,
+    });
+    const plan = makePlan([step]);
+    plan.goal = `Complete a large two-stage reporting goal. Stage 2 continues after this plan. ${largeMarker}`;
+    plan.summary = `Finish only Stage 1 and leave Stage 2 as remaining original-goal work. ${largeMarker}`;
+    const session = makeSession(plan);
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: `Executor wiring completed. ${largeMarker}`,
+      turnsUsed: 1,
+      executionSessionId: "exec-session-large",
+    });
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId: "run-report-lifecycle-large",
+      workingDir,
+      config: { goal: { semgrep: "off" } },
+      onRunStatePersist: vi.fn(),
+      onStatusChange: vi.fn(),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(mockRunCliProcess).toHaveBeenCalledTimes(3);
+    const argvText = mockRunCliProcess.mock.calls
+      .map((call) => extractArgs(call[0]).join("\n"))
+      .join("\n");
+    expect(argvText.length).toBeLessThan(10_000);
+    expect(argvText).toContain(
+      "Read the complete post-execution prompt from this agent-history artifact path:",
+    );
+    expect(argvText).not.toContain(largeMarker.slice(0, 120));
+
+    const promptArtifacts = mockRunCliProcess.mock.calls.map((call) =>
+      extractPromptArtifactPath(call[0]),
+    );
+    expect(
+      promptArtifacts.every((artifactPath) => artifactPath && fs.existsSync(artifactPath)),
+    ).toBe(true);
+    const promptContents = promptArtifacts.map((artifactPath) =>
+      fs.readFileSync(artifactPath!, "utf8"),
+    );
+    expect(promptContents[0]).toContain("post-execution report generation");
+    expect(promptContents[0]).toContain(largeMarker.slice(0, 120));
+    expect(promptContents[1]).toContain("prepare manual-test display data");
+    expect(promptContents[1]).toContain("Saved post-execution report markdown:");
+    expect(promptContents[2]).toContain("decide continuation");
+    expect(promptContents[2]).toContain("Structured completion context:");
+    expect(promptContents[2]).toContain(largeMarker.slice(0, 120));
+    expect(session.pendingContinuation).toMatchObject({
+      proposedPrompt: "Continue this goal by implementing the Telegram report UI.",
+      status: "pending",
+    });
+  });
+
+  it("links the stored Goal Brief path into the lifecycle reporter prompt without inlining its content", async () => {
     const step = makeStep();
     const plan = makePlan([step]);
     const session = makeSession(plan);
@@ -427,9 +504,11 @@ describe("post-execution reporting lifecycle", () => {
       .map((call) => extractPrompt(call[0]))
       .find((prompt) => prompt.includes("post-execution report generation"));
     expect(generatePrompt).toBeDefined();
-    expect(generatePrompt).toContain("Goal Brief content (read from the stored brief path):");
-    expect(generatePrompt).toContain("Stage 2 still needs goal2.txt created.");
     expect(generatePrompt).toContain(`Goal brief: ${briefPath}`);
+    expect(generatePrompt).toContain("Open the Goal Brief path above if you need the full brief");
+    // FIX 3: the Goal Brief is linked by path, not inlined — its full content must
+    // not be embedded in the bounded completion context.
+    expect(generatePrompt).not.toContain("Stage 2 still needs goal2.txt created.");
     expect(generatePrompt).not.toContain("Goal Brief is missing");
   });
 
@@ -499,9 +578,87 @@ describe("post-execution reporting lifecycle", () => {
       "Post-execution reporting could not generate a full report during generateReport",
     );
     expect(session.postExecutionReportingFailureReason).toBeUndefined();
-    expect(session.manualTests).toEqual([]);
+    // FIX 5: the degraded path synthesizes deterministic fallback manual tests from
+    // completed steps instead of returning an empty array.
+    expect((session.manualTests ?? []).length).toBeGreaterThan(0);
+    expect(session.manualTests?.[0]?.description).toBe("Test native lifecycle reporting");
     expect(fs.existsSync(session.postExecutionReportArtifacts!.markdownPath)).toBe(true);
     expect(fs.existsSync(session.postExecutionReportArtifacts!.jsonPath)).toBe(true);
+    expect(statusEvents).toContainEqual(expect.objectContaining({ type: "all_done" }));
+    expect(statusEvents).not.toContainEqual(
+      expect.objectContaining({ type: "post_execution_reporting_failed" }),
+    );
+  });
+
+  it("keeps degraded fallback continuation actionable when remaining work is evident", async () => {
+    const step = makeStep({
+      taskSummary: "Stage 1 was completed; Stage 2 was intentionally left for the next plan.",
+    });
+    const plan = makePlan([step]);
+    plan.goal =
+      "This goal has two stages. Stage 1 wires reporting. Stage 2 continues this same goal with the Telegram UI.";
+    plan.summary = "Complete Stage 1 only and leave Stage 2 as remaining original-goal work.";
+    const session = makeSession(plan);
+    const runId = "run-report-lifecycle-degraded-continuation";
+    const statusEvents: unknown[] = [];
+
+    const { resolveComputedGoalBriefPath } = await import("./goal-brief.js");
+    const briefPath = resolveComputedGoalBriefPath(runId, workingDir);
+    fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+    fs.writeFileSync(
+      briefPath,
+      [
+        "# Goal Brief",
+        "",
+        "## Remaining Work",
+        "Stage 2 still needs the Telegram report UI implemented and verified.",
+        "",
+        "## Observation Point",
+        "Stop after Stage 1 so the operator can approve Stage 2.",
+      ].join("\n"),
+      "utf8",
+    );
+
+    mockCliExecute.mockResolvedValueOnce({
+      status: "complete",
+      summary: "Stage 1 completed.",
+      turnsUsed: 1,
+      executionSessionId: "exec-session-1",
+    });
+    mockRunCliProcess.mockImplementation(() => failedReportCliResult());
+
+    const { executeGoalWithAgent } = await import("./agent-executor.js");
+    const outcome = await executeGoalWithAgent({
+      session,
+      runId,
+      workingDir,
+      config: { goal: { semgrep: "off" } },
+      enabledWorkers: ["claude_code"],
+      onRunStatePersist: vi.fn(),
+      onStatusChange: (event) => statusEvents.push(event),
+    });
+
+    expect(outcome.status).toBe("done");
+    expect(session.state).toBe("done");
+    expect(session.postExecutionReport).toMatchObject({
+      goalAchieved: false,
+      nextPlanRecommended: true,
+    });
+    expect(session.postExecutionReport?.nextPlanSummary).toContain("Stage 2");
+    expect(session.postExecutionReport?.nextPlanPrompt).toContain("Goal ID");
+    expect(session.postExecutionReport?.nextPlanSummary?.trim()).not.toBe("");
+    expect(session.postExecutionReport?.nextPlanPrompt?.trim()).not.toBe("");
+    expect(session.postExecutionContinuation).toMatchObject({
+      goalAchieved: false,
+      nextPlanRecommended: true,
+    });
+    expect(session.postExecutionContinuation?.nextPlanSummary).toContain("Stage 2");
+    expect(session.postExecutionContinuation?.nextPlanPrompt).toContain("Telegram report UI");
+    expect(session.pendingContinuation).toMatchObject({
+      goalAchieved: false,
+      proposedPrompt: expect.stringContaining("Telegram report UI"),
+      status: "pending",
+    });
     expect(statusEvents).toContainEqual(expect.objectContaining({ type: "all_done" }));
     expect(statusEvents).not.toContainEqual(
       expect.objectContaining({ type: "post_execution_reporting_failed" }),
@@ -543,7 +700,7 @@ describe("post-execution reporting lifecycle", () => {
 
     expect(outcome.status).toBe("done");
     expect(mockCliExecute).toHaveBeenCalledOnce();
-    expect(mockRunCliProcess).toHaveBeenCalled();
+    expect(mockRunCliProcess).not.toHaveBeenCalled();
     expect(persistState).toHaveBeenCalled();
     expect(session.state).toBe("reporting_failed");
     expect(session.postExecutionReportingFailureReason).toContain(

@@ -1,4 +1,23 @@
 export type ClaudeCodeAuthMode = "subscription" | "api_key";
+export type ClaudeDriver = "direct" | "tui-pilot";
+/**
+ * Logical Claude prompt-run call sites. Each site passes its id to the seam
+ * (`runCliProcess`) so the driver can be selected per-site. This is what lets
+ * S3 canary tui-pilot for only the long agentic sites while everything else
+ * stays on the global default.
+ */
+export type ClaudeDriverSite =
+  | "cli-worker"
+  | "cli-planner"
+  | "post-execution-report"
+  | "repo-chat-worker"
+  | "lessons"
+  | "manual-tests"
+  | "nightwatch"
+  | "goal-sending"
+  | "plan-autocheck";
+/** Fail-closed preflight enforcement when a tui-pilot prompt-run is required. */
+export type TuiPilotPreflightMode = "off" | "warn" | "enforce";
 export type PlanAutocheckMode = "codex" | "claude_code" | "off";
 export type SemgrepMode = "off" | "step" | "goal";
 export type CliWorkerId = "codex" | "claude_code";
@@ -10,6 +29,36 @@ export type GitHubPushConfig = {
   enabled?: boolean;
   /** Git remote name to push to. Default: "origin". */
   remote?: string;
+};
+
+/**
+ * Operational controls for the installed tui-pilot driver. All fields default
+ * at runtime (see TUI_PILOT_OPS_DEFAULTS in src/goal/tui-pilot-driver.ts), so an
+ * absent `goal.tuiPilot` block keeps the productionized defaults.
+ */
+export type TuiPilotOpsConfig = {
+  /**
+   * Pinned tui-pilot version that setup installs and preflight enforces
+   * (e.g. "0.8.60"). When set, preflight checks `tui-pilot --version` matches.
+   */
+  version?: string;
+  /** Fail-closed preflight enforcement when a tui-pilot run is required. Default "enforce". */
+  preflight?: TuiPilotPreflightMode;
+  /** Max concurrent tui-pilot (tmux) sessions. Default 3. Must be >= 1. */
+  maxConcurrent?: number;
+  /**
+   * Max runs allowed to wait for a session slot before failing closed. Default 64.
+   * 0 disables queueing (saturated runs fail closed immediately).
+   */
+  maxQueued?: number;
+  /** Max ms a run may wait in the queue before failing closed (timeout). Default 600000. */
+  queueTimeoutMs?: number;
+  /**
+   * Per-site driver overrides (site id -> driver). A site present here overrides
+   * the global `goal.claudeDriver`. This drives the S3 canary: set the four long
+   * agentic sites to "tui-pilot" while the global default stays "direct".
+   */
+  sites?: Partial<Record<ClaudeDriverSite, ClaudeDriver>>;
 };
 
 export type GoalConfig = {
@@ -30,6 +79,20 @@ export type GoalConfig = {
    * - "api_key": passes the gateway's ANTHROPIC_API_KEY through to the worker.
    */
   claudeCodeAuth?: ClaudeCodeAuthMode;
+  /**
+   * Claude prompt-run driver. Default: "direct" during tui-pilot S1 migration.
+   * "tui-pilot" is an installed-tool opt-in and must not become the default
+   * until shadow parity and canary gates pass.
+   */
+  claudeDriver?: ClaudeDriver;
+  /** Optional override for the installed/local tui-pilot executable. */
+  tuiPilotBinary?: string;
+  /**
+   * Operational controls for the tui-pilot driver leg (S2 productionization).
+   * These only affect prompt runs routed through the "tui-pilot" driver; the
+   * direct `claude -p` path is unaffected.
+   */
+  tuiPilot?: TuiPilotOpsConfig;
   /** Auto-review backend for plans before sending them to users. */
   planAutocheck?: PlanAutocheckMode;
   /** When Semgrep SAST runs during goal execution. */

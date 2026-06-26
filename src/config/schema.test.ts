@@ -1,17 +1,100 @@
 import { describe, expect, it } from "vitest";
 
 import { buildConfigSchema } from "./schema.js";
+import { MoltbotSchema } from "./zod-schema.js";
 
 describe("config schema", () => {
   it("exports schema + hints", () => {
     const res = buildConfigSchema();
-    const schema = res.schema as { properties?: Record<string, unknown> };
+    const schema = res.schema as {
+      properties?: Record<string, { properties?: Record<string, unknown> }>;
+    };
     expect(schema.properties?.gateway).toBeTruthy();
+    expect(schema.properties?.gateway?.properties?.observedInstances).toBeTruthy();
     expect(schema.properties?.agents).toBeTruthy();
     expect(res.uiHints.gateway?.label).toBe("Gateway");
     expect(res.uiHints["gateway.auth.token"]?.sensitive).toBe(true);
     expect(res.version).toBeTruthy();
     expect(res.generatedAt).toBeTruthy();
+  });
+
+  it("accepts gateway observedInstances without making it required", () => {
+    const withObserved = MoltbotSchema.safeParse({ gateway: { observedInstances: ["dev"] } });
+    expect(withObserved.success).toBe(true);
+    if (!withObserved.success) return;
+    expect(withObserved.data.gateway?.observedInstances).toEqual(["dev"]);
+
+    const withoutObserved = MoltbotSchema.safeParse({ gateway: { mode: "local" } });
+    expect(withoutObserved.success).toBe(true);
+    if (!withoutObserved.success) return;
+    expect(withoutObserved.data.gateway?.observedInstances).toBeUndefined();
+  });
+
+  it("accepts goal claudeDriver values while allowing omission to default at runtime", () => {
+    const omitted = MoltbotSchema.safeParse({ goal: {} });
+    expect(omitted.success).toBe(true);
+    if (!omitted.success) return;
+    expect(omitted.data.goal?.claudeDriver).toBeUndefined();
+
+    const direct = MoltbotSchema.safeParse({ goal: { claudeDriver: "direct" } });
+    expect(direct.success).toBe(true);
+    if (!direct.success) return;
+    expect(direct.data.goal?.claudeDriver).toBe("direct");
+
+    const tuiPilot = MoltbotSchema.safeParse({
+      goal: { claudeDriver: "tui-pilot", tuiPilotBinary: "/usr/local/bin/tui-pilot" },
+    });
+    expect(tuiPilot.success).toBe(true);
+    if (!tuiPilot.success) return;
+    expect(tuiPilot.data.goal?.claudeDriver).toBe("tui-pilot");
+    expect(tuiPilot.data.goal?.tuiPilotBinary).toBe("/usr/local/bin/tui-pilot");
+  });
+
+  it("rejects unknown goal claudeDriver values", () => {
+    const res = MoltbotSchema.safeParse({ goal: { claudeDriver: "claude-p" } });
+    expect(res.success).toBe(false);
+  });
+
+  it("accepts the goal.tuiPilot operational block with a per-site driver map", () => {
+    const res = MoltbotSchema.safeParse({
+      goal: {
+        claudeDriver: "direct",
+        tuiPilot: {
+          version: "0.8.60",
+          preflight: "enforce",
+          maxConcurrent: 3,
+          maxQueued: 64,
+          queueTimeoutMs: 600_000,
+          sites: {
+            "cli-worker": "tui-pilot",
+            "cli-planner": "tui-pilot",
+            "post-execution-report": "tui-pilot",
+            "repo-chat-worker": "tui-pilot",
+          },
+        },
+      },
+    });
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.data.goal?.tuiPilot?.version).toBe("0.8.60");
+    expect(res.data.goal?.tuiPilot?.maxConcurrent).toBe(3);
+    expect(res.data.goal?.tuiPilot?.sites?.["cli-worker"]).toBe("tui-pilot");
+  });
+
+  it("rejects invalid goal.tuiPilot values (bad site driver, sub-1 concurrency)", () => {
+    expect(
+      MoltbotSchema.safeParse({ goal: { tuiPilot: { sites: { "cli-worker": "codex" } } } }).success,
+    ).toBe(false);
+    expect(MoltbotSchema.safeParse({ goal: { tuiPilot: { maxConcurrent: 0 } } }).success).toBe(
+      false,
+    );
+    expect(MoltbotSchema.safeParse({ goal: { tuiPilot: { preflight: "loud" } } }).success).toBe(
+      false,
+    );
+    expect(
+      MoltbotSchema.safeParse({ goal: { tuiPilot: { sites: { "not-a-site": "direct" } } } })
+        .success,
+    ).toBe(false);
   });
 
   it("merges plugin ui hints", () => {

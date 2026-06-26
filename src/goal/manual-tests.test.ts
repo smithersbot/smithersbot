@@ -92,7 +92,12 @@ vi.mock("./backend-sandbox.js", async (importOriginal) => {
   };
 });
 
-import { clampCriticality, generateManualTests } from "./manual-tests.js";
+import {
+  buildFallbackManualTestsForSteps,
+  buildFallbackTests,
+  clampCriticality,
+  generateManualTests,
+} from "./manual-tests.js";
 import { buildClaudeCodeSandboxSettingsConfig } from "./backend-sandbox.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
 
@@ -100,6 +105,47 @@ describe("clampCriticality", () => {
   it("defaults invalid values to 5", () => {
     expect(clampCriticality(Number.NaN)).toBe(5);
     expect(clampCriticality("not-a-number")).toBe(5);
+  });
+});
+
+describe("buildFallbackManualTestsForSteps", () => {
+  it("exports the low-level fallback builder", () => {
+    const tests = buildFallbackTests(makeDoneSteps(), 1, new Set<string>());
+
+    expect(tests).toEqual([
+      expect.objectContaining({
+        description: "Test login validation",
+        detail: expect.stringContaining("Added server-side validation"),
+      }),
+    ]);
+  });
+
+  it("builds a deterministic fallback floor from completed steps only", () => {
+    const tests = buildFallbackManualTestsForSteps(
+      [
+        ...makeDoneSteps(),
+        {
+          id: "4",
+          description: "Implement unfinished billing flow",
+          dependsOn: [],
+          status: "pending",
+          taskSummary: "Not completed",
+        },
+      ],
+      { maxTests: 2, reason: "Post-execution reporting degraded." },
+    );
+
+    expect(tests).toHaveLength(2);
+    expect(tests).toEqual([
+      expect.objectContaining({
+        description: "Test login validation",
+        reason: "Post-execution reporting degraded.",
+      }),
+      expect.objectContaining({ description: "Test session timeout handling" }),
+    ]);
+    expect(tests).not.toContainEqual(
+      expect.objectContaining({ description: expect.stringContaining("billing") }),
+    );
   });
 });
 
