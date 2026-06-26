@@ -19,10 +19,10 @@ import {
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
 import { buildClaudeCodeEnv, buildCredentialStrippedEnv } from "./claude-code-env.js";
-import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
+import { extractCliTextAndSession, isRecord } from "./cli-output-parsing.js";
 import { runCliProcess, type RunCliProcessResult } from "./cli-process.js";
 import { workspaceNameFromWorkingDir } from "./agent-history.js";
-import { writeCriticalAgentLaunchEvent } from "./agent-history-events.js";
+import { appendAgentHistoryEvent, writeAgentPromptArtifact } from "./agent-history-events.js";
 import {
   extractGoalBriefSection,
   loadGoalBriefContent,
@@ -30,6 +30,7 @@ import {
 } from "./goal-brief.js";
 import { resolveHistoryWorkspaceSlug } from "./history-anchor.js";
 import { extractJsonObjectCandidates, repairJsonText } from "./json-repair.js";
+import { buildFallbackManualTestsForSteps } from "./manual-tests.js";
 import { extractJson } from "./planner.js";
 import { runWithBackendFallback, type PhaseFallbackResult } from "./phase-fallback.js";
 import { resolveClaudeBinary, SCOUT_REPORT_FILE } from "./scout.js";
@@ -39,8 +40,12 @@ export const POST_EXECUTION_REPORT_MARKDOWN_FILENAME = "post-execution-report.md
 export const POST_EXECUTION_REPORT_JSON_FILENAME = "post-execution-report.json";
 
 const DEFAULT_POST_EXECUTION_TIMEOUT_MS = 300_000;
+const POST_EXECUTION_CONTEXT_TEXT_CHARS = 260;
+const POST_EXECUTION_BUILD_GATE_OUTPUT_CHARS = 1_200;
 const SESSION_NOT_FOUND_RE =
   /(session|thread|conversation|resume)[^.\n\r]{0,80}(not found|unknown|expired|invalid)/i;
+const JSON_RETRY_PROMPT =
+  "Your previous message was not valid JSON. Resend ONLY the JSON object this phase requested, with no prose or code fences.";
 
 export const PostExecutionManualTestSchema = z.object({
   description: z.string().min(1),
@@ -206,8 +211,23 @@ function reportPromptHistoryKind(
   return "report";
 }
 
-function sanitizeReportArgvForHistory(args: readonly string[], prompt: string): string[] {
-  return args.map((arg) => (arg === prompt ? "<prompt>" : arg));
+function reportPromptReferencePhaseLabel(phase: PostExecutionPhaseName): string {
+  if (phase === "prepareManualTestDisplay") return "prepare manual-test display data";
+  if (phase === "decideContinuation") return "decide continuation";
+  return "post-execution report generation";
+}
+
+function buildPromptArtifactInstruction(params: {
+  phase: PostExecutionPhaseName;
+  promptArtifactPath: string;
+}): string {
+  return [
+    `Native lifecycle phase: ${reportPromptReferencePhaseLabel(params.phase)}.`,
+    "Read the complete post-execution prompt from this agent-history artifact path:",
+    params.promptArtifactPath,
+    "Follow that prompt exactly and return only the response shape it requests.",
+    "Do not modify files. Do not rerun completed plan steps.",
+  ].join("\n");
 }
 
 export function resolvePostExecutionReportArtifactPaths(params: {
@@ -351,12 +371,17 @@ export async function runPostExecutionReporting(
     report: reportResult.report,
     artifacts: reportResult.artifacts,
   });
-  if (manualResult.status === "failed") return manualResult;
+  const manualTestDisplay =
+    manualResult.status === "success"
+      ? manualResult.display
+      : buildFallbackManualTestDisplay(params.plan.steps);
 
-  session = {
-    backend: manualResult.backend,
-    ...(manualResult.sessionId ? { sessionId: manualResult.sessionId } : {}),
-  };
+  if (manualResult.status === "success") {
+    session = {
+      backend: manualResult.backend,
+      ...(manualResult.sessionId ? { sessionId: manualResult.sessionId } : {}),
+    };
+  }
 
   const continuationResult = await decideContinuation({
     ...params,
@@ -364,17 +389,32 @@ export async function runPostExecutionReporting(
     report: reportResult.report,
     artifacts: reportResult.artifacts,
   });
-  if (continuationResult.status === "failed") return continuationResult;
+  const continuation =
+    continuationResult.status === "success"
+      ? continuationResult.continuation
+      : buildFallbackContinuationDecision({
+          runId: params.runId,
+          goal: params.goal,
+          plan: params.plan,
+          workingDir: params.workingDir,
+          serializedRun: params.serializedRun,
+          historyWorkspaceSlug: params.serializedRun?.historyWorkspaceSlug,
+          failureReason: continuationResult.reason,
+        });
 
   return {
     status: "success",
     report: reportResult.report,
     markdown: reportResult.markdown,
     artifacts: reportResult.artifacts,
-    manualTestDisplay: manualResult.display,
-    continuation: continuationResult.continuation,
-    backend: continuationResult.backend,
-    ...(continuationResult.sessionId ? { sessionId: continuationResult.sessionId } : {}),
+    manualTestDisplay,
+    continuation,
+    backend: continuationResult.status === "success" ? continuationResult.backend : session.backend,
+    ...(continuationResult.status === "success" && continuationResult.sessionId
+      ? { sessionId: continuationResult.sessionId }
+      : session.sessionId
+        ? { sessionId: session.sessionId }
+        : {}),
   };
 }
 
@@ -420,10 +460,32 @@ async function runReportPhaseWithFallback<T>(params: {
         if (sessionId) attemptParams.sessionId = sessionId;
         else delete attemptParams.sessionId;
         const attemptResult = await runReportCliAttempt(attemptParams);
+        let parsedValue: T;
+        try {
+          parsedValue = params.parseText(attemptResult.text);
+        } catch (parseError) {
+          const retrySessionId =
+            attemptResult.sessionId ??
+            (backend === params.params.backend ? params.params.sessionId : undefined);
+          if (!retrySessionId) throw parseError;
+          const retryResult = await runReportCliAttempt({
+            ...attemptParams,
+            sessionId: retrySessionId,
+            prompt: JSON_RETRY_PROMPT,
+          });
+          parsedValue = params.parseText(retryResult.text);
+          return {
+            ok: true,
+            value: {
+              value: parsedValue,
+              sessionId: retryResult.sessionId ?? retrySessionId,
+            },
+          };
+        }
         return {
           ok: true,
           value: {
-            value: params.parseText(attemptResult.text),
+            value: parsedValue,
             sessionId:
               attemptResult.sessionId ??
               (backend === params.params.backend ? params.params.sessionId : undefined),
@@ -484,43 +546,52 @@ async function runReportCliAttempt(
       : undefined;
 
   const command = useCodex ? "codex" : (resolveClaudeBinary() ?? "claude");
+  const scope = {
+    kind: "goal" as const,
+    workspaceName:
+      params.serializedRun?.historyWorkspaceSlug ?? workspaceNameFromWorkingDir(params.workingDir),
+    goalId: params.runId,
+  };
+  const historyPhase = reportPromptHistoryKind(params.phase);
+  const promptArtifactPath = writeAgentPromptArtifact({
+    scope,
+    phase: historyPhase,
+    backend: params.backend,
+    prompt: params.prompt,
+  });
+  const promptInstruction = buildPromptArtifactInstruction({
+    phase: params.phase,
+    promptArtifactPath,
+  });
   const args = useCodex
     ? buildCodexReportArgs({
-        prompt: params.prompt,
+        promptInstruction,
         workingDir: params.workingDir,
         sandboxConfig: codexSandbox,
         sessionId: params.sessionId,
         model: params.model,
       })
     : buildClaudeReportArgs({
-        prompt: params.prompt,
+        promptInstruction,
         sandboxConfig: claudeSandbox,
         sessionId: params.sessionId,
         model: params.model,
       });
 
   try {
-    writeCriticalAgentLaunchEvent({
-      scope: {
-        kind: "goal",
-        workspaceName:
-          params.serializedRun?.historyWorkspaceSlug ??
-          workspaceNameFromWorkingDir(params.workingDir),
-        goalId: params.runId,
-      },
-      phase: reportPromptHistoryKind(params.phase),
+    appendAgentHistoryEvent(scope, {
+      event: "launch",
+      phase: historyPhase,
       backend: params.backend,
-      prompt: params.prompt,
       command,
-      argv: sanitizeReportArgvForHistory(args, params.prompt),
-      event: {
-        runId: params.runId,
-        goalId: params.runId,
-        status: "launching",
-        postExecutionPhase: params.phase,
-        ...(params.model ? { model: params.model } : {}),
-        ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-      },
+      argv: args,
+      promptArtifactPath,
+      runId: params.runId,
+      goalId: params.runId,
+      status: "launching",
+      postExecutionPhase: params.phase,
+      ...(params.model ? { model: params.model } : {}),
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -534,6 +605,7 @@ async function runReportCliAttempt(
     args,
     cwd: params.workingDir,
     timeoutMs: params.timeoutMs ?? DEFAULT_POST_EXECUTION_TIMEOUT_MS,
+    claudeDriverSite: "post-execution-report",
     env: useCodex
       ? codexSandbox
         ? mergeCodexNativeSandboxEnv(
@@ -578,7 +650,7 @@ async function runReportCliAttempt(
 }
 
 function buildClaudeReportArgs(params: {
-  prompt: string;
+  promptInstruction: string;
   sandboxConfig?: ClaudeCodeLaunchSandboxConfig;
   sessionId?: string;
   model?: string;
@@ -596,12 +668,12 @@ function buildClaudeReportArgs(params: {
   if (params.sandboxConfig) appendClaudeCodeSandboxArgs(args, params.sandboxConfig);
   if (params.model) args.push("--model", params.model);
   if (params.sessionId) args.push("--resume", params.sessionId);
-  args.push(params.prompt);
+  args.push(params.promptInstruction);
   return args;
 }
 
 function buildCodexReportArgs(params: {
-  prompt: string;
+  promptInstruction: string;
   workingDir: string;
   sandboxConfig?: CodexNativeSandboxConfig;
   sessionId?: string;
@@ -620,7 +692,7 @@ function buildCodexReportArgs(params: {
     if (params.sandboxConfig) appendCodexNativeSandboxExecArgs(args, params.sandboxConfig);
   }
   if (params.model) args.push("--model", params.model);
-  args.push(params.prompt);
+  args.push(params.promptInstruction);
   return args;
 }
 
@@ -633,11 +705,10 @@ function buildGenerateReportPrompt(params: GenerateReportParams): string {
     "",
     "Return exactly one JSON object:",
     "{",
-    '  "markdown": "<human readable markdown report>",',
     '  "report": {',
     '    "planCompleted": true,',
     '    "goalAchieved": true,',
-    '    "summary": "...",',
+    '    "summary": "concise outcome summary",',
     '    "filesChanged": ["..."],',
     '    "verificationCommands": ["..."],',
     '    "manualTests": [{"description":"...","criticality":5,"reason":"...","detail":"..."}],',
@@ -649,19 +720,12 @@ function buildGenerateReportPrompt(params: GenerateReportParams): string {
     "  }",
     "}",
     "",
-    "Markdown formatting rules:",
-    "- The markdown field must use compact sections with Markdown bold markers, not headings.",
-    '- Start with exactly "**Post-Execution Report:**".',
-    '- Render only these core sections: "**Summary:**", "**Outcome:**", "**Files Changed:**", "**Verification Commands:**", and "**Sources:**".',
-    "- Do not render Manual Tests, Next Plan, Proposed prompt, or Decision(s) in the markdown body; those have separate UI surfaces and must only be linked from Sources.",
-    "- Do not use #, ##, or ### headings. Do not separate every section with blank lines.",
-    '- The markdown field must end with a Sources Section using the bold label "**Sources:**".',
-    `- In Sources, link the Goal Brief: ${sourcePaths.goalBriefPath}`,
-    `- In Sources, link the ScoutReport mirror: ${sourcePaths.scoutReportPath}`,
-    `- In Sources, link the prior Plan Report: ${sourcePaths.priorPlanReportPath}`,
-    "- In Sources, link Test Details, the continuation message, and View Prompt as the UI surfaces for expanded details.",
-    "- In Sources, include exactly one terms pointer line: Terms: see GLOSSARY.md",
-    "- If a linked source is missing, still include its path and note that it was unavailable.",
+    "Keep field values concise. The system will render markdown deterministically from the report object.",
+    "Evidence source links:",
+    `- Goal Brief: ${sourcePaths.goalBriefPath}`,
+    `- ScoutReport mirror: ${sourcePaths.scoutReportPath}`,
+    `- Prior Plan Report: ${sourcePaths.priorPlanReportPath}`,
+    "- If a linked source is missing, still reason from the available structured context.",
     "",
     "The report must answer:",
     "- What did the user originally ask for?",
@@ -758,15 +822,11 @@ function buildPlanCompletionContext(params: GenerateReportParams): string {
     `Plan summary: ${params.plan.summary}`,
     `Long Goal Summary: ${longGoalSummary}`,
     `Goal brief: ${briefPath}`,
+    "Open the Goal Brief path above if you need the full brief; this prompt only includes compact derived fields.",
   ];
   if (brief.ok) {
-    lines.push("");
-    lines.push("Goal Brief content (read from the stored brief path):");
-    lines.push("```markdown");
-    lines.push(brief.content);
-    lines.push("```");
     lines.push(
-      "Use the Goal Brief's Remaining Work and Observation Point to evaluate whether the original goal is achieved.",
+      "Use the Goal Brief's Remaining Work and Observation Point to evaluate whether the original goal is achieved; open the linked brief if those details are needed.",
     );
   } else {
     lines.push("");
@@ -779,12 +839,22 @@ function buildPlanCompletionContext(params: GenerateReportParams): string {
   }
   lines.push("");
   lines.push("Plan steps:");
+  const workerSummaryPathsByStep = new Map(
+    (params.workerSummaries ?? params.serializedRun?.workerSummaries ?? []).map((summary) => [
+      summary.id,
+      summary.path,
+    ]),
+  );
   for (const step of params.plan.steps) {
+    const sourceLink = workerSummaryPathsByStep.get(step.id);
     lines.push(
       [
         `- ${step.id}: ${step.shortSummary || step.description}`,
         `  status: ${step.status}`,
-        step.taskSummary ? `  completion: ${step.taskSummary}` : undefined,
+        step.taskSummary
+          ? `  completion snippet: ${compactPostExecutionContextText(step.taskSummary)}`
+          : undefined,
+        sourceLink ? `  Source Link: ${sourceLink}` : undefined,
         step.blockedQuestion ? `  blocker: ${step.blockedQuestion}` : undefined,
       ]
         .filter(Boolean)
@@ -822,11 +892,182 @@ function buildPlanCompletionContext(params: GenerateReportParams): string {
         lines.push(`  failedCommand: ${result.failedCommand}`);
       }
       if (!result.passed && result.output) {
-        lines.push(`  output: ${result.output}`);
+        lines.push(
+          `  output: ${compactPostExecutionContextText(
+            result.output,
+            POST_EXECUTION_BUILD_GATE_OUTPUT_CHARS,
+          )}`,
+        );
       }
     }
   }
   return redactSecretValues(lines.join("\n"));
+}
+
+function compactPostExecutionContextText(
+  value: string,
+  maxChars = POST_EXECUTION_CONTEXT_TEXT_CHARS,
+): string {
+  const redacted = redactSecretValues(value).replace(/\s+/g, " ").trim();
+  if (redacted.length <= maxChars) return redacted;
+  return `${redacted.slice(0, maxChars).trimEnd()}...`;
+}
+
+function buildFallbackManualTestDisplay(
+  steps: readonly Plan["steps"][number][],
+): PostExecutionManualTestDisplay {
+  const manualTests = buildFallbackManualTestsForSteps(steps, {
+    reason: "Post-execution manual-test display generation failed; using deterministic fallback.",
+  });
+  return {
+    manualTests,
+    displayMarkdown: renderManualTestsMarkdown(manualTests),
+  };
+}
+
+type FallbackRemainingWorkEvidence = {
+  summary: string;
+  nextPlanPrompt: string;
+};
+
+function buildFallbackContinuationDecision(params: {
+  runId: string;
+  goal: string;
+  plan: Plan;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
+  failureReason: string;
+}): PostExecutionContinuationDecision {
+  const remainingWork = collectFallbackRemainingWork(params);
+  return {
+    goalAchieved: !remainingWork,
+    nextPlanRecommended: Boolean(remainingWork),
+    nextPlanSummary: remainingWork?.summary ?? null,
+    nextPlanPrompt: remainingWork?.nextPlanPrompt ?? null,
+    decisionsNeeded: [],
+    failureOrBlockedReason: `Post-execution continuation decision failed: ${params.failureReason}`,
+  };
+}
+
+function collectFallbackRemainingWork(params: {
+  runId: string;
+  goal: string;
+  plan: Plan;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
+}): FallbackRemainingWorkEvidence | undefined {
+  return collectGoalBriefFallbackRemainingWork(params) ?? collectPlanFallbackRemainingWork(params);
+}
+
+function collectGoalBriefFallbackRemainingWork(params: {
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
+}): FallbackRemainingWorkEvidence | undefined {
+  const brief = loadGoalBriefContent({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.serializedRun?.goalBriefPath
+      ? { goalBriefPath: params.serializedRun.goalBriefPath }
+      : {}),
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+  });
+  if (!brief.ok) return undefined;
+
+  const remainingWork = extractGoalBriefSection(brief.content, ["Remaining Work"]);
+  if (!isActionableFallbackRemainingText(remainingWork)) return undefined;
+
+  const observationPoint =
+    extractGoalBriefSection(brief.content, ["Next Observation Point", "Observation Point"]) ?? "";
+  const summary = normalizeFallbackRemainingText(remainingWork);
+  const observation = normalizeFallbackRemainingText(observationPoint, 400);
+  return {
+    summary,
+    nextPlanPrompt: [
+      `Create the next plan under the same Goal ID (${params.runId}) to complete the remaining work recorded in the Goal Brief.`,
+      `Remaining work: ${summary}`,
+      observation ? `Observation point: ${observation}` : "",
+      "Do not redo completed plan steps. Do not claim the remaining work is already complete without concrete evidence.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+function collectPlanFallbackRemainingWork(params: {
+  runId: string;
+  goal: string;
+  plan: Plan;
+}): FallbackRemainingWorkEvidence | undefined {
+  const candidates = [
+    params.goal,
+    params.plan.goal,
+    params.plan.summary,
+    params.plan.shortSummary,
+    ...params.plan.steps.flatMap((step) => [
+      step.description,
+      step.shortSummary,
+      step.taskSummary,
+      step.blockedQuestion,
+    ]),
+  ];
+  const matching = candidates
+    .map((line) => normalizeFallbackRemainingText(line, 500))
+    .filter((line) => lineIdentifiesFallbackRemainingWork(line));
+  if (matching.length === 0) return undefined;
+
+  const summary = normalizeFallbackRemainingText(matching.slice(0, 3).join(" "), 700);
+  return {
+    summary,
+    nextPlanPrompt: [
+      `Create the next plan under the same Goal ID (${params.runId}) to complete the remaining original-goal work.`,
+      `Remaining work: ${summary}`,
+      "Do not redo completed plan steps. Use the Goal Brief, current plan context, and saved artifacts as the source of truth.",
+    ].join("\n"),
+  };
+}
+
+function normalizeFallbackRemainingText(value: string | undefined, maxLength = 700): string {
+  const text = value?.replace(/\s+/g, " ").trim() ?? "";
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3).trimEnd()}...` : text;
+}
+
+function isActionableFallbackRemainingText(value: string | undefined): value is string {
+  const text = normalizeFallbackRemainingText(value, 1_000);
+  if (!text) return false;
+  if (
+    /^(?:none|n\/a|not applicable|complete|completed)\.?$/i.test(text) ||
+    /\b(?:no|nothing)\b.{0,40}\b(?:remaining|left|unfinished|incomplete|to do|todo|work)\b/i.test(
+      text,
+    ) ||
+    /\b(?:goal|work|task)\b.{0,40}\b(?:is|was|appears|looks)\b.{0,20}\b(?:complete|completed|done)\b/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function lineIdentifiesFallbackRemainingWork(line: string): boolean {
+  const text = normalizeFallbackRemainingText(line, 1_000);
+  if (!isActionableFallbackRemainingText(text)) return false;
+  return (
+    /\bremaining (?:original[- ]goal )?work\b/i.test(text) ||
+    /\bstill needs?\b/i.test(text) ||
+    /\bunfinished\b/i.test(text) ||
+    /\bincomplete\b/i.test(text) ||
+    /\bnext plan\b/i.test(text) ||
+    /\bstage\s*(?:2|two|3|three|next|later)\b/i.test(text) ||
+    /\bleav(?:e|es|ing|ed)\b.{0,100}\b(?:continuation|later|next|stage)\b/i.test(text) ||
+    /\bcontinue(?:s|d)?\b.{0,100}\b(?:same goal|after|stage|remaining|with another plan)\b/i.test(
+      text,
+    )
+  );
 }
 
 function buildSavedReportContext(artifacts: PostExecutionReportArtifactPaths): string {
@@ -943,53 +1184,11 @@ function parseJsonObjectFromText(text: string): Record<string, unknown> {
 }
 
 function parseCliTextAndSession(stdout: string): ReportCliAttemptResult {
-  const lines = parseJsonLines(stdout);
-  let sessionId: string | undefined;
-  let finalResultText: string | undefined;
-  const parts: string[] = [];
-
-  for (const parsed of lines) {
-    sessionId = sessionId ?? pickSessionId(parsed);
-    const type = typeof parsed.type === "string" ? parsed.type : "";
-    const isError = parsed.is_error === true;
-    if (type === "result" && !isError) {
-      const resultText = jsonOrText(parsed.result).trim();
-      if (resultText) finalResultText = resultText;
-      continue;
-    }
-    const eventText = collectText(parsed).trim();
-    if (eventText && parts.at(-1) !== eventText) parts.push(eventText);
-  }
-
-  const text = finalResultText ?? parts.join("\n");
+  const parsed = extractCliTextAndSession(stdout);
   return {
-    text: (text || stdout.trim()).trim(),
-    ...(sessionId ? { sessionId } : {}),
+    text: (parsed.text || stdout.trim()).trim(),
+    ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
   };
-}
-
-function pickSessionId(parsed: Record<string, unknown>): string | undefined {
-  const fields = [
-    "session_id",
-    "sessionId",
-    "conversation_id",
-    "conversationId",
-    "thread_id",
-    "threadId",
-  ];
-  for (const field of fields) {
-    const value = parsed[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
-function jsonOrText(value: unknown): string {
-  if (typeof value === "string") return value;
-  const text = collectText(value).trim();
-  if (text) return text;
-  if (value == null) return "";
-  return JSON.stringify(value);
 }
 
 function resolvePhaseBackends(params: {

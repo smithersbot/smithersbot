@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildCliArgs, writeDenyFile } from "./cli-worker.js";
+import { buildCliArgs, buildCliPromptPayload, writeDenyFile } from "./cli-worker.js";
 import { validateConfigObject } from "../config/config.js";
 import {
   buildSandboxProbeCases,
@@ -116,11 +116,17 @@ describe("goal worker sandbox live probes", () => {
     try {
       const denyFile = writeDenyFile([], fixture.repoDir);
       const prompt = buildSandboxProbePrompt(fixture);
+      const promptPayload = buildCliPromptPayload({
+        backend: "codex",
+        prompt,
+        denyFilePath: denyFile,
+      });
       const args = buildCliArgs({
         backend: "codex",
         prompt,
         workingDir: fixture.repoDir,
         denyFilePath: denyFile,
+        promptPayload,
       });
 
       expect(args).not.toContain("--sandbox");
@@ -129,8 +135,10 @@ describe("goal worker sandbox live probes", () => {
       expect(args).toContain(fixture.repoDir);
       expect(args.join(" ")).not.toContain("danger-full-access");
       expect(args.join(" ")).not.toContain("dangerously-bypass");
-      expect(args.at(-1)).toContain("DENIED managed private env");
-      expect(args.at(-1)).toContain("ALLOWED agent history search");
+      expect(args.join(" ")).not.toContain("DENIED managed private env");
+      expect(args.join(" ")).not.toContain("ALLOWED agent history search");
+      expect(promptPayload.promptArg).toContain("DENIED managed private env");
+      expect(promptPayload.promptArg).toContain("ALLOWED agent history search");
     } finally {
       if (previousRoot === undefined) delete process.env.SMITHERSBOT_GOALS_ROOT;
       else process.env.SMITHERSBOT_GOALS_ROOT = previousRoot;

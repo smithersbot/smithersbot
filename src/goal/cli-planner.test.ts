@@ -501,6 +501,43 @@ describe("buildPlanningPrompt dev-gateway guidance gating", () => {
       expect(revisionPrompt(DEV_CWD)).not.toContain(DEV_GATEWAY_PLANNER_GUIDANCE);
     });
   });
+
+  it("renders user-requested edits as authoritative revision requirements", () => {
+    const currentPlan: Plan = {
+      goal: "Ship frontend",
+      workingDir: NON_DEV_CWD,
+      summary: "Current frontend plan",
+      steps: [
+        {
+          id: "frontend",
+          description: "Edit the frontend",
+          dependsOn: [],
+          status: "pending",
+          durationMinutes: 10,
+          backend: "codex",
+        },
+      ],
+    };
+
+    const prompt = buildPlanRevisionPrompt({
+      goalText: "Ship frontend",
+      currentPlan,
+      cwd: NON_DEV_CWD,
+      editInstructions: "Reviewer feedback: keep the plan executable.",
+      userEditInstructions: [
+        "Each task that edits the frontend needs to use Playwright to test within the task.",
+      ],
+      enabledWorkers: ["claude_code", "codex"],
+    });
+
+    expect(prompt).toContain("User-requested changes (authoritative for this revision):");
+    expect(prompt).toContain(
+      "1. Each task that edits the frontend needs to use Playwright to test within the task.",
+    );
+    expect(prompt.indexOf("User-requested changes")).toBeLessThan(
+      prompt.indexOf("Revision instructions: Reviewer feedback"),
+    );
+  });
 });
 
 describe("buildPlanningPrompt Goal-vs-Plan framing", () => {
