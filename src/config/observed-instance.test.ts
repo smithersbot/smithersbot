@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   OBSERVED_INSTANCES_ENV,
   isInstanceObserved,
+  resolveGatewayInstanceIdentity,
   resolveObservedInstanceSet,
 } from "./gateway-instance.js";
 import {
@@ -60,10 +61,11 @@ describe("observed-instance resolvers and guard", () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), "observed-instance-"));
     homedir = () => home;
-    devManagedRoot = path.join(home, "smithersbot-dev-home");
-    devAgentRoot = path.join(devManagedRoot, "agent");
+    const devIdentity = resolveGatewayInstanceIdentity("dev", homedir);
+    devManagedRoot = devIdentity.managedRoot;
+    devAgentRoot = path.join(devIdentity.managedRoot, "agent");
     devPrivateRoot = path.join(devManagedRoot, "private");
-    devStateDir = path.join(home, ".smithersbot-dev");
+    devStateDir = devIdentity.stateDir;
 
     for (const dir of [
       path.join(devAgentRoot, "workspaces", "smithersbot-dev"),
@@ -203,7 +205,8 @@ describe("observed-instance resolvers and guard", () => {
     const env = {
       [OBSERVED_INSTANCES_ENV]: "dev",
     } as unknown as NodeJS.ProcessEnv;
-    expect(resolveManagedRoot(env, homedir)).toBe(path.join(home, "smithersbot-home"));
-    expect(resolveAgentRoot(env, homedir)).toBe(path.join(home, "smithersbot-home", "agent"));
+    const stableIdentity = resolveGatewayInstanceIdentity("stable", homedir);
+    expect(resolveManagedRoot(env, homedir)).toBe(stableIdentity.managedRoot);
+    expect(resolveAgentRoot(env, homedir)).toBe(path.join(stableIdentity.managedRoot, "agent"));
   });
 });

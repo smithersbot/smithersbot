@@ -59,6 +59,7 @@ import type { ClaudeCodeAuthMode, CliWorkerId, GoalConfig } from "../config/type
 import { redactSecretValues } from "../security/secret-paths.js";
 import { PENDING_WORKSPACE_SLUG } from "./history-anchor.js";
 import { mirrorGoalRuntimeToAgentHistory } from "./runtime-mirror.js";
+import { extractCliTextAndSession } from "./cli-output-parsing.js";
 
 const DEFAULT_PLANNING_TIMEOUT_MS = 7_200_000;
 const LOG_EXCERPT_CHARS = 2048;
@@ -228,6 +229,7 @@ export type CliPlanRevisionParams = {
   goalText: string;
   currentPlan: Plan;
   editInstructions: string;
+  userEditInstructions?: string[];
   priorFeedback?: string[];
   goalsDir?: string;
   timeoutMs?: number;
@@ -809,20 +811,21 @@ function parsePlanWithFallbackWithSource(
 ): { plan: PlanResult; source: "file" | "stdout" } {
   const planPath = path.join(scoutDir, EXECUTION_PLAN_FILE);
   const fileText = fs.existsSync(planPath) ? fs.readFileSync(planPath, "utf8") : "";
+  const stdoutText = extractCliTextAndSession(stdout).text || stdout;
 
   if (fileText.trim().length > 0) {
     try {
       return { plan: parsePlanResultFromText(fileText, goalText), source: "file" };
     } catch (err) {
       // Some runs may write a valid JSON plan only to stdout.
-      if (stdout.trim().length > 0) {
-        return { plan: parsePlanResultFromText(stdout, goalText), source: "stdout" };
+      if (stdoutText.trim().length > 0) {
+        return { plan: parsePlanResultFromText(stdoutText, goalText), source: "stdout" };
       }
       throw err;
     }
   }
 
-  return { plan: parsePlanResultFromText(stdout, goalText), source: "stdout" };
+  return { plan: parsePlanResultFromText(stdoutText, goalText), source: "stdout" };
 }
 
 function listDirectoryForDiagnostics(dir: string): string[] {
@@ -1028,6 +1031,7 @@ async function repairMissingGoalBrief(params: {
         args,
         cwd: params.cwd,
         timeoutMs: params.timeoutMs,
+        claudeDriverSite: "cli-planner",
         ...(backend === "claude_code" ? { stdin: repairPrompt } : {}),
         stdoutPath: path.join(params.scoutDir, GOAL_BRIEF_REPAIR_STDOUT_FILE),
         stderrPath: path.join(params.scoutDir, GOAL_BRIEF_REPAIR_STDERR_FILE),
@@ -1151,11 +1155,20 @@ export function buildPlanRevisionPrompt(params: {
   currentPlan: Plan;
   cwd: string;
   editInstructions: string;
+  userEditInstructions?: string[];
   priorFeedback?: string[];
   enabledWorkers: CliWorkerId[];
   goalConfig?: GoalConfig;
 }): string {
-  const { goalText, currentPlan, cwd, editInstructions, priorFeedback, enabledWorkers } = params;
+  const {
+    goalText,
+    currentPlan,
+    cwd,
+    editInstructions,
+    userEditInstructions,
+    priorFeedback,
+    enabledWorkers,
+  } = params;
   const currentPlanJson = JSON.stringify(
     {
       workingDir: currentPlan.workingDir,
@@ -1189,6 +1202,17 @@ export function buildPlanRevisionPrompt(params: {
           "",
         ]
       : [];
+  const scopedUserEdits = [
+    ...new Set((userEditInstructions ?? []).map((item) => item.trim()).filter(Boolean)),
+  ];
+  const userEditInstructionsSection =
+    scopedUserEdits.length > 0
+      ? [
+          "User-requested changes (authoritative for this revision):",
+          ...scopedUserEdits.map((instruction, index) => `${index + 1}. ${instruction}`),
+          "",
+        ]
+      : [];
 
   return [
     buildPlanRevisionSystemPrompt(enabledWorkers, {
@@ -1202,6 +1226,7 @@ export function buildPlanRevisionPrompt(params: {
     currentPlanJson,
     "",
     ...priorChecklistSection,
+    ...userEditInstructionsSection,
     `Revision instructions: ${editInstructions}`,
     "",
     "Generate a revised plan incorporating these changes. Keep unchanged steps as-is where possible.",
@@ -1264,6 +1289,7 @@ export async function runCliPlanRevision(
     currentPlan,
     cwd: plannerCwd,
     editInstructions,
+    userEditInstructions: params.userEditInstructions,
     priorFeedback,
     enabledWorkers: plannerBackends,
     ...(params.goalConfig ? { goalConfig: params.goalConfig } : {}),
@@ -1338,6 +1364,7 @@ export async function runCliPlanRevision(
       args,
       cwd: plannerCwd,
       timeoutMs: timeout,
+      claudeDriverSite: "cli-planner",
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(revisionDir, PLAN_REVISION_STDOUT_FILE),
       stderrPath: path.join(revisionDir, PLAN_REVISION_STDERR_FILE),
@@ -1491,7 +1518,10 @@ export async function runCliPlanRevision(
 
   let parsedPlan: PlanResult;
   try {
-    parsedPlan = parsePlanResultFromText(procResult.stdout, goalText);
+    parsedPlan = parsePlanResultFromText(
+      extractCliTextAndSession(procResult.stdout).text || procResult.stdout,
+      goalText,
+    );
   } catch (err) {
     appendPlannerHistoryBestEffort({
       workingDir: plannerCwd,
@@ -1705,6 +1735,7 @@ export async function runCliPlanning(params: CliPlanningParams): Promise<CliPlan
       args,
       cwd: plannerCwd,
       timeoutMs: timeout,
+      claudeDriverSite: "cli-planner",
       ...(backend === "claude_code" ? { stdin: prompt } : {}),
       stdoutPath: path.join(scoutDir, PLANNER_STDOUT_FILE),
       stderrPath: path.join(scoutDir, PLANNER_STDERR_FILE),

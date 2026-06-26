@@ -493,6 +493,7 @@ async function runClaudeLessonExtraction(params: {
     cwd: params.workingDir,
     timeoutMs: LESSON_EXTRACTION_TIMEOUT_MS,
     stdin,
+    claudeDriverSite: "lessons",
     env: buildClaudeCodeEnv("subscription"),
   });
   const tokenUsage = parseBackendUsage(`${result.stdout}\n${result.stderr}`);

@@ -70,6 +70,7 @@ import {
   startTaskCheckpoint,
 } from "./git-checkpoint.js";
 import { isRepoPrivate } from "./git-privacy.js";
+import { extractGoalBriefSection, loadGoalBriefContent } from "./goal-brief.js";
 import { orderStepsCriticalPathFirst, computeCriticalPathScores } from "./plan-order.js";
 import { extractRunLessons, getLessonsForContext } from "./lessons.js";
 import { PiTaskRunner } from "./pi-runner.js";
@@ -80,6 +81,7 @@ import {
   buildRalphHistorySummary,
 } from "./run-journal.js";
 import { buildContinuationProposal, type ContinuationAssessment } from "./continuation.js";
+import { buildFallbackManualTestsForSteps, generateManualTests } from "./manual-tests.js";
 import {
   renderPostExecutionReportMarkdown,
   resolvePostExecutionReportArtifactPaths,
@@ -127,6 +129,7 @@ const DEFAULT_TIMEOUT_MS = 600_000; // 10 minutes per prompt
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_MAX_RALPH_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_POST_EXECUTION_MANUAL_TEST_LIMIT = 5;
 const DEFAULT_BACKEND: CliWorkerId = "claude_code";
 const DEFAULT_MAX_BUILD_GATE_FIX_CYCLES = 2;
 
@@ -495,6 +498,83 @@ function mapPostExecutionManualTests(
   }));
 }
 
+function buildManualTestDisplayFromSuggestions(
+  tests: readonly ManualTestSuggestion[],
+): PostExecutionManualTestDisplay {
+  return {
+    manualTests: tests.map((test) => ({
+      description: test.description,
+      criticality: test.criticality,
+      ...(test.reason ? { reason: test.reason } : {}),
+      detail: test.detail,
+    })),
+    displayMarkdown:
+      tests.length === 0
+        ? "No manual tests are needed."
+        : tests
+            .map((test, index) =>
+              [
+                `${index + 1}. ${test.description} (criticality ${test.criticality}/10)`,
+                test.reason ? `   - Why: ${test.reason}` : undefined,
+                `   - Steps: ${test.detail}`,
+              ]
+                .filter((line): line is string => Boolean(line))
+                .join("\n"),
+            )
+            .join("\n"),
+  };
+}
+
+function buildFallbackManualTestDisplay(
+  steps: readonly PlanStep[],
+): PostExecutionManualTestDisplay {
+  return buildManualTestDisplayFromSuggestions(
+    buildFallbackManualTestsForSteps(steps, {
+      maxTests: DEFAULT_POST_EXECUTION_MANUAL_TEST_LIMIT,
+    }),
+  );
+}
+
+async function buildLifecycleManualTestDisplay(params: {
+  goal: string;
+  steps: readonly PlanStep[];
+  runId: string;
+  workingDir: string;
+  client?: GoalLlmClient;
+  existingDisplay?: PostExecutionManualTestDisplay;
+  onProgress?: (message: string) => void;
+}): Promise<PostExecutionManualTestDisplay> {
+  const fallbackDisplay = buildFallbackManualTestDisplay(params.steps);
+  if (!params.client) {
+    return params.existingDisplay?.manualTests.length ? params.existingDisplay : fallbackDisplay;
+  }
+
+  try {
+    const generated = await generateManualTests({
+      goal: params.goal,
+      steps: [...params.steps],
+      client: params.client,
+      minTests: fallbackDisplay.manualTests.length > 0 ? 1 : 0,
+      maxTests: DEFAULT_POST_EXECUTION_MANUAL_TEST_LIMIT,
+      runId: params.runId,
+      workingDir: params.workingDir,
+    });
+    if (generated.tests.length > 0) {
+      return buildManualTestDisplayFromSuggestions(generated.tests);
+    }
+  } catch (error) {
+    params.onProgress?.(
+      `  [warn] Bounded manual-test generation failed; using deterministic fallback: ${unknownErrorMessage(
+        error,
+      )}`,
+    );
+  }
+
+  return fallbackDisplay.manualTests.length > 0
+    ? fallbackDisplay
+    : (params.existingDisplay ?? fallbackDisplay);
+}
+
 function mapPostExecutionDecision(
   decision: PostExecutionDecision,
 ): ContinuationProposalDecision | undefined {
@@ -516,9 +596,147 @@ function mapPostExecutionDecision(
   };
 }
 
+type DegradedRemainingWorkEvidence = {
+  summary: string;
+  nextPlanPrompt: string;
+};
+
+function normalizeDegradedRemainingText(value: string | undefined, maxLength = 700): string {
+  const text = value?.replace(/\s+/g, " ").trim() ?? "";
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3).trimEnd()}...` : text;
+}
+
+function isActionableDegradedRemainingText(value: string | undefined): value is string {
+  const text = normalizeDegradedRemainingText(value, 1_000);
+  if (!text) return false;
+  if (
+    /^(?:none|n\/a|not applicable|complete|completed)\.?$/i.test(text) ||
+    /\b(?:no|nothing)\b.{0,40}\b(?:remaining|left|unfinished|incomplete|to do|todo|work)\b/i.test(
+      text,
+    ) ||
+    /\b(?:goal|work|task)\b.{0,40}\b(?:is|was|appears|looks)\b.{0,20}\b(?:complete|completed|done)\b/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function buildDegradedNextPlanPrompt(params: { runId: string; summary: string }): string {
+  return [
+    `Create the next plan under the same Goal ID (${params.runId}) to complete the remaining original-goal work.`,
+    `Remaining work: ${params.summary}`,
+    "Do not redo completed plan steps. Use the Goal Brief, current plan context, and saved artifacts as the source of truth.",
+  ].join("\n");
+}
+
+function collectGoalBriefDegradedRemainingWork(params: {
+  runId: string;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
+}): DegradedRemainingWorkEvidence | undefined {
+  const brief = loadGoalBriefContent({
+    runId: params.runId,
+    workingDir: params.workingDir,
+    ...(params.serializedRun?.goalBriefPath
+      ? { goalBriefPath: params.serializedRun.goalBriefPath }
+      : {}),
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+  });
+  if (!brief.ok) return undefined;
+
+  const remainingWork = extractGoalBriefSection(brief.content, ["Remaining Work"]);
+  if (!isActionableDegradedRemainingText(remainingWork)) return undefined;
+
+  const observationPoint =
+    extractGoalBriefSection(brief.content, ["Next Observation Point", "Observation Point"]) ?? "";
+  const summary = normalizeDegradedRemainingText(remainingWork);
+  const observation = normalizeDegradedRemainingText(observationPoint, 400);
+  return {
+    summary,
+    nextPlanPrompt: [
+      `Create the next plan under the same Goal ID (${params.runId}) to complete the remaining work recorded in the Goal Brief.`,
+      `Remaining work: ${summary}`,
+      observation ? `Observation point: ${observation}` : "",
+      "Do not redo completed plan steps. Do not claim the remaining work is already complete without concrete evidence.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  };
+}
+
+function lineIdentifiesRemainingPlanWork(line: string): boolean {
+  const text = normalizeDegradedRemainingText(line, 1_000);
+  if (!isActionableDegradedRemainingText(text)) return false;
+  return (
+    /\bremaining (?:original[- ]goal )?work\b/i.test(text) ||
+    /\bstill needs?\b/i.test(text) ||
+    /\bunfinished\b/i.test(text) ||
+    /\bincomplete\b/i.test(text) ||
+    /\bnext plan\b/i.test(text) ||
+    /\bstage\s*(?:2|two|3|three|next|later)\b/i.test(text) ||
+    /\bleav(?:e|es|ing|ed)\b.{0,100}\b(?:continuation|later|next|stage)\b/i.test(text) ||
+    /\bcontinue(?:s|d)?\b.{0,100}\b(?:same goal|after|stage|remaining|with another plan)\b/i.test(
+      text,
+    )
+  );
+}
+
+function collectPlanDegradedRemainingWork(params: {
+  runId: string;
+  goal: string;
+  plan: Plan;
+}): DegradedRemainingWorkEvidence | undefined {
+  const candidates = [
+    params.goal,
+    params.plan.goal,
+    params.plan.summary,
+    params.plan.shortSummary,
+    ...params.plan.steps.flatMap((step) => [
+      step.description,
+      step.shortSummary,
+      step.taskSummary,
+      step.blockedQuestion,
+    ]),
+  ];
+  const matching = candidates
+    .map((line) => normalizeDegradedRemainingText(line, 500))
+    .filter((line) => lineIdentifiesRemainingPlanWork(line));
+  if (matching.length === 0) return undefined;
+
+  const summary = normalizeDegradedRemainingText(matching.slice(0, 3).join(" "), 700);
+  return {
+    summary,
+    nextPlanPrompt: buildDegradedNextPlanPrompt({ runId: params.runId, summary }),
+  };
+}
+
+function collectDegradedRemainingWork(params: {
+  runId: string;
+  goal: string;
+  plan: Plan;
+  workingDir: string;
+  historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
+}): DegradedRemainingWorkEvidence | undefined {
+  return (
+    collectGoalBriefDegradedRemainingWork(params) ??
+    collectPlanDegradedRemainingWork({
+      runId: params.runId,
+      goal: params.goal,
+      plan: params.plan,
+    })
+  );
+}
+
 function buildDegradedPostExecutionReport(params: {
   summary: string;
   failure: PostExecutionReportingFailure;
+  manualTests?: readonly PostExecutionManualTest[];
+  remainingWork?: DegradedRemainingWorkEvidence;
 }): PostExecutionReport {
   return {
     planCompleted: true,
@@ -526,10 +744,10 @@ function buildDegradedPostExecutionReport(params: {
     summary: params.summary,
     filesChanged: [],
     verificationCommands: [],
-    manualTests: [],
-    nextPlanRecommended: false,
-    nextPlanSummary: null,
-    nextPlanPrompt: null,
+    manualTests: params.manualTests ? [...params.manualTests] : [],
+    nextPlanRecommended: Boolean(params.remainingWork),
+    nextPlanSummary: params.remainingWork?.summary ?? null,
+    nextPlanPrompt: params.remainingWork?.nextPlanPrompt ?? null,
     decisionsNeeded: [],
     failureOrBlockedReason: `Post-execution reporting could not generate a full report during ${params.failure.phase}: ${params.failure.reason}`,
   };
@@ -557,15 +775,29 @@ function writeFallbackPostExecutionArtifacts(params: {
 
 function buildDegradedPostExecutionResult(params: {
   runId: string;
+  goal: string;
+  plan: Plan;
   workingDir: string;
   historyWorkspaceSlug?: string;
+  serializedRun?: SerializedRun;
   summary: string;
   failure: PostExecutionReportingFailure;
   backend: CliWorkerId;
 }): SuccessfulPostExecutionReportingResult {
+  const remainingWork = collectDegradedRemainingWork({
+    runId: params.runId,
+    goal: params.goal,
+    plan: params.plan,
+    workingDir: params.workingDir,
+    ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
+    ...(params.serializedRun ? { serializedRun: params.serializedRun } : {}),
+  });
+  const manualTestDisplay = buildFallbackManualTestDisplay(params.plan.steps);
   const report = buildDegradedPostExecutionReport({
     summary: params.summary,
     failure: params.failure,
+    manualTests: manualTestDisplay.manualTests,
+    ...(remainingWork ? { remainingWork } : {}),
   });
   const { artifacts, markdown } = writeFallbackPostExecutionArtifacts({
     runId: params.runId,
@@ -573,15 +805,11 @@ function buildDegradedPostExecutionResult(params: {
     ...(params.historyWorkspaceSlug ? { historyWorkspaceSlug: params.historyWorkspaceSlug } : {}),
     report,
   });
-  const manualTestDisplay: PostExecutionManualTestDisplay = {
-    manualTests: [],
-    displayMarkdown: "",
-  };
   const continuation: PostExecutionContinuationDecision = {
     goalAchieved: false,
-    nextPlanRecommended: false,
-    nextPlanSummary: null,
-    nextPlanPrompt: null,
+    nextPlanRecommended: Boolean(remainingWork),
+    nextPlanSummary: remainingWork?.summary ?? null,
+    nextPlanPrompt: remainingWork?.nextPlanPrompt ?? null,
     decisionsNeeded: [],
     failureOrBlockedReason: report.failureOrBlockedReason,
   };
@@ -686,6 +914,7 @@ async function runPostExecutionLifecycle(
     summary: string;
     reviewUrl?: string;
     maxTurnsPerTask?: number;
+    manualTestsClient?: GoalLlmClient;
     failOnReportingFailure?: boolean;
   },
 ): Promise<PostExecutionLifecycleResult> {
@@ -781,8 +1010,11 @@ async function runPostExecutionLifecycle(
     try {
       result = buildDegradedPostExecutionResult({
         runId,
+        goal: session.goal,
+        plan,
         workingDir,
         ...(historyWorkspaceSlug ? { historyWorkspaceSlug } : {}),
+        ...(serializedRunForReporting ? { serializedRun: serializedRunForReporting } : {}),
         summary: params.summary,
         failure: reportingFailure,
         backend,
@@ -815,6 +1047,19 @@ async function runPostExecutionLifecycle(
       return { status: "failed", summary: params.summary, failure: fallbackFailure };
     }
   }
+
+  result = {
+    ...result,
+    manualTestDisplay: await buildLifecycleManualTestDisplay({
+      goal: session.goal,
+      steps,
+      runId,
+      workingDir,
+      ...(params.manualTestsClient ? { client: params.manualTestsClient } : {}),
+      existingDisplay: result.manualTestDisplay,
+      onProgress,
+    }),
+  };
 
   const manualTests = mapPostExecutionManualTests(result.manualTestDisplay.manualTests);
   const continuation = buildReportDerivedContinuationProposal({
@@ -2109,6 +2354,7 @@ export async function executeGoalWithAgent(params: ExecuteGoalParams): Promise<G
         enabledWorkers,
         model: params.model,
         claudeCodeAuth: params.claudeCodeAuth,
+        manualTestsClient: params.manualTestsClient,
         channel: params.channel,
         serializedRun: params.serializedRun,
         onRunStatePersist: params.onRunStatePersist,

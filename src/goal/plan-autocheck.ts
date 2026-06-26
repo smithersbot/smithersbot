@@ -35,7 +35,13 @@ import {
   CLAUDE_ALLOWED_TOOLS_READ_ONLY,
   CLAUDE_READ_ONLY_PROMPT,
 } from "./claude-code-constants.js";
-import { collectText, isRecord, parseJsonLines } from "./cli-output-parsing.js";
+import {
+  collectText,
+  extractCliTextAndSession,
+  isRecord,
+  parseJsonLines,
+  pickCliSessionId,
+} from "./cli-output-parsing.js";
 import { classifyProviderError, extractUsageLimitResetHint } from "./error-patterns.js";
 import { backendDisplayName } from "./usage-limit-message.js";
 import { runCliPlanRevision } from "./cli-planner.js";
@@ -328,47 +334,8 @@ class ReviewerCliError extends Error {
   }
 }
 
-function pickSessionId(parsed: Record<string, unknown>): string | undefined {
-  const fields = [
-    "session_id",
-    "sessionId",
-    "conversation_id",
-    "conversationId",
-    "thread_id",
-    "threadId",
-  ];
-  for (const field of fields) {
-    const value = parsed[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
-}
-
 function parseTextAndSessionFromJsonLines(raw: string): { text: string; sessionId?: string } {
-  const lines = parseJsonLines(raw);
-  let sessionId: string | undefined;
-  let finalResultText: string | undefined;
-  const parts: string[] = [];
-
-  for (const parsed of lines) {
-    sessionId = sessionId ?? pickSessionId(parsed);
-    const type = typeof parsed.type === "string" ? parsed.type : "";
-    const isError = parsed.is_error === true;
-    if (type === "result" && !isError) {
-      const resultText = collectText(parsed.result).trim();
-      if (resultText) {
-        finalResultText = resultText;
-      }
-      continue;
-    }
-    const eventText = collectText(parsed).trim();
-    if (!eventText) continue;
-    if (parts.at(-1) !== eventText) {
-      parts.push(eventText);
-    }
-  }
-
-  return { text: (finalResultText ?? parts.join("\n")).trim(), sessionId };
+  return extractCliTextAndSession(raw);
 }
 
 function parseDecisionRecord(raw: Record<string, unknown>): AutocheckDecision | undefined {
@@ -455,7 +422,7 @@ function parseClaudeReviewerOutput(stdout: string): ParsedReviewerOutput {
   let resultText: string | undefined;
 
   for (const parsed of lines) {
-    sessionId = sessionId ?? pickSessionId(parsed);
+    sessionId = pickCliSessionId(parsed) ?? sessionId;
     const type = typeof parsed.type === "string" ? parsed.type : "";
     const isError = parsed.is_error === true;
     if (type !== "result" || isError) continue;
@@ -622,7 +589,6 @@ function normalizeBackend(value: string | undefined): PlanAutocheckBackend | und
 }
 
 function buildClaudeReviewerArgs(params: {
-  prompt: string;
   sandboxConfig: ClaudeCodeLaunchSandboxConfig;
   sessionId?: string;
   model?: string;
@@ -640,12 +606,10 @@ function buildClaudeReviewerArgs(params: {
   appendClaudeCodeSandboxArgs(args, params.sandboxConfig);
   if (params.model) args.push("--model", params.model);
   if (params.sessionId) args.push("--resume", params.sessionId);
-  args.push(params.prompt);
   return args;
 }
 
 function buildCodexReviewerArgs(params: {
-  prompt: string;
   workingDir: string;
   sandboxConfig: CodexNativeSandboxConfig;
   sessionId?: string;
@@ -670,7 +634,6 @@ function buildCodexReviewerArgs(params: {
     args.push("--model", params.model);
   }
 
-  args.push(params.prompt);
   return args;
 }
 
@@ -682,9 +645,6 @@ function sanitizeReviewerArgvForHistory(args: readonly string[]): string[] {
       sanitized[index + 1] = "<append-system-prompt redacted; see prompt artifact>";
       index += 1;
     }
-  }
-  if (sanitized.length > 0) {
-    sanitized[sanitized.length - 1] = "<prompt redacted; see prompt artifact>";
   }
   return sanitized;
 }
@@ -996,13 +956,11 @@ async function runReviewerAttempt(params: {
   const args =
     params.backend === "claude_code"
       ? buildClaudeReviewerArgs({
-          prompt: params.prompt,
           sandboxConfig: claudeSandbox!,
           sessionId: params.sessionId,
           model: params.model,
         })
       : buildCodexReviewerArgs({
-          prompt: params.prompt,
           workingDir: params.workingDir,
           sandboxConfig: codexSandbox!,
           sessionId: params.sessionId,
@@ -1034,9 +992,11 @@ async function runReviewerAttempt(params: {
   const procResult = await runCliProcess({
     command,
     args,
+    claudeDriverSite: "plan-autocheck",
     // Run reviewers from the project workspace so CLAUDE.md/AGENTS.md discovery stays consistent.
     cwd: params.workingDir,
     timeoutMs: params.timeoutMs,
+    stdin: params.prompt,
     stdoutPath: params.stdoutPath,
     stderrPath: params.stderrPath,
     env:
@@ -1687,6 +1647,7 @@ export async function runPlanAutocheck(params: PlanAutocheckParams): Promise<Pla
         goalText: params.goalText,
         currentPlan,
         editInstructions: result.decision.editInstructions,
+        userEditInstructions: params.userEditInstructions,
         priorFeedback: feedbackHistory.slice(0, -1),
         cwd: params.workingDir,
         model: params.model,

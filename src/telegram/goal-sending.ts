@@ -1067,6 +1067,7 @@ async function askPlannerBackendForMermaidRepair(params: {
     cwd: params.workingDir,
     timeoutMs: MERMAID_REPAIR_TIMEOUT_MS,
     stdin: params.prompt,
+    claudeDriverSite: "goal-sending",
     env: buildClaudeCodeEnv("subscription"),
   });
   if (result.timedOut || (result.exitCode && result.exitCode !== 0) || result.signal) {

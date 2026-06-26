@@ -158,6 +158,33 @@ describe("applyResumeNote", () => {
     expect(goal.state).not.toBe("executing");
   });
 
+  it("clears build-gate fix state for rescheduled blocked steps", () => {
+    const blocked = step({
+      id: "gate-blocked",
+      status: "blocked",
+      blockedReason: "task_failed",
+      blockedQuestion: "Build gate failed.",
+    });
+    const goal = session([blocked], {
+      buildGateFixCounts: {
+        "gate-blocked": 2,
+        untouched: 1,
+      },
+      buildGateFixSignatures: {
+        "gate-blocked": "not-ok-3",
+        untouched: "not-ok-9",
+      },
+    });
+
+    applyResumeNote(goal, {
+      source: "goal_resume",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(goal.buildGateFixCounts).toEqual({ untouched: 1 });
+    expect(goal.buildGateFixSignatures).toEqual({ untouched: "not-ok-9" });
+  });
+
   it("records user details as a per-step answer when clearing a legacy block with no reason", () => {
     const legacyNeedsInput = step({
       id: "legacy-needs-input",
@@ -300,6 +327,33 @@ describe("applyResumeNote", () => {
     expect(goal.plan?.steps.map((s) => s.status)).toEqual(["pending", "pending"]);
     expect(result.noteBody).toContain("to resume the interrupted run");
     expect(result.noteBody).toContain("User details:\nCarry on.");
+  });
+
+  it("clears final build-gate fix state for a run-level resume_execution marker", () => {
+    const goal = session([step({ id: "step-a", status: "pending" })], {
+      state: "blocked",
+      blocked: {
+        blockedAt: "execution",
+        prompt: "Run was interrupted.",
+        requiredInputKey: "resume_execution",
+      },
+      buildGateFixCounts: {
+        __final__: 2,
+        "step-a": 1,
+      },
+      buildGateFixSignatures: {
+        __final__: "final-gate",
+        "step-a": "step-gate",
+      },
+    });
+
+    applyResumeNote(goal, {
+      source: "goal_resume",
+      now: "2026-05-30T12:00:00.000Z",
+    });
+
+    expect(goal.buildGateFixCounts).toEqual({ "step-a": 1 });
+    expect(goal.buildGateFixSignatures).toEqual({ "step-a": "step-gate" });
   });
 
   it("preserves a follow-up reply after the first note cleared blocked steps", () => {

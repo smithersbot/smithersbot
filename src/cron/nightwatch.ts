@@ -325,6 +325,7 @@ async function runClaudeLessonCondense(params: {
 }): Promise<CondensedLesson[]> {
   const result = await runCliProcess({
     command: params.claudeBinary,
+    claudeDriverSite: "nightwatch",
     args: [
       "-p",
       "--output-format",

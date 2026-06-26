@@ -7,6 +7,7 @@ import {
   SECRET_PATH_DENY_REASON,
   SECRET_PATH_PATTERNS,
 } from "../security/secret-paths.js";
+import { resolveObservedAgentRoot, resolveObservedSealedRoots } from "../config/managed-paths.js";
 
 // Regression guard for "Issue 2" from the stable-to-dev isolation verification:
 // a stable worker / repo-chat process running as the same OS user as the dev
@@ -159,6 +160,38 @@ describe("dev private-root deny policy (stable worker / repo-chat)", () => {
         const absolute = path.join(homeDir, filePath.slice(2));
         expect(isSecretPath(absolute, { homeDir })).toBe(false);
       }
+    });
+  });
+
+  // The cross-instance repo-chat grant computes the dev sealed roots and agent
+  // root from the gateway-instance identity mapping (no literal folder names).
+  // These assertions prove the mapping-derived sealed roots are exactly the ones
+  // the deny policy refuses, while the mapping-derived agent root stays readable —
+  // so renaming either managed root keeps the seal/grant aligned.
+  describe("identity-mapping-derived dev sealing stays denied", () => {
+    const observed = { observedInstances: ["dev"] };
+
+    it("denies the mapping-derived dev private root and state dir once resolved", () => {
+      const home = path.join(path.sep, "home", "fixture-user");
+      vi.spyOn(os, "homedir").mockReturnValue(home);
+      const sealed = resolveObservedSealedRoots("dev", { ...observed, homedir: () => home });
+
+      for (const root of [sealed.privateRoot, sealed.stateDir]) {
+        expect(checkPathDeny(path.join(root, "child"))?.reason).toBe(SECRET_PATH_DENY_REASON);
+        expect(checkPathDeny(path.join(root, "child"), buildDevWorkspaceHardDenies())?.reason).toBe(
+          SECRET_PATH_DENY_REASON,
+        );
+      }
+    });
+
+    it("keeps the mapping-derived dev agent root inspectable", () => {
+      const home = path.join(path.sep, "home", "fixture-user");
+      vi.spyOn(os, "homedir").mockReturnValue(home);
+      const agentRoot = resolveObservedAgentRoot("dev", { ...observed, homedir: () => home });
+
+      expect(checkPathDeny(path.join(agentRoot, "workspaces", "ws", "src", "index.ts"))).toBeNull();
+      expect(checkPathDeny(path.join(agentRoot, "history", "goals", "run.md"))).toBeNull();
+      expect(isSecretPath(path.join(agentRoot, "workspaces", "ws"), { homeDir: home })).toBe(false);
     });
   });
 

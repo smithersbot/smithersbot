@@ -5,7 +5,8 @@ export const RATE_LIMIT_RE =
 export const PROVIDER_TRANSIENT_OVERLOAD_RE =
   /\b(?:5\d{2}|529)\b|overloaded|server-side issue|service unavailable/i;
 export const CREDITS_RE = /credit|balance|billing|insufficient.*funds|payment|quota.*exceeded/i;
-export const AUTH_RE = /401|403|unauthorized|forbidden|invalid.*key|authentication/i;
+export const AUTH_RE =
+  /401|403|unauthorized|forbidden|invalid.*key|authentication|not logged in|log in|login/i;
 export const NETWORK_RE =
   /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up|EAI_AGAIN/i;
 
@@ -64,7 +65,13 @@ export function classifyProviderError(params: {
   assistantError?: string | null;
   preferCredits?: boolean;
 }): ProviderErrorKind | undefined {
-  if (params.assistantError === "billing_error") return "out_of_credits";
+  const assistantError = params.assistantError?.trim() ?? "";
+  if (/billing|credit|balance|insufficient/i.test(assistantError)) return "out_of_credits";
+  if (/auth|login|logged.?in|unauthorized|forbidden/i.test(assistantError)) return "auth";
+  if (/rate.?limit|usage.?limit|429|too.?many.?requests/i.test(assistantError)) {
+    return "rate_limit";
+  }
+  if (/network|fetch|socket|connection|timeout/i.test(assistantError)) return "network";
 
   const orderedKinds: ProviderErrorKind[] = params.preferCredits
     ? ["out_of_credits", "auth", "rate_limit", "network"]
